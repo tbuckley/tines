@@ -41,7 +41,7 @@ test.describe.serial('public workflow snapshots', () => {
 		}
 
 		const publisher = apiClient(request, WORKFLOW_PUBLICATIONS_PUBLISHER.apiKey);
-		const workflow = await body<{ id: string }>(
+		const workflow = await body<{ id: string; states: { id: string; name: string }[] }>(
 			await publisher.post('/api/v1/workflows', {
 				name: marker,
 				description: `Inspectable exact text ${marker}\n\n[External guide](https://example.com/public-guide)\n\n${'reader-state '.repeat(120)}`,
@@ -64,6 +64,20 @@ test.describe.serial('public workflow snapshots', () => {
 								description: `Human decision ${'with-readable-long-gate '.repeat(20)}`
 							}
 						]
+					}
+				]
+			})
+		);
+		const draftState = workflow.states.find((state) => state.name === 'Draft')!;
+		await body(
+			await publisher.post('/api/v1/context', {
+				kind: 'skill',
+				name: `required-publishing-${runId}`,
+				workflow_state_id: draftState.id,
+				files: [
+					{
+						path: 'SKILL.md',
+						content: `# Publishing review\n\n${'Read every included instruction. '.repeat(130)}\n\nComplete skill tail ${marker}`
 					}
 				]
 			})
@@ -92,15 +106,74 @@ test.describe.serial('public workflow snapshots', () => {
 		await gotoHydrated(ownerPage, `/workflows/${workflow.id}/export#publish`);
 		const displayName = ownerPage.getByLabel('Public display name');
 		await displayName.fill('First proof name');
-		await ownerPage.getByRole('button', { name: 'Prepare exact publication proof' }).click();
-		await expect(ownerPage.getByText('Exact proof', { exact: true })).toBeVisible();
+		let prepareRequests = 0;
+		const prepareRequestIds: string[] = [];
+		ownerPage.on('request', (request) => {
+			if (request.method() === 'POST' && request.url().endsWith('/api/v1/publications/prepare')) {
+				prepareRequests++;
+				prepareRequestIds.push(request.postDataJSON().prepare_request_id);
+			}
+		});
+		let releasePreparation!: () => void;
+		const heldPreparation = new Promise<void>((resolve) => (releasePreparation = resolve));
+		let preparationStarted!: () => void;
+		const startedPreparation = new Promise<void>((resolve) => (preparationStarted = resolve));
+		await ownerPage.route('**/api/v1/publications/prepare', async (route) => {
+			const response = await route.fetch();
+			preparationStarted();
+			await heldPreparation;
+			await route.fulfill({ response });
+		});
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		await startedPreparation;
 		await displayName.fill('Alice Browser');
-		await expect(ownerPage.getByText('Exact proof', { exact: true })).toHaveCount(0);
-		await ownerPage.getByRole('button', { name: 'Prepare exact publication proof' }).click();
-		await ownerPage.getByLabel(/I have the right to share/).check();
-		await ownerPage.getByLabel(/I reviewed this exact proof/).check();
-		await ownerPage.getByRole('button', { name: 'Publish immutable snapshot' }).click();
-		await expect(ownerPage.getByText('Published', { exact: true })).toBeVisible();
+		const rejectedResponse = ownerPage.waitForResponse('**/api/v1/publications/prepare');
+		releasePreparation();
+		await rejectedResponse;
+		await expect(ownerPage.getByRole('heading', { name: 'Customize', exact: true })).toBeVisible();
+		await expect(ownerPage.getByText('Published by First proof name')).toHaveCount(0);
+		await ownerPage.unroute('**/api/v1/publications/prepare');
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		await expect(ownerPage.getByRole('heading', { name: 'Preview', exact: true })).toBeFocused();
+		const skillReview = ownerPage.getByRole('link', { name: 'Review 1 included skill' });
+		await skillReview.click();
+		const skill = ownerPage.locator('section[id^="review-"]').filter({ hasText: marker });
+		await expect(skill).toBeFocused();
+		await expect(skill.getByText(`Complete skill tail ${marker}`, { exact: true })).toBeVisible();
+		await expect(skill.getByRole('button', { name: /Show all/ })).toHaveCount(0);
+		await ownerPage.setViewportSize(PHONE);
+		const continueAction = ownerPage.getByRole('button', {
+			name: 'I reviewed the included skill — Continue to Share'
+		});
+		await expect(continueAction).toBeVisible();
+		const actionBox = await continueAction.boundingBox();
+		expect(actionBox!.x).toBeGreaterThanOrEqual(0);
+		expect(actionBox!.x + actionBox!.width).toBeLessThanOrEqual(PHONE.width);
+		await ownerPage.getByRole('button', { name: 'Back to Customize' }).click();
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		expect(prepareRequests).toBe(2);
+		expect(new Set(prepareRequestIds).size).toBe(2);
+		await continueAction.click();
+		await ownerPage
+			.getByRole('checkbox', { name: /I have the right to share all included content/ })
+			.check();
+		const publishAttempts: unknown[] = [];
+		await ownerPage.route('**/api/v1/publications/*/publish', async (route) => {
+			publishAttempts.push(route.request().postDataJSON());
+			if (publishAttempts.length === 1) {
+				const response = await route.fetch();
+				expect(response.ok()).toBe(true);
+				await route.abort('connectionreset');
+				return;
+			}
+			await route.continue();
+		});
+		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
+		await expect(ownerPage.getByText(/could not confirm whether sharing finished/)).toBeVisible();
+		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
+		await expect(ownerPage.getByText('Shared', { exact: true })).toBeVisible();
+		expect(publishAttempts).toHaveLength(2);
+		expect(publishAttempts[1]).toEqual(publishAttempts[0]);
 		await ownerContext.close();
 		const publicContext = await browser.newContext();
 		const page = await publicContext.newPage();
@@ -147,7 +220,7 @@ test.describe.serial('public workflow snapshots', () => {
 				page.getByText(`Inspectable exact text ${marker}`, { exact: true })
 			).toBeVisible();
 			await expect(page.getByRole('button', { name: /Sign in to install/i })).toBeVisible();
-			await expect(page.getByRole('button', { name: /Download package/i })).toBeVisible();
+			await expect(page.getByRole('button', { name: /Download file/i })).toBeVisible();
 			const external = page.getByRole('button', { name: /External guide/i });
 			await external.click();
 			await expect(page.getByRole('dialog', { name: 'Open external destination?' })).toBeVisible();
@@ -212,7 +285,7 @@ test.describe.serial('public workflow snapshots', () => {
 		);
 		await expect(validPage).toHaveURL(`/workflows/import?publication=${snapshotId}`);
 		await expect(
-			validPage.getByRole('heading', { name: 'Install workflow package' })
+			validPage.getByRole('heading', { name: 'Install workflow', exact: true })
 		).toBeVisible();
 		expect(
 			d1<{ n: number }>(
@@ -341,11 +414,16 @@ test.describe.serial('public workflow snapshots', () => {
 		const page = await context.newPage();
 		await page.goto(`/p/${snapshotId}/install`);
 		await expect(page).toHaveURL(`/workflows/import?publication=${snapshotId}`);
-		await expect(page.getByRole('heading', { name: 'Install workflow package' })).toBeVisible();
-		await page.getByRole('button', { name: 'Prepare installation' }).click();
-		await page.getByLabel(/I confirm exact plan/).check();
-		await page.getByRole('button', { name: 'Install package' }).click();
-		await expect(page.getByRole('heading', { name: 'Package installed' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Install workflow' })).toBeVisible();
+		await page.getByRole('button', { name: 'Preview installation' }).click();
+		const includedReviews = page.getByRole('checkbox', { name: /I reviewed every file/ });
+		await expect(includedReviews).toHaveCount(1);
+		await includedReviews.check();
+		await page.getByLabel(/I reviewed what will be installed/).check();
+		const install = page.getByRole('button', { name: 'Install workflow' });
+		await expect(install).toBeEnabled();
+		await install.click();
+		await expect(page.getByRole('heading', { name: 'Installed', exact: true })).toBeVisible();
 		await context.close();
 
 		const bob = apiClient(request, BOB.apiKey);
@@ -356,9 +434,9 @@ test.describe.serial('public workflow snapshots', () => {
 		const observed = await observedContext.newPage();
 		await gotoHydrated(observed, `/p/${snapshotId}`);
 		await expect(observed.getByText(marker, { exact: false }).first()).toBeVisible();
-		const expansion = observed.getByRole('button', { name: /Show all \d+ words/ });
+		const expansion = observed.getByRole('button', { name: /Show all \d+ words/ }).first();
 		await expansion.click();
-		const collapse = observed.getByRole('button', { name: 'Show snippet' });
+		const collapse = observed.getByRole('button', { name: 'Show snippet' }).first();
 		await collapse.focus();
 		let releaseAvailable!: () => void;
 		const availableRelease = new Promise<void>((resolve) => (releaseAvailable = resolve));

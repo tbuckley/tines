@@ -18,6 +18,7 @@
 	import PackageInputs from '$lib/components/library/PackageInputs.svelte';
 	import PackageOperations from '$lib/components/library/PackageOperations.svelte';
 	import PackageReceipt from '$lib/components/library/PackageReceipt.svelte';
+	import TechnicalDetails from '$lib/components/publications/TechnicalDetails.svelte';
 	import PackageReview from '$lib/components/library/PackageReview.svelte';
 	import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
 
@@ -412,7 +413,7 @@
 	}}
 />
 
-<svelte:head><title>Install workflow package · Tines</title></svelte:head>
+<svelte:head><title>Install workflow · Tines</title></svelte:head>
 
 <div class="mx-auto max-w-[68rem] min-w-0 pb-20">
 	<a
@@ -420,11 +421,11 @@
 		class="text-muted-foreground mb-4 inline-flex min-h-10 items-center gap-1 text-sm hover:underline"
 		><IconArrowLeft size={15} /> Workflows</a
 	>
-	<h1 class="text-2xl font-semibold tracking-tight">Install workflow package</h1>
+	<h1 class="text-2xl font-semibold tracking-tight">Install workflow</h1>
 	<p class="text-muted-foreground mt-2 mb-6 max-w-3xl text-sm">
 		{hostedMode
-			? 'Review this hosted snapshot, resolve its destination values, and install one atomic independent copy. Tines rechecks availability at commit.'
-			: 'Review a local Tines package, resolve its destination values, and install one atomic independent copy. This page never fetches package dependencies or public URLs.'}
+			? 'Preview this shared workflow, choose its values, and install an independent copy.'
+			: 'Preview a local workflow file, choose its values, and install an independent copy.'}
 	</p>
 
 	{#if !hostedMode}<div class="mb-6 flex flex-wrap items-center gap-3 rounded-lg border p-4">
@@ -447,10 +448,9 @@
 			<span class="text-muted-foreground min-w-0 text-sm break-all"
 				>{fileName ?? 'No file chosen'}</span
 			>
-			{#if document_}<span
-					class="text-muted-foreground max-w-full min-w-0 text-xs break-all sm:w-auto"
-					><code>{document_.digest}</code></span
-				>{/if}
+			{#if document_}<TechnicalDetails
+					items={[{ label: 'Document fingerprint', value: document_.digest }]}
+				/>{/if}
 		</div>{/if}
 
 	{#if error}<div
@@ -482,7 +482,7 @@
 		<p role="status" class="text-muted-foreground text-sm">Reading and validating package…</p>
 	{:else if stage === 'unknown'}
 		<section class="space-y-3 rounded-lg border p-4">
-			<h2 class="font-semibold">Installation result unknown</h2>
+			<h2 class="font-semibold">Installation status is unknown</h2>
 			<p class="text-muted-foreground text-sm">
 				Recovery is scoped to this account, destination, and prepared plan. The saved recovery
 				record contains the signed plan identity, not package prose.
@@ -494,7 +494,7 @@
 						variant="outline"
 						onclick={() =>
 							installExact(recovery!.planToken, recovery!.planDigest, recovery!.planId)}
-						>Retry same plan safely</Button
+						>Retry installation</Button
 					>{/if}
 			</div>
 			{#if !document_}<p class="text-muted-foreground text-xs">
@@ -526,10 +526,10 @@
 				onchange={invalidatePlan}
 			/>
 			{#if tokenInvoker}<div class="flex justify-end">
-					<Button size="sm" variant="outline" onclick={backToToken}>Back to exact use</Button>
+					<Button size="sm" variant="outline" onclick={backToToken}>Back to passage</Button>
 				</div>{/if}
 			{#if !plan}<Button onclick={prepare} disabled={stage === 'preparing'}
-					>{stage === 'preparing' ? 'Preparing exact plan…' : 'Prepare installation'}</Button
+					>{stage === 'preparing' ? 'Preparing preview…' : 'Preview installation'}</Button
 				>{/if}
 		</div>
 	{/if}
@@ -542,13 +542,19 @@
 	>
 		<div class="mx-auto flex min-h-10 max-w-[68rem] flex-wrap items-center justify-between gap-2">
 			<label class="flex min-h-10 items-center gap-2 text-sm"
-				><input type="checkbox" bind:checked={confirmed} /> I confirm exact plan
-				<code class="hidden lg:inline">{plan.plan_digest}</code></label
+				><input type="checkbox" bind:checked={confirmed} /> I reviewed what will be installed</label
 			>
-			<Button onclick={install} disabled={!confirmed || !reviewComplete}>Install package</Button>
+			<Button onclick={install} disabled={!confirmed || !reviewComplete}>Install workflow</Button>
 		</div>
 		{#if !reviewComplete}<p class="text-muted-foreground mx-auto max-w-[68rem] text-right text-xs">
-				Review every included skill and repository before confirming.
+				Review every included skill and repository before installing.
 			</p>{/if}
+		<TechnicalDetails
+			items={[
+				{ label: 'Plan', value: plan.plan_id },
+				{ label: 'Plan fingerprint', value: plan.plan_digest },
+				{ label: 'Expires', value: new Date(plan.expires_at).toLocaleString() }
+			]}
+		/>
 	</div>
 {/if}

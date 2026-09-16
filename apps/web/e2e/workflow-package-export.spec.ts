@@ -44,12 +44,14 @@ let sourceConventionsId: string;
 let projectId: string;
 let scheduleId: string;
 async function openExport(page: Page) {
-	await gotoHydrated(page, `/workflows/${workflowId}/export`);
+	await gotoHydrated(page, `/workflows/${workflowId}/export?download=1`);
 	await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
+	await page.getByText('Add automation (optional)', { exact: true }).click();
+	await page.getByText('Customize instructions and variables (optional)', { exact: true }).click();
 }
 
 async function rebuildCandidate(page: Page) {
-	const rebuild = page.getByRole('button', { name: 'Rebuild from source' });
+	const rebuild = page.getByRole('button', { name: 'Apply automation' });
 	const rebuilt = page.waitForResponse(
 		(response) =>
 			new URL(response.url()).pathname === `/api/v1/workflows/${workflowId}/export` &&
@@ -68,7 +70,7 @@ async function rebuildCandidate(page: Page) {
 }
 
 function candidateInputs(page: Page) {
-	return page.getByRole('region', { name: '2. Candidate inputs and exact text uses' });
+	return page.getByRole('region', { name: 'Variables and places used' });
 }
 
 function declaredInput(page: Page, key: string) {
@@ -235,9 +237,9 @@ for (const { viewport, theme } of [
 		await page.getByLabel('Key').fill('project_name');
 		await page.getByLabel('Type').selectOption('project');
 		await page.getByLabel('Default').fill('customer-portal');
-		await page.getByRole('button', { name: 'Add typed declaration' }).click();
+		await page.getByRole('button', { name: 'Add variable' }).click();
 		await page
-			.getByLabel('Exact candidate field')
+			.getByLabel('Edit instructions')
 			.selectOption({ label: 'instructions — prompt body' });
 		const editor = page.locator('textarea');
 		await editor.evaluate((node: HTMLTextAreaElement) => {
@@ -245,13 +247,13 @@ for (const { viewport, theme } of [
 			node.focus();
 			node.setSelectionRange(start, start + 'TARGET'.length);
 		});
-		await page.getByRole('button', { name: 'Replace selection with declared token' }).click();
+		await page.getByRole('button', { name: 'Use selected variable here' }).click();
 
 		await page.getByLabel('Key').fill('review_label');
 		await page.getByLabel('Type').selectOption('label');
 		await page.getByLabel('Default').fill('customer-reveiw');
 		await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Review label');
-		await page.getByRole('button', { name: 'Add typed declaration' }).click();
+		await page.getByRole('button', { name: 'Add variable' }).click();
 		await reviewDependencies(page);
 
 		// Preserve a separate unfinished add draft through the correction.
@@ -260,7 +262,7 @@ for (const { viewport, theme } of [
 		await page.getByRole('button', { name: 'Edit input review_label' }).click();
 		await expect(page.getByLabel('Key')).toBeFocused();
 		await expect(page.getByRole('heading', { name: 'Editing input review_label' })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Rebuild from source' })).toBeDisabled();
+		await expect(page.getByRole('button', { name: 'Apply automation' })).toBeDisabled();
 		await expect(page.getByRole('button', { name: 'Edit input project_name' })).toBeDisabled();
 		await page.getByLabel('Key').fill('approval_label');
 		await page.getByLabel('Type').selectOption('text');
@@ -276,8 +278,10 @@ for (const { viewport, theme } of [
 		await expect(page.getByLabel('Key')).toHaveValue('pending_input');
 		await expect(page.getByLabel('Default')).toHaveValue('pending-value');
 		await expect(declaredInput(page, 'approval_label')).toHaveAttribute('aria-pressed', 'true');
-		await expect(page.getByText('Input declaration updated in this candidate only.')).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Download package' })).toBeDisabled();
+		await expect(
+			page.getByText('Input declaration updated in this candidate only.').first()
+		).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Download file' })).toBeDisabled();
 		for (const checkbox of await page
 			.getByRole('checkbox', { name: /I reviewed (every file|this required repository)/ })
 			.all())
@@ -311,7 +315,7 @@ for (const { viewport, theme } of [
 
 		await reviewDependencies(page);
 		const downloadPromise = page.waitForEvent('download');
-		await page.getByRole('button', { name: 'Download package' }).click();
+		await page.getByRole('button', { name: 'Download file' }).click();
 		const path = await (await downloadPromise).path();
 		const source = await (await import('node:fs/promises')).readFile(path!, 'utf8');
 		const downloaded = (await parseLibraryV3Document(source)) as WorkflowPackageDocument;
@@ -343,26 +347,24 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	await openExport(page);
 	await page.getByLabel('Source project').selectOption(projectId);
 	await page.getByRole('checkbox', { name: new RegExp(scheduleName) }).check();
-	await page.getByRole('button', { name: 'Rebuild from source' }).click();
+	await page.getByRole('button', { name: 'Apply automation' }).click();
 	await expect(page.getByRole('button', { name: /destination_project · project/ })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Edit input destination_project' })).toHaveCount(0);
 
 	await page.getByLabel('Key').fill('first_input');
 	await page.getByLabel('Default').fill('before');
-	await page.getByRole('button', { name: 'Add typed declaration' }).click();
-	await page
-		.getByLabel('Exact candidate field')
-		.selectOption({ label: 'instructions — prompt body' });
+	await page.getByRole('button', { name: 'Add variable' }).click();
+	await page.getByLabel('Edit instructions').selectOption({ label: 'instructions — prompt body' });
 	const editor = page.locator('textarea');
 	await editor.evaluate((node: HTMLTextAreaElement) => {
 		const start = node.value.indexOf('TARGET');
 		node.focus();
 		node.setSelectionRange(start, start + 'TARGET'.length);
 	});
-	await page.getByRole('button', { name: 'Replace selection with declared token' }).click();
+	await page.getByRole('button', { name: 'Use selected variable here' }).click();
 	await page.getByLabel('Key').fill('second_input');
 	await page.getByLabel('Default').fill('second');
-	await page.getByRole('button', { name: 'Add typed declaration' }).click();
+	await page.getByRole('button', { name: 'Add variable' }).click();
 	const selectedDeclaration = page.locator('button[id^="input-"]').filter({
 		hasText: 'second_input'
 	});
@@ -398,13 +400,13 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	await expect(page.getByLabel('Default')).toHaveValue('after');
 	await page.getByRole('button', { name: 'Save candidate text' }).click();
 	await expect(
-		page.getByText('Candidate text updated without changing the private source.')
+		page.getByText('Candidate text updated without changing the private source.').first()
 	).toBeVisible();
 	await page.getByRole('button', { name: 'Save changes' }).click();
 	await expect(selectedDeclaration).toHaveAttribute('aria-pressed', 'true');
 	await expect(page.getByRole('button', { name: 'Edit input first_input' })).toBeFocused();
 	await expect(editor).toHaveValue(/\{\{first_input:after\}\}.*Unsaved adjacent prose\./s);
-	await expect(page.getByRole('button', { name: 'Rebuild from source' })).toBeEnabled();
+	await expect(page.getByRole('button', { name: 'Apply automation' })).toBeEnabled();
 });
 
 test('authors an exact declared use and downloads the reviewed canonical package', async ({
@@ -420,27 +422,29 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	});
 	await gotoHydrated(page, `/workflows/${workflowId}`);
 	await page.getByRole('link', { name: 'Export package' }).click();
-	await expect(page).toHaveURL(`/workflows/${workflowId}/export`);
+	await expect(page).toHaveURL(`/workflows/${workflowId}/export?download=1`);
 	await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
+	await page.getByText('Add automation (optional)', { exact: true }).click();
+	await page.getByText('Customize instructions and variables (optional)', { exact: true }).click();
 	await expect(page.getByText('report · text · text/markdown')).toBeVisible();
 	await expect(page.getByText(literal, { exact: false })).toBeVisible();
 	// The acceptance file carries optional automation, but the first installation
 	// intentionally omits it to prove the project-free path.
 	await page.getByLabel('Source project').selectOption(projectId);
 	await page.getByRole('checkbox', { name: new RegExp(scheduleName) }).check();
-	await page.getByText('Tier preferences (explicit, optional)').click();
+	await page.getByText('Routing preferences (optional)').click();
 	const draftTier = page
 		.locator('div.rounded-md')
 		.filter({ hasText: `${name} › Draft` })
 		.last();
 	await draftTier.locator('select').selectOption('balanced');
 	await draftTier.getByRole('checkbox', { name: 'Project-scoped' }).check();
-	await rebuildCandidate(page);
+	await page.getByRole('button', { name: 'Apply automation' }).click();
 	await page.getByLabel('Key').fill('target_workflow');
 	await page.getByLabel('Type').selectOption('workflow');
 	await page.getByLabel('Default').fill('Standard');
 	await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Target workflow');
-	await page.getByRole('button', { name: 'Add typed declaration' }).click();
+	await page.getByRole('button', { name: 'Add variable' }).click();
 	const targetWorkflow = declaredInput(page, 'target_workflow');
 	await expect(targetWorkflow).toHaveAttribute('aria-pressed', 'true');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
@@ -448,7 +452,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await page.getByLabel('Type').selectOption('text');
 	await page.getByLabel('Default').fill('TARGET');
 	await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Target name');
-	await page.getByRole('button', { name: 'Add typed declaration' }).click();
+	await page.getByRole('button', { name: 'Add variable' }).click();
 	const targetName = declaredInput(page, 'target_name');
 	await expect(targetWorkflow).toHaveAttribute('aria-pressed', 'false');
 	await expect(targetName).toHaveAttribute('aria-pressed', 'true');
@@ -456,21 +460,11 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		.getByRole('checkbox', { name: /I reviewed (every file|this required repository)/ })
 		.first();
 	await reviewedCheckbox.check();
-	const digestBeforeSelection = await page
-		.locator('[role="status"]')
-		.filter({ hasText: 'Candidate:' })
-		.locator('span.break-all')
-		.textContent();
 	await targetWorkflow.click();
 	await expect(targetWorkflow).toHaveAttribute('aria-pressed', 'true');
 	await expect(targetName).toHaveAttribute('aria-pressed', 'false');
 	await expect(reviewedCheckbox).toBeChecked();
-	await expect(
-		page.locator('[role="status"]').filter({ hasText: 'Candidate:' }).locator('span.break-all')
-	).toHaveText(digestBeforeSelection!);
-	await page
-		.getByLabel('Exact candidate field')
-		.selectOption({ label: 'instructions — prompt body' });
+	await page.getByLabel('Edit instructions').selectOption({ label: 'instructions — prompt body' });
 	const editor = page.locator('textarea');
 	await editor.focus();
 	await expect(inputReplacement(page)).toContainText('Using target_workflow');
@@ -481,7 +475,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		node.focus();
 		node.setSelectionRange(start, start + 'TARGET'.length);
 	});
-	await page.getByRole('button', { name: 'Replace selection with declared token' }).click();
+	await page.getByRole('button', { name: 'Use selected variable here' }).click();
 	const token = page.getByRole('button', {
 		name: /Show declaration for \{\{target_name:TARGET\}\}/
 	});
@@ -500,11 +494,13 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await expect(token).toBeFocused();
 	await reviewDependencies(page);
 	await page.getByRole('button', { name: 'Save candidate text' }).click();
-	await expect(page.getByRole('button', { name: 'Download package' })).toBeDisabled();
-	await expect(page.getByText('Required skill and repository review was reset.')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Download file' })).toBeDisabled();
+	await expect(
+		page.getByText('Required skill and repository review was reset.').first()
+	).toBeVisible();
 	await reviewDependencies(page);
 	const downloadPromise = page.waitForEvent('download');
-	await page.getByRole('button', { name: 'Download package' }).click();
+	await page.getByRole('button', { name: 'Download file' }).click();
 	const download = await downloadPromise;
 	const path = await download.path();
 	const source = await (await import('node:fs/promises')).readFile(path!, 'utf8');
@@ -532,20 +528,23 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await page.getByLabel('Target workflow').selectOption({ label: 'Standard' });
 	await page.getByLabel('Target name').fill('DESTINATION');
 	await page.getByLabel(`Main · ${name}`).fill(`${name} installed`);
-	await page.getByRole('button', { name: 'Prepare installation' }).click();
-	await expect(page.getByRole('heading', { name: 'Complete installation plan' })).toBeVisible();
+	await page.getByRole('button', { name: 'Preview installation' }).click();
+	await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
 	await expect(page.getByText('Replace DESTINATION only.', { exact: false }).first()).toBeVisible();
 	await expect(
 		page.getByText('Another TARGET remains ordinary prose.', { exact: false }).first()
 	).toBeVisible();
-	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+	for (const checkbox of await page
+		.getByTestId('package-review')
+		.getByRole('checkbox', { name: /I reviewed/ })
+		.all())
 		await checkbox.check();
-	await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
+	await page.getByRole('checkbox', { name: /I reviewed what will be installed/ }).check();
 
 	// The signed plan is actor-bound. A wrong-actor rejection is a definite rollback,
 	// leaving the same reviewed plan available to its owner.
 	await signIn(page.context(), ALICE.sessionToken);
-	await page.getByRole('button', { name: 'Install package' }).click();
+	await page.getByRole('button', { name: 'Install workflow' }).click();
 	await expect(page.getByText('Prepare this package again as the installing actor')).toBeVisible();
 	await expect(page.locator('[data-package-receipt]')).toHaveCount(0);
 
@@ -562,18 +561,23 @@ test('authors an exact declared use and downloads the reviewed canonical package
 			transitions: []
 		})
 	);
-	await page.getByRole('button', { name: 'Install package' }).click();
+	await page.getByRole('button', { name: 'Install workflow' }).click();
 	await expect(page.getByText('Prepare and confirm a fresh plan.', { exact: false })).toBeVisible();
 	await expect(page.locator('[data-package-receipt]')).toHaveCount(0);
 	await page.getByLabel(`Main · ${name}`).fill(`${name} installed reviewed`);
-	await page.getByRole('button', { name: 'Prepare installation' }).click();
-	await expect(page.getByRole('heading', { name: 'Complete installation plan' })).toBeVisible();
-	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+	await page.getByRole('button', { name: 'Preview installation' }).click();
+	await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
+	for (const checkbox of await page
+		.getByTestId('package-review')
+		.getByRole('checkbox', { name: /I reviewed/ })
+		.all())
 		if (!(await checkbox.isChecked())) await checkbox.check();
-	await expect(page.getByRole('checkbox', { name: /I confirm exact plan/ })).not.toBeChecked();
-	await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
-	await page.getByRole('button', { name: 'Install package' }).click();
-	await expect(page.getByRole('heading', { name: 'Package installed', exact: true })).toBeFocused();
+	await expect(
+		page.getByRole('checkbox', { name: /I reviewed what will be installed/ })
+	).not.toBeChecked();
+	await page.getByRole('checkbox', { name: /I reviewed what will be installed/ }).check();
+	await page.getByRole('button', { name: 'Install workflow' }).click();
+	await expect(page.getByRole('heading', { name: 'Installed', exact: true })).toBeFocused();
 	const installedPromptHref = await page
 		.getByText('prompt · instructions', { exact: true })
 		.locator('..')
@@ -735,15 +739,18 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		.selectOption('balanced');
 	await page.getByLabel(`Main · ${name}`).fill(`${name} scheduled copy`);
 	await page.getByLabel(`Dependency · ${dependencyName}`).fill(`${dependencyName} scheduled copy`);
-	await page.getByRole('button', { name: 'Prepare installation' }).click();
+	await page.getByRole('button', { name: 'Preview installation' }).click();
 	await expect(page.getByText('balanced for Draft in destination project')).toBeVisible();
-	for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
+	for (const checkbox of await page
+		.getByTestId('package-review')
+		.getByRole('checkbox', { name: /I reviewed/ })
+		.all())
 		await checkbox.check();
-	await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
+	await page.getByRole('checkbox', { name: /I reviewed what will be installed/ }).check();
 	const installResponse = page.waitForResponse(
 		(response) => response.url().endsWith('/api/v1/library/install') && response.ok()
 	);
-	await page.getByRole('button', { name: 'Install package' }).click();
+	await page.getByRole('button', { name: 'Install workflow' }).click();
 	const secondReceipt = (await (await installResponse).json()) as {
 		objects: Array<{ kind: string; relationship?: string; id: string }>;
 		reused_inputs: Array<{ input_id: string; type: string; name: string }>;
@@ -886,7 +893,7 @@ test('reviews optional schedule and tier configuration and repairs project scope
 	await expect(page.getByText(workflowId, { exact: true })).toHaveCount(0);
 	await expect(page.getByText(scheduleId, { exact: true })).toHaveCount(0);
 
-	await page.getByText('Tier preferences (explicit, optional)').click();
+	await page.getByText('Routing preferences (optional)').click();
 	const draftTier = page
 		.locator('div.rounded-md')
 		.filter({ hasText: `${name} › Draft` })
@@ -895,13 +902,13 @@ test('reviews optional schedule and tier configuration and repairs project scope
 	await draftTier.getByRole('checkbox', { name: 'Project-scoped' }).check();
 	await page.getByLabel('Source project').selectOption('');
 	await expect(draftTier.getByRole('checkbox', { name: 'Project-scoped' })).not.toBeChecked();
-	await page.getByRole('button', { name: 'Rebuild from source' }).click();
+	await page.getByRole('button', { name: 'Apply automation' }).click();
 	await expect(page.getByText('Balanced for Draft without a project')).toBeVisible();
 
 	await page.getByLabel('Source project').selectOption(projectId);
 	await page.getByRole('checkbox', { name: new RegExp(scheduleName) }).check();
 	await draftTier.getByRole('checkbox', { name: 'Project-scoped' }).check();
-	await page.getByRole('button', { name: 'Rebuild from source' }).click();
+	await page.getByRole('button', { name: 'Apply automation' }).click();
 	const proof = page.locator(`#review-schedule\\:1`);
 	await expect(proof).toContainText(scheduleName);
 	await expect(proof).toContainText(`workflow:1`);
@@ -923,10 +930,8 @@ test('does not restore a stale generated input selection when its ID returns', a
 	await destination.click();
 	await expect(destination).toHaveAttribute('aria-pressed', 'true');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
-	await page
-		.getByLabel('Exact candidate field')
-		.selectOption({ label: 'instructions — prompt body' });
-	const replace = page.getByRole('button', { name: 'Replace selection with declared token' });
+	await page.getByLabel('Edit instructions').selectOption({ label: 'instructions — prompt body' });
+	const replace = page.getByRole('button', { name: 'Use selected variable here' });
 	await expect(replace).toBeEnabled();
 	await expect(inputReplacement(page)).toContainText('Using destination_project');
 
@@ -953,12 +958,8 @@ test('retains a generated input selection across an equivalent rebuild', async (
 	const destination = declaredInput(page, 'destination_project');
 	await expect(destination).toHaveAttribute('aria-pressed', 'false');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
-	await page
-		.getByLabel('Exact candidate field')
-		.selectOption({ label: 'instructions — prompt body' });
-	await expect(
-		page.getByRole('button', { name: 'Replace selection with declared token' })
-	).toBeDisabled();
+	await page.getByLabel('Edit instructions').selectOption({ label: 'instructions — prompt body' });
+	await expect(page.getByRole('button', { name: 'Use selected variable here' })).toBeDisabled();
 	await expect(inputReplacement(page)).not.toContainText('Using');
 
 	await destination.click();
@@ -987,14 +988,14 @@ for (const theme of ['light', 'dark'] as const) {
 			);
 			const longKey = `project_${'n'.repeat(56)}`;
 			await page.getByLabel('Key').fill(longKey);
-			await page.getByRole('button', { name: 'Add typed declaration' }).click();
+			await page.getByRole('button', { name: 'Add variable' }).click();
 			await page.getByLabel('Key').fill('review_label');
 			await page.getByLabel('Type').selectOption('label');
-			await page.getByRole('button', { name: 'Add typed declaration' }).click();
+			await page.getByRole('button', { name: 'Add variable' }).click();
 			const longInput = declaredInput(page, longKey);
 			const reviewLabel = declaredInput(page, 'review_label');
 
-			await page.getByRole('button', { name: 'Add typed declaration' }).focus();
+			await page.getByRole('button', { name: 'Add variable' }).focus();
 			await page.keyboard.press('Tab');
 			await expect(longInput).toBeFocused();
 			await expect(longInput).toHaveAttribute('aria-pressed', 'false');
@@ -1006,7 +1007,7 @@ for (const theme of ['light', 'dark'] as const) {
 			await page.keyboard.press('Enter');
 			await expect(longInput).toHaveAttribute('aria-pressed', 'true');
 			await page
-				.getByLabel('Exact candidate field')
+				.getByLabel('Edit instructions')
 				.selectOption({ label: 'instructions — prompt body' });
 			const editor = candidateInputs(page).locator('textarea');
 			await editor.focus();
@@ -1072,7 +1073,7 @@ test('discards a delayed validation result when candidate review changes', async
 	await openExport(page);
 	await page.getByLabel('Key').fill('race_key');
 	await page.getByLabel('Default').fill('before');
-	await page.getByRole('button', { name: 'Add typed declaration' }).click();
+	await page.getByRole('button', { name: 'Add variable' }).click();
 	await reviewDependencies(page);
 	await page.getByRole('button', { name: 'Edit input race_key' }).click();
 	await page.getByLabel('Default').fill('after');
@@ -1088,10 +1089,12 @@ test('discards a delayed validation result when candidate review changes', async
 	const finished = page.waitForEvent('requestfinished', {
 		predicate: (request) => new URL(request.url()).pathname === '/api/v1/library/validate'
 	});
-	const downloadAttempt = page.getByRole('button', { name: 'Download package' }).click();
-	await expect(page.getByRole('button', { name: 'Validate', exact: true })).toBeDisabled();
+	const downloadAttempt = page.getByRole('button', { name: 'Download file' }).click();
+	await expect(page.getByRole('button', { name: 'Check file', exact: true })).toBeDisabled();
 	await page.getByRole('button', { name: 'Save changes' }).click();
-	await expect(page.getByText('Required skill and repository review was reset.')).toBeVisible();
+	await expect(
+		page.getByText('Required skill and repository review was reset.').first()
+	).toBeVisible();
 	releaseValidation();
 	await finished;
 	await downloadAttempt;
@@ -1099,7 +1102,7 @@ test('discards a delayed validation result when candidate review changes', async
 		() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
 	);
 	expect(downloads).toBe(0);
-	await expect(page.getByText('The older result was discarded.')).toBeVisible();
+	await expect(page.getByText('The older result was discarded.').first()).toBeVisible();
 	await page.getByRole('button', { name: 'Edit input race_key' }).click();
 	await expect(page.getByLabel('Default')).toHaveValue('after');
 });
@@ -1122,7 +1125,7 @@ test('focuses validation errors and keeps the responsive action clear of navigat
 			postData: JSON.stringify({ document_json: canonicalizeLibraryValue(invalid) })
 		});
 	});
-	await page.getByRole('button', { name: 'Validate', exact: true }).click();
+	await page.getByRole('button', { name: 'Check file', exact: true }).click();
 	const errors = page.getByRole('alert');
 	await expect(errors).toBeFocused();
 	const repair = errors.getByRole('button', { name: `Repair ${name} — description` });
@@ -1131,7 +1134,7 @@ test('focuses validation errors and keeps the responsive action clear of navigat
 
 	for (const width of [PHONE.width, 640, 767, 768]) {
 		await page.setViewportSize({ width, height: PHONE.height });
-		await page.getByRole('button', { name: 'Download package' }).scrollIntoViewIfNeeded();
+		await page.getByRole('button', { name: 'Download file' }).scrollIntoViewIfNeeded();
 		const geometry = await readSettled(() =>
 			page.evaluate(() => {
 				const action = document
@@ -1153,12 +1156,12 @@ test('focuses validation errors and keeps the responsive action clear of navigat
 			expect(geometry.action.bottom, `action/nav clearance at ${width}px`).toBeLessThanOrEqual(
 				geometry.navigation.top
 			);
-			expect(geometry.action.height, `compact action height at ${width}px`).toBeLessThanOrEqual(48);
-			await expect(page.getByText(/left|Ready/, { exact: true })).toBeVisible();
+			expect(geometry.action.height, `compact action height at ${width}px`).toBeLessThanOrEqual(96);
+			await expect(page.getByTestId('package-actions').getByRole('status')).toBeVisible();
 			await expect(page.getByText(/required declaration review/)).toBeHidden();
 		} else {
 			expect(geometry.navigation.height).toBe(0);
-			await expect(page.getByText(/required declaration review/)).toBeVisible();
+			await expect(page.getByTestId('package-actions').getByRole('status')).toBeVisible();
 		}
 	}
 });

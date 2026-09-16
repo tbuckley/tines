@@ -7,6 +7,7 @@
 	import { api } from '$lib/api';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import TechnicalDetails from '$lib/components/publications/TechnicalDetails.svelte';
 
 	let { data } = $props();
 	let busyId = $state<string | null>(null);
@@ -16,9 +17,9 @@
 		if (
 			action === 'withdraw' &&
 			!(await confirmDialog({
-				title: 'Withdraw this public snapshot?',
+				title: 'Remove public access?',
 				body: 'Hosted inspection, download, and new installs stop immediately. Downloaded copies and completed installs remain independent.',
-				confirmLabel: 'Withdraw snapshot',
+				confirmLabel: 'Remove public access',
 				destructive: true
 			}))
 		)
@@ -28,7 +29,7 @@
 		try {
 			if (action === 'withdraw') await api.withdrawPublication(snapshotId);
 			else await api.restorePublication(snapshotId);
-			status = action === 'withdraw' ? 'Snapshot withdrawn.' : 'Snapshot restored.';
+			status = action === 'withdraw' ? 'Public access removed.' : 'Public access restored.';
 			await invalidateAll();
 		} catch (error) {
 			status = error instanceof ApiError ? error.message : 'The snapshot could not be updated.';
@@ -38,7 +39,7 @@
 	}
 </script>
 
-<svelte:head><title>Public snapshots · Tines</title></svelte:head>
+<svelte:head><title>Shared workflows · Tines</title></svelte:head>
 
 <a
 	href="/workflows"
@@ -47,17 +48,17 @@
 	<IconArrowLeft size={16} /> Workflows
 </a>
 <div class="mb-6">
-	<h1 class="text-2xl font-semibold tracking-tight">Public snapshots</h1>
+	<h1 class="text-2xl font-semibold tracking-tight">Shared workflows</h1>
 	<p class="text-muted-foreground mt-1 max-w-2xl text-sm">
-		Manage immutable snapshots you published. Withdrawing a hosted snapshot cannot recall downloaded
-		copies or completed installations.
+		Manage workflows you shared. Removing public access cannot remove copies people already
+		downloaded or installed.
 	</p>
 </div>
 
 {#if !data.creation.enabled}
 	<div class="bg-muted/40 mb-6 rounded-lg border p-4 text-sm">
 		<b>New publishing is disabled on this host.</b>
-		Existing active snapshots remain available; withdrawal is still allowed.
+		Existing shared workflows remain available; you can still remove public access.
 	</div>
 {/if}
 
@@ -77,7 +78,7 @@
 {/if}
 
 {#if data.publications.length === 0}
-	<p class="text-muted-foreground rounded-lg border p-6 text-sm">No public snapshots yet.</p>
+	<p class="text-muted-foreground rounded-lg border p-6 text-sm">No shared workflows yet.</p>
 {:else}
 	<div class="space-y-3">
 		{#each data.publications as publication (publication.snapshot_id)}
@@ -110,9 +111,12 @@
 								? 'Hosted'
 								: 'Unavailable'}
 						</p>
-						<p class="text-muted-foreground mt-2 font-mono text-xs break-all">
-							{publication.bytes_sha256}
-						</p>
+						<TechnicalDetails
+							items={[
+								{ label: 'File fingerprint', value: publication.bytes_sha256 },
+								{ label: 'Document fingerprint', value: publication.document_digest }
+							]}
+						/>
 					</div>
 					<div class="flex flex-wrap gap-2">
 						{#if publication.owner_state === 'published' && publication.host_state === 'active'}
@@ -122,13 +126,14 @@
 								target="_blank"
 								rel="noopener noreferrer"
 							>
-								<IconExternalLink size={16} /> Inspect
+								<IconExternalLink size={16} /> View
 							</Button>
 							<Button
 								variant="outline"
 								class="text-destructive"
 								disabled={busyId === publication.snapshot_id}
-								onclick={() => change(publication.snapshot_id, 'withdraw')}>Withdraw</Button
+								onclick={() => change(publication.snapshot_id, 'withdraw')}
+								>Remove public access</Button
 							>
 						{:else if publication.owner_state === 'withdrawn' && publication.host_state === 'active'}
 							<Button

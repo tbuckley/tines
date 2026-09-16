@@ -64,3 +64,12 @@ checks a matching destination receipt before parsing or reading its positional s
 Owner listings use `(published_at DESC, id ASC)` keyset pagination. Inspector snippets count rendered
 words, preserve closed span semantics through tables and lists, and show all 101–115 rendered words;
 external actions and successful availability checks return focus without allowing publisher HTML.
+
+## Decision update — 2026-09-14 publish-first browser flow (Tines/553)
+
+Owned-workflow publishing uses Customize → Preview → Share at the existing export route. Preview
+prepares and renders the server-frozen document; unchanged navigation reuses that candidate, while a
+bound edit invalidates its aggregate included-content review and consent. The Preview continuation is
+the explicit skill/repository review acknowledgment. One Share statement supplies both existing wire
+assertions, which remain bound to the proof digest. Normal browser views use human status; hashes and
+IDs remain stored and are exposed only in closed, allowlisted Technical details disclosures.

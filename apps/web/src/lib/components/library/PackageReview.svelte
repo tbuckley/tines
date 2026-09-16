@@ -10,14 +10,18 @@
 		onReview,
 		onToken,
 		onEdit,
-		expandedFields = new Set()
+		expandedFields = new Set(),
+		reviewMode = 'per-item',
+		contextFirst = false
 	}: {
 		document: WorkflowPackageDocument;
 		reviewed: Set<string>;
-		onReview: (id: string, checked: boolean) => void;
-		onToken: (id: string, trigger: HTMLElement) => void;
+		onReview?: (id: string, checked: boolean) => void;
+		onToken?: (id: string, trigger: HTMLElement) => void;
 		onEdit?: (recordId: string, field: string) => void;
 		expandedFields?: Set<string>;
+		reviewMode?: 'per-item' | 'summary';
+		contextFirst?: boolean;
 	} = $props();
 
 	const workflowByState = $derived.by(() => {
@@ -45,8 +49,8 @@
 	}
 </script>
 
-<div class="space-y-8" data-testid="package-review">
-	<section aria-labelledby="package-graph-title">
+<div class="flex flex-col gap-8" data-testid="package-review">
+	<section class:order-2={contextFirst} aria-labelledby="package-graph-title">
 		<h2 id="package-graph-title" class="mb-3 text-lg font-semibold">Workflow graph and gates</h2>
 		<div class="space-y-5">
 			{#each document.workflows as workflow (workflow.id)}
@@ -107,7 +111,7 @@
 		</div>
 	</section>
 
-	<section aria-labelledby="package-context-title">
+	<section class:order-1={contextFirst} aria-labelledby="package-context-title">
 		<h2 id="package-context-title" class="mb-1 text-lg font-semibold">Ordered state context</h2>
 		<p class="text-muted-foreground mb-3 text-sm">
 			Every entry below is bundled at its exact state scope. Inherited entries remain separate from
@@ -129,7 +133,7 @@
 							</p>{/if}
 						<div class="space-y-4">
 							{#each items as item (item.id)}
-								<section class="min-w-0 border-l-2 pl-3" id="review-{item.id}">
+								<section class="min-w-0 border-l-2 pl-3" id="review-{item.id}" tabindex="-1">
 									<div class="flex flex-wrap items-center justify-between gap-2">
 										<h4 class="font-medium">
 											{item.name} <span class="text-muted-foreground text-xs">· {item.kind}</span>
@@ -166,19 +170,21 @@
 													text={file.content}
 													format={file.path.toLowerCase().endsWith('.md') ? 'markdown' : 'text'}
 													tokens={tokens(file.id, 'content')}
-													forceExpanded={expandedFields.has(fieldKey(file.id, 'content'))}
+													forceExpanded={reviewMode === 'summary' ||
+														expandedFields.has(fieldKey(file.id, 'content'))}
 													{onToken}
 												/>
 											</div>
 										{/each}
-										<label class="mt-3 flex min-h-10 items-center gap-2 text-sm"
-											><input
-												type="checkbox"
-												checked={reviewed.has(item.id)}
-												onchange={(e) => onReview(item.id, e.currentTarget.checked)}
-											/>
-											<IconCheck size={15} /> I reviewed every file in this required skill</label
-										>
+										{#if reviewMode === 'per-item'}<label
+												class="mt-3 flex min-h-10 items-center gap-2 text-sm"
+												><input
+													type="checkbox"
+													checked={reviewed.has(item.id)}
+													onchange={(e) => onReview?.(item.id, e.currentTarget.checked)}
+												/>
+												<IconCheck size={15} /> I reviewed every file in this required skill</label
+											>{/if}
 									{:else}
 										<dl class="mt-2 grid min-w-0 grid-cols-[5rem_1fr] gap-1 text-xs">
 											<dt>URL</dt>
@@ -191,14 +197,15 @@
 										<p class="text-muted-foreground mt-2 text-xs">
 											Declaration only. Tines does not fetch this repository.
 										</p>
-										<label class="mt-2 flex min-h-10 items-center gap-2 text-sm"
-											><input
-												type="checkbox"
-												checked={reviewed.has(item.id)}
-												onchange={(e) => onReview(item.id, e.currentTarget.checked)}
-											/>
-											<IconCheck size={15} /> I reviewed this required repository declaration</label
-										>
+										{#if reviewMode === 'per-item'}<label
+												class="mt-2 flex min-h-10 items-center gap-2 text-sm"
+												><input
+													type="checkbox"
+													checked={reviewed.has(item.id)}
+													onchange={(e) => onReview?.(item.id, e.currentTarget.checked)}
+												/>
+												<IconCheck size={15} /> I reviewed this required repository declaration</label
+											>{/if}
 									{/if}
 								</section>
 							{/each}
@@ -209,7 +216,11 @@
 		</div>
 	</section>
 
-	<section class="grid gap-4 md:grid-cols-2" aria-label="Package prerequisites and automation">
+	<section
+		class:order-3={contextFirst}
+		class="grid gap-4 md:grid-cols-2"
+		aria-label="Package prerequisites and automation"
+	>
 		<div class="rounded-lg border p-4">
 			<h2 class="font-semibold">Destination prerequisites</h2>
 			{#if document.inputs.length}<ul class="mt-2 min-w-0 space-y-1 text-sm">

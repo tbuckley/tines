@@ -6,6 +6,7 @@
 	import MarketingSignIn from '$lib/components/marketing/MarketingSignIn.svelte';
 	import PublicTextSnippet from '$lib/components/publications/PublicTextSnippet.svelte';
 	import PublicationReportDialog from '$lib/components/publications/PublicationReportDialog.svelte';
+	import TechnicalDetails from '$lib/components/publications/TechnicalDetails.svelte';
 	import {
 		inspectorTargetId,
 		publicInstructionLayers,
@@ -179,10 +180,11 @@
 				disabled={!navigation.length}
 				onclick={backToSource}>Back to source</button
 			>
-			<p class="text-muted-foreground text-sm">Public workflow snapshot</p>
+			<p class="text-muted-foreground text-sm">Shared workflow</p>
 			<h1 class="mt-1 text-3xl font-semibold wrap-break-word">{main.name}</h1>
 			<p class="text-muted-foreground mt-2 min-w-0 text-sm break-words">
-				Published by {snapshot.metadata.display_name} · {snapshot.metadata.license} · immutable snapshot
+				Published by {snapshot.metadata.display_name} · {snapshot.metadata.license} · this shared version
+				will not change
 			</p>
 			<div class="mt-5 flex flex-wrap gap-3">
 				<button
@@ -200,7 +202,7 @@
 						onclick={(event) => signIn?.open(event.currentTarget)}>Sign in to install</button
 					>{/if}
 				<button class="rounded-md border px-4 py-2 font-medium" type="button" onclick={download}
-					>Download package</button
+					>Download file</button
 				>
 				<a
 					class="rounded-md border px-4 py-2 font-medium"
@@ -563,10 +565,15 @@
 		<footer
 			class="text-muted-foreground flex flex-wrap items-center justify-between gap-3 border-t py-6 text-xs break-all"
 		>
-			<span
-				>Document {snapshot.document_digest} · bytes {snapshot.bytes_sha256} ·
-				<a class="underline" href="/public-workflow-policy" rel="noreferrer">Content rules</a></span
-			>
+			<div class="min-w-0">
+				<a class="underline" href="/public-workflow-policy" rel="noreferrer">Content rules</a
+				><TechnicalDetails
+					items={[
+						{ label: 'Document fingerprint', value: snapshot.document_digest },
+						{ label: 'File fingerprint', value: snapshot.bytes_sha256 }
+					]}
+				/>
+			</div>
 			<button
 				class="focus-visible:ring-ring/50 min-h-10 rounded-md border px-3 text-sm outline-none focus-visible:ring-[3px]"
 				type="button"

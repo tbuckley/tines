@@ -124,6 +124,12 @@ Whole-library imports carry the API request's dispatch effect through workflow o
 
 Workflow-package authoring and prepared installation proofs describe selected schedule recurrences in human-readable text. Presets use the shared recurrence description, cron expressions remain complete and wrap within the proof, and timezone plus the installs-paused explanation remain separate.
 
+## Decision update — 2026-09-14 browser review wording (Tines/553)
+
+Publishing uses one aggregate included-content acknowledgment over the frozen preview. File download
+and installation retain per-item review. Browser installation calls its prepared result “What will be
+installed” and hides plan fingerprints under Technical details; signed plan confirmation is unchanged.
+
 ## Decision update — Tines/485 declared-input selection feedback
 
 Workflow-package authoring keeps its existing candidate-local declared-input selection semantics. The active declaration remains visibly marked after focus moves to the candidate editor, every declaration exposes its pressed state, and the replacement action repeats the selected key. Adding a declaration and navigating from a rendered token continue to select it; rebuilding retains a surviving input ID and clears a stale one. This feedback does not change candidate data, package tokens, exact text uses, or downloaded bytes.

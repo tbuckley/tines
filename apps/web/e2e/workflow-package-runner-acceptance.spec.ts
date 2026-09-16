@@ -164,24 +164,22 @@ test('installs as Alice and activates the installed Run state through a real dae
 				response.request().method() === 'POST' &&
 				response.ok()
 		);
-		await page.getByRole('button', { name: 'Prepare installation' }).click();
+		await page.getByRole('button', { name: 'Preview installation' }).click();
 		const plan = (await (await prepareResponse).json()) as PrepareWorkflowPackageResponse;
 		expect(plan.actor_key).toBe(`session:${ALICE.id}`);
 		expect(plan.document_digest).toBe(document.digest);
 		for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
 			await checkbox.check();
-		await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
+		await page.getByRole('checkbox', { name: /I reviewed what will be installed/ }).check();
 		const installResponse = page.waitForResponse(
 			(response) =>
 				response.url().endsWith('/api/v1/library/install') &&
 				response.request().method() === 'POST' &&
 				response.ok()
 		);
-		await page.getByRole('button', { name: 'Install package' }).click();
+		await page.getByRole('button', { name: 'Install workflow' }).click();
 		const receipt = (await (await installResponse).json()) as WorkflowPackageReceipt;
-		await expect(
-			page.getByRole('heading', { name: 'Package installed', exact: true })
-		).toBeFocused();
+		await expect(page.getByRole('heading', { name: 'Installed', exact: true })).toBeFocused();
 		expect(receipt.document_digest).toBe(document.digest);
 		expect(receipt.plan_digest).toBe(plan.plan_digest);
 		const installedWorkflowId = receipt.objects.find(
