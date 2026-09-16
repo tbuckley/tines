@@ -30,6 +30,7 @@
 	{@const details = span.token ? tokenDetails?.(span.token.input_id, span.token.use_id) : undefined}
 	{#if span.token && linkMode === 'confirm'}<button
 			type="button"
+			data-input-id={span.token.input_id}
 			id={occurrenceScope
 				? `${occurrenceScope}-${span.token.occurrence_id}`
 				: span.token.occurrence_id}

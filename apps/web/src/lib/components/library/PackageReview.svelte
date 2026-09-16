@@ -1,10 +1,16 @@
 <script lang="ts">
-	import { describeRecurrence, type WorkflowPackageDocument } from '@tines/shared';
+	import {
+		describeRecurrence,
+		type TextUseField,
+		type WorkflowPackageDocument
+	} from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import { declaredOccurrences } from './package-text';
 	import { readField } from './package-input-editor';
 	import PackageText from './PackageText.svelte';
+	import PackageFieldWorkbench from './PackageFieldWorkbench.svelte';
+	import type { InputDraft } from './package-input-editor';
 
 	let {
 		document,
@@ -16,7 +22,11 @@
 		reviewMode = 'per-item',
 		contextFirst = false,
 		samples = {},
-		changedInputIds = new Set()
+		changedInputIds = new Set(),
+		onSaveText,
+		onCreate,
+		onEditVariable,
+		onSample
 	}: {
 		document: WorkflowPackageDocument;
 		reviewed: Set<string>;
@@ -28,6 +38,20 @@
 		contextFirst?: boolean;
 		samples?: Record<string, string>;
 		changedInputIds?: Set<string>;
+		onSaveText?: (recordId: string, field: TextUseField, value: string) => Promise<boolean>;
+		onCreate?: (request: {
+			recordId: string;
+			field: TextUseField;
+			sourceSnapshot: string;
+			value: string;
+			start: number;
+			end: number;
+			direction: 'forward' | 'backward' | 'none';
+			inputId?: string;
+			draft?: InputDraft;
+		}) => Promise<string | null>;
+		onSample?: (inputId: string, value: string | undefined) => void;
+		onEditVariable?: (inputId: string, draft: InputDraft) => Promise<boolean>;
 	} = $props();
 
 	const workflowByState = $derived.by(() => {
@@ -92,8 +116,22 @@
 								: 'Required inheritance dependency'}</span
 						>
 					</div>
-					{#if workflow.description}
-						<PackageText
+					{#if onCreate}<PackageFieldWorkbench
+							recordId={workflow.id}
+							field="description"
+							label={`${workflow.name} — description`}
+							text={workflow.description}
+							format="markdown"
+							tokens={tokens(workflow.id, 'description')}
+							inputs={document.inputs}
+							{samples}
+							{onToken}
+							{onSaveText}
+							{onCreate}
+							{onEditVariable}
+							{onSample}
+							forceExpanded={expandedFields.has(fieldKey(workflow.id, 'description'))}
+						/>{:else if workflow.description}<PackageText
 							text={workflow.description}
 							format="markdown"
 							tokens={tokens(workflow.id, 'description')}
@@ -173,17 +211,46 @@
 												onclick={() => onEdit?.(item.id, 'body')}>Edit candidate text</button
 											>{/if}
 									</div>
-									{#if item.description}<p class="text-muted-foreground my-2 text-xs">
+									{#if onCreate}<PackageFieldWorkbench
+											recordId={item.id}
+											field="description"
+											label={`${item.name} — description`}
+											text={item.description}
+											format="markdown"
+											tokens={tokens(item.id, 'description')}
+											inputs={document.inputs}
+											{samples}
+											{onToken}
+											{onSaveText}
+											{onCreate}
+											{onEditVariable}
+											{onSample}
+										/>{:else if item.description}<p class="text-muted-foreground my-2 text-xs">
 											{item.description}
 										</p>{/if}
 									{#if item.kind === 'prompt'}
-										<PackageText
-											text={item.body}
-											format="markdown"
-											tokens={tokens(item.id, 'body')}
-											forceExpanded={expandedFields.has(fieldKey(item.id, 'body'))}
-											{onToken}
-										/>
+										{#if onCreate}<PackageFieldWorkbench
+												recordId={item.id}
+												field="body"
+												label={`${item.name} — prompt body`}
+												text={item.body}
+												format="markdown"
+												tokens={tokens(item.id, 'body')}
+												inputs={document.inputs}
+												{samples}
+												{onToken}
+												{onSaveText}
+												{onCreate}
+												{onEditVariable}
+												{onSample}
+												forceExpanded={expandedFields.has(fieldKey(item.id, 'body'))}
+											/>{:else}<PackageText
+												text={item.body}
+												format="markdown"
+												tokens={tokens(item.id, 'body')}
+												forceExpanded={expandedFields.has(fieldKey(item.id, 'body'))}
+												{onToken}
+											/>{/if}
 									{:else if item.kind === 'skill'}
 										{#each item.files as file (file.id)}
 											<div class="mt-3">
@@ -195,14 +262,30 @@
 															>Edit candidate text</button
 														>{/if}
 												</div>
-												<PackageText
-													text={file.content}
-													format={file.path.toLowerCase().endsWith('.md') ? 'markdown' : 'text'}
-													tokens={tokens(file.id, 'content')}
-													forceExpanded={reviewMode === 'summary' ||
-														expandedFields.has(fieldKey(file.id, 'content'))}
-													{onToken}
-												/>
+												{#if onCreate}<PackageFieldWorkbench
+														recordId={file.id}
+														field="content"
+														label={`${item.name} / ${file.path}`}
+														text={file.content}
+														format={file.path.toLowerCase().endsWith('.md') ? 'markdown' : 'text'}
+														tokens={tokens(file.id, 'content')}
+														inputs={document.inputs}
+														{samples}
+														{onToken}
+														{onSaveText}
+														{onCreate}
+														{onEditVariable}
+														{onSample}
+														forceExpanded={reviewMode === 'summary' ||
+															expandedFields.has(fieldKey(file.id, 'content'))}
+													/>{:else}<PackageText
+														text={file.content}
+														format={file.path.toLowerCase().endsWith('.md') ? 'markdown' : 'text'}
+														tokens={tokens(file.id, 'content')}
+														forceExpanded={reviewMode === 'summary' ||
+															expandedFields.has(fieldKey(file.id, 'content'))}
+														{onToken}
+													/>{/if}
 											</div>
 										{/each}
 										{#if reviewMode === 'per-item'}<label
@@ -305,21 +388,50 @@
 						</dd>
 					</dl>
 					<div class="mt-3">
-						<b>Title template</b><PackageText
-							text={schedule.title_template}
-							tokens={tokens(schedule.id, 'title_template')}
-							forceExpanded={expandedFields.has(fieldKey(schedule.id, 'title_template'))}
-							{onToken}
-						/>
+						<b>Title template</b>{#if onCreate}<PackageFieldWorkbench
+								recordId={schedule.id}
+								field="title_template"
+								label={`${schedule.name} — title template`}
+								text={schedule.title_template}
+								tokens={tokens(schedule.id, 'title_template')}
+								inputs={document.inputs}
+								{samples}
+								{onToken}
+								{onSaveText}
+								{onCreate}
+								{onEditVariable}
+								{onSample}
+								forceExpanded={expandedFields.has(fieldKey(schedule.id, 'title_template'))}
+							/>{:else}<PackageText
+								text={schedule.title_template}
+								tokens={tokens(schedule.id, 'title_template')}
+								forceExpanded={expandedFields.has(fieldKey(schedule.id, 'title_template'))}
+								{onToken}
+							/>{/if}
 					</div>
 					<div class="mt-3">
-						<b>Description template</b><PackageText
-							text={schedule.description_template}
-							format="markdown"
-							tokens={tokens(schedule.id, 'description_template')}
-							forceExpanded={expandedFields.has(fieldKey(schedule.id, 'description_template'))}
-							{onToken}
-						/>
+						<b>Description template</b>{#if onCreate}<PackageFieldWorkbench
+								recordId={schedule.id}
+								field="description_template"
+								label={`${schedule.name} — description template`}
+								text={schedule.description_template}
+								format="markdown"
+								tokens={tokens(schedule.id, 'description_template')}
+								inputs={document.inputs}
+								{samples}
+								{onToken}
+								{onSaveText}
+								{onCreate}
+								{onEditVariable}
+								{onSample}
+								forceExpanded={expandedFields.has(fieldKey(schedule.id, 'description_template'))}
+							/>{:else}<PackageText
+								text={schedule.description_template}
+								format="markdown"
+								tokens={tokens(schedule.id, 'description_template')}
+								forceExpanded={expandedFields.has(fieldKey(schedule.id, 'description_template'))}
+								{onToken}
+							/>{/if}
 					</div>
 				</article>
 			{/each}{#each document.routing as route}<p class="mt-2 text-xs">
