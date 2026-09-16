@@ -9,6 +9,7 @@
 		linkMode = 'confirm',
 		format = 'markdown',
 		uses = [],
+		labelImages = false,
 		occurrenceScope,
 		onToken,
 		tokenDetails
@@ -18,11 +19,13 @@
 		linkMode?: 'confirm' | 'inert';
 		format?: 'markdown' | 'text';
 		uses?: PublicTextUse[];
+		labelImages?: boolean;
 		occurrenceScope?: string;
 		onToken?: (inputId: string, useId: string, trigger: HTMLElement) => void;
 		tokenDetails?: (
 			inputId: string,
-			useId: string
+			useId: string,
+			occurrenceId: string
 		) => {
 			text: string;
 			label: string;
@@ -30,7 +33,7 @@
 			changed?: boolean;
 		};
 	} = $props();
-	const fullBlocks = $derived(publicTextModel(source, { format, uses }));
+	const fullBlocks = $derived(publicTextModel(source, { format, uses, labelImages }));
 	const blocks = $derived(maxWords ? truncatePublicTextModel(fullBlocks, maxWords) : fullBlocks);
 	let destination = $state<string | null>(null);
 	let destinationOpen = $state(false);

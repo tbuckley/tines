@@ -16,11 +16,14 @@ export interface PublicTextUse {
 	id: string;
 	input_id: string;
 	token: string;
+	/** Author-only resolved value. Omit to display the declaration token itself. */
+	value?: string;
 }
 
 export interface PublicTextOptions {
 	format?: 'markdown' | 'text';
 	uses?: readonly PublicTextUse[];
+	labelImages?: boolean;
 }
 
 export type PublicTextBlock =
@@ -42,7 +45,7 @@ interface MdNode {
 	identifier?: string;
 }
 
-type TokenOccurrence = PublicTextUse & { start: number; end: number };
+type TokenOccurrence = PublicTextUse & { start: number; end: number; ordinal: number };
 
 /** Every unescaped occurrence of each declared token, in source order. */
 export function declaredPublicTextOccurrences(
@@ -56,34 +59,62 @@ export function declaredPublicTextOccurrences(
 		while (from < text.length) {
 			const start = text.indexOf(use.token, from);
 			if (start < 0) break;
-			let slashes = 0;
-			for (let at = start - 1; at >= 0 && text[at] === '\\'; at--) slashes++;
-			if (slashes % 2 === 0) matches.push({ ...use, start, end: start + use.token.length });
+			if (start === 0 || text[start - 1] !== '\\')
+				matches.push({ ...use, start, end: start + use.token.length, ordinal: 0 });
 			from = start + use.token.length;
 		}
 	}
 	matches.sort((a, b) => a.start - b.start || b.end - a.end || a.id.localeCompare(b.id));
 	const result: TokenOccurrence[] = [];
 	let end = -1;
+	const ordinals = new Map<string, number>();
 	for (const match of matches) {
 		if (match.start < end) continue;
-		result.push(match);
+		const ordinal = ordinals.get(match.id) ?? 0;
+		result.push({ ...match, ordinal });
+		ordinals.set(match.id, ordinal + 1);
 		end = match.end;
 	}
 	return result;
 }
 
 function markTokens(source: string, uses: readonly PublicTextUse[]) {
-	const occurrences = declaredPublicTextOccurrences(source, uses);
+	const active = declaredPublicTextOccurrences(source, uses);
+	const byStart = new Map(active.map((occurrence) => [occurrence.start, occurrence]));
+	const matches: Array<TokenOccurrence & { escaped: boolean }> = [];
+	for (const use of uses) {
+		if (!use.token) continue;
+		for (let from = 0; from < source.length;) {
+			const start = source.indexOf(use.token, from);
+			if (start < 0) break;
+			const occurrence = byStart.get(start);
+			matches.push({
+				...(occurrence ?? { ...use, start, end: start + use.token.length, ordinal: -1 }),
+				escaped: start > 0 && source[start - 1] === '\\'
+			});
+			from = start + 1;
+		}
+	}
+	matches.sort((a, b) => a.start - b.start || a.end - b.end);
+	for (let index = 1; index < matches.length; index++)
+		if (matches[index].start < matches[index - 1].end)
+			throw new Error('Declared token occurrences overlap');
 	let marker = '\uE000';
 	while (source.includes(marker)) marker += '\uE001';
 	let marked = '';
 	let at = 0;
-	for (const [index, occurrence] of occurrences.entries()) {
-		marked += source.slice(at, occurrence.start) + `${marker}${index}${marker}`;
-		at = occurrence.end;
+	for (const match of matches) {
+		marked += source.slice(at, match.escaped ? match.start - 1 : match.start);
+		if (match.escaped) marked += match.token;
+		else {
+			const index = active.findIndex(
+				(occurrence) => occurrence.start === match.start && occurrence.id === match.id
+			);
+			marked += `${marker}s${index}${marker}${match.value ?? match.token}${marker}e${index}${marker}`;
+		}
+		at = match.end;
 	}
-	return { source: marked + source.slice(at), marker, occurrences };
+	return { source: marked + source.slice(at), marker, occurrences: active };
 }
 
 function safeHref(value: string | undefined): string | undefined {
@@ -102,41 +133,36 @@ function spans(
 	nodes: MdNode[],
 	style: Omit<PublicTextSpan, 'text' | 'href' | 'token'> = {},
 	marked?: ReturnType<typeof markTokens>,
-	definitions = new Map<string, string>()
+	definitions = new Map<string, string>(),
+	state = { active: [] as number[], emitted: new Set<number>() },
+	labelImages = false
 ): PublicTextSpan[] {
 	const result: PublicTextSpan[] = [];
 	for (const node of nodes) {
 		if (node.type === 'image' || node.type === 'imageReference') {
-			result.push({ text: '[image suppressed]', ...style });
+			const destination =
+				node.type === 'image' ? node.url : definitions.get(node.identifier?.toLowerCase() ?? '');
+			const alt = (node as MdNode & { alt?: string }).alt ?? '';
+			const activeIndex = state.active.at(-1);
+			const activeOccurrence =
+				activeIndex === undefined ? undefined : marked?.occurrences[activeIndex];
+			result.push({
+				text: labelImages
+					? `Image (not loaded): ${alt ? `${alt} — ` : ''}${destination ?? ''}`
+					: '[image suppressed]',
+				...style,
+				...(activeOccurrence ? { token: occurrenceToken(activeOccurrence) } : {})
+			});
+			if (activeOccurrence) state.emitted.add(activeIndex!);
 			continue;
 		}
 		if (node.type === 'text' || node.type === 'html') {
 			const value = node.value ?? '';
-			if (!marked || !value.includes(marked.marker)) result.push({ text: value, ...style });
-			else {
-				let at = 0;
-				const pattern = new RegExp(`${marked.marker}(\\d+)${marked.marker}`, 'g');
-				for (const match of value.matchAll(pattern)) {
-					if (match.index! > at) result.push({ text: value.slice(at, match.index), ...style });
-					const occurrence = marked.occurrences[Number(match[1])];
-					if (occurrence)
-						result.push({
-							text: occurrence.token,
-							...style,
-							token: {
-								use_id: occurrence.id,
-								input_id: occurrence.input_id,
-								occurrence_id: `public-token-${match[1]}`
-							}
-						});
-					at = match.index! + match[0].length;
-				}
-				if (at < value.length) result.push({ text: value.slice(at), ...style });
-			}
+			result.push(...markedSpans(value, style, marked, state));
 			continue;
 		}
 		if (node.type === 'inlineCode') {
-			result.push(...markedSpans(node.value ?? '', { ...style, code: true }, marked));
+			result.push(...markedSpans(node.value ?? '', { ...style, code: true }, marked, state));
 			continue;
 		}
 		if (node.type === 'break') {
@@ -144,15 +170,29 @@ function spans(
 			continue;
 		}
 		if (node.type === 'link' || node.type === 'linkReference') {
-			const link = safeHref(
-				node.type === 'link' ? node.url : definitions.get(node.identifier?.toLowerCase() ?? '')
-			);
+			const rawDestination =
+				node.type === 'link' ? node.url : definitions.get(node.identifier?.toLowerCase() ?? '');
+			const destination = marked
+				? stripMarkers(rawDestination ?? '', marked, state)
+				: { value: rawDestination ?? '', indexes: [] };
+			const link = safeHref(destination.value);
 			result.push(
-				...spans(node.children ?? [], style, marked, definitions).map((span) => ({
-					...span,
-					...(link && !span.token ? { href: link } : {})
-				}))
+				...spans(node.children ?? [], style, marked, definitions, state, labelImages).map(
+					(span) => ({
+						...span,
+						...(link && !span.token ? { href: link } : {})
+					})
+				)
 			);
+			for (const index of destination.indexes) {
+				const occurrence = marked?.occurrences[index];
+				if (occurrence)
+					result.push({
+						text: occurrence.value ?? occurrence.token,
+						...style,
+						token: occurrenceToken(occurrence)
+					});
+			}
 			continue;
 		}
 		if (node.type === 'strong' || node.type === 'emphasis' || node.type === 'delete') {
@@ -166,14 +206,16 @@ function spans(
 						...(node.type === 'delete' ? { deleted: true } : {})
 					},
 					marked,
-					definitions
+					definitions,
+					state,
+					labelImages
 				)
 			);
 			continue;
 		}
 		// Unknown inline constructs never become elements or attributes. Preserve
 		// only allowlisted descendants as inert text.
-		result.push(...spans(node.children ?? [], style, marked, definitions));
+		result.push(...spans(node.children ?? [], style, marked, definitions, state, labelImages));
 	}
 	return result;
 }
@@ -181,35 +223,82 @@ function spans(
 function markedSpans(
 	value: string,
 	style: Omit<PublicTextSpan, 'text' | 'href' | 'token'>,
-	marked?: ReturnType<typeof markTokens>
+	marked?: ReturnType<typeof markTokens>,
+	state = { active: [] as number[], emitted: new Set<number>() }
 ): PublicTextSpan[] {
-	if (!marked || !value.includes(marked.marker)) return [{ text: value, ...style }];
+	if (!marked) return [{ text: value, ...style }];
+	if (!value.includes(marked.marker)) {
+		const index = state.active.at(-1);
+		const occurrence = index === undefined ? undefined : marked.occurrences[index];
+		if (occurrence) state.emitted.add(index!);
+		return [{ text: value, ...style, ...(occurrence ? { token: occurrenceToken(occurrence) } : {}) }];
+	}
 	const result: PublicTextSpan[] = [];
 	let at = 0;
-	const pattern = new RegExp(`${marked.marker}(\\d+)${marked.marker}`, 'g');
+	const pattern = new RegExp(`${marked.marker}([se])(\\d+)${marked.marker}`, 'g');
 	for (const match of value.matchAll(pattern)) {
-		if (match.index! > at) result.push({ text: value.slice(at, match.index), ...style });
-		const occurrence = marked.occurrences[Number(match[1])];
-		if (occurrence)
+		if (match.index! > at) {
+			const text = value.slice(at, match.index);
+			const index = state.active.at(-1);
+			const occurrence = index === undefined ? undefined : marked.occurrences[index];
 			result.push({
-				text: occurrence.token,
+				text,
 				...style,
-				token: {
-					use_id: occurrence.id,
-					input_id: occurrence.input_id,
-					occurrence_id: `public-token-${match[1]}`
-				}
+				...(occurrence ? { token: occurrenceToken(occurrence) } : {})
 			});
+			if (occurrence) state.emitted.add(index!);
+		}
+		const index = Number(match[2]);
+		if (match[1] === 's') state.active.push(index);
+		else {
+			if (!state.emitted.has(index) && marked.occurrences[index])
+				result.push({ text: '', ...style, token: occurrenceToken(marked.occurrences[index]) });
+			state.active = state.active.filter((item) => item !== index);
+		}
 		at = match.index! + match[0].length;
 	}
-	if (at < value.length) result.push({ text: value.slice(at), ...style });
+	if (at < value.length) {
+		const text = value.slice(at);
+		const index = state.active.at(-1);
+		const occurrence = index === undefined ? undefined : marked.occurrences[index];
+		result.push({ text, ...style, ...(occurrence ? { token: occurrenceToken(occurrence) } : {}) });
+		if (occurrence) state.emitted.add(index!);
+	}
 	return result;
+}
+
+function occurrenceToken(occurrence: TokenOccurrence) {
+	return {
+		use_id: occurrence.id,
+		input_id: occurrence.input_id,
+		occurrence_id: `${occurrence.id}:${occurrence.ordinal}`
+	};
+}
+
+function stripMarkers(
+	value: string,
+	marked: ReturnType<typeof markTokens>,
+	state: { active: number[]; emitted: Set<number> }
+) {
+	const indexes: number[] = [];
+	const pattern = new RegExp(`${marked.marker}([se])(\\d+)${marked.marker}`, 'g');
+	const clean = value.replace(pattern, (_match, edge: string, rawIndex: string) => {
+		const index = Number(rawIndex);
+		if (edge === 's') {
+			state.active.push(index);
+			indexes.push(index);
+		} else state.active = state.active.filter((item) => item !== index);
+		return '';
+	});
+	return { value: clean, indexes: [...new Set(indexes)] };
 }
 
 function blockSpans(
 	node: MdNode,
 	marked: ReturnType<typeof markTokens>,
-	definitions: Map<string, string>
+	definitions: Map<string, string>,
+	state: { active: number[]; emitted: Set<number> },
+	labelImages: boolean
 ): PublicTextSpan[] {
 	const result: PublicTextSpan[] = [];
 	for (const child of node.children ?? []) {
@@ -220,7 +309,9 @@ function blockSpans(
 				child.children ?? (child.value !== undefined ? [child] : []),
 				{},
 				marked,
-				definitions
+				definitions,
+				state,
+				labelImages
 			)
 		);
 	}
@@ -233,12 +324,13 @@ export function publicTextModel(
 	options: PublicTextOptions = {}
 ): PublicTextBlock[] {
 	const marked = markTokens(source, options.uses ?? []);
+	const state = { active: [] as number[], emitted: new Set<number>() };
 	if (options.format === 'text') {
 		return [
 			{
 				kind: 'paragraph',
 				quote_depth: 0,
-				spans: spans([{ type: 'text', value: marked.source }], {}, marked)
+				spans: spans([{ type: 'text', value: marked.source }], {}, marked, new Map(), state)
 			}
 		];
 	}
@@ -258,16 +350,19 @@ export function publicTextModel(
 				result.push({
 					kind: 'heading',
 					depth: Math.min(6, Math.max(1, node.depth ?? 1)),
-					spans: spans(node.children ?? [], {}, marked, definitions)
+					spans: spans(node.children ?? [], {}, marked, definitions, state, options.labelImages)
 				});
 			} else if (node.type === 'paragraph') {
 				result.push({
 					kind: 'paragraph',
 					quote_depth: quoteDepth,
-					spans: spans(node.children ?? [], {}, marked, definitions)
+					spans: spans(node.children ?? [], {}, marked, definitions, state, options.labelImages)
 				});
 			} else if (node.type === 'code') {
-				result.push({ kind: 'code', spans: markedSpans(node.value ?? '', { code: true }, marked) });
+				result.push({
+					kind: 'code',
+					spans: markedSpans(node.value ?? '', { code: true }, marked, state)
+				});
 			} else if (node.type === 'thematicBreak') {
 				result.push({ kind: 'break' });
 			} else if (node.type === 'blockquote') {
@@ -279,7 +374,7 @@ export function publicTextModel(
 						depth: listDepth,
 						ordered: node.ordered === true,
 						index: (node.start ?? 1) + offset,
-						spans: blockSpans(item, marked, definitions)
+						spans: blockSpans(item, marked, definitions, state, options.labelImages ?? false)
 					});
 					visit(
 						(item.children ?? []).filter((child) => child.type === 'list'),
@@ -291,7 +386,9 @@ export function publicTextModel(
 				result.push({
 					kind: 'table',
 					rows: (node.children ?? []).map((row) =>
-						(row.children ?? []).map((cell) => spans(cell.children ?? [], {}, marked, definitions))
+						(row.children ?? []).map((cell) =>
+							spans(cell.children ?? [], {}, marked, definitions, state, options.labelImages)
+						)
 					)
 				});
 			}

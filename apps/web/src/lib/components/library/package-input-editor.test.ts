@@ -189,6 +189,19 @@ describe('passage-local variable helpers', () => {
 		).toThrow('ordinary passage text');
 	});
 
+	it('rejects an explicit empty range', () => {
+		const value = document();
+		expect(() =>
+			replaceSelectionWithVariable(value, {
+				ref: { recordId: 'workflow:1', field: 'description' },
+				sourceSnapshot: value.workflows[0].description,
+				start: 3,
+				end: 3,
+				inputId: 'input:author:2'
+			})
+		).toThrow('non-empty');
+	});
+
 	it('removes an orphaned authored use but refuses to remove generated uses', () => {
 		const authored = saveAuthoredField(
 			document(),

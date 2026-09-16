@@ -16,7 +16,8 @@
 		ontoken?: (inputId: string, useId: string, trigger: HTMLElement) => void;
 		tokenDetails?: (
 			inputId: string,
-			useId: string
+			useId: string,
+			occurrenceId: string
 		) => {
 			text: string;
 			label: string;
@@ -27,25 +28,48 @@
 </script>
 
 {#each spans as span}
-	{@const details = span.token ? tokenDetails?.(span.token.input_id, span.token.use_id) : undefined}
-	{#if span.token && linkMode === 'confirm'}<button
-			type="button"
+	{@const details = span.token
+		? tokenDetails?.(span.token.input_id, span.token.use_id, span.token.occurrence_id)
+		: undefined}
+	{#if span.token && linkMode === 'confirm' && details}<span
 			data-input-id={span.token.input_id}
+			data-occurrence-id={span.token.occurrence_id}
 			id={occurrenceScope
 				? `${occurrenceScope}-${span.token.occurrence_id}`
 				: span.token.occurrence_id}
-			class="text-primary rounded px-0.5 text-left font-mono underline underline-offset-2 transition-colors duration-150 motion-reduce:transition-none {(details?.changed ??
+			class="inline-flex min-h-11 flex-wrap items-center gap-x-2 rounded px-1 transition-colors duration-150 motion-reduce:transition-none {(details?.changed ??
 			!tokenDetails)
 				? 'bg-primary/10'
 				: ''}"
+			><span
+				class="text-primary font-mono underline underline-offset-2"
+				class:font-bold={span.strong}
+				class:italic={span.emphasis}
+				class:line-through={span.deleted}>{details?.text ?? span.text}</span
+			><span class="text-muted-foreground font-sans text-xs"
+				>{details?.label ?? 'Variable'} · {details?.count ?? 1}
+				{(details?.count ?? 1) === 1 ? 'use' : 'uses'}</span
+			><button
+				type="button"
+				class="text-primary min-h-11 px-2 text-xs font-medium underline"
+				aria-label={details ? `Edit ${details.label}` : `Show declaration for ${span.text}`}
+				onclick={(event) =>
+					ontoken?.(span.token!.input_id, span.token!.use_id, event.currentTarget)}>Edit</button
+			></span
+		>{:else if span.token && linkMode === 'confirm'}<button
+			type="button"
+			data-input-id={span.token.input_id}
+			data-occurrence-id={span.token.occurrence_id}
+			id={occurrenceScope
+				? `${occurrenceScope}-${span.token.occurrence_id}`
+				: span.token.occurrence_id}
+			class="text-primary min-h-10 rounded px-0.5 text-left font-mono underline underline-offset-2"
 			class:font-bold={span.strong}
 			class:italic={span.emphasis}
 			class:line-through={span.deleted}
-			aria-label={details
-				? `${details.label}: ${details.text} · ${details.count} ${details.count === 1 ? 'use' : 'uses'}. Edit variable`
-				: `Show declaration for ${span.text}`}
+			aria-label={`Show declaration for ${span.text}`}
 			onclick={(event) => ontoken?.(span.token!.input_id, span.token!.use_id, event.currentTarget)}
-			>{details?.text ?? span.text}</button
+			>{span.text}</button
 		>{:else if span.href && linkMode === 'confirm'}<button
 			type="button"
 			class="text-primary text-left underline"

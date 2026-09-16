@@ -30,16 +30,15 @@
 		replaceSelectionWithVariable,
 		saveAuthoredField,
 		updateAuthoredInput,
-		writeField,
 		type InputDraft
 	} from '$lib/components/library/package-input-editor';
 	import PackageReview from '$lib/components/library/PackageReview.svelte';
+	import { declaredOccurrences } from '$lib/components/library/package-text';
 	import TechnicalDetails from '$lib/components/publications/TechnicalDetails.svelte';
 	import { PublicationFlowController } from '$lib/components/publications/publication-flow';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
-	import { Textarea } from '$lib/components/ui/textarea/index.js';
 
 	let { data } = $props();
 	function initialCandidate(): WorkflowPackageDocument {
@@ -84,15 +83,14 @@
 	let addDraftSnapshot = $state<InputDraft | null>(null);
 	let inputFormError = $state('');
 	let selectedInputId = $state('');
-	let selectedTarget = $state('');
-	let fieldEditor = $state<HTMLTextAreaElement | null>(null);
-	let fieldEditPending = $state(false);
 	let inputPanel = $state<HTMLElement | null>(null);
 	let keyEditor = $state<HTMLInputElement | null>(null);
 	let tokenInvoker = $state<HTMLElement | null>(null);
 	let diagnosticsPanel = $state<HTMLElement | null>(null);
 	let samples = $state<Record<string, string>>({});
 	let changedInputIds = $state<Set<string>>(new Set());
+	let changedOccurrenceIds = $state<Set<string>>(new Set());
+	let inlineStates = $state<Record<string, { active: boolean; inputIds: string[] }>>({});
 
 	const requiredReviews = $derived(
 		candidate.context
@@ -114,7 +112,6 @@
 		data.schedules.filter((schedule) => schedule.project_id === sourceProjectId)
 	);
 	const editableFields = $derived(listEditableFields(candidate));
-	const selectedField = $derived(editableFields.find((field) => field.key === selectedTarget));
 	const selectedInput = $derived(candidate.inputs.find((input) => input.id === selectedInputId));
 	const diagnosticFieldKeys = $derived(
 		new Set(
@@ -142,6 +139,27 @@
 		publicationResult = null;
 		shareConsent = false;
 		step = 'customize';
+	}
+	function inlineStateChanged(key: string, state: { active: boolean; inputIds: string[] }) {
+		const previous = inlineStates[key];
+		inlineStates = { ...inlineStates, [key]: state };
+		if (state.active && !previous?.active)
+			resetReview('Finish or cancel the passage edit before continuing.');
+	}
+	async function guardInlineEdits(action: string, inputId?: string, exceptKey?: string) {
+		const blocked = Object.entries(inlineStates).find(
+			([key, state]) =>
+				key !== exceptKey && state.active && (!inputId || state.inputIds.includes(inputId))
+		);
+		if (!blocked) return true;
+		status = `Save or cancel the passage edit before ${action}.`;
+		await tick();
+		const section = document.querySelector<HTMLElement>(
+			`[data-field-key="${CSS.escape(blocked[0])}"]`
+		);
+		(section?.querySelector<HTMLElement>('[data-inline-action]') ?? section)?.focus();
+		section?.scrollIntoView({ block: 'center' });
+		return false;
 	}
 	function displayNameChanged(event: Event) {
 		displayName = (event.currentTarget as HTMLInputElement).value;
@@ -202,12 +220,9 @@
 	}
 	async function rebuild() {
 		if (candidateUpdating || busy) return;
+		if (!(await guardInlineEdits('rebuilding'))) return;
 		if (editingInputId) {
 			status = 'Save or cancel the input edit before rebuilding.';
-			return;
-		}
-		if (fieldEditPending || (fieldEditor && fieldEditor.value !== selectedField?.value)) {
-			status = 'Save or cancel the candidate text edit before rebuilding.';
 			return;
 		}
 		if (
@@ -224,6 +239,7 @@
 			candidate = rebuilt;
 			samples = {};
 			changedInputIds = new Set();
+			changedOccurrenceIds = new Set();
 			baseline = { document_digest: rebuilt.digest, exported_at: rebuilt.exported_at };
 			appliedSourceOptions = structuredClone(options);
 			dirty = false;
@@ -248,12 +264,9 @@
 		}
 	}
 	async function prepareForPublication() {
+		if (!(await guardInlineEdits('previewing'))) return;
 		if (editingInputId) {
 			status = 'Save or cancel the input edit before previewing.';
-			return;
-		}
-		if (fieldEditPending || (fieldEditor && fieldEditor.value !== selectedField?.value)) {
-			status = 'Save or cancel the candidate text edit before previewing.';
 			return;
 		}
 		if (candidateUpdating) {
@@ -506,28 +519,10 @@
 		}
 		const tokenChanges =
 			inputToken(current.key, current.default) !== inputToken(normalized.key, normalized.default);
-		const selectedFieldIsAffected = Boolean(
-			tokenChanges &&
-			selectedField &&
-			candidate.text_uses.some(
-				(use) =>
-					use.input_id === inputId &&
-					use.target.record_id === selectedField?.recordId &&
-					use.target.field === selectedField.field
-			)
-		);
-		if (selectedFieldIsAffected && fieldEditor && fieldEditor.value !== selectedField?.value) {
+		if (tokenChanges && !(await guardInlineEdits('updating this variable', inputId))) {
 			inputFormError = 'Save candidate text before updating this input’s registered tokens.';
 			return;
 		}
-		const pendingField =
-			!selectedFieldIsAffected && fieldEditor
-				? {
-						value: fieldEditor.value,
-						start: fieldEditor.selectionStart,
-						end: fieldEditor.selectionEnd
-					}
-				: null;
 		const snapshot = candidate;
 		let updated: WorkflowPackageDocument;
 		try {
@@ -552,55 +547,6 @@
 		}
 		if (!saved) return;
 		await finishInputEdit(inputId);
-		await tick();
-		if (fieldEditor) {
-			if (selectedFieldIsAffected && selectedField) fieldEditor.value = selectedField.value;
-			else if (pendingField) {
-				fieldEditor.value = pendingField.value;
-				fieldEditor.setSelectionRange(pendingField.start, pendingField.end);
-			}
-		}
-	}
-	async function saveCandidateField(addUse = false) {
-		if (!selectedField || !fieldEditor) return;
-		const input = addUse ? selectedInput : undefined;
-		if (addUse && !input) {
-			status = 'Choose an input declaration first.';
-			return;
-		}
-		const next = JSON.parse(JSON.stringify(candidate)) as WorkflowPackageDocument;
-		resetReview('Saving the draft text.');
-		candidateUpdating = true;
-		let value = fieldEditor.value;
-		if (input) {
-			const token = inputToken(input.key, input.default);
-			const start = fieldEditor.selectionStart;
-			const end = fieldEditor.selectionEnd;
-			value = `${value.slice(0, start)}${token}${value.slice(end)}`;
-			next.text_uses.push({
-				id: `use:author:${next.text_uses.length + 1}`,
-				target: { record_id: selectedField.recordId, field: selectedField.field },
-				input_id: input.id,
-				token
-			});
-		}
-		writeField(next, selectedField.recordId, selectedField.field, value);
-		try {
-			candidate = await withLibraryDocumentDigest(next);
-			dirty = true;
-			fieldEditPending = false;
-			resetReview(
-				addUse
-					? 'Exact declared token use added to the draft field.'
-					: 'Candidate text updated without changing the private source.'
-			);
-			await tick();
-			if (fieldEditor) fieldEditor.value = value;
-		} catch (error) {
-			status = message(error);
-		} finally {
-			candidateUpdating = false;
-		}
 	}
 	async function saveInlineText(recordId: string, field: TextUseField, value: string) {
 		if (candidateUpdating) return false;
@@ -617,6 +563,7 @@
 			candidate = await withLibraryDocumentDigest(next);
 			dirty = true;
 			changedInputIds = new Set();
+			changedOccurrenceIds = new Set();
 			resetReview('Passage text updated in this candidate only.');
 			return true;
 		} catch (error) {
@@ -659,15 +606,14 @@
 			candidate = await withLibraryDocumentDigest(result.document);
 			selectedInputId = result.inputId;
 			dirty = true;
-			changedInputIds = new Set([result.inputId]);
-			const count = result.document.text_uses
-				.filter((use) => use.input_id === result.inputId)
-				.reduce((total, use) => {
-					const source = readField(result.document, use.target.record_id, use.target.field) ?? '';
-					return total + source.split(use.token).length - 1;
-				}, 0);
-			resetReview(`${count} ${count === 1 ? 'use' : 'uses'} updated.`);
-			return result.inputId;
+			changedInputIds = new Set();
+			changedOccurrenceIds = new Set([`${result.useId}:${result.occurrence.ordinal}`]);
+			resetReview('1 use updated.');
+			return {
+				inputId: result.inputId,
+				useId: result.useId,
+				ordinal: result.occurrence.ordinal
+			};
 		} catch (error) {
 			status = message(error);
 			return null;
@@ -675,8 +621,15 @@
 			candidateUpdating = false;
 		}
 	}
-	async function editInlineVariable(inputId: string, draft: InputDraft) {
+	async function editInlineVariable(
+		inputId: string,
+		draft: InputDraft,
+		recordId: string,
+		field: TextUseField
+	) {
 		if (candidateUpdating) return false;
+		if (!(await guardInlineEdits('updating this variable', inputId, `${recordId}:${field}`)))
+			return false;
 		let next: WorkflowPackageDocument;
 		try {
 			next = updateAuthoredInput(candidate, inputId, draft);
@@ -690,6 +643,7 @@
 			candidate = await withLibraryDocumentDigest(next);
 			dirty = true;
 			changedInputIds = new Set([inputId]);
+			changedOccurrenceIds = new Set();
 			resetReview('Input declaration updated in this candidate only.');
 			return true;
 		} catch (error) {
@@ -706,15 +660,14 @@
 		if (JSON.stringify(next) === JSON.stringify(samples)) return;
 		samples = next;
 		changedInputIds = new Set([inputId]);
-		const count = candidate.text_uses.filter((use) => use.input_id === inputId).length;
+		changedOccurrenceIds = new Set();
+		const count = candidate.text_uses
+			.filter((use) => use.input_id === inputId)
+			.reduce((total, use) => {
+				const source = readField(candidate, use.target.record_id, use.target.field) ?? '';
+				return total + declaredOccurrences(source, [{ token: use.token, inputId }]).length;
+			}, 0);
 		status = `${count} ${count === 1 ? 'use' : 'uses'} updated. Sample values do not change the reusable file.`;
-	}
-	function cancelCandidateField() {
-		if (!selectedField || !fieldEditor || candidateUpdating) return;
-		fieldEditor.value = selectedField.value;
-		fieldEditPending = false;
-		status = 'Candidate text edit canceled.';
-		fieldEditor.focus();
 	}
 	type InputRepairField = 'key' | 'default' | 'label' | 'description';
 	function diagnosticInput(path: string) {
@@ -758,6 +711,7 @@
 		return editableFields.find((item) => item.key === key) ?? null;
 	}
 	async function validate(expectedGeneration = candidateGeneration) {
+		if (!(await guardInlineEdits('checking the file'))) return null;
 		if (candidateUpdating) {
 			status = 'Wait for the candidate edit to finish before validating.';
 			return null;
@@ -836,10 +790,12 @@
 		tokenInvoker = null;
 	}
 	async function beginEdit(recordId: string, field: string) {
-		selectedTarget = `${recordId}:${field}`;
-		fieldEditPending = false;
 		await tick();
-		fieldEditor?.focus();
+		const section = document.querySelector<HTMLElement>(
+			`[data-field-key="${CSS.escape(`${recordId}:${field}`)}"]`
+		);
+		section?.querySelector<HTMLButtonElement>('[data-inline-edit]')?.click();
+		section?.scrollIntoView({ block: 'center' });
 	}
 </script>
 
@@ -926,10 +882,12 @@
 			contextFirst
 			{samples}
 			{changedInputIds}
+			{changedOccurrenceIds}
 			onSaveText={saveInlineText}
 			onCreate={createInlineVariable}
 			onEditVariable={editInlineVariable}
 			onSample={setSample}
+			onStateChange={inlineStateChanged}
 		/>
 	</section>
 
@@ -1164,61 +1122,10 @@
 						</div>
 					{/each}
 				</div>{/if}
-			<div class="mt-4 border-t pt-4">
-				<label class="text-xs"
-					>Edit instructions<Select
-						class="mt-1"
-						bind:value={selectedTarget}
-						onchange={() => (fieldEditPending = false)}
-						><option value="">Choose a text field</option>{#each editableFields as field}<option
-								value={field.key}>{field.label}</option
-							>{/each}</Select
-					></label
-				>{#if selectedField}<Textarea
-						class="mt-2 min-h-40 font-mono text-xs"
-						bind:ref={fieldEditor}
-						value={selectedField.value}
-						oninput={(event) =>
-							(fieldEditPending = event.currentTarget.value !== selectedField?.value)}
-					></Textarea>
-					<div class="mt-2 flex flex-wrap gap-2">
-						<Button
-							size="sm"
-							variant="outline"
-							onclick={() => saveCandidateField(false)}
-							disabled={candidateUpdating}>Save candidate text</Button
-						>
-						<Button
-							size="sm"
-							variant="outline"
-							onclick={cancelCandidateField}
-							disabled={candidateUpdating || !fieldEditPending}>Cancel text edit</Button
-						>
-						<div
-							class="flex max-w-full min-w-0 flex-wrap items-center gap-2"
-							data-testid="input-replacement"
-						>
-							<Button
-								size="sm"
-								onclick={() => saveCandidateField(true)}
-								disabled={!selectedInput || candidateUpdating}>Use selected variable here</Button
-							>
-							{#if selectedInput}<span
-									class="text-muted-foreground max-w-full min-w-0 text-xs [overflow-wrap:anywhere]"
-									>Using <code class="[overflow-wrap:anywhere]">{selectedInput.key}</code></span
-								>{/if}
-						</div>
-						<a
-							class="text-primary inline-flex min-h-9 items-center px-2 text-xs underline"
-							href="/workflows/{data.workflow.id}"
-							title="Rebuilding afterward discards this candidate">Edit private source instead</a
-						>
-					</div>
-					<p class="text-muted-foreground mt-2 text-xs">
-						This opens the normal source editor. Rebuild afterward to include source changes;
-						rebuilding discards this candidate and its draft inputs.
-					</p>{/if}
-			</div>
+			<p class="text-muted-foreground mt-4 border-t pt-4 text-xs">
+				Edit passage text and place variables only beside the passage above. The inventory keeps
+				declarations, including variables with no current uses.
+			</p>
 		</section>
 	</details>
 
