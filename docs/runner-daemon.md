@@ -56,7 +56,8 @@ is only needed for registration and never appears in a service unit. Both values
 come from `tines login` (the same directory's `config.json`) instead of the environment; the
 env vars take precedence when set.
 
-Flags (shared by `install` and `daemon`; `install` writes the ones you give into the unit):
+Flags (eight are shared by `install` and `daemon`; `install` writes the shared ones you give
+into the unit):
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
@@ -66,11 +67,14 @@ Flags (shared by `install` and `daemon`; `install` writes the ones you give into
 | `--max-concurrent` | Simultaneous runs on this machine (1–100), or the machine-owned ceiling when remote adjustment is enabled | 1 |
 | `--allow-remote-concurrency` | Let signed-in operators request a cap up to the local ceiling; never enabled remotely | off |
 | `--poll-interval` | Seconds between polls | 15 |
-| `--no-cli-refresh` | Skip the managed CLI install; harnesses use whatever `tines` is on the ambient PATH | refresh on |
-| `--no-self-update` | Never exit for the service manager to relaunch a newer daemon (see "Keeping the daemon itself current") | self-update on |
 | `--keep-workspaces` | Keep settled runs' workspaces for debugging: `never`, `failed`, or `always` | `never` |
 | `--keep-workspaces-for` | Hours a kept workspace survives | 72 |
 | `--keep-workspaces-max` | Most kept workspaces to hold at once (oldest go first) | 20 |
+| `--no-cli-refresh` | Foreground `daemon` only: skip the managed CLI install; harnesses use whatever `tines` is on the ambient PATH | refresh on |
+| `--no-self-update` | Foreground `daemon` only: never exit for the service manager to relaunch a newer daemon (see "Keeping the daemon itself current") | self-update on |
+
+The service created by `runner install` always keeps both the harness-facing CLI and the daemon
+itself current, so `install` does not accept the two `--no-*` flags.
 
 Each run's workspace (under the config dir) contains `prompt.md` (supervisor preamble +
 stitched context + issue block), `skills/<name>/…`, `repos.json`, and a clone of each listed
