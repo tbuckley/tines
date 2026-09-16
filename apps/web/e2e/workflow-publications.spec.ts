@@ -195,7 +195,9 @@ test.describe.serial('public workflow snapshots', () => {
 		expect(prepareRequests).toBe(3);
 		expect(new Set(prepareRequestIds).size).toBe(3);
 		await continueAction.click();
-		await expect(ownerPage.getByRole('heading', { name: 'Share', exact: true })).toBeFocused();
+		await expect(
+			ownerPage.getByRole('heading', { name: 'Ready to share', exact: true })
+		).toBeFocused();
 		await expectPlainLanguage(ownerPage);
 		await ownerPage
 			.getByRole('checkbox', { name: /I have the right to share all included content/ })
