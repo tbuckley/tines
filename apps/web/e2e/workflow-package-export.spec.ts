@@ -288,7 +288,7 @@ for (const { viewport, theme } of [
 			await expect(checkbox).not.toBeChecked();
 		await expect(
 			page.getByRole('button', {
-				name: /Show declaration for \{\{project_name:customer-portal\}\}/
+				name: /project_name: customer-portal · 1 use\. Edit variable/
 			})
 		).toBeVisible();
 
@@ -340,6 +340,47 @@ for (const { viewport, theme } of [
 		]);
 	});
 }
+
+test('creates and previews one exact occurrence beside its passage', async ({ page }) => {
+	await openExport(page);
+	const passage = page.locator('section[aria-label="instructions — prompt body"]');
+	await passage.getByRole('button', { name: 'Edit', exact: true }).click();
+	const editor = passage.getByRole('textbox', { name: 'instructions — prompt body' });
+	await editor.fill('Deploy customer-portal, but keep customer-portal private.');
+	await editor.evaluate((node: HTMLTextAreaElement) => {
+		const start = node.value.indexOf('customer-portal');
+		node.focus();
+		node.setSelectionRange(start, start + 'customer-portal'.length, 'forward');
+		node.dispatchEvent(new Event('select', { bubbles: true }));
+	});
+	await passage.getByRole('button', { name: 'Make variable' }).click();
+	await passage.getByRole('textbox', { name: 'Friendly name' }).fill('Project name');
+	await passage.getByRole('button', { name: 'Save', exact: true }).click();
+
+	const chip = passage.locator('button[data-input-id]');
+	await expect(chip).toBeFocused();
+	await expect(chip).toHaveAccessibleName('Project name: customer-portal · 1 use. Edit variable');
+	await expect(chip).toHaveText('customer-portal');
+	await expect(passage.getByText('keep customer-portal private', { exact: false })).toBeVisible();
+	await expect(passage).not.toContainText('{{project_name:customer-portal}}');
+
+	await passage.getByRole('button', { name: 'Preview values' }).click();
+	await passage
+		.getByRole('textbox', { name: 'Sample value — Project name' })
+		.fill('support-console');
+	await expect(chip).toHaveText('support-console');
+	await expect(passage.getByText('keep customer-portal private', { exact: false })).toBeVisible();
+	await passage.getByRole('button', { name: 'Use default' }).click();
+	await expect(chip).toHaveText('customer-portal');
+
+	await chip.click();
+	await passage.getByRole('textbox', { name: 'Friendly name' }).fill('Service name');
+	await passage.getByText('More options', { exact: true }).click();
+	await passage.getByLabel('Example/default').fill('billing-service');
+	await passage.getByRole('button', { name: 'Done' }).click();
+	await expect(chip).toBeFocused();
+	await expect(chip).toHaveAccessibleName('Service name: billing-service · 1 use. Edit variable');
+});
 
 test('cancels safely and refuses duplicate keys or registered-token edits over unsaved text', async ({
 	page
