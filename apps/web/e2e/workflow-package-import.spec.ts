@@ -25,7 +25,7 @@ import { apiClient, body, DESKTOP, gotoHydrated, PHONE, readSettled, signIn } fr
 const LONG_CRON =
 	'0 9 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 * *';
 const IMPLEMENTATION_JARGON =
-	/candidate-only|candidate rebuilt|input declaration|registered tokens|save candidate text|prepared plan|signed plan identity|a different digest is refused/i;
+	/candidate-only|candidate rebuilt|edit candidate text|input declaration|registered tokens|save candidate text|prepared plan|signed plan identity|a different digest is refused/i;
 
 async function expectPlainLanguage(page: Page) {
 	const text = (await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();

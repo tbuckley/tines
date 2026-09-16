@@ -15,7 +15,7 @@ import { d1, sqlLiteral } from './d1';
 import { apiClient, body, errorBody, gotoHydrated, runId, signIn, PHONE, DESKTOP } from './helpers';
 
 const IMPLEMENTATION_JARGON =
-	/candidate-only|candidate rebuilt|input declaration|registered tokens|save candidate text|prepared plan|signed plan identity|a different digest is refused/i;
+	/candidate-only|candidate rebuilt|edit candidate text|input declaration|registered tokens|save candidate text|prepared plan|signed plan identity|a different digest is refused/i;
 
 async function expectPlainLanguage(page: import('@playwright/test').Page) {
 	const text = (await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
@@ -624,15 +624,15 @@ test.describe.serial('public workflow snapshots', () => {
 		const editor = ownerPage.locator('textarea');
 		await editor.evaluate((element) => (element as HTMLTextAreaElement).setSelectionRange(0, 15));
 		await ownerPage.getByRole('button', { name: 'Use selected variable here' }).click();
-		await ownerPage.getByRole('button', { name: 'Edit input project_name' }).click();
+		await ownerPage.getByRole('button', { name: 'Edit variable project_name' }).click();
 		await ownerPage.getByLabel('Default').fill('billing-service');
 		await ownerPage.getByRole('button', { name: 'Save changes' }).click();
 		await expect(editor).toHaveValue('{{project_name:billing-service}} and customer-portal');
-		await editor.fill('{{project_name:billing-service}} and UNSAVED candidate text');
+		await editor.fill('{{project_name:billing-service}} and UNSAVED text');
 		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
 		await expect(ownerPage.getByRole('heading', { name: 'Customize', exact: true })).toBeVisible();
 		await expect(ownerPage.getByTestId('package-actions')).toContainText(
-			'Save or cancel the candidate text edit before previewing.'
+			'Save or cancel the text edit before previewing.'
 		);
 		await ownerPage.getByRole('button', { name: 'Cancel text edit' }).click();
 		await expect(editor).toHaveValue('{{project_name:billing-service}} and customer-portal');

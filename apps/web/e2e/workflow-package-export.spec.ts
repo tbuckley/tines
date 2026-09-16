@@ -25,7 +25,7 @@ const literal = 'The ordinary prose marker stays exactly unchanged.';
 const markdownTail = 'The final Markdown passage is visible only after expansion.';
 const imageUrl = 'https://example.invalid/auto-fetch.png';
 const IMPLEMENTATION_JARGON =
-	/candidate-only|candidate rebuilt|input declaration|registered tokens|save candidate text|prepared plan|signed plan identity|a different digest is refused/i;
+	/candidate-only|candidate rebuilt|edit candidate text|input declaration|registered tokens|save candidate text|prepared plan|signed plan identity|a different digest is refused/i;
 const longMarkdown = `# Long guidance
 
 ![remote pixel](${imageUrl})
@@ -240,11 +240,17 @@ for (const { viewport, theme } of [
 		await expect(page.locator('html')).toHaveClass(
 			theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
 		);
+		await expect(
+			page.getByRole('button', { name: 'Edit text', exact: true }).first()
+		).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Edit candidate text' })).toHaveCount(0);
 
 		await page.getByLabel('Key').fill('project_name');
 		await page.getByLabel('Type').selectOption('project');
 		await page.getByLabel('Default').fill('customer-portal');
 		await page.getByRole('button', { name: 'Add variable' }).click();
+		await expect(page.getByText('Variable added to this copy.').first()).toBeVisible();
+		await expect(page.getByText('Input declaration added to this candidate only.')).toHaveCount(0);
 		await page
 			.getByLabel('Edit instructions')
 			.selectOption({ label: 'instructions — prompt body' });
@@ -255,6 +261,10 @@ for (const { viewport, theme } of [
 			node.setSelectionRange(start, start + 'TARGET'.length);
 		});
 		await page.getByRole('button', { name: 'Use selected variable here' }).click();
+		await expect(page.getByText('Variable added at the selected location.').first()).toBeVisible();
+		await expect(page.getByText('Exact declared token use added to the draft field.')).toHaveCount(
+			0
+		);
 
 		await page.getByLabel('Key').fill('review_label');
 		await page.getByLabel('Type').selectOption('label');

@@ -141,7 +141,7 @@
 										{#if item.kind === 'prompt' && onEdit}<button
 												class="text-primary text-xs underline"
 												type="button"
-															onclick={() => onEdit?.(item.id, 'body')}>Edit text</button
+												onclick={() => onEdit?.(item.id, 'body')}>Edit text</button
 											>{/if}
 									</div>
 									{#if item.description}<p class="text-muted-foreground my-2 text-xs">
@@ -162,8 +162,7 @@
 													<code>{file.path}</code>{#if onEdit}<button
 															class="text-primary underline"
 															type="button"
-															onclick={() => onEdit?.(file.id, 'content')}
-																	>Edit text</button
+															onclick={() => onEdit?.(file.id, 'content')}>Edit text</button
 														>{/if}
 												</div>
 												<PackageText
