@@ -6,29 +6,45 @@
 		linkMode,
 		occurrenceScope,
 		onlink,
-		ontoken
+		ontoken,
+		tokenDetails
 	}: {
 		spans: PublicTextSpan[];
 		linkMode: 'confirm' | 'inert';
 		occurrenceScope?: string;
 		onlink: (href: string, trigger: HTMLElement) => void;
 		ontoken?: (inputId: string, useId: string, trigger: HTMLElement) => void;
+		tokenDetails?: (
+			inputId: string,
+			useId: string
+		) => {
+			text: string;
+			label: string;
+			count: number;
+			changed?: boolean;
+		};
 	} = $props();
 </script>
 
 {#each spans as span}
+	{@const details = span.token ? tokenDetails?.(span.token.input_id, span.token.use_id) : undefined}
 	{#if span.token && linkMode === 'confirm'}<button
 			type="button"
 			id={occurrenceScope
 				? `${occurrenceScope}-${span.token.occurrence_id}`
 				: span.token.occurrence_id}
-			class="bg-primary/10 text-primary rounded px-0.5 text-left font-mono underline underline-offset-2"
+			class="text-primary rounded px-0.5 text-left font-mono underline underline-offset-2 transition-colors duration-150 motion-reduce:transition-none {(details?.changed ??
+			!tokenDetails)
+				? 'bg-primary/10'
+				: ''}"
 			class:font-bold={span.strong}
 			class:italic={span.emphasis}
 			class:line-through={span.deleted}
-			aria-label={`Show declaration for ${span.text}`}
+			aria-label={details
+				? `${details.label}: ${details.text} · ${details.count} ${details.count === 1 ? 'use' : 'uses'}. Edit variable`
+				: `Show declaration for ${span.text}`}
 			onclick={(event) => ontoken?.(span.token!.input_id, span.token!.use_id, event.currentTarget)}
-			>{span.text}</button
+			>{details?.text ?? span.text}</button
 		>{:else if span.href && linkMode === 'confirm'}<button
 			type="button"
 			class="text-primary text-left underline"
