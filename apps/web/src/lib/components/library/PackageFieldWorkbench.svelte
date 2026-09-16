@@ -59,6 +59,7 @@
 	let mode = $state<'preview' | 'edit'>('preview');
 	let draftValue = $state('');
 	let baseValue = $state('');
+	let lastText = $state('');
 	let start = $state(0);
 	let end = $state(0);
 	let direction = $state<'forward' | 'backward' | 'none'>('none');
@@ -84,10 +85,10 @@
 	);
 
 	$effect(() => {
-		if (baseValue === text || (mode === 'preview' && !creating)) {
-			baseValue = text;
-			draftValue = text;
-		}
+		if (text === lastText) return;
+		if (draftValue === lastText || (mode === 'preview' && !creating)) draftValue = text;
+		baseValue = text;
+		lastText = text;
 	});
 	$effect(() => {
 		if (!keyOverridden)
@@ -189,6 +190,10 @@
 			creating = false;
 			editingInputId = null;
 			await tick();
+			draftValue = text;
+			baseValue = text;
+			lastText = text;
+			await tick();
 			document
 				.querySelector<HTMLElement>(
 					`#${CSS.escape(scope)} [data-input-id="${CSS.escape(inputId)}"]`
@@ -213,6 +218,10 @@
 		if (!inputId) return;
 		creating = false;
 		mode = 'preview';
+		await tick();
+		draftValue = text;
+		baseValue = text;
+		lastText = text;
 		await tick();
 		document
 			.querySelector<HTMLElement>(`#${CSS.escape(scope)} [data-input-id="${CSS.escape(inputId)}"]`)
