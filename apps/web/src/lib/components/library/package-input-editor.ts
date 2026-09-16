@@ -15,6 +15,225 @@ export type InputDraft = {
 	required: boolean;
 };
 
+export type EditablePackageField = {
+	key: string;
+	recordId: string;
+	field: TextUseField;
+	label: string;
+	value: string;
+};
+
+export type FieldRef = { recordId: string; field: TextUseField };
+
+export type ReplaceSelectionRequest = {
+	ref: FieldRef;
+	sourceSnapshot: string;
+	start: number;
+	end: number;
+	inputId?: string;
+	newInput?: InputDraft;
+};
+
+export type ReplaceSelectionResult = {
+	document: WorkflowPackageDocument;
+	inputId: string;
+	useId: string;
+	selection: { start: number; end: number };
+};
+
+/** Every field that can carry a registered package input, in review order. */
+export function listEditableFields(document: WorkflowPackageDocument): EditablePackageField[] {
+	const fields: EditablePackageField[] = [];
+	for (const workflow of document.workflows)
+		fields.push({
+			key: `${workflow.id}:description`,
+			recordId: workflow.id,
+			field: 'description',
+			label: `${workflow.name} — description`,
+			value: workflow.description
+		});
+	for (const item of document.context) {
+		fields.push({
+			key: `${item.id}:description`,
+			recordId: item.id,
+			field: 'description',
+			label: `${item.name} — description`,
+			value: item.description
+		});
+		if (item.kind === 'prompt')
+			fields.push({
+				key: `${item.id}:body`,
+				recordId: item.id,
+				field: 'body',
+				label: `${item.name} — prompt body`,
+				value: item.body
+			});
+		if (item.kind === 'skill')
+			for (const file of item.files)
+				fields.push({
+					key: `${file.id}:content`,
+					recordId: file.id,
+					field: 'content',
+					label: `${item.name} / ${file.path}`,
+					value: file.content
+				});
+	}
+	for (const schedule of document.schedules) {
+		fields.push({
+			key: `${schedule.id}:title_template`,
+			recordId: schedule.id,
+			field: 'title_template',
+			label: `${schedule.name} — title template`,
+			value: schedule.title_template
+		});
+		fields.push({
+			key: `${schedule.id}:description_template`,
+			recordId: schedule.id,
+			field: 'description_template',
+			label: `${schedule.name} — description template`,
+			value: schedule.description_template
+		});
+	}
+	return fields;
+}
+
+export function generateInputKey(label: string, usedKeys: readonly string[]): string {
+	let base = label
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '_')
+		.replace(/^_+|_+$/g, '');
+	if (!base) base = 'variable';
+	if (/^[0-9]/.test(base)) base = `variable_${base}`;
+	base = base.slice(0, 64).replace(/_+$/g, '') || 'variable';
+	const used = new Set(usedKeys);
+	if (!used.has(base)) return base;
+	for (let suffix = 2; ; suffix++) {
+		const ending = `_${suffix}`;
+		const candidate = `${base.slice(0, 64 - ending.length).replace(/_+$/g, '')}${ending}`;
+		if (!used.has(candidate)) return candidate;
+	}
+}
+
+export function nextAuthoredId(
+	document: WorkflowPackageDocument,
+	prefix: 'input:author:' | 'use:author:'
+): string {
+	const ids = new Set([
+		...document.workflows.map((record) => record.id),
+		...document.context.flatMap((record) => [
+			record.id,
+			...(record.kind === 'skill' ? record.files.map((file) => file.id) : [])
+		]),
+		...document.schedules.map((record) => record.id),
+		...document.routing.map((record) => record.id),
+		...document.inputs.map((record) => record.id),
+		...document.text_uses.map((record) => record.id)
+	]);
+	for (let index = 1; ; index++) if (!ids.has(`${prefix}${index}`)) return `${prefix}${index}`;
+}
+
+function cutsSurrogatePair(value: string, offset: number) {
+	if (offset <= 0 || offset >= value.length) return false;
+	const before = value.charCodeAt(offset - 1);
+	const after = value.charCodeAt(offset);
+	return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+}
+
+/** Atomically create/reuse a declaration and replace the captured exact range. */
+export function replaceSelectionWithVariable(
+	document: WorkflowPackageDocument,
+	request: ReplaceSelectionRequest
+): ReplaceSelectionResult {
+	const current = readField(document, request.ref.recordId, request.ref.field);
+	if (current === undefined) throw new Error('The selected passage no longer exists.');
+	if (current !== request.sourceSnapshot)
+		throw new Error('This passage changed. Select the text again before making a variable.');
+	if (
+		request.start < 0 ||
+		request.end > current.length ||
+		request.start >= request.end ||
+		cutsSurrogatePair(current, request.start) ||
+		cutsSurrogatePair(current, request.end)
+	)
+		throw new Error('Select a complete, non-empty text range.');
+
+	const fieldUses = document.text_uses.filter(
+		(use) => use.target.record_id === request.ref.recordId && use.target.field === request.ref.field
+	);
+	const occurrences = declaredOccurrences(
+		current,
+		fieldUses.map((use) => ({ token: use.token, inputId: use.input_id }))
+	);
+	if (
+		occurrences.some(
+			(occurrence) => request.start < occurrence.end && request.end > occurrence.start
+		)
+	)
+		throw new Error('Select ordinary passage text, or edit the existing variable chip.');
+
+	const next = JSON.parse(JSON.stringify(document)) as WorkflowPackageDocument;
+	let input: PackageInput | undefined;
+	if (request.inputId) input = next.inputs.find((item) => item.id === request.inputId);
+	else if (request.newInput) {
+		const normalized = normalizeInputDraft(request.newInput);
+		if (next.inputs.some((item) => item.key === normalized.key))
+			throw new Error(`Input key “${normalized.key}” already exists.`);
+		input = { id: nextAuthoredId(next, 'input:author:'), ...normalized };
+		next.inputs.push(input);
+	}
+	if (!input) throw new Error('Choose an existing variable or create a new one.');
+
+	const token = inputToken(input.key, input.default);
+	const existingUse = fieldUses.find((use) => use.input_id === input!.id);
+	if (!existingUse && current.includes(token))
+		throw new Error(
+			'This token already appears here. Choose New variable or escape the literal token.'
+		);
+	const value = `${current.slice(0, request.start)}${token}${current.slice(request.end)}`;
+	if (!writeField(next, request.ref.recordId, request.ref.field, value))
+		throw new Error('The selected passage no longer exists.');
+	let use = next.text_uses.find(
+		(item) =>
+			item.input_id === input!.id &&
+			item.target.record_id === request.ref.recordId &&
+			item.target.field === request.ref.field
+	);
+	if (!use) {
+		use = {
+			id: nextAuthoredId(next, 'use:author:'),
+			target: { record_id: request.ref.recordId, field: request.ref.field },
+			input_id: input.id,
+			token
+		};
+		next.text_uses.push(use);
+	}
+	return {
+		document: next,
+		inputId: input.id,
+		useId: use.id,
+		selection: { start: request.start, end: request.start + token.length }
+	};
+}
+
+export function saveAuthoredField(
+	document: WorkflowPackageDocument,
+	ref: FieldRef,
+	value: string
+): WorkflowPackageDocument {
+	const next = JSON.parse(JSON.stringify(document)) as WorkflowPackageDocument;
+	if (!writeField(next, ref.recordId, ref.field, value))
+		throw new Error('The selected passage no longer exists.');
+	for (const use of next.text_uses.filter(
+		(item) => item.target.record_id === ref.recordId && item.target.field === ref.field
+	)) {
+		if (declaredOccurrences(value, [{ token: use.token, inputId: use.input_id }]).length) continue;
+		if (!use.id.startsWith('use:author:'))
+			throw new Error('This edit would remove a required generated variable use.');
+		next.text_uses = next.text_uses.filter((item) => item.id !== use.id);
+	}
+	return next;
+}
+
 export function normalizeInputDraft(draft: InputDraft) {
 	const key = draft.key.trim();
 	if (!/^[a-z][a-z0-9_]{0,63}$/.test(key))

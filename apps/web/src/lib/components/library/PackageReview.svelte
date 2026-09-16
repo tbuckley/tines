@@ -2,6 +2,8 @@
 	import { describeRecurrence, type WorkflowPackageDocument } from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
+	import { declaredOccurrences } from './package-text';
+	import { readField } from './package-input-editor';
 	import PackageText from './PackageText.svelte';
 
 	let {
@@ -12,7 +14,9 @@
 		onEdit,
 		expandedFields = new Set(),
 		reviewMode = 'per-item',
-		contextFirst = false
+		contextFirst = false,
+		samples = {},
+		changedInputIds = new Set()
 	}: {
 		document: WorkflowPackageDocument;
 		reviewed: Set<string>;
@@ -22,6 +26,8 @@
 		expandedFields?: Set<string>;
 		reviewMode?: 'per-item' | 'summary';
 		contextFirst?: boolean;
+		samples?: Record<string, string>;
+		changedInputIds?: Set<string>;
 	} = $props();
 
 	const workflowByState = $derived.by(() => {
@@ -36,10 +42,33 @@
 			result.set(item.state_id, [...(result.get(item.state_id) ?? []), item]);
 		return result;
 	});
+	function inputCount(inputId: string) {
+		let count = 0;
+		for (const use of document.text_uses) {
+			if (use.input_id !== inputId) continue;
+			const source = readField(document, use.target.record_id, use.target.field);
+			if (source !== undefined)
+				count += declaredOccurrences(source, [{ token: use.token, inputId }]).length;
+		}
+		return count;
+	}
 	function tokens(recordId: string, field: string) {
 		return document.text_uses
 			.filter((use) => use.target.record_id === recordId && use.target.field === field)
-			.map((use) => ({ token: use.token, inputId: use.input_id }));
+			.map((use) => {
+				const input = document.inputs.find((item) => item.id === use.input_id);
+				return {
+					id: use.id,
+					token: use.token,
+					inputId: use.input_id,
+					label: input?.label ?? input?.key ?? use.input_id,
+					value: Object.hasOwn(samples, use.input_id)
+						? samples[use.input_id]
+						: (input?.default ?? ''),
+					count: inputCount(use.input_id),
+					changed: changedInputIds.has(use.input_id)
+				};
+			});
 	}
 	function fieldKey(recordId: string, field: string) {
 		return `${recordId}:${field}`;

@@ -10,7 +10,8 @@
 		format = 'markdown',
 		uses = [],
 		occurrenceScope,
-		onToken
+		onToken,
+		tokenDetails
 	}: {
 		source: string;
 		maxWords?: number;
@@ -19,6 +20,15 @@
 		uses?: PublicTextUse[];
 		occurrenceScope?: string;
 		onToken?: (inputId: string, useId: string, trigger: HTMLElement) => void;
+		tokenDetails?: (
+			inputId: string,
+			useId: string
+		) => {
+			text: string;
+			label: string;
+			count: number;
+			changed?: boolean;
+		};
 	} = $props();
 	const fullBlocks = $derived(publicTextModel(source, { format, uses }));
 	const blocks = $derived(maxWords ? truncatePublicTextModel(fullBlocks, maxWords) : fullBlocks);
@@ -43,6 +53,7 @@
 					{occurrenceScope}
 					onlink={confirmDestination}
 					ontoken={onToken}
+					{tokenDetails}
 				/>
 			</div>
 		{:else if block.kind === 'paragraph'}
@@ -57,6 +68,7 @@
 					{occurrenceScope}
 					onlink={confirmDestination}
 					ontoken={onToken}
+					{tokenDetails}
 				/>
 			</p>
 		{:else if block.kind === 'code'}
@@ -67,6 +79,7 @@
 					{occurrenceScope}
 					onlink={confirmDestination}
 					ontoken={onToken}
+					{tokenDetails}
 				/></pre>
 		{:else if block.kind === 'list_item'}
 			<div class="flex gap-2" style:padding-left="{block.depth * 1.25}rem">
@@ -77,6 +90,7 @@
 						{occurrenceScope}
 						onlink={confirmDestination}
 						ontoken={onToken}
+						{tokenDetails}
 					/></span
 				>
 			</div>
@@ -94,6 +108,7 @@
 												{occurrenceScope}
 												onlink={confirmDestination}
 												ontoken={onToken}
+												{tokenDetails}
 											/></th
 										>{:else}<td class="border p-2 break-words"
 											><PublicTextSpans
@@ -102,6 +117,7 @@
 												{occurrenceScope}
 												onlink={confirmDestination}
 												ontoken={onToken}
+												{tokenDetails}
 											/></td
 										>{/if}{/each}</tr
 							>{/each}</tbody
