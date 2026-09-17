@@ -318,7 +318,17 @@
 				{updateCount}
 				{updateCount === 1 ? 'use' : 'uses'} updated
 			</p>{/if}
-		{#if draftValue !== text}<p class="text-muted-foreground mt-2 text-xs">Unsaved text</p>{/if}
+		{#if draftValue !== text}
+			<div class="mt-2 flex flex-wrap items-center gap-2">
+				<p class="text-muted-foreground text-xs">Unsaved text</p>
+				<Button data-inline-action class="min-h-11" size="sm" variant="outline" onclick={saveText}
+					>Save text</Button
+				>
+				<Button class="min-h-11" size="sm" variant="ghost" onclick={cancelText}
+					>Cancel text edits</Button
+				>
+			</div>
+		{/if}
 	{:else}
 		<label class="sr-only" for={`${scope}-editor`}>{label}</label>
 		<Textarea
