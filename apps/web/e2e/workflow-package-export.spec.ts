@@ -297,11 +297,10 @@ for (const { viewport, theme } of [
 			.getByRole('checkbox', { name: /I reviewed (every file|this required repository)/ })
 			.all())
 			await expect(checkbox).not.toBeChecked();
-		await expect(
-			page.getByRole('button', {
-				name: /project_name: customer-portal · 1 use\. Edit variable/
-			})
-		).toBeVisible();
+		const projectChip = page.locator('[data-input-id]').filter({ hasText: 'project_name · 1 use' });
+		await expect(projectChip).toBeVisible();
+		await expect(projectChip.locator('span').first()).toHaveText('customer-portal');
+		await expect(projectChip.getByRole('button', { name: 'Edit project_name' })).toBeVisible();
 
 		const editButton = page.getByRole('button', { name: 'Edit input approval_label' });
 		await expect(editButton.locator('svg')).toBeVisible();
@@ -370,10 +369,11 @@ test('creates and previews one exact occurrence beside its passage', async ({ pa
 	await passage.getByRole('textbox', { name: 'Friendly name' }).fill('Project name');
 	await passage.getByRole('button', { name: 'Save', exact: true }).click();
 
-	const chip = passage.locator('button[data-input-id]');
-	await expect(chip).toBeFocused();
-	await expect(chip).toHaveAccessibleName('Project name: customer-portal · 1 use. Edit variable');
-	await expect(chip).toHaveText('customer-portal');
+	const chip = passage.locator('[data-input-id]');
+	const chipValue = chip.locator('span').first();
+	await expect(chip.getByRole('button', { name: 'Edit Project name' })).toBeFocused();
+	await expect(chip).toContainText('Project name · 1 use');
+	await expect(chipValue).toHaveText('customer-portal');
 	await expect(passage.getByText('keep customer-portal private', { exact: false })).toBeVisible();
 	await expect(passage).not.toContainText('{{project_name:customer-portal}}');
 
@@ -381,18 +381,19 @@ test('creates and previews one exact occurrence beside its passage', async ({ pa
 	await passage
 		.getByRole('textbox', { name: 'Sample value — Project name' })
 		.fill('support-console');
-	await expect(chip).toHaveText('support-console');
+	await expect(chipValue).toHaveText('support-console');
 	await expect(passage.getByText('keep customer-portal private', { exact: false })).toBeVisible();
 	await passage.getByRole('button', { name: 'Use default' }).click();
-	await expect(chip).toHaveText('customer-portal');
+	await expect(chipValue).toHaveText('customer-portal');
 
-	await chip.click();
+	await chip.getByRole('button', { name: 'Edit Project name' }).click();
 	await passage.getByRole('textbox', { name: 'Friendly name' }).fill('Service name');
 	await passage.getByText('More options', { exact: true }).click();
 	await passage.getByLabel('Example/default').fill('billing-service');
 	await passage.getByRole('button', { name: 'Done' }).click();
-	await expect(chip).toBeFocused();
-	await expect(chip).toHaveAccessibleName('Service name: billing-service · 1 use. Edit variable');
+	await expect(chip.getByRole('button', { name: 'Edit Service name' })).toBeFocused();
+	await expect(chip).toContainText('Service name · 1 use');
+	await expect(chipValue).toHaveText('billing-service');
 });
 
 test('cancels safely and refuses duplicate keys or registered-token edits over unsaved text', async ({
@@ -459,7 +460,7 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	await page.getByRole('button', { name: 'Save changes' }).click();
 	await expect(selectedDeclaration).toHaveAttribute('aria-pressed', 'true');
 	await expect(page.getByRole('button', { name: 'Edit input first_input' })).toBeFocused();
-	await expect(passage.locator('button[data-input-id]')).toHaveText('after');
+	await expect(passage.locator('[data-input-id]').locator('span').first()).toHaveText('after');
 	await expect(passage).toContainText('Unsaved adjacent prose.');
 	await expect(page.getByRole('button', { name: 'Apply automation' })).toBeEnabled();
 });
@@ -525,13 +526,14 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		'TARGET',
 		'target_name'
 	);
-	const token = passage.locator('button[data-input-id]');
+	const token = passage.locator('[data-input-id]');
 	await expect(token).toBeVisible();
-	await expect(token).toHaveAccessibleName(/target_name: TARGET · 1 use\. Edit variable/);
+	await expect(token.locator('span').first()).toHaveText('TARGET');
+	await expect(token).toContainText('Target name · 1 use');
 	// The escaped literal renders as ordinary text: exactly one substitutable use.
 	await expect(token).toHaveCount(1);
 	await expect(passage.getByText('Escaped literal {{target_name:TARGET}} stays.')).toBeVisible();
-	await token.click();
+	await token.getByRole('button', { name: 'Edit Target name' }).click();
 	await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toBeVisible();
 	await passage.getByRole('button', { name: 'Cancel', exact: true }).click();
 	await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toHaveCount(0);

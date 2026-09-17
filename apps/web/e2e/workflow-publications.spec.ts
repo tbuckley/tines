@@ -595,13 +595,15 @@ test.describe.serial('public workflow snapshots', () => {
 		await passage.getByRole('button', { name: 'Make variable' }).click();
 		await passage.getByRole('textbox', { name: 'Friendly name' }).fill('Project name');
 		await passage.getByRole('button', { name: 'Save', exact: true }).click();
-		const chip = passage.locator('button[data-input-id]');
-		await expect(chip).toBeFocused();
-		await chip.click();
+		const chip = passage.locator('[data-input-id]');
+		const chipEdit = chip.getByRole('button', { name: 'Edit Project name' });
+		await expect(chipEdit).toBeFocused();
+		await chipEdit.click();
 		await passage.getByText('More options', { exact: true }).click();
 		await passage.getByLabel('Example/default').fill('billing-service');
 		await passage.getByRole('button', { name: 'Done' }).click();
-		await expect(chip).toHaveAccessibleName('Project name: billing-service · 1 use. Edit variable');
+		await expect(chip).toContainText('Project name · 1 use');
+		await expect(chip.locator('span').first()).toHaveText('billing-service');
 		await editToggle.click();
 		await expect(editor).toHaveValue('{{project_name:billing-service}} and customer-portal');
 		// An unsaved inline edit blocks publication Preview even after toggling back to Preview.
