@@ -91,6 +91,13 @@
 	--sidebar-ring: oklch(0.551 0.027 264.364);
 }
 
+/* Chromium uses a select's computed background for its native popup. Let the
+   user-agent dark palette supply that background instead of carrying the
+   translucent form-control fill into the popup. */
+.dark select {
+	background-color: revert;
+}
+
 @theme inline {
 	--radius-sm: calc(var(--radius) - 4px);
 	--radius-md: calc(var(--radius) - 2px);
