@@ -97,9 +97,11 @@
 	);
 	const fieldKey = $derived(`${recordId}:${field}`);
 
-	function reportState(nextMode = mode, nextCreating = creating) {
+	function reportState(nextMode = mode, nextCreating = creating, nextDraft = draftValue) {
+		// An unsaved draft is a live edit even after the author toggles back to Preview:
+		// page guards (rebuild, file check, publication Preview) must see it as active.
 		onStateChange?.(fieldKey, {
-			active: nextMode === 'edit' || nextCreating,
+			active: nextMode === 'edit' || nextCreating || nextDraft !== text,
 			inputIds: [...new Set(tokens.map((token) => token.inputId))]
 		});
 	}
@@ -216,7 +218,7 @@
 				return;
 			}
 			creating = false;
-			reportState(mode, false);
+			reportState(mode, false, text);
 			editingInputId = null;
 			await tick();
 			draftValue = text;
@@ -247,7 +249,7 @@
 		if (!result) return;
 		creating = false;
 		mode = 'preview';
-		reportState('preview', false);
+		reportState('preview', false, text);
 		await tick();
 		draftValue = text;
 		baseValue = text;
@@ -263,14 +265,14 @@
 		if (!(await onSaveText?.(recordId, field, draftValue))) return;
 		baseValue = draftValue;
 		mode = 'preview';
-		reportState('preview', false);
+		reportState('preview', false, text);
 	}
 	function cancelText() {
 		draftValue = text;
 		baseValue = text;
 		creating = false;
 		mode = 'preview';
-		reportState('preview', false);
+		reportState('preview', false, text);
 	}
 </script>
 
