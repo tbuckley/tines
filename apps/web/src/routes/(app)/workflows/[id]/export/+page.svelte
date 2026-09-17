@@ -11,6 +11,7 @@
 		type PackageInput,
 		type PublicationOwnerResult,
 		type PublicationProof,
+		type PublicationSourceOptions,
 		type TextUseField,
 		type WorkflowPackageDocument
 	} from '@tines/shared';
@@ -40,7 +41,12 @@
 	function initialCandidate(): WorkflowPackageDocument {
 		return structuredClone(data.candidate);
 	}
+	function initialBaseline() {
+		return { document_digest: data.candidate.digest, exported_at: data.candidate.exported_at };
+	}
 	let candidate = $state<WorkflowPackageDocument>(initialCandidate());
+	let baseline = $state(initialBaseline());
+	let appliedSourceOptions = $state<PublicationSourceOptions>({ schedule_ids: [], tiers: [] });
 	let sourceProjectId = $state('');
 	let selectedSchedules = $state<string[]>([]);
 	let tierSelections = $state<Record<string, '' | ModelTier>>({});
@@ -76,6 +82,7 @@
 	let selectedInputId = $state('');
 	let selectedTarget = $state('');
 	let fieldEditor = $state<HTMLTextAreaElement | null>(null);
+	let fieldEditPending = $state(false);
 	let inputPanel = $state<HTMLElement | null>(null);
 	let keyEditor = $state<HTMLInputElement | null>(null);
 	let tokenInvoker = $state<HTMLElement | null>(null);
@@ -208,7 +215,7 @@
 		target?.focus({ preventScroll: true });
 		target?.scrollIntoView({ block: 'center' });
 	}
-	function exportOptions(): ExportWorkflowPackageOptions {
+	function sourceOptions(): PublicationSourceOptions {
 		const tiers: NonNullable<ExportWorkflowPackageOptions['tiers']> = [];
 		for (const state of data.sourceStates) {
 			const tier = tierSelections[state.id];
@@ -222,10 +229,19 @@
 		return {
 			...(sourceProjectId ? { source_project_id: sourceProjectId } : {}),
 			schedule_ids: selectedSchedules,
-			tiers,
-			authoring: { inputs: candidate.inputs, text_uses: candidate.text_uses }
+			tiers
 		};
 	}
+	const pendingSourceSelection = $derived(
+		canonicalizeLibraryValue(sourceOptions()) !== canonicalizeLibraryValue(appliedSourceOptions)
+	);
+	let sourceSelectionSignature = canonicalizeLibraryValue(sourceOptions());
+	$effect(() => {
+		const signature = canonicalizeLibraryValue(sourceOptions());
+		if (signature === sourceSelectionSignature) return;
+		sourceSelectionSignature = signature;
+		resetReview('Automation choices changed. Apply or revert them before previewing.');
+	});
 	function setReviewed(id: string, checked: boolean) {
 		candidateGeneration += 1;
 		const next = new Set(reviewed);
@@ -244,6 +260,10 @@
 			status = 'Save or cancel the input edit before rebuilding.';
 			return;
 		}
+		if (fieldEditPending || (fieldEditor && fieldEditor.value !== selectedField?.value)) {
+			status = 'Save or cancel the candidate text edit before rebuilding.';
+			return;
+		}
 		if (
 			dirty &&
 			!confirm('Rebuilding from the source discards candidate-only text and input edits. Continue?')
@@ -252,23 +272,13 @@
 		busy = true;
 		status = 'Rebuilding the candidate from its private source…';
 		try {
-			const tiers: NonNullable<ExportWorkflowPackageOptions['tiers']> = [];
-			for (const state of data.sourceStates) {
-				const tier = tierSelections[state.id];
-				if (tier)
-					tiers.push({
-						state_id: state.id,
-						tier,
-						project_scoped: projectScoped[state.id] ?? false
-					});
-			}
-			candidate = await api.exportWorkflowPackage(data.workflow.id, {
-				...(sourceProjectId ? { source_project_id: sourceProjectId } : {}),
-				schedule_ids: selectedSchedules,
-				tiers
-			});
+			const options = sourceOptions();
+			const rebuilt = await api.exportWorkflowPackage(data.workflow.id, options);
+			if (!rebuilt.inputs.some((input) => input.id === selectedInputId)) selectedInputId = '';
+			candidate = rebuilt;
+			baseline = { document_digest: rebuilt.digest, exported_at: rebuilt.exported_at };
+			appliedSourceOptions = structuredClone(options);
 			dirty = false;
-			if (!candidate.inputs.some((input) => input.id === selectedInputId)) selectedInputId = '';
 			resetReview('Candidate rebuilt from source.');
 		} catch (error) {
 			status = message(error);
@@ -290,8 +300,20 @@
 		}
 	}
 	async function prepareForPublication() {
-		if (dirty) {
-			status = 'Save these changes in the workflow before previewing.';
+		if (editingInputId) {
+			status = 'Save or cancel the input edit before previewing.';
+			return;
+		}
+		if (fieldEditPending || (fieldEditor && fieldEditor.value !== selectedField?.value)) {
+			status = 'Save or cancel the candidate text edit before previewing.';
+			return;
+		}
+		if (candidateUpdating) {
+			status = 'Wait for the draft edit to finish before previewing.';
+			return;
+		}
+		if (pendingSourceSelection) {
+			status = 'Apply or revert the automation choices before previewing.';
 			return;
 		}
 		try {
@@ -324,7 +346,14 @@
 				source: {
 					kind: 'owned_workflow',
 					workflow_id: data.workflow.id,
-					options: exportOptions()
+					options: JSON.parse(
+						canonicalizeLibraryValue(appliedSourceOptions)
+					) as PublicationSourceOptions,
+					draft: {
+						version: 1,
+						baseline: { ...baseline },
+						document_json: canonicalizeLibraryValue(candidate)
+					}
 				},
 				metadata: {
 					display_name: displayName,
@@ -333,7 +362,11 @@
 				}
 			});
 			const proof = await api.preparePublication(request);
-			if (!publicationFlow.acceptProof(proof, revision)) return;
+			if (!publicationFlow.acceptProof(proof, revision)) {
+				if (revision === publicationFlow.revision && proof.expires_at <= Date.now())
+					status = 'The preview expired before it was ready. Preview this version again.';
+				return;
+			}
 			publicationProof = proof;
 			publicationResult = null;
 			shareConsent = false;
@@ -341,7 +374,13 @@
 			step = 'preview';
 			await focusStep();
 		} catch (error) {
-			status = 'Preview could not be loaded. Fix the highlighted field or try Preview again.';
+			if (revision !== publicationFlow.revision) return;
+			status =
+				error instanceof ApiError &&
+				(error.code === 'publication_source_changed' ||
+					error.code === 'publication_source_changing')
+					? 'The source changed. Your draft edits are still here. Review the latest source before sharing.'
+					: message(error);
 			const details = error instanceof ApiError ? error.details?.diagnostics : null;
 			if (Array.isArray(details)) {
 				diagnostics = details.filter(
@@ -392,7 +431,28 @@
 			step = 'complete';
 			await focusStep();
 		} catch (error) {
-			status = 'We could not confirm whether sharing finished. Retry publishing to check safely.';
+			if (
+				error instanceof ApiError &&
+				(error.code === 'publication_source_changed' ||
+					error.code === 'publication_source_changing' ||
+					error.code === 'publication_proof_expired' ||
+					error.code === 'publication_policy_changed')
+			) {
+				publicationFlow.invalidate();
+				publicationProof = null;
+				reviewed = new Set();
+				shareConsent = false;
+				step = 'customize';
+				status =
+					error.code === 'publication_source_changed' ||
+					error.code === 'publication_source_changing'
+						? 'The source changed. Your draft edits are still here. Review the latest source before sharing.'
+						: 'Preview this version again before sharing.';
+				await focusStep();
+			} else if (error instanceof ApiError && error.code !== 'publication_outcome_unknown')
+				status = error.message;
+			else
+				status = 'We could not confirm whether sharing finished. Retry publishing to check safely.';
 		} finally {
 			busy = false;
 		}
@@ -410,7 +470,7 @@
 			status = `Input key “${normalized.key}” already exists.`;
 			return;
 		}
-		candidateGeneration += 1;
+		resetReview('Saving a new variable.');
 		candidateUpdating = true;
 		const id = `input:author:${candidate.inputs.length + 1}`;
 		const next = {
@@ -521,11 +581,17 @@
 					}
 				: null;
 		const snapshot = candidate;
-		candidateGeneration += 1;
+		let updated: WorkflowPackageDocument;
+		try {
+			updated = updateAuthoredInput(snapshot, inputId, inputDraft());
+		} catch (error) {
+			inputFormError = message(error);
+			return;
+		}
+		resetReview('Saving the variable changes.');
 		candidateUpdating = true;
 		let saved = false;
 		try {
-			const updated = updateAuthoredInput(snapshot, inputId, inputDraft());
 			const sealed = await withLibraryDocumentDigest(updated);
 			candidate = sealed;
 			dirty = true;
@@ -555,7 +621,7 @@
 			return;
 		}
 		const next = JSON.parse(JSON.stringify(candidate)) as WorkflowPackageDocument;
-		candidateGeneration += 1;
+		resetReview('Saving the draft text.');
 		candidateUpdating = true;
 		let value = fieldEditor.value;
 		if (input) {
@@ -574,6 +640,7 @@
 		try {
 			candidate = await withLibraryDocumentDigest(next);
 			dirty = true;
+			fieldEditPending = false;
 			resetReview(
 				addUse
 					? 'Exact declared token use added to the draft field.'
@@ -586,6 +653,28 @@
 		} finally {
 			candidateUpdating = false;
 		}
+	}
+	function cancelCandidateField() {
+		if (!selectedField || !fieldEditor || candidateUpdating) return;
+		fieldEditor.value = selectedField.value;
+		fieldEditPending = false;
+		status = 'Candidate text edit canceled.';
+		fieldEditor.focus();
+	}
+	type InputRepairField = 'key' | 'default' | 'label' | 'description';
+	function diagnosticInput(path: string) {
+		const parts = path.split('/').slice(1);
+		if (parts[0] !== 'inputs') return null;
+		const input = candidate.inputs[Number(parts[1])];
+		const field = parts[2] as InputRepairField;
+		if (!input?.id.startsWith('input:author:')) return null;
+		if (!['key', 'default', 'label', 'description'].includes(field)) return null;
+		return { input, field, label: `${input.label || input.key} — ${field}` };
+	}
+	async function beginInputRepair(input: PackageInput, field: InputRepairField) {
+		await editInput(input);
+		await tick();
+		document.getElementById(`input-editor-${field}`)?.focus();
 	}
 	function diagnosticField(path: string) {
 		const parts = path.split('/').slice(1);
@@ -693,6 +782,7 @@
 	}
 	async function beginEdit(recordId: string, field: string) {
 		selectedTarget = `${recordId}:${field}`;
+		fieldEditPending = false;
 		await tick();
 		fieldEditor?.focus();
 	}
@@ -880,7 +970,7 @@
 				<div>
 					<h2 id="inputs-title" class="font-semibold">Variables and places used</h2>
 					<p class="text-muted-foreground mt-1 text-xs">
-						Changes apply to this copy. Save source changes before sharing.
+						Changes apply only to this reusable copy. Preview saves the exact draft for sharing.
 					</p>
 				</div>
 				{#if tokenInvoker}<Button size="sm" variant="outline" onclick={backToToken}
@@ -897,6 +987,7 @@
 			<div class:mt-4={!editingInputId} class="grid gap-3 md:grid-cols-3">
 				<label class="text-xs"
 					>Key<Input
+						id="input-editor-key"
 						class="mt-1"
 						bind:ref={keyEditor}
 						bind:value={draftKey}
@@ -911,15 +1002,26 @@
 					></label
 				><label class="text-xs"
 					>Default<Input
+						id="input-editor-default"
 						class="mt-1"
 						bind:value={draftDefault}
 						maxlength={10000}
 						placeholder="No default"
 					/></label
 				><label class="text-xs"
-					>Label<Input class="mt-1" bind:value={draftLabel} maxlength={200} /></label
+					>Label<Input
+						id="input-editor-label"
+						class="mt-1"
+						bind:value={draftLabel}
+						maxlength={200}
+					/></label
 				><label class="text-xs md:col-span-2"
-					>Description<Input class="mt-1" bind:value={draftDescription} maxlength={1000} /></label
+					>Description<Input
+						id="input-editor-description"
+						class="mt-1"
+						bind:value={draftDescription}
+						maxlength={1000}
+					/></label
 				>
 			</div>
 			<label class="mt-2 flex min-h-10 items-center gap-2 text-sm"
@@ -987,7 +1089,10 @@
 				</div>{/if}
 			<div class="mt-4 border-t pt-4">
 				<label class="text-xs"
-					>Edit instructions<Select class="mt-1" bind:value={selectedTarget}
+					>Edit instructions<Select
+						class="mt-1"
+						bind:value={selectedTarget}
+						onchange={() => (fieldEditPending = false)}
 						><option value="">Choose a text field</option>{#each editableFields as field}<option
 								value={field.key}>{field.label}</option
 							>{/each}</Select
@@ -996,6 +1101,8 @@
 						class="mt-2 min-h-40 font-mono text-xs"
 						bind:ref={fieldEditor}
 						value={selectedField.value}
+						oninput={(event) =>
+							(fieldEditPending = event.currentTarget.value !== selectedField?.value)}
 					></Textarea>
 					<div class="mt-2 flex flex-wrap gap-2">
 						<Button
@@ -1003,6 +1110,12 @@
 							variant="outline"
 							onclick={() => saveCandidateField(false)}
 							disabled={candidateUpdating}>Save candidate text</Button
+						>
+						<Button
+							size="sm"
+							variant="outline"
+							onclick={cancelCandidateField}
+							disabled={candidateUpdating || !fieldEditPending}>Cancel text edit</Button
 						>
 						<div
 							class="flex max-w-full min-w-0 flex-wrap items-center gap-2"
@@ -1053,6 +1166,7 @@
 			<ul class="mt-2 list-disc pl-5 text-sm">
 				{#each diagnostics as diagnostic}
 					{@const repair = diagnosticField(diagnostic.path)}
+					{@const inputRepair = diagnosticInput(diagnostic.path)}
 					<li>
 						{diagnostic.message}
 						{#if repair}<button
@@ -1060,6 +1174,12 @@
 								class="ml-2 underline underline-offset-2"
 								onclick={() => beginEdit(repair.recordId, repair.field)}
 								>Repair {repair.label}</button
+							>{/if}
+						{#if inputRepair}<button
+								type="button"
+								class="ml-2 underline underline-offset-2"
+								onclick={() => beginInputRepair(inputRepair.input, inputRepair.field)}
+								>Repair {inputRepair.label}</button
 							>{/if}
 					</li>
 				{/each}

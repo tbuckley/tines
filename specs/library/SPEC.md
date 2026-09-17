@@ -142,3 +142,8 @@ quota-limited, and default-off. One central availability predicate controls anon
 download, hosted preview, and transaction-time install receipt creation. Withdrawal cannot change a
 file already downloaded or an independent installation. The lifecycle and transport contract are in
 [PUBLICATIONS.md](PUBLICATIONS.md).
+
+Owned-workflow browser publishing may derive frozen snapshot bytes from a verified in-memory
+publication draft. The additive trust boundary and immutable-field allowlist are recorded in
+[PUBLICATIONS.md](PUBLICATIONS.md#decision-update--2026-09-15-owned-publication-drafts-tines552)
+and [FORMAT_V3.md](FORMAT_V3.md#decision-update--2026-09-15-tines552-publication-draft-boundary).

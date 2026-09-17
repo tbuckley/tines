@@ -132,8 +132,13 @@ describe('Codex discovery against a broken app-server', () => {
 		const started = Date.now();
 		const report = await discoverEffortCapabilities('codex', 'test');
 		expect(Date.now() - started).toBeLessThan(4000);
-		expect(report && 'discovery_error' in report ? report.discovery_error : '').toContain(
-			'exited (code 3) before listing models'
+		// Which failure lands first is a race the fake cannot fix: if the
+		// process is gone before our initialize write reaches the pipe, the
+		// write's EPIPE arrives before the close event does. Both are the same
+		// fast, non-fatal discovery failure — that, not the wording, is the
+		// contract. (Deploy hit the EPIPE ordering on its first run.)
+		expect(report && 'discovery_error' in report ? report.discovery_error : '').toMatch(
+			/^Codex app-server (exited \(code 3\) before listing models|stdin: write EPIPE)$/
 		);
 	});
 });

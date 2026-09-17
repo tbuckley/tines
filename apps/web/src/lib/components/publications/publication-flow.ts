@@ -23,16 +23,21 @@ export class PublicationFlowController {
 	}
 
 	prepareRequest(body: PrepareBody, createId: () => string = () => crypto.randomUUID()) {
-		const key = JSON.stringify(body);
+		const detached = structuredClone(body);
+		const key = JSON.stringify(detached);
 		if (this.attempt?.revision === this.revision && this.attempt.key === key)
 			return this.attempt.request;
-		const request = { ...body, prepare_request_id: createId() };
+		const request = { ...detached, prepare_request_id: createId() };
 		this.attempt = { revision: this.revision, key, request };
 		return request;
 	}
 
-	acceptProof(proof: PublicationProof, revision: number) {
+	acceptProof(proof: PublicationProof, revision: number, now = Date.now()) {
 		if (revision !== this.revision) return false;
+		if (proof.expires_at <= now) {
+			this.invalidate();
+			return false;
+		}
 		this.proof = proof;
 		this.reviewedIds = new Set();
 		this.consented = false;
@@ -59,6 +64,10 @@ export class PublicationFlowController {
 
 	publishRequest(): PublishPublicationRequest | null {
 		if (!this.proof || !this.consented) return null;
+		const dependencies = this.proof.document.context.filter(
+			(item) => item.kind === 'skill' || item.kind === 'repo'
+		);
+		if (!dependencies.every((item) => this.reviewedIds.has(item.id))) return null;
 		return {
 			review_digest: this.proof.review_digest,
 			sharing_rights: true,
