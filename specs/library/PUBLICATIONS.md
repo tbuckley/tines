@@ -89,6 +89,10 @@ and retains the transaction-time source witness guard. Draft edits never mutate 
 source changes fail closed and require explicit refresh or rebuild. Legacy owned and file publication
 requests retain their existing interpretation.
 
+This normal-view language rule also covers optional authoring controls and installation recovery
+alerts: they name the task and the next action, while diagnostic identifiers stay inside closed
+Technical details.
+
 ## Decision update — 2026-09-16 inline variables beside passages (Tines/554)
 
 Owned-workflow Customize authors variables beside each passage. A field workbench toggles Edit and

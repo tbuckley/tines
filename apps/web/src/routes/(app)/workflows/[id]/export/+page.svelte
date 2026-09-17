@@ -134,7 +134,7 @@
 		reviewed = new Set();
 		validatedDigest = null;
 		diagnostics = [];
-		status = `${note} Required skill and repository review was reset.`;
+		status = `${note} Review included skills and repositories again.`;
 		publicationProof = null;
 		publicationResult = null;
 		shareConsent = false;
@@ -222,16 +222,18 @@
 		if (candidateUpdating || busy) return;
 		if (!(await guardInlineEdits('rebuilding'))) return;
 		if (editingInputId) {
-			status = 'Save or cancel the input edit before rebuilding.';
+			status = 'Save or cancel the variable edit before applying automation.';
 			return;
 		}
 		if (
 			dirty &&
-			!confirm('Rebuilding from the source discards candidate-only text and input edits. Continue?')
+			!confirm(
+				'Apply automation using the latest workflow? This replaces the instruction and variable edits made in this copy.'
+			)
 		)
 			return;
 		busy = true;
-		status = 'Rebuilding the candidate from its private source…';
+		status = 'Applying automation from the latest workflow…';
 		try {
 			const options = sourceOptions();
 			const rebuilt = await api.exportWorkflowPackage(data.workflow.id, options);
@@ -241,9 +243,11 @@
 			changedInputIds = new Set();
 			changedOccurrenceIds = new Set();
 			baseline = { document_digest: rebuilt.digest, exported_at: rebuilt.exported_at };
-			appliedSourceOptions = structuredClone(options);
+			appliedSourceOptions = JSON.parse(
+				canonicalizeLibraryValue(options)
+			) as PublicationSourceOptions;
 			dirty = false;
-			resetReview('Candidate rebuilt from source.');
+			resetReview('This copy now uses the latest workflow and automation choices.');
 		} catch (error) {
 			status = message(error);
 			const details = error instanceof ApiError ? error.details?.diagnostics : null;
@@ -266,11 +270,11 @@
 	async function prepareForPublication() {
 		if (!(await guardInlineEdits('previewing'))) return;
 		if (editingInputId) {
-			status = 'Save or cancel the input edit before previewing.';
+			status = 'Save or cancel the variable edit before previewing.';
 			return;
 		}
 		if (candidateUpdating) {
-			status = 'Wait for the draft edit to finish before previewing.';
+			status = 'Wait for the edit to finish before previewing.';
 			return;
 		}
 		if (pendingSourceSelection) {
@@ -340,7 +344,7 @@
 				error instanceof ApiError &&
 				(error.code === 'publication_source_changed' ||
 					error.code === 'publication_source_changing')
-					? 'The source changed. Your draft edits are still here. Review the latest source before sharing.'
+					? 'The source changed. Your edits to this copy are still here. Review the latest source before sharing.'
 					: message(error);
 			const details = error instanceof ApiError ? error.details?.diagnostics : null;
 			if (Array.isArray(details)) {
@@ -407,7 +411,7 @@
 				status =
 					error.code === 'publication_source_changed' ||
 					error.code === 'publication_source_changing'
-						? 'The source changed. Your draft edits are still here. Review the latest source before sharing.'
+						? 'The source changed. Your edits to this copy are still here. Review the latest source before sharing.'
 						: 'Preview this version again before sharing.';
 				await focusStep();
 			} else if (error instanceof ApiError && error.code !== 'publication_outcome_unknown')
@@ -428,7 +432,7 @@
 			return;
 		}
 		if (candidate.inputs.some((input) => input.key === normalized.key)) {
-			status = `Input key “${normalized.key}” already exists.`;
+			status = `Variable key “${normalized.key}” already exists.`;
 			return;
 		}
 		resetReview('Saving a new variable.');
@@ -448,7 +452,7 @@
 		}
 		selectedInputId = id;
 		dirty = true;
-		resetReview('Input declaration added to this candidate only.');
+		resetReview('Variable added to this copy.');
 	}
 	function inputDraft(): InputDraft {
 		return {
@@ -507,7 +511,7 @@
 		const inputId = editingInputId;
 		const current = candidate.inputs.find((input) => input.id === inputId);
 		if (!current) {
-			inputFormError = 'Input declaration no longer exists.';
+			inputFormError = 'This variable is no longer available.';
 			return;
 		}
 		let normalized;
@@ -515,6 +519,10 @@
 			normalized = normalizeInputDraft(inputDraft());
 		} catch (error) {
 			inputFormError = message(error);
+			return;
+		}
+		if (candidate.inputs.some((input) => input.id !== inputId && input.key === normalized.key)) {
+			inputFormError = `Variable key “${normalized.key}” already exists.`;
 			return;
 		}
 		const tokenChanges =
@@ -538,7 +546,7 @@
 			const sealed = await withLibraryDocumentDigest(updated);
 			candidate = sealed;
 			dirty = true;
-			resetReview('Input declaration updated in this candidate only.');
+			resetReview('Variable updated in this copy.');
 			saved = true;
 		} catch (error) {
 			inputFormError = message(error);
@@ -564,7 +572,7 @@
 			dirty = true;
 			changedInputIds = new Set();
 			changedOccurrenceIds = new Set();
-			resetReview('Passage text updated in this candidate only.');
+			resetReview('Text saved in this copy.');
 			return true;
 		} catch (error) {
 			status = message(error);
@@ -713,7 +721,7 @@
 	async function validate(expectedGeneration = candidateGeneration) {
 		if (!(await guardInlineEdits('checking the file'))) return null;
 		if (candidateUpdating) {
-			status = 'Wait for the candidate edit to finish before validating.';
+			status = 'Wait for the edit to finish before checking this copy.';
 			return null;
 		}
 		const snapshot = canonicalizeLibraryValue(candidate);
@@ -726,8 +734,7 @@
 				candidateGeneration !== expectedGeneration ||
 				canonicalizeLibraryValue(candidate) !== snapshot
 			) {
-				status =
-					'The candidate or its review changed during validation. The older result was discarded.';
+				status = 'This copy or its review changed while it was being checked. Check it again.';
 				return null;
 			}
 			diagnostics = result.diagnostics;
@@ -747,7 +754,7 @@
 	}
 	async function download() {
 		if (!reviewComplete) {
-			status = 'Review every required skill and repository declaration before downloading.';
+			status = 'Review every included skill and repository before downloading.';
 			return;
 		}
 		const expectedGeneration = candidateGeneration;
@@ -759,8 +766,7 @@
 			!reviewComplete ||
 			canonicalizeLibraryValue(candidate) !== snapshot
 		) {
-			status =
-				'The candidate or its required review changed during validation. Review it again before downloading.';
+			status = 'This copy or its review changed. Review it again before downloading.';
 			return;
 		}
 		candidate = result.document;
@@ -898,7 +904,8 @@
 			<h2 id="selection-title" class="font-semibold">Automation choices</h2>
 			<p class="text-muted-foreground mt-1 text-xs">
 				None is the default. Choose a source project before selecting its schedules or
-				project-scoped routing. Rebuild discards candidate-only edits after confirmation.
+				project-scoped routing. Apply automation replaces instruction and variable edits in this
+				copy. You’ll be asked to confirm first.
 			</p>
 			<div class="mt-4 grid gap-4 md:grid-cols-2">
 				<label class="text-sm"
@@ -985,8 +992,9 @@
 				variant="outline"
 				onclick={rebuild}
 				disabled={busy || candidateUpdating || Boolean(editingInputId)}
-				title={editingInputId ? 'Save or cancel the input edit before rebuilding.' : undefined}
-				><IconRefresh size={16} /> Apply automation</Button
+				title={editingInputId
+					? 'Save or cancel the variable edit before applying automation.'
+					: undefined}><IconRefresh size={16} /> Apply automation</Button
 			>
 		</section>
 	</details>
@@ -1005,7 +1013,7 @@
 				<div>
 					<h2 id="inputs-title" class="font-semibold">Variables and places used</h2>
 					<p class="text-muted-foreground mt-1 text-xs">
-						Changes apply only to this reusable copy. Preview saves the exact draft for sharing.
+						Changes apply only to this reusable copy. Preview saves these exact changes for sharing.
 					</p>
 				</div>
 				{#if tokenInvoker}<Button size="sm" variant="outline" onclick={backToToken}
@@ -1013,10 +1021,10 @@
 					>{/if}
 			</div>
 			{#if editingInputId}
-				<h3 class="mt-4 text-sm font-semibold">Editing input {editingInputKey}</h3>
+				<h3 class="mt-4 text-sm font-semibold">Editing variable {editingInputKey}</h3>
 				<p class="text-muted-foreground mt-1 text-xs">
-					Key and default changes update this input’s registered tokens. Save resets required
-					reviews.
+					Changing the key or default updates the places linked to this variable. Save changes
+					requires you to review included skills and repositories again.
 				</p>
 			{/if}
 			<div class:mt-4={!editingInputId} class="grid gap-3 md:grid-cols-3">
@@ -1114,8 +1122,8 @@
 									variant="outline"
 									onclick={() => editInput(input)}
 									disabled={busy || candidateUpdating || Boolean(editingInputId)}
-									title={`Edit input ${input.key}`}
-									aria-label={`Edit input ${input.key}`}
+									title={`Edit variable ${input.key}`}
+									aria-label={`Edit variable ${input.key}`}
 									><IconPencil size={16} stroke={1.5} /></Button
 								>
 							{/if}

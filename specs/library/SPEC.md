@@ -130,6 +130,15 @@ Publishing uses one aggregate included-content acknowledgment over the frozen pr
 and installation retain per-item review. Browser installation calls its prepared result “What will be
 installed” and hides plan fingerprints under Technical details; signed plan confirmation is unchanged.
 
+## Decision update — 2026-09-15 optional authoring and recovery wording (Tines/576)
+
+Optional workflow-package authoring names copies, instructions, variables, previews, and the actions a
+person can take; installation recovery tells the person to check the result, choose the original file,
+or retry. Normal views do not expose internal candidate, token-registration, signed-plan, or digest
+matching language. Exact-content validation, document-digest retry identity, signed confirmation,
+receipt recovery, and every publication and installation contract remain unchanged. Recovery IDs and
+error codes remain available only in closed, allowlisted Technical details disclosures.
+
 ## Decision update — Tines/485 declared-input selection feedback
 
 Workflow-package passages render declared occurrences declaratively: a label, default, key or

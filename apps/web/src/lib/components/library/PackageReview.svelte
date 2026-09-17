@@ -233,7 +233,7 @@
 										{#if item.kind === 'prompt' && onEdit}<button
 												class="text-primary text-xs underline"
 												type="button"
-												onclick={() => onEdit?.(item.id, 'body')}>Edit candidate text</button
+												onclick={() => onEdit?.(item.id, 'body')}>Edit text</button
 											>{/if}
 									</div>
 									{#if onCreate}<PackageFieldWorkbench
@@ -289,8 +289,7 @@
 													<code>{file.path}</code>{#if onEdit}<button
 															class="text-primary underline"
 															type="button"
-															onclick={() => onEdit?.(file.id, 'content')}
-															>Edit candidate text</button
+															onclick={() => onEdit?.(file.id, 'content')}>Edit text</button
 														>{/if}
 												</div>
 												{#if onCreate}<PackageFieldWorkbench

@@ -51,7 +51,7 @@ Every runner has: a **name** (unique per user — routing rules and the CLI addr
 
 - `claude_managed`: Anthropic API key (encrypted at rest, write-only thereafter), the managed agent ids to run sessions against — one per tier, provisioned lazily by Tines on a tier's first use since model/system/tools live on the agent object, not the session; each is stored **with the model id it was provisioned for**, and a launch whose tier now resolves differently (built-in default moved, override edited) updates or re-provisions the agent before use, so tiers never silently freeze. These agent objects are deliberately minimal — default toolset, no directive system prompt; all direction lives in the per-session launch prompt, keeping the context spec's one-place-for-directives rule intact — and the lazily provisioned **managed environment id** (cloud, unrestricted egress) sessions run in.
 - `gemini_managed`: Gemini API key (encrypted, write-only), agent name (default the current Antigravity preview id) — the model is passed per interaction in `agent_config`, so tiers need no extra provisioning.
-- `local`: the **harness** (`claude_code` | `codex` | `custom` with a command template using `{prompt_file}`, `{workspace}`, and `{model}` placeholders), the device's display info (hostname, platform — reported by the daemon), and a hashed **runner token** used for all daemon calls.
+- `local`: the **harness** (`claude_code` | `codex` | `custom` with a command template using `{prompt_file}`, `{workspace}`, `{model}`, and `{effort}` placeholders), the device's display info (hostname, platform — reported by the daemon), and a hashed **runner token** used for all daemon calls.
 
 **Local liveness.** The daemon polls (see Protocol) and each poll bumps `last_seen_at`. A local runner is **online** when `last_seen_at` is within 2 minutes; the supervisor never assigns work to an offline runner. A local runner offline for more than 5 minutes has its `running` runs **failed by the sweep** (error `runner offline`, run keys revoked) — a crashed daemon must not hold claims for the full `max_run_minutes`; an orphaned harness process may briefly outlive this, but its key is already dead. Those ends are judged **interrupted** rather than struck (see Judging the end): the issue never had its attempt, so charging it for one would blame the work for the pipe. Managed runners are always considered online (a failing provider surfaces as launch errors, handled below).
 
@@ -72,6 +72,8 @@ Routing should say how *hard* to think without naming vendor model ids that go s
 The tier names are a closed set; adding a tier later is a code change, not user config — the point is a stable, small vocabulary that routing rules can rely on.
 
 > **Codex default decision (2026-09-14):** local Codex resolves `cheapest` to `gpt-5.6-luna`, `balanced` to `gpt-5.6-sol`, and `smartest` to `gpt-6-astra`. The former `gpt-5-codex` default is a known predecessor of each new built-in, so an exact override to it is marked stale but remains frozen until edited; the three new defaults are not predecessors of one another.
+
+> **Custom-template effort decision (2026-09-16):** `{effort}` forwards the assignment's resolved effort through the existing shell-quoted template expansion and becomes `''` when absent, matching `{model}`. This adds no custom-harness effort capability or routing support; existing fail-closed effort enforcement remains unchanged.
 
 ### What agents may take on
 

@@ -24,6 +24,8 @@ let scheduleName: string;
 const literal = 'The ordinary prose marker stays exactly unchanged.';
 const markdownTail = 'The final Markdown passage is visible only after expansion.';
 const imageUrl = 'https://example.invalid/auto-fetch.png';
+const IMPLEMENTATION_JARGON =
+	/candidate-only|in this candidate only|candidate rebuilt|edit candidate text|input declaration|registered tokens|save candidate text|prepared plan|signed plan identity|a different digest is refused/i;
 const longMarkdown = `# Long guidance
 
 ![remote pixel](${imageUrl})
@@ -48,6 +50,11 @@ async function openExport(page: Page) {
 	await expect(page.getByRole('heading', { name: 'Workflow graph and gates' })).toBeVisible();
 	await page.getByText('Add automation (optional)', { exact: true }).click();
 	await page.getByText('Customize instructions and variables (optional)', { exact: true }).click();
+}
+
+async function expectPlainLanguage(page: Page) {
+	const text = (await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
+	expect(text).not.toMatch(IMPLEMENTATION_JARGON);
 }
 
 async function rebuildCandidate(page: Page) {
@@ -253,11 +260,14 @@ for (const { viewport, theme } of [
 		await expect(page.locator('html')).toHaveClass(
 			theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
 		);
+		await expect(page.getByRole('button', { name: 'Edit candidate text' })).toHaveCount(0);
 
 		await page.getByLabel('Key').fill('project_name');
 		await page.getByLabel('Type').selectOption('project');
 		await page.getByLabel('Default').fill('customer-portal');
 		await page.getByRole('button', { name: 'Add variable' }).click();
+		await expect(page.getByText('Variable added to this copy.').first()).toBeVisible();
+		await expect(page.getByText('Input declaration added to this candidate only.')).toHaveCount(0);
 		await useVariableInline(page, 'instructions — prompt body', 'TARGET', 'project_name');
 
 		await page.getByLabel('Key').fill('review_label');
@@ -270,11 +280,17 @@ for (const { viewport, theme } of [
 		// Preserve a separate unfinished add draft through the correction.
 		await page.getByLabel('Key').fill('pending_input');
 		await page.getByLabel('Default').fill('pending-value');
-		await page.getByRole('button', { name: 'Edit input review_label' }).click();
+		await page.getByRole('button', { name: 'Edit variable review_label' }).click();
 		await expect(page.getByLabel('Key')).toBeFocused();
-		await expect(page.getByRole('heading', { name: 'Editing input review_label' })).toBeVisible();
+		await expect(
+			page.getByRole('heading', { name: 'Editing variable review_label' })
+		).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Apply automation' })).toBeDisabled();
-		await expect(page.getByRole('button', { name: 'Edit input project_name' })).toBeDisabled();
+		await expect(page.getByRole('button', { name: 'Edit variable project_name' })).toBeDisabled();
+		await expect(page.getByRole('button', { name: 'Apply automation' })).toHaveAttribute(
+			'title',
+			'Save or cancel the variable edit before applying automation.'
+		);
 		await page.getByLabel('Key').fill('approval_label');
 		await page.getByLabel('Type').selectOption('text');
 		await page.getByRole('textbox', { name: 'Label', exact: true }).fill('Approval label');
@@ -285,13 +301,12 @@ for (const { viewport, theme } of [
 		await page.getByRole('checkbox', { name: 'Required', exact: true }).check();
 		await page.getByRole('button', { name: 'Save changes' }).click();
 
-		await expect(page.getByRole('button', { name: 'Edit input approval_label' })).toBeFocused();
+		await expect(page.getByRole('button', { name: 'Edit variable approval_label' })).toBeFocused();
 		await expect(page.getByLabel('Key')).toHaveValue('pending_input');
 		await expect(page.getByLabel('Default')).toHaveValue('pending-value');
 		await expect(declaredInput(page, 'approval_label')).toHaveAttribute('aria-pressed', 'true');
-		await expect(
-			page.getByText('Input declaration updated in this candidate only.').first()
-		).toBeVisible();
+		await expect(page.getByText('Variable updated in this copy.').first()).toBeVisible();
+		await expectPlainLanguage(page);
 		await expect(page.getByRole('button', { name: 'Download file' })).toBeDisabled();
 		for (const checkbox of await page
 			.getByRole('checkbox', { name: /I reviewed (every file|this required repository)/ })
@@ -302,7 +317,7 @@ for (const { viewport, theme } of [
 		await expect(projectChip.locator('span').first()).toHaveText('customer-portal');
 		await expect(projectChip.getByRole('button', { name: 'Edit project_name' })).toBeVisible();
 
-		const editButton = page.getByRole('button', { name: 'Edit input approval_label' });
+		const editButton = page.getByRole('button', { name: 'Edit variable approval_label' });
 		await expect(editButton.locator('svg')).toBeVisible();
 		await expect(editButton).toHaveText('');
 		const editBox = await editButton.boundingBox();
@@ -404,7 +419,9 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	await page.getByRole('checkbox', { name: new RegExp(scheduleName) }).check();
 	await page.getByRole('button', { name: 'Apply automation' }).click();
 	await expect(page.getByRole('button', { name: /destination_project · project/ })).toBeVisible();
-	await expect(page.getByRole('button', { name: 'Edit input destination_project' })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Edit variable destination_project' })).toHaveCount(
+		0
+	);
 
 	await page.getByLabel('Key').fill('first_input');
 	await page.getByLabel('Default').fill('before');
@@ -427,17 +444,17 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 
 	await page.getByLabel('Key').fill('pending_input');
 	await page.getByLabel('Default').fill('pending');
-	await page.getByRole('button', { name: 'Edit input first_input' }).click();
+	await page.getByRole('button', { name: 'Edit variable first_input' }).click();
 	await page.getByLabel('Key').fill('second_input');
 	await page.getByRole('button', { name: 'Save changes' }).click();
-	await expect(page.getByRole('alert')).toHaveText('Input key “second_input” already exists.');
+	await expect(page.getByRole('alert')).toHaveText('Variable key “second_input” already exists.');
 	for (const checkbox of await page
 		.getByRole('checkbox', { name: /I reviewed (every file|this required repository)/ })
 		.all())
 		await expect(checkbox).toBeChecked();
 	await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 	await expect(selectedDeclaration).toHaveAttribute('aria-pressed', 'true');
-	await expect(page.getByRole('button', { name: 'Edit input first_input' })).toBeFocused();
+	await expect(page.getByRole('button', { name: 'Edit variable first_input' })).toBeFocused();
 	await expect(page.getByLabel('Key')).toHaveValue('pending_input');
 	await expect(page.getByLabel('Default')).toHaveValue('pending');
 
@@ -447,11 +464,11 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	const editor = passage.getByRole('textbox', { name: 'instructions — prompt body' });
 	const unsaved = `${await editor.inputValue()} Unsaved adjacent prose.`;
 	await editor.fill(unsaved);
-	await page.getByRole('button', { name: 'Edit input first_input' }).click();
+	await page.getByRole('button', { name: 'Edit variable first_input' }).click();
 	await page.getByLabel('Default').fill('after');
 	await page.getByRole('button', { name: 'Save changes' }).click();
 	await expect(page.getByRole('alert')).toHaveText(
-		'Save candidate text before updating this input’s registered tokens.'
+		'Save text before changing this variable’s key or default.'
 	);
 	await expect(editor).toHaveValue(unsaved);
 	await expect(page.getByLabel('Default')).toHaveValue('after');
@@ -459,10 +476,32 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	await expect(passage).toContainText('Unsaved adjacent prose.');
 	await page.getByRole('button', { name: 'Save changes' }).click();
 	await expect(selectedDeclaration).toHaveAttribute('aria-pressed', 'true');
-	await expect(page.getByRole('button', { name: 'Edit input first_input' })).toBeFocused();
+	await expect(page.getByRole('button', { name: 'Edit variable first_input' })).toBeFocused();
 	await expect(passage.locator('[data-input-id]').locator('span').first()).toHaveText('after');
 	await expect(passage).toContainText('Unsaved adjacent prose.');
 	await expect(page.getByRole('button', { name: 'Apply automation' })).toBeEnabled();
+	await expectPlainLanguage(page);
+
+	const dismissedDialog = page.waitForEvent('dialog');
+	const dismissedClick = applyAutomation.click();
+	const firstDialog = await dismissedDialog;
+	expect(firstDialog.message()).toBe(
+		'Apply automation using the latest workflow? This replaces the instruction and variable edits made in this copy.'
+	);
+	await firstDialog.dismiss();
+	await dismissedClick;
+	await expect(passage).toContainText('Unsaved adjacent prose.');
+
+	const acceptedDialog = page.waitForEvent('dialog');
+	const acceptedClick = applyAutomation.click();
+	const secondDialog = await acceptedDialog;
+	expect(secondDialog.message()).toBe(firstDialog.message());
+	await secondDialog.accept();
+	await acceptedClick;
+	await expect(
+		page.getByText('This copy now uses the latest workflow and automation choices.').first()
+	).toBeVisible();
+	await expectPlainLanguage(page);
 });
 
 test('authors an exact declared use and downloads the reviewed canonical package', async ({
@@ -585,7 +624,9 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	// leaving the same reviewed plan available to its owner.
 	await signIn(page.context(), ALICE.sessionToken);
 	await page.getByRole('button', { name: 'Install workflow' }).click();
-	await expect(page.getByText('Prepare this package again as the installing actor')).toBeVisible();
+	await expect(page.getByRole('alert')).toContainText(
+		'Installation did not finish. Your reviewed choices are still available. Choose Install workflow to retry.'
+	);
 	await expect(page.locator('[data-package-receipt]')).toHaveCount(0);
 
 	// Change Bob's destination after preparation. The backend must reject the stale
@@ -602,7 +643,9 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		})
 	);
 	await page.getByRole('button', { name: 'Install workflow' }).click();
-	await expect(page.getByText('Prepare and confirm a fresh plan.', { exact: false })).toBeVisible();
+	await expect(
+		page.getByText('Choose Preview installation and review it again.', { exact: false })
+	).toBeVisible();
 	await expect(page.locator('[data-package-receipt]')).toHaveCount(0);
 	await page.getByLabel(`Main · ${name}`).fill(`${name} installed reviewed`);
 	await page.getByRole('button', { name: 'Preview installation' }).click();
@@ -1054,7 +1097,7 @@ for (const theme of ['light', 'dark'] as const) {
 
 			await longInput.focus();
 			await page.keyboard.press('Tab');
-			await expect(page.getByRole('button', { name: `Edit input ${longKey}` })).toBeFocused();
+			await expect(page.getByRole('button', { name: `Edit variable ${longKey}` })).toBeFocused();
 			await page.keyboard.press('Tab');
 			await expect(reviewLabel).toBeFocused();
 			await page.keyboard.press('Space');
@@ -1098,7 +1141,7 @@ test('discards a delayed validation result when candidate review changes', async
 	await page.getByLabel('Default').fill('before');
 	await page.getByRole('button', { name: 'Add variable' }).click();
 	await reviewDependencies(page);
-	await page.getByRole('button', { name: 'Edit input race_key' }).click();
+	await page.getByRole('button', { name: 'Edit variable race_key' }).click();
 	await page.getByLabel('Default').fill('after');
 	let releaseValidation!: () => void;
 	const held = new Promise<void>((resolve) => (releaseValidation = resolve));
@@ -1116,7 +1159,7 @@ test('discards a delayed validation result when candidate review changes', async
 	await expect(page.getByRole('button', { name: 'Check file', exact: true })).toBeDisabled();
 	await page.getByRole('button', { name: 'Save changes' }).click();
 	await expect(
-		page.getByText('Required skill and repository review was reset.').first()
+		page.getByText('Review included skills and repositories again.').first()
 	).toBeVisible();
 	releaseValidation();
 	await finished;
@@ -1125,8 +1168,10 @@ test('discards a delayed validation result when candidate review changes', async
 		() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
 	);
 	expect(downloads).toBe(0);
-	await expect(page.getByText('The older result was discarded.').first()).toBeVisible();
-	await page.getByRole('button', { name: 'Edit input race_key' }).click();
+	await expect(
+		page.getByText('This copy or its review changed while it was being checked.').first()
+	).toBeVisible();
+	await page.getByRole('button', { name: 'Edit variable race_key' }).click();
 	await expect(page.getByLabel('Default')).toHaveValue('after');
 });
 
