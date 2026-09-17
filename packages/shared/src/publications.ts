@@ -11,13 +11,30 @@ export interface PublicationMetadata {
 	license_year: number;
 }
 
-export type PublicationSource =
+export type PublicationSourceOptions = Omit<ExportWorkflowPackageOptions, 'authoring'>;
+
+export interface OwnedWorkflowPublicationDraft {
+	version: 1;
+	baseline: { document_digest: string; exported_at: number };
+	document_json: string;
+}
+
+export type OwnedWorkflowPublicationSource =
 	| {
 			kind: 'owned_workflow';
 			workflow_id: string;
 			options: ExportWorkflowPackageOptions;
+			draft?: never;
 	  }
-	| { kind: 'file'; document_json: string };
+	| {
+			kind: 'owned_workflow';
+			workflow_id: string;
+			options: PublicationSourceOptions;
+			draft: OwnedWorkflowPublicationDraft;
+	  };
+
+export type PublicationSource =
+	OwnedWorkflowPublicationSource | { kind: 'file'; document_json: string };
 
 export interface PublicationDiagnostic {
 	path: string;

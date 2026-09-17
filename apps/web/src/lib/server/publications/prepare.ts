@@ -1,5 +1,7 @@
 import {
 	canonicalizeLibraryValue,
+	diagnosticOf,
+	parseLibraryV3Document,
 	parsePublicWorkflowDocument,
 	publicationReviewDigest,
 	validatePublicationMetadata,
@@ -15,7 +17,9 @@ import { newId, type Database } from '$lib/server/db';
 import { sha256Hex } from '$lib/server/crypto';
 import { ApiFail, runAtomic, type ActorContext } from '../api/core';
 import { packageActorKey } from '../library/token';
+import { validatePortableLibrary } from '../library/validate';
 import { publicationConfig } from './config';
+import { deriveOwnedPublicationDraft, PublicationDraftError } from './draft';
 import { buildOwnedPublicationSourceProof } from './source';
 
 const MAX_PRIVATE_VALUE_BYTES = 64 * 1024;
@@ -120,23 +124,76 @@ export async function preparePublication(
 	let selection: unknown;
 	let sourceWorkflowId: string | null = null;
 	if (request.source.kind === 'owned_workflow') {
+		const draft = request.source.draft;
+		if (draft && Object.hasOwn(request.source.options, 'authoring'))
+			throw new ApiFail(
+				422,
+				'invalid_publication_source',
+				'Draft publication options cannot contain authoring'
+			);
 		const built = await buildOwnedPublicationSourceProof(
 			db,
 			actor.userId,
 			request.source.workflow_id,
 			request.source.options,
-			now
+			draft?.baseline.exported_at ?? now
 		);
-		document = built.document;
+		if (draft && built.document.digest !== draft.baseline.document_digest)
+			throw new ApiFail(
+				409,
+				'publication_source_changed',
+				'The source changed; review the latest source before sharing'
+			);
+		if (draft) {
+			if (utf8Length(draft.document_json) > 1024 * 1024)
+				throw new ApiFail(413, 'publication_too_large', 'Publication draft exceeds 1048576 bytes');
+			let submitted: WorkflowPackageDocument;
+			try {
+				const parsedDraft = await parseLibraryV3Document(draft.document_json);
+				if (parsedDraft.profile !== 'workflow') throw new Error('Expected workflow profile');
+				submitted = parsedDraft;
+			} catch (error) {
+				throw new ApiFail(422, 'invalid_publication_draft', 'Publication draft needs repair', {
+					diagnostics: diagnosticOf(error)
+				});
+			}
+			try {
+				document = await deriveOwnedPublicationDraft(built.document, submitted, now);
+			} catch (error) {
+				if (error instanceof PublicationDraftError)
+					throw new ApiFail(422, 'publication_draft_forbidden_change', error.message, {
+						diagnostics: [{ path: error.path, code: 'forbidden_change', message: error.message }]
+					});
+				throw error;
+			}
+			const validation = await validatePortableLibrary(canonicalizeLibraryValue(document));
+			if (!validation.valid)
+				throw new ApiFail(422, 'invalid_publication_draft', 'Publication draft needs repair', {
+					diagnostics: validation.diagnostics
+				});
+		} else document = built.document;
 		documentJson = canonicalizeLibraryValue(document);
 		witnessRaw = built.witnessRaw;
 		witnessFingerprint = built.witnessFingerprint;
-		selection = { kind: 'owned_workflow', options: request.source.options };
+		selection = {
+			kind: 'owned_workflow',
+			options: request.source.options,
+			...(draft ? { draft_version: 1 } : {})
+		};
 		provenance = {
 			kind: 'owned_workflow',
 			workflow_id: request.source.workflow_id,
 			options: request.source.options,
-			exported_at: now
+			exported_at: now,
+			...(draft
+				? {
+						draft_version: 1,
+						baseline: {
+							document_digest: draft.baseline.document_digest,
+							exported_at: draft.baseline.exported_at
+						}
+					}
+				: {})
 		};
 		sourceWorkflowId = request.source.workflow_id;
 	} else if (request.source.kind === 'file') {

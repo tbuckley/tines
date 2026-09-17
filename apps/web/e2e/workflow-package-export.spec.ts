@@ -382,7 +382,7 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 		.getByRole('checkbox', { name: /I reviewed (every file|this required repository)/ })
 		.all())
 		await expect(checkbox).toBeChecked();
-	await page.getByRole('button', { name: 'Cancel' }).click();
+	await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 	await expect(selectedDeclaration).toHaveAttribute('aria-pressed', 'true');
 	await expect(page.getByRole('button', { name: 'Edit input first_input' })).toBeFocused();
 	await expect(page.getByLabel('Key')).toHaveValue('pending_input');
