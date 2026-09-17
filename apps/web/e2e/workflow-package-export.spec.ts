@@ -77,8 +77,28 @@ function declaredInput(page: Page, key: string) {
 	return candidateInputs(page).getByRole('button', { name: new RegExp(`^${key} ·`) });
 }
 
-function inputReplacement(page: Page) {
-	return candidateInputs(page).getByTestId('input-replacement');
+function passageSection(page: Page, fieldLabel: string) {
+	return page.locator(`section[aria-label="${fieldLabel}"]`);
+}
+
+/** Select `phrase` in the passage editor beside `fieldLabel`, then bind it to the declared `key`. */
+async function useVariableInline(page: Page, fieldLabel: string, phrase: string, key: string) {
+	const passage = passageSection(page, fieldLabel);
+	if ((await passage.getByRole('textbox', { name: fieldLabel }).count()) === 0)
+		await passage.getByRole('button', { name: `Edit ${fieldLabel}`, exact: true }).click();
+	const editor = passage.getByRole('textbox', { name: fieldLabel });
+	await editor.evaluate((node: HTMLTextAreaElement, needle: string) => {
+		const start = node.value.indexOf(needle);
+		node.focus();
+		node.setSelectionRange(start, start + needle.length, 'forward');
+		node.dispatchEvent(new Event('select', { bubbles: true }));
+	}, phrase);
+	await passage.getByRole('button', { name: 'Make variable' }).click();
+	const choice = passage.locator('select:has(option[value="new"])');
+	const value = await choice.locator('option', { hasText: ` · ${key} · ` }).getAttribute('value');
+	await choice.selectOption(value!);
+	await passage.getByRole('button', { name: 'Save', exact: true }).click();
+	return passage;
 }
 
 async function reviewDependencies(page: Page) {
@@ -238,16 +258,7 @@ for (const { viewport, theme } of [
 		await page.getByLabel('Type').selectOption('project');
 		await page.getByLabel('Default').fill('customer-portal');
 		await page.getByRole('button', { name: 'Add variable' }).click();
-		await page
-			.getByLabel('Edit instructions')
-			.selectOption({ label: 'instructions — prompt body' });
-		const editor = page.locator('textarea');
-		await editor.evaluate((node: HTMLTextAreaElement) => {
-			const start = node.value.indexOf('TARGET');
-			node.focus();
-			node.setSelectionRange(start, start + 'TARGET'.length);
-		});
-		await page.getByRole('button', { name: 'Use selected variable here' }).click();
+		await useVariableInline(page, 'instructions — prompt body', 'TARGET', 'project_name');
 
 		await page.getByLabel('Key').fill('review_label');
 		await page.getByLabel('Type').selectOption('label');
@@ -397,14 +408,12 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	await page.getByLabel('Key').fill('first_input');
 	await page.getByLabel('Default').fill('before');
 	await page.getByRole('button', { name: 'Add variable' }).click();
-	await page.getByLabel('Edit instructions').selectOption({ label: 'instructions — prompt body' });
-	const editor = page.locator('textarea');
-	await editor.evaluate((node: HTMLTextAreaElement) => {
-		const start = node.value.indexOf('TARGET');
-		node.focus();
-		node.setSelectionRange(start, start + 'TARGET'.length);
-	});
-	await page.getByRole('button', { name: 'Use selected variable here' }).click();
+	const passage = await useVariableInline(
+		page,
+		'instructions — prompt body',
+		'TARGET',
+		'first_input'
+	);
 	await page.getByLabel('Key').fill('second_input');
 	await page.getByLabel('Default').fill('second');
 	await page.getByRole('button', { name: 'Add variable' }).click();
@@ -431,6 +440,10 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	await expect(page.getByLabel('Key')).toHaveValue('pending_input');
 	await expect(page.getByLabel('Default')).toHaveValue('pending');
 
+	await passage
+		.getByRole('button', { name: 'Edit instructions — prompt body', exact: true })
+		.click();
+	const editor = passage.getByRole('textbox', { name: 'instructions — prompt body' });
 	const unsaved = `${await editor.inputValue()} Unsaved adjacent prose.`;
 	await editor.fill(unsaved);
 	await page.getByRole('button', { name: 'Edit input first_input' }).click();
@@ -441,14 +454,13 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	);
 	await expect(editor).toHaveValue(unsaved);
 	await expect(page.getByLabel('Default')).toHaveValue('after');
-	await page.getByRole('button', { name: 'Save candidate text' }).click();
-	await expect(
-		page.getByText('Candidate text updated without changing the private source.').first()
-	).toBeVisible();
+	await passage.getByRole('button', { name: 'Save text', exact: true }).click();
+	await expect(passage).toContainText('Unsaved adjacent prose.');
 	await page.getByRole('button', { name: 'Save changes' }).click();
 	await expect(selectedDeclaration).toHaveAttribute('aria-pressed', 'true');
 	await expect(page.getByRole('button', { name: 'Edit input first_input' })).toBeFocused();
-	await expect(editor).toHaveValue(/\{\{first_input:after\}\}.*Unsaved adjacent prose\./s);
+	await expect(passage.locator('button[data-input-id]')).toHaveText('after');
+	await expect(passage).toContainText('Unsaved adjacent prose.');
 	await expect(page.getByRole('button', { name: 'Apply automation' })).toBeEnabled();
 });
 
@@ -507,40 +519,23 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await expect(targetWorkflow).toHaveAttribute('aria-pressed', 'true');
 	await expect(targetName).toHaveAttribute('aria-pressed', 'false');
 	await expect(reviewedCheckbox).toBeChecked();
-	await page.getByLabel('Edit instructions').selectOption({ label: 'instructions — prompt body' });
-	const editor = page.locator('textarea');
-	await editor.focus();
-	await expect(inputReplacement(page)).toContainText('Using target_workflow');
-	await targetName.click();
-	await expect(inputReplacement(page)).toContainText('Using target_name');
-	await editor.evaluate((node: HTMLTextAreaElement) => {
-		const start = node.value.indexOf('TARGET');
-		node.focus();
-		node.setSelectionRange(start, start + 'TARGET'.length);
-	});
-	await page.getByRole('button', { name: 'Use selected variable here' }).click();
-	const token = page.getByRole('button', {
-		name: /Show declaration for \{\{target_name:TARGET\}\}/
-	});
+	const passage = await useVariableInline(
+		page,
+		'instructions — prompt body',
+		'TARGET',
+		'target_name'
+	);
+	const token = passage.locator('button[data-input-id]');
 	await expect(token).toBeVisible();
+	await expect(token).toHaveAccessibleName(/target_name: TARGET · 1 use\. Edit variable/);
 	// The escaped literal renders as ordinary text: exactly one substitutable use.
 	await expect(token).toHaveCount(1);
-	await expect(page.getByText('Escaped literal {{target_name:TARGET}} stays.')).toBeVisible();
-	await targetWorkflow.click();
-	await expect(inputReplacement(page)).toContainText('Using target_workflow');
+	await expect(passage.getByText('Escaped literal {{target_name:TARGET}} stays.')).toBeVisible();
 	await token.click();
-	await expect(targetName).toHaveAttribute('aria-pressed', 'true');
-	await expect(targetWorkflow).toHaveAttribute('aria-pressed', 'false');
-	await expect(inputReplacement(page)).toContainText('Using target_name');
-	await expect(page.getByRole('button', { name: 'Back to passage' })).toBeVisible();
-	await page.keyboard.press('Escape');
-	await expect(token).toBeFocused();
-	await reviewDependencies(page);
-	await page.getByRole('button', { name: 'Save candidate text' }).click();
+	await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toBeVisible();
+	await passage.getByRole('button', { name: 'Cancel', exact: true }).click();
+	await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Download file' })).toBeDisabled();
-	await expect(
-		page.getByText('Required skill and repository review was reset.').first()
-	).toBeVisible();
 	await reviewDependencies(page);
 	const downloadPromise = page.waitForEvent('download');
 	await page.getByRole('button', { name: 'Download file' }).click();
@@ -973,24 +968,20 @@ test('does not restore a stale generated input selection when its ID returns', a
 	await destination.click();
 	await expect(destination).toHaveAttribute('aria-pressed', 'true');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
-	await page.getByLabel('Edit instructions').selectOption({ label: 'instructions — prompt body' });
-	const replace = page.getByRole('button', { name: 'Use selected variable here' });
-	await expect(replace).toBeEnabled();
-	await expect(inputReplacement(page)).toContainText('Using destination_project');
+	// The inventory declares and selects only; passages own every replacement.
+	await expect(page.getByLabel('Edit instructions')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Use selected variable here' })).toHaveCount(0);
+	await expect(candidateInputs(page).locator('select')).toHaveCount(0);
 
 	await schedule.uncheck();
 	await rebuildCandidate(page);
 	await expect(destination).toHaveCount(0);
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
-	await expect(inputReplacement(page)).not.toContainText('Using');
-	await expect(replace).toBeDisabled();
 
 	await schedule.check();
 	await rebuildCandidate(page);
 	await expect(destination).toHaveAttribute('aria-pressed', 'false');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
-	await expect(inputReplacement(page)).not.toContainText('Using');
-	await expect(replace).toBeDisabled();
 });
 
 test('retains a generated input selection across an equivalent rebuild', async ({ page }) => {
@@ -1001,17 +992,12 @@ test('retains a generated input selection across an equivalent rebuild', async (
 	const destination = declaredInput(page, 'destination_project');
 	await expect(destination).toHaveAttribute('aria-pressed', 'false');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
-	await page.getByLabel('Edit instructions').selectOption({ label: 'instructions — prompt body' });
-	await expect(page.getByRole('button', { name: 'Use selected variable here' })).toBeDisabled();
-	await expect(inputReplacement(page)).not.toContainText('Using');
 
 	await destination.click();
 	await expect(destination).toHaveAttribute('aria-pressed', 'true');
-	await expect(inputReplacement(page)).toContainText('Using destination_project');
 	await rebuildCandidate(page);
 	await expect(destination).toHaveAttribute('aria-pressed', 'true');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
-	await expect(inputReplacement(page)).toContainText('Using destination_project');
 });
 
 for (const theme of ['light', 'dark'] as const) {
@@ -1049,12 +1035,6 @@ for (const theme of ['light', 'dark'] as const) {
 			expect(focusShadow).not.toBe('none');
 			await page.keyboard.press('Enter');
 			await expect(longInput).toHaveAttribute('aria-pressed', 'true');
-			await page
-				.getByLabel('Edit instructions')
-				.selectOption({ label: 'instructions — prompt body' });
-			const editor = candidateInputs(page).locator('textarea');
-			await editor.focus();
-			await expect(inputReplacement(page)).toContainText(`Using ${longKey}`);
 			const selectedColors = await longInput.evaluate((element) => {
 				const style = getComputedStyle(element);
 				return { border: style.borderColor, background: style.backgroundColor };
@@ -1077,16 +1057,14 @@ for (const theme of ['light', 'dark'] as const) {
 			await expect(reviewLabel).toBeFocused();
 			await page.keyboard.press('Space');
 			await expect(reviewLabel).toHaveAttribute('aria-pressed', 'true');
-			await editor.focus();
-			await expect(inputReplacement(page)).toContainText('Using review_label');
+			await expect(longInput).toHaveAttribute('aria-pressed', 'false');
 			await page.screenshot({
 				path: testInfo.outputPath(`package-input-second-${theme}-${viewport.width}.png`),
 				fullPage: true
 			});
 
 			await longInput.click();
-			await inputReplacement(page).scrollIntoViewIfNeeded();
-			await expect(inputReplacement(page)).toContainText(`Using ${longKey}`);
+			await expect(longInput).toHaveAttribute('aria-pressed', 'true');
 			const geometry = await page.evaluate(() => {
 				const longCard = document
 					.querySelector<HTMLElement>('section[aria-labelledby="inputs-title"]')!
