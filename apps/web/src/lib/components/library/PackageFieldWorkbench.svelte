@@ -290,11 +290,17 @@
 	}
 </script>
 
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <section
 	id={scope}
 	data-field-key={fieldKey}
 	class="mt-2 min-w-0 rounded-md border p-3"
 	aria-label={label}
+	onkeydown={(event) => {
+		if (event.key !== 'Escape' || !creating) return;
+		event.stopPropagation();
+		void cancelCreate();
+	}}
 >
 	<div class="mb-2 flex flex-wrap items-center justify-between gap-2">
 		<span class="text-muted-foreground text-xs font-medium">{label}</span>
@@ -387,16 +393,10 @@
 	{/if}
 
 	{#if creating}
-		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 		<div
 			class="bg-muted/30 mt-3 rounded-md border p-3"
 			role="group"
 			aria-label={editingInputId ? 'Edit variable' : 'Make variable'}
-			onkeydown={(event) => {
-				if (event.key !== 'Escape') return;
-				event.stopPropagation();
-				void cancelCreate();
-			}}
 		>
 			<p class="text-muted-foreground mb-3 text-xs break-words">
 				{#if editingInputId}Edit this variable beside its passage.{:else}Selected: <q

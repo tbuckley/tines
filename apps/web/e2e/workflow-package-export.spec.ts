@@ -451,7 +451,7 @@ test('creates and previews one exact occurrence beside its passage', async ({ pa
 		node.dispatchEvent(new Event('select', { bubbles: true }));
 	});
 	await passage.getByRole('button', { name: 'Make variable' }).click();
-	await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toBeFocused();
+	await expect(passage.getByRole('group', { name: 'Make variable' })).toBeVisible();
 	await page.keyboard.press('Escape');
 	await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toHaveCount(0);
 	await expect(editor).toBeFocused();

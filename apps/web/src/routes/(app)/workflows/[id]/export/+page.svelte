@@ -535,7 +535,7 @@
 		const tokenChanges =
 			inputToken(current.key, current.default) !== inputToken(normalized.key, normalized.default);
 		if (tokenChanges && !(await guardInlineEdits('updating this variable', inputId))) {
-			inputFormError = 'Save candidate text before updating this input’s registered tokens.';
+			inputFormError = 'Save text before changing this variable’s key or default.';
 			return;
 		}
 		const snapshot = candidate;
