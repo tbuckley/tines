@@ -113,8 +113,18 @@ schedule, and tier preferences are opt-in. Rebuilding from source warns before d
 candidate-only edits. Eligible and selected schedules expose their complete templates, recurrence,
 timezone, workflow and start-state identities, and prior-issue gate before download.
 
-The input editor adds typed declarations and registers an exact token at the selected range of one
-editable candidate field. Use **Edit** to correct any browser-authored declaration in place: its ID,
+Variables are made beside the passage that uses them. Each editable field has an Edit/Preview
+workbench: select a range in Edit (keyboard selection works) and choose **Make variable**, which
+prefills the example/default from the selection, generates the internal key, defaults the type to
+Text and asks only for a friendly name; **Variable** offers every existing declaration for reuse and
+type, required, key and description sit under More options. Save atomically creates or reuses the
+declaration and registers that exact range, then returns focus to the new occurrence, rendered as a
+labelled chip with its use count and an edit action. **Preview values** accepts an ephemeral sample
+per variable and re-renders every occurrence with canonical substitution without touching defaults,
+drafts, downloads or publications. Unsaved passage text or an open variable form blocks rebuild,
+Check file/download and publication Preview until saved or cancelled. The declaration inventory
+below the passages only declares, selects and edits variables; it has no field chooser. Use
+**Edit** to correct any browser-authored declaration in place: its ID,
 ordering, unrelated candidate work, and unfinished add draft are preserved. If its key or default
 changes, only that input's active exact tokens in its registered fields change with it; escaped and
 unregistered text remains untouched. Saving resets required reviews, while Cancel changes nothing.

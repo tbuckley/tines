@@ -88,3 +88,14 @@ Preview, dependency review, consent, stored bytes, and installation. Publish rep
 and retains the transaction-time source witness guard. Draft edits never mutate the private source;
 source changes fail closed and require explicit refresh or rebuild. Legacy owned and file publication
 requests retain their existing interpretation.
+
+## Decision update — 2026-09-16 inline variables beside passages (Tines/554)
+
+Owned-workflow Customize authors variables beside each passage. A field workbench toggles Edit and
+Preview, retains the selection and text across the toggle, and offers Make variable on the selected
+range: the compact form atomically creates or reuses a declaration plus that exact text use, and
+Done/Cancel return focus to the occurrence. Sample values are ephemeral, use the installer's
+canonical substitution, and never enter drafts, downloads, public views or installs. Unsaved
+passage text and open variable forms are bound edits: they invalidate proof and reviews and block
+rebuild, file checks and Preview. The declaration inventory keeps declaration-only creation,
+zero-use variables, selection and editing, and has no global field selector or replacement action.
