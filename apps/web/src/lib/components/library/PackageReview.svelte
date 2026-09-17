@@ -52,7 +52,7 @@
 			direction: 'forward' | 'backward' | 'none';
 			inputId?: string;
 			draft?: InputDraft;
-		}) => Promise<{ inputId: string; useId: string; ordinal: number } | null>;
+		}) => Promise<{ inputId: string; useId: string; ordinal: number } | { error: string } | null>;
 		onSample?: (inputId: string, value: string | undefined) => void;
 		onEditVariable?: (
 			inputId: string,
