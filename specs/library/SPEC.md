@@ -130,6 +130,15 @@ Publishing uses one aggregate included-content acknowledgment over the frozen pr
 and installation retain per-item review. Browser installation calls its prepared result “What will be
 installed” and hides plan fingerprints under Technical details; signed plan confirmation is unchanged.
 
+## Decision update — 2026-09-15 optional authoring and recovery wording (Tines/576)
+
+Optional workflow-package authoring names copies, instructions, variables, previews, and the actions a
+person can take; installation recovery tells the person to check the result, choose the original file,
+or retry. Normal views do not expose internal candidate, token-registration, signed-plan, or digest
+matching language. Exact-content validation, document-digest retry identity, signed confirmation,
+receipt recovery, and every publication and installation contract remain unchanged. Recovery IDs and
+error codes remain available only in closed, allowlisted Technical details disclosures.
+
 ## Decision update — Tines/485 declared-input selection feedback
 
 Workflow-package authoring keeps its existing candidate-local declared-input selection semantics. The active declaration remains visibly marked after focus moves to the candidate editor, every declaration exposes its pressed state, and the replacement action repeats the selected key. Adding a declaration and navigating from a rendered token continue to select it; rebuilding retains a surviving input ID and clears a stale one. This feedback does not change candidate data, package tokens, exact text uses, or downloaded bytes.

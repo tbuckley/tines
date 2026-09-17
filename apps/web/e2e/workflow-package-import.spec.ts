@@ -24,6 +24,13 @@ import { apiClient, body, DESKTOP, gotoHydrated, PHONE, readSettled, signIn } fr
 
 const LONG_CRON =
 	'0 9 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 * *';
+const IMPLEMENTATION_JARGON =
+	/candidate-only|candidate rebuilt|edit candidate text|input declaration|registered tokens|save candidate text|prepared plan|signed plan identity|a different digest is refused/i;
+
+async function expectPlainLanguage(page: Page) {
+	const text = (await page.locator('body').innerText()).replace(/\s+/g, ' ').trim();
+	expect(text).not.toMatch(IMPLEMENTATION_JARGON);
+}
 
 // Check all allocated object/event families, including rows written before a late failure.
 function allocatedRows(plan: PrepareWorkflowPackageResponse) {
@@ -340,6 +347,12 @@ test('reviews, confirms and installs an independent project-free package through
 		'/workflows/import'
 	);
 	await gotoHydrated(page, '/workflows/import');
+	await expect(
+		page.getByText(
+			'Choose a workflow package file to check what it includes. Nothing is installed until you review and confirm.'
+		)
+	).toBeVisible();
+	await expectPlainLanguage(page);
 	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
 	await expect(page.getByRole('heading', { name: 'Destination values' })).toBeVisible();
 	for (const schedule of await page
@@ -560,6 +573,9 @@ test('retries the exact plan after reload and real 404, then recovers a lost com
 	});
 	await page.getByRole('button', { name: 'Install workflow' }).click();
 	await expect(page.getByRole('heading', { name: 'Installation status is unknown' })).toBeVisible();
+	await expect(page.getByRole('alert')).toContainText(
+		'We could not confirm whether installation finished. Choose Check result before retrying.'
+	);
 	await expect(page.getByRole('button', { name: 'Check result' })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Retry installation' })).toBeVisible();
 	const saved = await page.evaluate(() =>
@@ -567,11 +583,34 @@ test('retries the exact plan after reload and real 404, then recovers a lost com
 	);
 	expect(saved).toMatchObject({ planId: expect.any(String), planToken: expect.any(String) });
 	expect(JSON.stringify(saved)).not.toContain(mainName);
+	const errorDetails = page.getByRole('alert').locator('details');
+	await expect(errorDetails).not.toHaveAttribute('open', '');
+	await expect(page.getByText('install_outcome_unknown', { exact: true })).toBeHidden();
+	await expectPlainLanguage(page);
 	await page.reload({ waitUntil: 'networkidle' });
 	await expect(page.getByRole('heading', { name: 'Installation status is unknown' })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Check result' })).toBeVisible();
+	const recoverySection = page
+		.getByRole('heading', { name: 'Installation status is unknown' })
+		.locator('..');
+	const recoveryDetails = recoverySection.locator('details');
+	await expect(recoveryDetails).not.toHaveAttribute('open', '');
+	await expect(page.getByText(saved.planId, { exact: true })).toBeHidden();
+	await expect(page.getByText(saved.planDigest, { exact: true })).toBeHidden();
+	await expect(page.getByText(saved.documentDigest, { exact: true })).toBeHidden();
+	expect(await page.locator('body').textContent()).not.toContain(saved.planToken);
+	await expectPlainLanguage(page);
+	await recoveryDetails.getByText('Technical details', { exact: true }).click();
+	await expect(page.getByText(saved.planId, { exact: true })).toBeVisible();
+	await expect(page.getByText(saved.planDigest, { exact: true })).toBeVisible();
+	await expect(page.getByText(saved.documentDigest, { exact: true })).toBeVisible();
+	expect(await page.locator('body').textContent()).not.toContain(saved.planToken);
+	await recoveryDetails.getByText('Technical details', { exact: true }).click();
 	await page.getByRole('button', { name: 'Check result' }).click();
-	await expect(page.getByText('this is not proof of rollback', { exact: false })).toBeVisible();
+	await expect(page.getByRole('alert')).toContainText(
+		'No result is available yet. Installation may still be running. Choose Check result again, or retry the same installation.'
+	);
+	await expectPlainLanguage(page);
 	await expect(page.getByRole('button', { name: 'Preview installation' })).toHaveCount(0);
 	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
 	await page.getByRole('button', { name: 'Retry installation' }).click();
@@ -619,10 +658,15 @@ test('preserves a committed recovery across wrong, invalid and legacy files', as
 	const retry = page.getByRole('button', { name: 'Retry installation' });
 	await expect(retry).toBeDisabled();
 	const rejectedFiles = [
-		{ file: missingWorkflowPath, message: /This file does not match/ },
+		{
+			file: missingWorkflowPath,
+			message:
+				'This file does not match the installation awaiting recovery. Choose the original workflow package file.'
+		},
 		{
 			file: { name: 'broken.json', mimeType: 'application/json', buffer: Buffer.from('{') },
-			message: /not valid Tines library JSON/
+			message:
+				'Choose the original workflow package file to retry this installation, or choose Check result.'
 		},
 		{
 			file: {
@@ -630,7 +674,8 @@ test('preserves a committed recovery across wrong, invalid and legacy files', as
 				mimeType: 'application/json',
 				buffer: Buffer.from(JSON.stringify({ version: 3, profile: 'workflow' }))
 			},
-			message: /.+/
+			message:
+				'Choose the original workflow package file to retry this installation, or choose Check result.'
 		},
 		{
 			file: {
@@ -638,7 +683,8 @@ test('preserves a committed recovery across wrong, invalid and legacy files', as
 				mimeType: 'application/json',
 				buffer: Buffer.from(JSON.stringify({ version: 2 }))
 			},
-			message: /Choose the original workflow package/
+			message:
+				'Choose the original workflow package file to retry this installation, or choose Check result.'
 		}
 	];
 	for (const [index, rejected] of rejectedFiles.entries()) {
@@ -664,6 +710,7 @@ test('preserves a committed recovery across wrong, invalid and legacy files', as
 		);
 		expect(requests).toHaveLength(1);
 		expect(await savedRecovery()).toBe(saved);
+		await expectPlainLanguage(page);
 	}
 	// Even a rejected retry of the matching file cannot establish the original outcome.
 	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
@@ -679,8 +726,9 @@ test('preserves a committed recovery across wrong, invalid and legacy files', as
 	});
 	await retry.click();
 	await expect(page.getByRole('alert')).toContainText(
-		'original installation result is still unknown'
+		'The retry did not finish. The original installation result is still unknown. Choose Check result before taking further action.'
 	);
+	await expectPlainLanguage(page);
 	expect(requests).toHaveLength(2);
 	expect(requests[1]).toEqual(requests[0]);
 	expect(await savedRecovery()).toBe(saved);
@@ -692,6 +740,43 @@ test('preserves a committed recovery across wrong, invalid and legacy files', as
 	expect(d1(`SELECT id FROM library_install WHERE id=${sqlLiteral(committed!.id)}`)).toEqual([
 		{ id: committed!.id }
 	]);
+});
+
+test('turns a confirmation mismatch into a fresh-preview instruction without leaking server copy', async ({
+	page
+}) => {
+	await gotoHydrated(page, '/workflows/import');
+	await page.getByLabel('Workflow package file').setInputFiles(packagePath);
+	const prepared = page.waitForResponse((response) =>
+		response.url().endsWith('/api/v1/library/prepare')
+	);
+	await page.getByRole('button', { name: 'Preview installation' }).click();
+	const plan = (await (await prepared).json()) as PrepareWorkflowPackageResponse;
+	await approve(page);
+	await page.route('**/api/v1/library/install', (route) =>
+		route.fulfill({
+			status: 409,
+			contentType: 'application/json',
+			body: JSON.stringify({
+				error: {
+					code: 'confirmation_mismatch',
+					message: 'Confirm the exact prepared plan digest',
+					details: null
+				}
+			})
+		})
+	);
+	await page.getByRole('button', { name: 'Install workflow' }).click();
+	const alert = page.getByRole('alert');
+	await expect(alert).toContainText(
+		'The file or confirmation no longer matches the preview. Nothing was created by this rejected attempt. Choose Preview installation and review it again.'
+	);
+	await expect(alert).not.toContainText('prepared plan digest');
+	await expect(alert.locator('details')).not.toHaveAttribute('open', '');
+	await expect(page.getByText('confirmation_mismatch', { exact: true })).toBeHidden();
+	await expect(page.getByRole('button', { name: 'Preview installation' })).toBeVisible();
+	await expectPlainLanguage(page);
+	expect(allocatedRows(plan)).toEqual([]);
 });
 
 test('rejects an expired signed plan and requires fresh preparation and confirmation', async ({
@@ -737,8 +822,10 @@ test('rejects an expired signed plan and requires fresh preparation and confirma
 	const rejected = page.waitForResponse((r) => r.url().endsWith('/api/v1/library/install'));
 	await page.getByRole('button', { name: 'Install workflow' }).click();
 	expect((await rejected).status()).toBe(409);
-	await expect(page.getByRole('alert')).toContainText('expired');
-	await expect(page.getByRole('alert')).toContainText('Prepare and confirm a fresh plan');
+	await expect(page.getByRole('alert')).toContainText(
+		'The preview expired or the destination changed. Nothing was created by this rejected attempt. Choose Preview installation and review it again.'
+	);
+	await expectPlainLanguage(page);
 	expect(allocatedRows(expiredPlan!)).toEqual([]);
 	await expect(page.getByLabel(`Main · ${mainName}`)).toHaveValue(`${mainName} expiry`);
 	await expect(
@@ -785,6 +872,9 @@ test('a late native D1 failure rolls back every allocated row and permits the sa
 		await page.getByRole('button', { name: 'Install workflow' }).click();
 		expect((await failed).status()).toBe(500);
 		await expect(page.getByRole('alert')).toBeFocused();
+		await expect(page.getByRole('alert')).toContainText(
+			'Installation did not finish. Your reviewed choices are still available. Choose Install workflow to retry.'
+		);
 		await expect(page.getByRole('heading', { name: 'Installation status is unknown' })).toHaveCount(
 			0
 		);
