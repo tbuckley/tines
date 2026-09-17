@@ -50,7 +50,7 @@
 			direction: 'forward' | 'backward' | 'none';
 			inputId?: string;
 			draft?: InputDraft;
-		}) => Promise<{ inputId: string; useId: string; ordinal: number } | null>;
+		}) => Promise<{ inputId: string; useId: string; ordinal: number } | { error: string } | null>;
 		onSample?: (inputId: string, value: string | undefined) => void;
 		onEditVariable?: (
 			inputId: string,
@@ -247,6 +247,10 @@
 				: { inputId: choice })
 		});
 		if (!result) return;
+		if ('error' in result) {
+			formError = result.error;
+			return;
+		}
 		creating = false;
 		mode = 'preview';
 		reportState('preview', false, text);

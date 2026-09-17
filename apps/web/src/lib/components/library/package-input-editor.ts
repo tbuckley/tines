@@ -188,7 +188,9 @@ export function replaceSelectionWithVariable(
 
 	const token = inputToken(input.key, input.default);
 	const existingUse = fieldUses.find((use) => use.input_id === input!.id);
-	if (!existingUse && source.includes(token))
+	// Registering a use row would activate any unescaped literal copy of the token
+	// already in this passage; an escaped copy (`\{{key:default}}`) stays literal.
+	if (!existingUse && declaredOccurrences(source, [{ token, inputId: input.id }]).length)
 		throw new Error(
 			'This token already appears here. Choose New variable or escape the literal token.'
 		);

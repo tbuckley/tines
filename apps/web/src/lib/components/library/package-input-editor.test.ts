@@ -189,6 +189,36 @@ describe('passage-local variable helpers', () => {
 		).toThrow('ordinary passage text');
 	});
 
+	it('reuses a declaration beside an escaped literal copy but not beside an active one', () => {
+		const value = document();
+		const token = inputToken('project_name', 'customer-portal');
+		value.workflows[0].description = `Deploy customer-portal; literal \\${token}.`;
+		value.text_uses = [];
+		const result = replaceSelectionWithVariable(value, {
+			ref: { recordId: 'workflow:1', field: 'description' },
+			sourceSnapshot: value.workflows[0].description,
+			start: 7,
+			end: 22,
+			inputId: 'input:author:2'
+		});
+		expect(result.document.workflows[0].description).toBe(`Deploy ${token}; literal \\${token}.`);
+		expect(result.document.text_uses).toHaveLength(1);
+		expect(result.occurrence.ordinal).toBe(0);
+
+		const active = document();
+		active.workflows[0].description = `Deploy customer-portal; literal ${token}.`;
+		active.text_uses = [];
+		expect(() =>
+			replaceSelectionWithVariable(active, {
+				ref: { recordId: 'workflow:1', field: 'description' },
+				sourceSnapshot: active.workflows[0].description,
+				start: 7,
+				end: 22,
+				inputId: 'input:author:2'
+			})
+		).toThrow('already appears');
+	});
+
 	it('rejects an explicit empty range', () => {
 		const value = document();
 		expect(() =>

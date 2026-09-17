@@ -598,7 +598,7 @@
 			});
 		} catch (error) {
 			status = message(error);
-			return null;
+			return { error: message(error) };
 		}
 		resetReview('Saving the new variable use.');
 		candidateUpdating = true;
