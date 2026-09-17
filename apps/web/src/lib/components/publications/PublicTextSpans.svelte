@@ -79,6 +79,13 @@
 			class:font-mono={span.code}
 			title={`Open external destination: ${span.href}`}
 			onclick={(event) => onlink(span.href!, event.currentTarget)}>{span.text}</button
+		>{:else if span.image}<span
+			class="markdown-inert-image"
+			role="img"
+			aria-label={`Image not loaded: ${span.image.label}`}
+			class:font-bold={span.strong}
+			class:italic={span.emphasis}
+			class:line-through={span.deleted}>{span.text}</span
 		>{:else}<span
 			class:font-bold={span.strong}
 			class:italic={span.emphasis}

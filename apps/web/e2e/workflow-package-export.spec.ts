@@ -344,7 +344,9 @@ for (const { viewport, theme } of [
 test('creates and previews one exact occurrence beside its passage', async ({ page }) => {
 	await openExport(page);
 	const passage = page.locator('section[aria-label="instructions — prompt body"]');
-	await passage.getByRole('button', { name: 'Edit', exact: true }).click();
+	await passage
+		.getByRole('button', { name: 'Edit instructions — prompt body', exact: true })
+		.click();
 	const editor = passage.getByRole('textbox', { name: 'instructions — prompt body' });
 	await editor.fill('Deploy customer-portal, but keep customer-portal private.');
 	await editor.evaluate((node: HTMLTextAreaElement) => {

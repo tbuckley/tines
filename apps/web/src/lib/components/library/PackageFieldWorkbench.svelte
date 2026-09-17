@@ -285,12 +285,20 @@
 		<div class="flex gap-1" aria-label={`${label} mode`}>
 			<Button
 				data-inline-edit
+				class="min-h-11"
 				size="sm"
 				variant={mode === 'edit' ? 'secondary' : 'ghost'}
+				aria-label={`Edit ${label}`}
+				aria-pressed={mode === 'edit'}
 				onclick={edit}><IconPencil size={15} /> Edit</Button
 			>
-			<Button size="sm" variant={mode === 'preview' ? 'secondary' : 'ghost'} onclick={preview}
-				><IconEye size={15} /> Preview</Button
+			<Button
+				class="min-h-11"
+				size="sm"
+				variant={mode === 'preview' ? 'secondary' : 'ghost'}
+				aria-label={`Preview ${label}`}
+				aria-pressed={mode === 'preview'}
+				onclick={preview}><IconEye size={15} /> Preview</Button
 			>
 		</div>
 	</div>

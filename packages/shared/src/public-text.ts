@@ -10,6 +10,8 @@ export interface PublicTextSpan {
 	code?: boolean;
 	href?: string;
 	token?: { use_id: string; input_id: string; occurrence_id: string };
+	/** Set on the labelled inert-image placeholder so readers can expose it as an image. */
+	image?: { label: string };
 }
 
 export interface PublicTextUse {
@@ -146,11 +148,11 @@ function spans(
 			const activeIndex = state.active.at(-1);
 			const activeOccurrence =
 				activeIndex === undefined ? undefined : marked?.occurrences[activeIndex];
+			const imageLabel = `${alt ? `${alt} — ` : ''}${destination ?? ''}`;
 			result.push({
-				text: labelImages
-					? `Image (not loaded): ${alt ? `${alt} — ` : ''}${destination ?? ''}`
-					: '[image suppressed]',
+				text: labelImages ? `Image (not loaded): ${imageLabel}` : '[image suppressed]',
 				...style,
+				...(labelImages ? { image: { label: imageLabel } } : {}),
 				...(activeOccurrence ? { token: occurrenceToken(activeOccurrence) } : {})
 			});
 			if (activeOccurrence) state.emitted.add(activeIndex!);
@@ -231,7 +233,9 @@ function markedSpans(
 		const index = state.active.at(-1);
 		const occurrence = index === undefined ? undefined : marked.occurrences[index];
 		if (occurrence) state.emitted.add(index!);
-		return [{ text: value, ...style, ...(occurrence ? { token: occurrenceToken(occurrence) } : {}) }];
+		return [
+			{ text: value, ...style, ...(occurrence ? { token: occurrenceToken(occurrence) } : {}) }
+		];
 	}
 	const result: PublicTextSpan[] = [];
 	let at = 0;

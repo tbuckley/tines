@@ -147,6 +147,10 @@ describe('public text rendering model', () => {
 			publicTextModel('![diagram](https://example.test/diagram.png)', { labelImages: true })
 		);
 		expect(serialized).toContain('Image (not loaded): diagram — https://example.test/diagram.png');
+		expect(serialized).toContain('"image":{"label":"diagram — https://example.test/diagram.png"}');
+		expect(JSON.stringify(publicTextModel('![d](https://example.test/d.png)'))).not.toContain(
+			'"image":'
+		);
 	});
 
 	it('truncates at joined rendered-word boundaries across adjacent styles', () => {
