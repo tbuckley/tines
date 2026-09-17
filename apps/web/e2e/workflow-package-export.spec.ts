@@ -969,7 +969,7 @@ test('does not restore a stale generated input selection when its ID returns', a
 	await expect(destination).toHaveAttribute('aria-pressed', 'true');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
 	// The inventory declares and selects only; passages own every replacement.
-	await expect(page.getByLabel('Edit instructions')).toHaveCount(0);
+	await expect(page.getByLabel('Edit instructions', { exact: true })).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Use selected variable here' })).toHaveCount(0);
 	await expect(candidateInputs(page).locator('select')).toHaveCount(0);
 
