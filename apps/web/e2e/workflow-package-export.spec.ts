@@ -425,6 +425,8 @@ test('creates and previews one exact occurrence beside its passage', async ({ pa
 	await passage.getByLabel('Example/default').fill('billing-service');
 	await passage.getByRole('button', { name: 'Done' }).click();
 	await expect(chip.getByRole('button', { name: 'Edit Service name' })).toBeFocused();
+	await expect(page.getByText('Variable updated in this copy.').first()).toBeVisible();
+	await expectPlainLanguage(page);
 	await expect(chip).toContainText('Service name · 1 use');
 	await expect(chipValue).toHaveText('billing-service');
 

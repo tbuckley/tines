@@ -659,7 +659,7 @@
 			dirty = true;
 			changedInputIds = new Set([inputId]);
 			changedOccurrenceIds = new Set();
-			resetReview('Input declaration updated in this candidate only.');
+			resetReview('Variable updated in this copy.');
 			return true;
 		} catch (error) {
 			status = message(error);
