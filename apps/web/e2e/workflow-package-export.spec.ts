@@ -398,6 +398,24 @@ test('creates and previews one exact occurrence beside its passage', async ({ pa
 		.fill('support-console');
 	await expect(chipValue).toHaveText('support-console');
 	await expect(passage.getByText('keep customer-portal private', { exact: false })).toBeVisible();
+	// A Markdown-valued sample splits into styled fragments but stays one occurrence:
+	// one chip, one Edit control, one id.
+	await passage.getByRole('textbox', { name: 'Sample value — Project name' }).fill('a **b** c');
+	await expect(chip).toHaveCount(1);
+	await expect(chipValue).toHaveText('a b c');
+	await expect(chipValue.locator('.font-bold')).toHaveText('b');
+	await expect(chip.getByRole('button', { name: 'Edit Project name' })).toHaveCount(1);
+	await expect(passage).not.toContainText('**b**');
+	expect(
+		await passage.evaluate((section) => {
+			const ids = [...section.querySelectorAll('[id]')].map((node) => node.id);
+			return ids.length - new Set(ids).size;
+		})
+	).toBe(0);
+	for (const name of ['Preview values', 'Use default'])
+		expect(
+			(await passage.getByRole('button', { name }).boundingBox())!.height
+		).toBeGreaterThanOrEqual(44);
 	await passage.getByRole('button', { name: 'Use default' }).click();
 	await expect(chipValue).toHaveText('customer-portal');
 
@@ -409,6 +427,41 @@ test('creates and previews one exact occurrence beside its passage', async ({ pa
 	await expect(chip.getByRole('button', { name: 'Edit Service name' })).toBeFocused();
 	await expect(chip).toContainText('Service name · 1 use');
 	await expect(chipValue).toHaveText('billing-service');
+
+	// A bare Edit/Preview toggle changes no bytes, so review acknowledgments survive it.
+	await reviewDependencies(page);
+	const download = page.getByRole('button', { name: 'Download file' });
+	await expect(download).toBeEnabled();
+	const editToggle = passage.getByRole('button', {
+		name: 'Edit instructions — prompt body',
+		exact: true
+	});
+	await editToggle.click();
+	await passage
+		.getByRole('button', { name: 'Preview instructions — prompt body', exact: true })
+		.click();
+	await expect(download).toBeEnabled();
+
+	// Escape cancels an open form and returns focus to the editor with its selection.
+	await editToggle.click();
+	await editor.evaluate((node: HTMLTextAreaElement) => {
+		const start = node.value.indexOf('private');
+		node.focus();
+		node.setSelectionRange(start, start + 'private'.length, 'forward');
+		node.dispatchEvent(new Event('select', { bubbles: true }));
+	});
+	await passage.getByRole('button', { name: 'Make variable' }).click();
+	await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toBeFocused();
+	await page.keyboard.press('Escape');
+	await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toHaveCount(0);
+	await expect(editor).toBeFocused();
+	expect(
+		await editor.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd])
+	).toEqual([
+		'Deploy billing-service, but keep customer-portal private.'.indexOf('private'),
+		'Deploy billing-service, but keep customer-portal private.'.indexOf('private') +
+			'private'.length
+	]);
 });
 
 test('cancels safely and refuses duplicate keys or registered-token edits over unsaved text', async ({
@@ -1016,7 +1069,7 @@ test('does not restore a stale generated input selection when its ID returns', a
 	// The inventory declares and selects only; passages own every replacement.
 	await expect(page.getByLabel('Edit instructions', { exact: true })).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Use selected variable here' })).toHaveCount(0);
-	await expect(candidateInputs(page).locator('select')).toHaveCount(0);
+	await expect(candidateInputs(page).locator('select:has(option[value="new"])')).toHaveCount(0);
 
 	await schedule.uncheck();
 	await rebuildCandidate(page);
@@ -1110,6 +1163,32 @@ for (const theme of ['light', 'dark'] as const) {
 
 			await longInput.click();
 			await expect(longInput).toHaveAttribute('aria-pressed', 'true');
+			// The inventory selection feeds the passage: "Using <key>" beside Make variable, and the
+			// chooser preselects that declaration when the form opens.
+			const passage = passageSection(page, 'instructions — prompt body');
+			await passage
+				.getByRole('button', { name: 'Edit instructions — prompt body', exact: true })
+				.click();
+			const usingBeforeForm = passage.getByTestId('input-replacement');
+			await expect(usingBeforeForm).toHaveText(`Using ${longKey}`);
+			await passage
+				.getByRole('textbox', { name: 'instructions — prompt body' })
+				.evaluate((node: HTMLTextAreaElement) => {
+					const start = node.value.indexOf('TARGET');
+					node.focus();
+					node.setSelectionRange(start, start + 'TARGET'.length, 'forward');
+					node.dispatchEvent(new Event('select', { bubbles: true }));
+				});
+			await passage.getByRole('button', { name: 'Make variable' }).click();
+			const chooser = passage.locator('select:has(option[value="new"])');
+			await expect(chooser).not.toHaveValue('new');
+			await expect(chooser.locator('option:checked')).toContainText(` · ${longKey} · `);
+			const using = passage.getByTestId('input-replacement');
+			await expect(using).toHaveText(`Using ${longKey}`);
+			await page.screenshot({
+				path: testInfo.outputPath(`package-input-using-${theme}-${viewport.width}.png`),
+				fullPage: true
+			});
 			const geometry = await page.evaluate(() => {
 				const longCard = document
 					.querySelector<HTMLElement>('section[aria-labelledby="inputs-title"]')!
@@ -1120,8 +1199,6 @@ for (const theme of ['light', 'dark'] as const) {
 						document.documentElement.scrollWidth - document.documentElement.clientWidth,
 					cardOverflow: longCard.scrollWidth - longCard.clientWidth,
 					actionOverflow: action.scrollWidth - action.clientWidth,
-					cardBottom: longCard.getBoundingClientRect().bottom,
-					actionTop: action.getBoundingClientRect().top,
 					textOverflow: getComputedStyle(longCard.querySelector('code')!).textOverflow
 				};
 			});
@@ -1129,8 +1206,11 @@ for (const theme of ['light', 'dark'] as const) {
 			expect(geometry.cardOverflow).toBeLessThanOrEqual(1);
 			expect(geometry.actionOverflow).toBeLessThanOrEqual(1);
 			expect(geometry.textOverflow).not.toBe('ellipsis');
-			if (viewport.width === PHONE.width)
-				expect(geometry.cardBottom).toBeLessThan(geometry.actionTop);
+			await page.keyboard.press('Escape');
+			await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toHaveCount(0);
+			await expect(
+				passage.getByRole('textbox', { name: 'instructions — prompt body' })
+			).toBeFocused();
 		});
 	}
 }

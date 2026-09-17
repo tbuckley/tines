@@ -76,14 +76,16 @@
 			</p>
 		{:else if block.kind === 'code'}
 			<pre
-				class="bg-muted max-w-full overflow-x-auto rounded p-3 font-mono text-xs whitespace-pre-wrap"><PublicTextSpans
-					spans={block.spans}
-					{linkMode}
-					{occurrenceScope}
-					onlink={confirmDestination}
-					ontoken={onToken}
-					{tokenDetails}
-				/></pre>
+				class="bg-muted max-w-full overflow-x-auto rounded p-3 font-mono text-xs whitespace-pre-wrap"><code
+					><PublicTextSpans
+						spans={block.spans}
+						{linkMode}
+						{occurrenceScope}
+						onlink={confirmDestination}
+						ontoken={onToken}
+						{tokenDetails}
+					/></code
+				></pre>
 		{:else if block.kind === 'list_item'}
 			<div class="flex gap-2" style:padding-left="{block.depth * 1.25}rem">
 				<span aria-hidden="true">{block.ordered ? `${block.index}.` : '•'}</span><span

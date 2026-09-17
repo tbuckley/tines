@@ -20,6 +20,7 @@
 		tokens = [],
 		inputs,
 		samples = {},
+		selectedInputId = '',
 		onToken,
 		onSaveText,
 		onCreate,
@@ -38,6 +39,7 @@
 		tokens?: PackageTextToken[];
 		inputs: PackageInput[];
 		samples?: Record<string, string>;
+		selectedInputId?: string;
 		onToken?: (id: string, trigger: HTMLElement) => void;
 		onSaveText?: (recordId: string, field: TextUseField, value: string) => Promise<boolean>;
 		onCreate?: (request: {
@@ -58,7 +60,10 @@
 			recordId: string,
 			field: TextUseField
 		) => Promise<boolean>;
-		onStateChange?: (key: string, state: { active: boolean; inputIds: string[] }) => void;
+		onStateChange?: (
+			key: string,
+			state: { active: boolean; bound: boolean; inputIds: string[] }
+		) => void;
 		changedOccurrenceIds?: Set<string>;
 		updateCount?: number;
 		forceExpanded?: boolean;
@@ -96,12 +101,17 @@
 			.filter((input): input is PackageInput => Boolean(input))
 	);
 	const fieldKey = $derived(`${recordId}:${field}`);
+	const selectedInput = $derived(inputs.find((input) => input.id === selectedInputId));
+	const chosenInput = $derived(inputs.find((input) => input.id === choice));
 
 	function reportState(nextMode = mode, nextCreating = creating, nextDraft = draftValue) {
 		// An unsaved draft is a live edit even after the author toggles back to Preview:
 		// page guards (rebuild, file check, publication Preview) must see it as active.
+		// Switching Edit/Preview never changes bytes: only a bound edit (typed text or an
+		// open variable form) invalidates the review.
 		onStateChange?.(fieldKey, {
 			active: nextMode === 'edit' || nextCreating || nextDraft !== text,
+			bound: nextCreating || nextDraft !== text,
 			inputIds: [...new Set(tokens.map((token) => token.inputId))]
 		});
 	}
@@ -147,7 +157,7 @@
 		creating = true;
 		reportState(mode, true);
 		editingInputId = null;
-		choice = 'new';
+		choice = selectedInput ? selectedInput.id : 'new';
 		friendlyName = '';
 		defaultValue = draftValue.slice(start, end);
 		type = 'text';
@@ -343,7 +353,10 @@
 			onselect={captureSelection}
 			onkeyup={captureSelection}
 			onpointerup={captureSelection}
-			oninput={captureSelection}
+			oninput={() => {
+				captureSelection();
+				reportState();
+			}}
 		/>
 		<p class="text-muted-foreground mt-1 text-xs" aria-live="polite">
 			{start === end
@@ -354,6 +367,11 @@
 			<Button class="min-h-11" size="sm" onclick={beginCreate} aria-disabled={start === end}
 				><IconVariable size={16} /> Make variable</Button
 			>
+			{#if selectedInput && !creating}<span
+					data-testid="input-replacement"
+					class="text-muted-foreground flex min-h-11 items-center text-xs break-all"
+					>Using {selectedInput.key}</span
+				>{/if}
 			<Button
 				data-inline-action
 				class="min-h-11"
@@ -369,7 +387,17 @@
 	{/if}
 
 	{#if creating}
-		<div class="bg-muted/30 mt-3 rounded-md border p-3" aria-label="Make variable">
+		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+		<div
+			class="bg-muted/30 mt-3 rounded-md border p-3"
+			role="group"
+			aria-label={editingInputId ? 'Edit variable' : 'Make variable'}
+			onkeydown={(event) => {
+				if (event.key !== 'Escape') return;
+				event.stopPropagation();
+				void cancelCreate();
+			}}
+		>
 			<p class="text-muted-foreground mb-3 text-xs break-words">
 				{#if editingInputId}Edit this variable beside its passage.{:else}Selected: <q
 						>{draftValue.slice(start, end)}</q
@@ -435,10 +463,14 @@
 				</p>
 			{/if}
 			{#if formError}<p class="text-destructive mt-2 text-sm" role="alert">{formError}</p>{/if}
-			<div class="mt-3 flex gap-2">
+			<div class="mt-3 flex flex-wrap items-center gap-2">
 				<Button data-inline-action class="min-h-11" size="sm" onclick={saveVariable}
 					>{editingInputId ? 'Done' : 'Save'}</Button
-				><Button class="min-h-11" size="sm" variant="outline" onclick={cancelCreate}>Cancel</Button>
+				><Button class="min-h-11" size="sm" variant="outline" onclick={cancelCreate}>Cancel</Button
+				>{#if !editingInputId && chosenInput}<span
+						data-testid="input-replacement"
+						class="text-muted-foreground text-xs break-all">Using {chosenInput.key}</span
+					>{/if}
 			</div>
 		</div>
 	{/if}
@@ -446,6 +478,7 @@
 	{#if usedInputs.length && mode === 'preview'}
 		<div class="mt-2">
 			<Button
+				class="min-h-11"
 				size="sm"
 				variant="ghost"
 				onclick={() => (previewValuesOpen = !previewValuesOpen)}
@@ -461,7 +494,7 @@
 							/><span class="text-muted-foreground"
 								>Only changes this preview.{input.default === null ? ' No default.' : ''}</span
 							><Button
-								class="mt-1"
+								class="mt-1 min-h-11"
 								size="sm"
 								variant="ghost"
 								onclick={() => onSample?.(input.id, undefined)}>Use default</Button

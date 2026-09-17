@@ -17,11 +17,11 @@
 		reviewed,
 		onReview,
 		onToken,
-		onEdit,
 		expandedFields = new Set(),
 		reviewMode = 'per-item',
 		contextFirst = false,
 		samples = {},
+		selectedInputId = '',
 		changedInputIds = new Set(),
 		changedOccurrenceIds = new Set(),
 		onSaveText,
@@ -34,11 +34,11 @@
 		reviewed: Set<string>;
 		onReview?: (id: string, checked: boolean) => void;
 		onToken?: (id: string, trigger: HTMLElement) => void;
-		onEdit?: (recordId: string, field: string) => void;
 		expandedFields?: Set<string>;
 		reviewMode?: 'per-item' | 'summary';
 		contextFirst?: boolean;
 		samples?: Record<string, string>;
+		selectedInputId?: string;
 		changedInputIds?: Set<string>;
 		changedOccurrenceIds?: Set<string>;
 		onSaveText?: (recordId: string, field: TextUseField, value: string) => Promise<boolean>;
@@ -60,7 +60,10 @@
 			recordId: string,
 			field: TextUseField
 		) => Promise<boolean>;
-		onStateChange?: (key: string, state: { active: boolean; inputIds: string[] }) => void;
+		onStateChange?: (
+			key: string,
+			state: { active: boolean; bound: boolean; inputIds: string[] }
+		) => void;
 	} = $props();
 
 	const workflowByState = $derived.by(() => {
@@ -147,6 +150,7 @@
 							tokens={tokens(workflow.id, 'description')}
 							inputs={document.inputs}
 							{samples}
+							{selectedInputId}
 							{onToken}
 							{onSaveText}
 							{onCreate}
@@ -230,11 +234,6 @@
 										<h4 class="font-medium">
 											{item.name} <span class="text-muted-foreground text-xs">· {item.kind}</span>
 										</h4>
-										{#if item.kind === 'prompt' && onEdit}<button
-												class="text-primary text-xs underline"
-												type="button"
-												onclick={() => onEdit?.(item.id, 'body')}>Edit text</button
-											>{/if}
 									</div>
 									{#if onCreate}<PackageFieldWorkbench
 											recordId={item.id}
@@ -245,6 +244,7 @@
 											tokens={tokens(item.id, 'description')}
 											inputs={document.inputs}
 											{samples}
+											{selectedInputId}
 											{onToken}
 											{onSaveText}
 											{onCreate}
@@ -266,6 +266,7 @@
 												tokens={tokens(item.id, 'body')}
 												inputs={document.inputs}
 												{samples}
+												{selectedInputId}
 												{onToken}
 												{onSaveText}
 												{onCreate}
@@ -286,11 +287,7 @@
 										{#each item.files as file (file.id)}
 											<div class="mt-3">
 												<div class="mb-1 flex justify-between gap-2 text-xs">
-													<code>{file.path}</code>{#if onEdit}<button
-															class="text-primary underline"
-															type="button"
-															onclick={() => onEdit?.(file.id, 'content')}>Edit text</button
-														>{/if}
+													<code>{file.path}</code>
 												</div>
 												{#if onCreate}<PackageFieldWorkbench
 														recordId={file.id}
@@ -301,6 +298,7 @@
 														tokens={tokens(file.id, 'content')}
 														inputs={document.inputs}
 														{samples}
+														{selectedInputId}
 														{onToken}
 														{onSaveText}
 														{onCreate}
@@ -429,6 +427,7 @@
 								tokens={tokens(schedule.id, 'title_template')}
 								inputs={document.inputs}
 								{samples}
+								{selectedInputId}
 								{onToken}
 								{onSaveText}
 								{onCreate}
@@ -455,6 +454,7 @@
 								tokens={tokens(schedule.id, 'description_template')}
 								inputs={document.inputs}
 								{samples}
+								{selectedInputId}
 								{onToken}
 								{onSaveText}
 								{onCreate}

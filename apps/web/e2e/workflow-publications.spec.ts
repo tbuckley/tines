@@ -635,7 +635,13 @@ test.describe.serial('public workflow snapshots', () => {
 			node.dispatchEvent(new Event('select', { bubbles: true }));
 		});
 		await passage.getByRole('button', { name: 'Make variable' }).click();
-		await passage.getByRole('textbox', { name: 'Friendly name' }).fill('Project name');
+		// The inventory declaration is offered beside the passage; reuse it rather than minting a copy.
+		const choice = passage.locator('select:has(option[value="new"])');
+		const existing = await choice
+			.locator('option', { hasText: ' · project_name · ' })
+			.getAttribute('value');
+		await choice.selectOption(existing!);
+		await expect(passage.getByTestId('input-replacement')).toHaveText('Using project_name');
 		await passage.getByRole('button', { name: 'Save', exact: true }).click();
 		const chip = passage.locator('[data-input-id]');
 		const chipEdit = chip.getByRole('button', { name: 'Edit Project name' });

@@ -131,6 +131,24 @@ describe('public text rendering model', () => {
 		]);
 	});
 
+	it('keeps every fragment text of a Markdown-valued sample under one occurrence', () => {
+		const model = publicTextModel('{{v:}} and {{v:}}', {
+			uses: [{ id: 'use:v', input_id: 'input:v', token: '{{v:}}', value: 'a **b** c' }]
+		});
+		const spans = model.flatMap((block) => ('spans' in block ? block.spans : []));
+		const tokens = spans.filter((span) => span.token);
+		expect(
+			tokens.map((span) => [span.text, span.strong ?? false, span.token?.occurrence_id])
+		).toEqual([
+			['a ', false, 'use:v:0'],
+			['b', true, 'use:v:0'],
+			[' c', false, 'use:v:0'],
+			['a ', false, 'use:v:1'],
+			['b', true, 'use:v:1'],
+			[' c', false, 'use:v:1']
+		]);
+	});
+
 	it('retains empty values and values in Markdown destinations as editable occurrences', () => {
 		const uses = [
 			{ id: 'use:url', input_id: 'input:url', token: '{{url:}}', value: 'https://example.test/x' },

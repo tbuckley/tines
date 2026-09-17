@@ -90,7 +90,9 @@
 	let samples = $state<Record<string, string>>({});
 	let changedInputIds = $state<Set<string>>(new Set());
 	let changedOccurrenceIds = $state<Set<string>>(new Set());
-	let inlineStates = $state<Record<string, { active: boolean; inputIds: string[] }>>({});
+	let inlineStates = $state<
+		Record<string, { active: boolean; bound: boolean; inputIds: string[] }>
+	>({});
 
 	const requiredReviews = $derived(
 		candidate.context
@@ -140,10 +142,15 @@
 		shareConsent = false;
 		step = 'customize';
 	}
-	function inlineStateChanged(key: string, state: { active: boolean; inputIds: string[] }) {
+	function inlineStateChanged(
+		key: string,
+		state: { active: boolean; bound: boolean; inputIds: string[] }
+	) {
 		const previous = inlineStates[key];
 		inlineStates = { ...inlineStates, [key]: state };
-		if (state.active && !previous?.active)
+		// A bare Edit/Preview toggle changes no bytes, so it keeps the review acknowledgments;
+		// typed text or an open variable form is a bound edit and invalidates them.
+		if (state.bound && !previous?.bound)
 			resetReview('Finish or cancel the passage edit before continuing.');
 	}
 	async function guardInlineEdits(action: string, inputId?: string, exceptKey?: string) {
@@ -887,6 +894,7 @@
 			expandedFields={diagnosticFieldKeys}
 			contextFirst
 			{samples}
+			{selectedInputId}
 			{changedInputIds}
 			{changedOccurrenceIds}
 			onSaveText={saveInlineText}
