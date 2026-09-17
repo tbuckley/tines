@@ -455,12 +455,16 @@ test('creates and previews one exact occurrence beside its passage', async ({ pa
 	await page.keyboard.press('Escape');
 	await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toHaveCount(0);
 	await expect(editor).toBeFocused();
-	expect(
-		await editor.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd])
-	).toEqual([
-		'Deploy billing-service, but keep customer-portal private.'.indexOf('private'),
-		'Deploy billing-service, but keep customer-portal private.'.indexOf('private') +
-			'private'.length
+	// The editor holds source text, so the retained range is measured against its own value.
+	const retained = await editor.evaluate((node: HTMLTextAreaElement) => ({
+		start: node.selectionStart,
+		end: node.selectionEnd,
+		expected: node.value.indexOf('private')
+	}));
+	expect(retained.expected).toBeGreaterThan(0);
+	expect([retained.start, retained.end]).toEqual([
+		retained.expected,
+		retained.expected + 'private'.length
 	]);
 });
 
@@ -532,7 +536,8 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	await expect(page.getByRole('button', { name: 'Edit variable first_input' })).toBeFocused();
 	await expect(passage.locator('[data-input-id]').locator('span').first()).toHaveText('after');
 	await expect(passage).toContainText('Unsaved adjacent prose.');
-	await expect(page.getByRole('button', { name: 'Apply automation' })).toBeEnabled();
+	const applyAutomation = page.getByRole('button', { name: 'Apply automation' });
+	await expect(applyAutomation).toBeEnabled();
 	await expectPlainLanguage(page);
 
 	const dismissedDialog = page.waitForEvent('dialog');
@@ -987,29 +992,51 @@ test('reviews inheritance plus long Markdown and plain-text files without remote
 		markdownSection.getByRole('img', { name: `Image not loaded: remote pixel — ${imageUrl}` })
 	).toHaveText(`Image (not loaded): remote pixel — ${imageUrl}`);
 	await expect(markdownSection.getByText(markdownTail)).toBeHidden();
-	await expect(markdownSection.locator('pre code')).toContainText('fenced24');
+	// The snippet stops at 100 rendered words, which lands before the fenced block here, so
+	// the block renders as <pre><code> only once the passage is expanded.
+	await expect(markdownSection.locator('pre code')).toHaveCount(0);
+	await expect(markdownSection).not.toContainText('[content omitted]');
 	const expandMarkdown = markdownSection.getByRole('button', { name: /Show all \d+ words/ });
 	await expandMarkdown.click();
 	await expect(page.getByText(markdownTail)).toBeVisible();
+	await expect(markdownSection.locator('pre code')).toContainText('fenced24');
 	const collapseMarkdown = markdownSection.getByRole('button', { name: 'Show snippet' });
 	await expect(collapseMarkdown).toBeFocused();
-	await expect(markdownSection.getByRole('link', { name: 'Reviewed destination' })).toHaveAttribute(
+	// Links open through the same confirm-destination dialog the public reader uses; the
+	// destination is shown and only opened by an explicit click.
+	const reviewedDestination = markdownSection.getByRole('button', {
+		name: 'Reviewed destination'
+	});
+	await expect(reviewedDestination).toHaveAttribute(
+		'title',
+		'Open external destination: https://example.invalid/never-fetch'
+	);
+	await reviewedDestination.click();
+	const destinationDialog = page.getByRole('dialog', { name: 'Open external destination?' });
+	await expect(destinationDialog).toBeVisible();
+	await expect(destinationDialog.getByRole('link', { name: 'Open destination' })).toHaveAttribute(
 		'href',
 		'https://example.invalid/never-fetch'
 	);
+	await destinationDialog.getByRole('button', { name: 'Cancel' }).click();
+	await expect(destinationDialog).toBeHidden();
+	await expect(reviewedDestination).toBeFocused();
 	await collapseMarkdown.click();
 	await expect(page.getByText(markdownTail)).toBeHidden();
 	await expect(markdownSection.getByRole('button', { name: /Show all \d+ words/ })).toBeFocused();
 
 	const plainBlock = page.getByText('notes.txt').locator('..').locator('..');
-	await expect(plainBlock.locator('pre')).toContainText('alpha    beta\nline two');
+	// Plain text renders as one whitespace-preserving run, as on the public reader.
+	const plainText = plainBlock.locator('p.whitespace-pre-wrap').first();
+	await expect(plainText).toContainText('alpha    beta\nline two');
+	expect(await plainText.evaluate((node) => getComputedStyle(node).whiteSpace)).toBe('pre-wrap');
 	const expandText = plainBlock.getByRole('button', { name: /Show all \d+ words/ });
 	await expandText.click();
-	await expect(plainBlock.locator('pre')).toContainText('plain125');
+	await expect(plainText).toContainText('plain125');
 	const collapseText = plainBlock.getByRole('button', { name: 'Show snippet' });
 	await expect(collapseText).toBeFocused();
 	await collapseText.click();
-	await expect(plainBlock.locator('pre')).not.toContainText('plain125');
+	await expect(plainText).not.toContainText('plain125');
 	await expect(plainBlock.getByRole('button', { name: /Show all \d+ words/ })).toBeFocused();
 	await expect.poll(() => externalRequests).toEqual([]);
 });
