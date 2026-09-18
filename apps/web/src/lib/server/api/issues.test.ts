@@ -1,16 +1,34 @@
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import type { WorkflowResponse } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { CLOSED, PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
+import {
+	CLOSED,
+	OPEN,
+	PROJECT,
+	REVIEW,
+	USER,
+	addLabel,
+	addIssue,
+	addRunner,
+	seedBase
+} from '../supervisor/test-fixtures';
 import { ApiFail, type ActorContext } from './core';
 import {
 	allowedTransitions,
 	assertPinFieldsAllowed,
 	countIssuesByCategory,
+	countOpenIssuesByWorkflow,
 	createIssue,
 	getIssueDetail,
 	listIssues,
 	loadIssue,
-	resolveStateRef
+	resumeIssue,
+	resolveStateRef,
+	transitionIssue,
+	updateIssue
 } from './issues';
 import { createLabel, listLabels } from './labels';
 import { listArtifacts } from './artifacts';
@@ -24,9 +42,15 @@ const workflow: WorkflowResponse = {
 	is_system: true,
 	initial_state_id: 's_open',
 	states: [
-		{ id: 's_open', name: 'Open', category: 'active', position: 0 },
-		{ id: 's_review', name: 'Review', category: 'awaiting_human', position: 1 },
-		{ id: 's_closed', name: 'Closed', category: 'done', position: 2 }
+		{ id: 's_open', name: 'Open', category: 'active', position: 0, inherits_from: null },
+		{
+			id: 's_review',
+			name: 'Review',
+			category: 'awaiting_human',
+			position: 1,
+			inherits_from: null
+		},
+		{ id: 's_closed', name: 'Closed', category: 'done', position: 2, inherits_from: null }
 	],
 	transitions: [
 		{ id: 't_submit', name: 'Submit', from_state_id: 's_open', to_state_id: 's_review' },
@@ -120,6 +144,312 @@ describe('assertPinFieldsAllowed', () => {
 	});
 });
 
+describe('updateIssue sparse patch concurrency', () => {
+	const actor: ActorContext = {
+		userId: USER,
+		userName: 'alice',
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	};
+
+	function beforeBatch(
+		t: TestDb,
+		interleave: () => Promise<unknown>,
+		inspectUpdate?: (sql: string) => void
+	): Env {
+		const batch = t.env.DB.batch.bind(t.env.DB);
+		return {
+			...t.env,
+			DB: {
+				...t.env.DB,
+				batch: async (statements: Parameters<typeof batch>[0]) => {
+					inspectUpdate?.((statements[0] as unknown as { sqlText: string }).sqlText);
+					await interleave();
+					return batch(statements);
+				}
+			}
+		} as Env;
+	}
+
+	it('preserves a concurrent transition during a title-only patch', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t, { title: 'Original', description: 'Original description' });
+		let winnerStateEnteredAt = 0;
+		const env = beforeBatch(t, async () => {
+			const winner = await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				action: 'Submit for review'
+			});
+			expect(winner.state.id).toBe(REVIEW);
+			winnerStateEnteredAt = winner.state_entered_at;
+		});
+
+		const result = await updateIssue(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			title: 'Renamed'
+		});
+
+		expect(result).toMatchObject({ title: 'Renamed', state: { id: REVIEW } });
+		expect(result.state_entered_at).toBe(winnerStateEnteredAt);
+		const transitions = t.all(
+			`SELECT payload FROM event WHERE issue_id = ? AND type = 'issue.transitioned'`,
+			id
+		);
+		expect(transitions).toHaveLength(1);
+		expect(JSON.parse(transitions[0].payload as string)).toMatchObject({
+			state_entry_version: 1,
+			workflow_id: 'wf_standard',
+			workflow_name: 'Standard',
+			from_state_id: OPEN,
+			to_state_id: REVIEW,
+			to_state_category: 'awaiting_human'
+		});
+	});
+
+	it.each([
+		{
+			name: 'title patch commits last',
+			outer: { title: 'Renamed' },
+			concurrent: { description: 'New instructions' }
+		},
+		{
+			name: 'description patch commits last',
+			outer: { description: 'New instructions' },
+			concurrent: { title: 'Renamed' }
+		}
+	])('preserves distinct concurrent text changes when $name', async ({ outer, concurrent }) => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t, { title: 'Original', description: 'Original description' });
+		const env = beforeBatch(t, () =>
+			updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, concurrent)
+		);
+
+		const result = await updateIssue(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, outer);
+
+		expect(result).toMatchObject({ title: 'Renamed', description: 'New instructions' });
+	});
+
+	it('preserves a concurrent pin and omits unrelated columns from a text update', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t, { title: 'Original', description: 'Original description' });
+		const runnerId = addRunner(t, { id: 'rnr_sparse', name: 'sparse' });
+		let updateSql = '';
+		const env = beforeBatch(
+			t,
+			() =>
+				updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+					pinned_runner_id: runnerId,
+					pinned_tier: 'smartest'
+				}),
+			(sql) => {
+				updateSql = sql;
+			}
+		);
+
+		const result = await updateIssue(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			title: 'Renamed'
+		});
+
+		expect(result).toMatchObject({
+			title: 'Renamed',
+			pinned_runner_id: runnerId,
+			pinned_tier: 'smartest'
+		});
+		const assignments = updateSql.slice(0, updateSql.indexOf(' where '));
+		expect(assignments).toContain('"title"');
+		expect(assignments).toContain('"updated_at"');
+		expect(assignments).not.toMatch(
+			/"description"|"workflow_id"|"state_id"|"pinned_runner_id"|"pinned_tier"/
+		);
+	});
+
+	it('keeps state CAS conflict handling and guarded events for explicit moves', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t);
+		const env = beforeBatch(t, async () => {
+			await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				action: 'Submit for review'
+			});
+			// Keep the event guard's timestamp witness distinct even when both
+			// requests happen within the same millisecond in this in-memory test.
+			t.sqlite.prepare('UPDATE issue SET updated_at = updated_at + 1 WHERE id = ?').run(id);
+		});
+
+		await expect(
+			updateIssue(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, { state: REVIEW })
+		).rejects.toMatchObject({
+			status: 409,
+			code: 'conflict'
+		});
+		expect((await getIssueDetail(t.db, USER, { id })).state.id).toBe(REVIEW);
+		expect(
+			t.all(`SELECT id FROM event WHERE issue_id = ? AND type = 'issue.transitioned'`, id)
+		).toHaveLength(1);
+	});
+
+	it('keeps workflow moves coupled to their initial state and manual-move reset', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t);
+		t.sqlite.exec(`
+			INSERT INTO workflow (id, user_id, name, description, initial_state_id, created_at, updated_at)
+				VALUES ('wf_sparse', '${USER}', 'Sparse', '', 'wfs_sparse_start', 0, 0);
+			INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at)
+				VALUES ('wfs_sparse_start', 'wf_sparse', 'Start', 'active', 0, 0);
+			UPDATE issue SET attempt_count = 2, needs_attention = 1 WHERE id = '${id}';
+		`);
+
+		const moved = await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			workflow_id: 'wf_sparse'
+		});
+
+		expect(moved).toMatchObject({
+			workflow: { id: 'wf_sparse' },
+			state: { id: 'wfs_sparse_start' },
+			attempt_count: 0,
+			needs_attention: false
+		});
+		expect(moved.state_entered_at).toBeGreaterThan(0);
+		const updates = t.all(
+			`SELECT payload FROM event WHERE issue_id = ? AND type = 'issue.updated'`,
+			id
+		);
+		expect(updates).toHaveLength(1);
+		expect(JSON.parse(updates[0].payload as string)).toMatchObject({
+			state_entry_version: 1,
+			changed: ['workflow'],
+			workflow_from_id: 'wf_standard',
+			workflow_to_id: 'wf_sparse',
+			from_state_id: OPEN,
+			to_state_id: 'wfs_sparse_start',
+			to_state_name: 'Start',
+			to_state_category: 'active'
+		});
+	});
+
+	it('retains pin and tier coupling when explicitly setting and clearing a pin', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t);
+		const runnerId = addRunner(t, { id: 'rnr_pin', name: 'pinned' });
+
+		const pinned = await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			pinned_runner_id: runnerId,
+			pinned_tier: 'cheapest'
+		});
+		expect(pinned).toMatchObject({
+			pinned_runner_id: runnerId,
+			pinned_runner_name: 'pinned',
+			pinned_tier: 'cheapest'
+		});
+		const unpinned = await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			pinned_runner_id: null
+		});
+		expect(unpinned).toMatchObject({ pinned_runner_id: null, pinned_tier: null });
+		const pinEvents = t
+			.all(`SELECT payload FROM event WHERE issue_id = ? AND type = 'issue.updated'`, id)
+			.map((row) => JSON.parse(row.payload as string))
+			.filter((payload) => payload.changed.includes('pin'));
+		expect(pinEvents).toHaveLength(2);
+		expect(pinEvents.at(-1)).toMatchObject({ pinned_runner_id: null, pinned_tier: null });
+	});
+
+	it('keeps pin fields coupled when an unpin races a tier update', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const id = addIssue(t);
+		const runnerId = addRunner(t, { id: 'rnr_pin_race', name: 'pin race' });
+		await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			pinned_runner_id: runnerId
+		});
+		const env = beforeBatch(t, () =>
+			updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				pinned_tier: 'smartest'
+			})
+		);
+
+		const unpinned = await updateIssue(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			pinned_runner_id: null
+		});
+
+		expect(unpinned).toMatchObject({ pinned_runner_id: null, pinned_tier: null });
+	});
+});
+
+describe('dispatch effects: issue mutation owners', () => {
+	it('records successful changes and approved no-ops, but not rejected lookups', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const actor: ActorContext = {
+			userId: USER,
+			userName: 'alice',
+			apiKeyId: null,
+			apiKeyName: null,
+			viaSession: true
+		};
+		const effects = recordDispatchEffects();
+		const issue = addIssue(t, { title: 'Original' });
+
+		await updateIssue(t.db, t.env, actor, effects, issue, { title: 'Changed' });
+		await updateIssue(t.db, t.env, actor, effects, issue, { title: 'Changed' });
+		expect(effects.count()).toBe(2);
+
+		await transitionIssue(t.db, t.env, actor, effects, issue, { action: 'Submit for review' });
+		expect(effects.count()).toBe(3);
+
+		const parked = addIssue(t, { needsAttention: true, attemptCount: 3 });
+		await resumeIssue(t.db, t.env, actor, effects, parked);
+		await resumeIssue(t.db, t.env, actor, effects, parked);
+		expect(effects.count()).toBe(5);
+
+		await expect(resumeIssue(t.db, t.env, actor, effects, 'iss_missing')).rejects.toMatchObject({
+			status: 404
+		});
+		expect(effects.count()).toBe(5);
+	});
+
+	it.each(['update', 'transition', 'resume'] as const)(
+		'keeps %s silent when its durable batch rejects',
+		async (owner) => {
+			const t = createTestDb();
+			seedBase(t);
+			const actor: ActorContext = {
+				userId: USER,
+				userName: 'alice',
+				apiKeyId: null,
+				apiKeyName: null,
+				viaSession: true
+			};
+			const issue = addIssue(t, {
+				title: 'Original',
+				...(owner === 'resume' ? { needsAttention: true, attemptCount: 3 } : {})
+			});
+			const effects = recordDispatchEffects();
+			t.env.DB.batch = async () => {
+				throw new Error(`injected ${owner} batch failure`);
+			};
+			const call =
+				owner === 'update'
+					? updateIssue(t.db, t.env, actor, effects, issue, { title: 'Changed' })
+					: owner === 'transition'
+						? transitionIssue(t.db, t.env, actor, effects, issue, {
+								action: 'Submit for review'
+							})
+						: resumeIssue(t.db, t.env, actor, effects, issue);
+			await expect(call).rejects.toThrow(`injected ${owner} batch failure`);
+			expect(effects.count()).toBe(0);
+			expect(
+				t.all('SELECT title, state_id, needs_attention FROM issue WHERE id = ?', issue)
+			).toEqual([
+				{ title: 'Original', state_id: OPEN, needs_attention: owner === 'resume' ? 1 : 0 }
+			]);
+		}
+	);
+});
+
 describe('listIssues search', () => {
 	const PROJECT2 = 'prj_2';
 	let t: TestDb;
@@ -160,6 +490,40 @@ describe('listIssues search', () => {
 		expect(items.map((i) => i.id).sort()).toEqual([ids.byTitle, ids.done, ids.elsewhere].sort());
 	});
 
+	it('matches complete long and multibyte substrings without truncating or chunking', async () => {
+		const long = 'a'.repeat(49) + 'needle' + 'b'.repeat(145);
+		const japanese = 'あ'.repeat(49);
+		const longTitle = addIssue(t, { title: `prefix ${long} suffix` });
+		const longDescription = addIssue(t, { title: 'Long description', description: long });
+		const multibyte = addIssue(t, { title: japanese });
+		addIssue(t, { title: `${long.slice(0, 48)}x${long.slice(49)}` });
+		addIssue(t, { title: `${long.slice(100)} -- ${long.slice(0, 100)}` });
+
+		expect((await search({ q: long })).items.map((i) => i.id).sort()).toEqual(
+			[longTitle, longDescription].sort()
+		);
+		expect((await search({ q: japanese })).items.map((i) => i.id)).toEqual([multibyte]);
+	});
+
+	it('treats LIKE and SQL syntax characters literally', async () => {
+		const literal = addIssue(t, { title: `literal % _ \\ [x] O'Reilly -- drop table` });
+		addIssue(t, { title: 'ordinary wildcard decoy' });
+		for (const term of ['%', '_', '\\', '[x]', "O'Reilly -- drop table"]) {
+			expect(
+				(await search({ q: term })).items.map((i) => i.id),
+				term
+			).toEqual([literal]);
+		}
+	});
+
+	it('keeps SQLite ASCII-only case folding and treats empty q as absent', async () => {
+		const upperUnicode = addIssue(t, { title: 'Ärger' });
+		const lowerUnicode = addIssue(t, { title: 'ärger' });
+		expect((await search({ q: 'ÄRGER' })).items.map((i) => i.id)).toEqual([upperUnicode]);
+		expect((await search({ q: 'ärger' })).items.map((i) => i.id)).toEqual([lowerUnicode]);
+		expect((await search({ q: '' })).items).toHaveLength(7);
+	});
+
 	it('returns nothing when no issue matches', async () => {
 		expect((await search({ q: 'zzz' })).items).toEqual([]);
 	});
@@ -178,6 +542,109 @@ describe('listIssues search', () => {
 
 	it('returns every issue when q is absent', async () => {
 		expect((await search({})).items).toHaveLength(5);
+	});
+});
+
+describe('listIssues workflow filtering', () => {
+	let t: TestDb;
+	let ids: Record<string, string>;
+	let label: string;
+
+	beforeEach(() => {
+		t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(`
+			INSERT INTO workflow (id, user_id, name, initial_state_id, created_at, updated_at) VALUES
+				('wf_alpha', '${USER}', 'Shared workflow', 's_alpha_review', 0, 0),
+				('wf_beta', '${USER}', 'Shared workflow', 's_beta_review', 0, 0);
+			INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at) VALUES
+				('s_alpha_review', 'wf_alpha', 'Review', 'awaiting_human', 0, 0),
+				('s_alpha_done', 'wf_alpha', 'Done', 'done', 1, 0),
+				('s_beta_review', 'wf_beta', 'Review', 'active', 0, 0);
+		`);
+		label = addLabel(t, 'workflow-test');
+		ids = {
+			alphaReview: addIssue(t, {
+				title: 'Needle alpha review',
+				workflow: 'wf_alpha',
+				state: 's_alpha_review',
+				labels: [label]
+			}),
+			alphaDone: addIssue(t, {
+				title: 'Alpha done',
+				workflow: 'wf_alpha',
+				state: 's_alpha_done'
+			}),
+			betaReview: addIssue(t, {
+				title: 'Beta review',
+				workflow: 'wf_beta',
+				state: 's_beta_review'
+			}),
+			alphaDuplicate: addIssue(t, {
+				title: 'Alpha duplicate',
+				workflow: 'wf_alpha',
+				state: 's_alpha_review'
+			})
+		};
+		t.sqlite
+			.prepare(
+				`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at)
+				 VALUES ('lnk_workflow', ?, ?, 'duplicate_of', 0)`
+			)
+			.run(ids.alphaDuplicate, ids.betaReview);
+	});
+
+	const list = async (filters: Parameters<typeof listIssues>[2]) =>
+		(
+			await listIssues(t.db, USER, { projectId: PROJECT, ...filters }, { cursor: null, limit: 50 })
+		).items.map((item) => item.id);
+
+	it('matches workflow and state by id or exact name, including duplicate semantics', async () => {
+		expect((await list({ workflow: 'wf_alpha' })).sort()).toEqual(
+			[ids.alphaReview, ids.alphaDone, ids.alphaDuplicate].sort()
+		);
+		expect((await list({ workflow: 'Shared workflow' })).sort()).toEqual(Object.values(ids).sort());
+		expect(await list({ workflow: 'wf_alpha', state: 's_alpha_review' })).toEqual([
+			ids.alphaReview
+		]);
+		expect(await list({ workflow: 'wf_alpha', state: 's_beta_review' })).toEqual([
+			ids.alphaDuplicate
+		]);
+		expect((await list({ workflow: 'Shared workflow', state: 'Review' })).sort()).toEqual(
+			[ids.alphaReview, ids.betaReview, ids.alphaDuplicate].sort()
+		);
+		expect(await list({ workflow: 'WF_ALPHA' })).toEqual([]);
+	});
+
+	it('composes workflow with ready, label, and search and keeps user isolation', async () => {
+		expect(await list({ workflow: 'wf_alpha', ready: true, labels: [label], q: 'needle' })).toEqual(
+			[ids.alphaReview]
+		);
+		expect(
+			(
+				await listIssues(
+					t.db,
+					'another-user',
+					{ workflow: 'Shared workflow' },
+					{ cursor: null, limit: 50 }
+				)
+			).items
+		).toEqual([]);
+	});
+
+	it('counts within workflow/state scope while ignoring category and hide-done', async () => {
+		expect(
+			await countIssuesByCategory(t.db, USER, {
+				projectId: PROJECT,
+				workflow: 'wf_alpha',
+				state: 'Review',
+				category: 'done',
+				hideDone: true
+			})
+		).toEqual({ backlog: 0, active: 1, awaiting_human: 1, done: 0 });
+		expect(
+			await countIssuesByCategory(t.db, USER, { projectId: PROJECT, workflow: 'missing' })
+		).toEqual({ backlog: 0, active: 0, awaiting_human: 0, done: 0 });
 	});
 });
 
@@ -230,6 +697,30 @@ describe('countIssuesByCategory', () => {
 			await countIssuesByCategory(t.db, USER, { category: 'done', hideDone: true })
 		).toMatchObject({ active: 3, done: 1 });
 	});
+
+	it('uses literal long search semantics for category counts', async () => {
+		const term = `%_${'x'.repeat(60)}`;
+		addIssue(t, { title: term });
+		addIssue(t, { title: term, state: CLOSED });
+		expect(await countIssuesByCategory(t.db, USER, { q: term })).toMatchObject({
+			active: 1,
+			done: 1
+		});
+	});
+});
+
+describe('countOpenIssuesByWorkflow', () => {
+	it('counts open issues in the selected project and excludes done and other projects', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(`INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_2', '${USER}', 'other', 0, 0)`);
+		addIssue(t);
+		addIssue(t);
+		addIssue(t, { state: CLOSED });
+		addIssue(t, { project: 'prj_2' });
+		expect(await countOpenIssuesByWorkflow(t.db, USER, PROJECT)).toEqual({ wf_standard: 2 });
+	});
 });
 
 /**
@@ -256,7 +747,10 @@ describe('createIssue with labels', () => {
 	const runKey: ActorContext = { ...human, viaSession: false, agentRunId: 'arun_1' };
 
 	const create = (actor: ActorContext, labels: string[]) =>
-		createIssue(t.db, t.env, actor, PROJECT, { title: 'Labelled', labels });
+		createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Labelled',
+			labels
+		});
 	const issueCount = () =>
 		Number((t.sqlite.prepare('SELECT COUNT(*) AS n FROM issue').get() as { n: number }).n);
 
@@ -268,6 +762,18 @@ describe('createIssue with labels', () => {
 			'bug:1',
 			'p1:1'
 		]);
+		const event = t.all(
+			`SELECT payload FROM event WHERE issue_id = ? AND type = 'issue.created'`,
+			issue.id
+		);
+		expect(JSON.parse(event[0].payload as string)).toMatchObject({
+			state_entry_version: 1,
+			workflow_id: 'wf_standard',
+			workflow_name: 'Standard',
+			state_id: OPEN,
+			state_name: 'Open',
+			state_category: 'active'
+		});
 	});
 
 	it('rejects a run key naming an unknown label without creating the issue', async () => {
@@ -285,6 +791,21 @@ describe('createIssue with labels', () => {
 		expect(await listLabels(t.db, USER)).toEqual([]);
 	});
 
+	it('dispatch effects: createIssue stays silent when the durable batch rejects', async () => {
+		const effects = recordDispatchEffects();
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		t.env.DB.batch = async () => {
+			throw new Error('injected issue batch failure');
+		};
+		await expect(
+			createIssue(t.db, t.env, human, effects, PROJECT, { title: 'Rejected at commit' })
+		).rejects.toThrow('injected issue batch failure');
+		t.env.DB.batch = realBatch;
+		expect(effects.count()).toBe(0);
+		expect(issueCount()).toBe(0);
+		expect(t.all("SELECT id FROM event WHERE type = 'issue.created'")).toEqual([]);
+	});
+
 	it('lets a run key attach an existing label, matched case-insensitively', async () => {
 		await createLabel(t.db, t.env, human, { name: 'bug' });
 		const issue = await create(runKey, ['BUG']);
@@ -300,7 +821,7 @@ describe('createIssue with labels', () => {
 
 	it('filters on a label applied at creation time', async () => {
 		const labelled = await create(human, ['bug']);
-		await createIssue(t.db, t.env, human, PROJECT, { title: 'Plain' });
+		await createIssue(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, { title: 'Plain' });
 		const { items } = await listIssues(
 			t.db,
 			USER,
@@ -347,6 +868,91 @@ describe('listIssues brief', () => {
 			);
 			expect(byTitle).toEqual({ Documented: 'a long description body', Bare: '' });
 		}
+	});
+});
+
+describe('listIssues bidirectional pagination', () => {
+	it('walks 205 rows forward and back without gaps or duplicates', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		for (let n = 1; n <= 205; n += 1) {
+			const id = `iss_page_${String(n).padStart(3, '0')}`;
+			addIssue(t, { id });
+			t.sqlite.prepare('UPDATE issue SET created_at = ? WHERE id = ?').run(n, id);
+		}
+		const first = await listIssues(t.db, USER, { brief: true }, { cursor: null, limit: 100 });
+		const second = await listIssues(
+			t.db,
+			USER,
+			{ brief: true },
+			{
+				cursor: {
+					createdAt: first.items.at(-1)!.created_at,
+					id: first.items.at(-1)!.id
+				},
+				limit: 100,
+				direction: 'after'
+			}
+		);
+		const third = await listIssues(
+			t.db,
+			USER,
+			{},
+			{
+				cursor: {
+					createdAt: second.items.at(-1)!.created_at,
+					id: second.items.at(-1)!.id
+				},
+				limit: 100,
+				direction: 'after'
+			}
+		);
+		expect([first.items.length, second.items.length, third.items.length]).toEqual([100, 100, 5]);
+		expect([first.hasMore, second.hasMore, third.hasMore]).toEqual([true, true, false]);
+		const ids = [...first.items, ...second.items, ...third.items].map((issue) => issue.id);
+		expect(new Set(ids).size).toBe(205);
+		expect(ids[0]).toBe('iss_page_205');
+		expect(ids.at(-1)).toBe('iss_page_001');
+
+		const back = await listIssues(
+			t.db,
+			USER,
+			{},
+			{
+				cursor: { createdAt: third.items[0].created_at, id: third.items[0].id },
+				limit: 100,
+				direction: 'before'
+			}
+		);
+		expect(back.items.map((issue) => issue.id)).toEqual(second.items.map((issue) => issue.id));
+		expect(back.hasMore).toBe(true);
+	});
+
+	it('uses id as the stable reverse tie-breaker without looking up the boundary row', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		for (const id of ['iss_tie_a', 'iss_tie_b', 'iss_tie_c']) {
+			addIssue(t, { id });
+			t.sqlite.prepare('UPDATE issue SET created_at = 10 WHERE id = ?').run(id);
+		}
+		// Permanent addresses intentionally outlive issue mutability. This test
+		// removes a synthetic boundary row, so remove its test-only reservation too.
+		t.sqlite.prepare("DELETE FROM issue_address WHERE issue_id = 'iss_tie_b'").run();
+		t.sqlite.prepare("DELETE FROM issue WHERE id = 'iss_tie_b'").run();
+		const older = await listIssues(
+			t.db,
+			USER,
+			{},
+			{ cursor: { createdAt: 10, id: 'iss_tie_b' }, limit: 10, direction: 'after' }
+		);
+		const newer = await listIssues(
+			t.db,
+			USER,
+			{},
+			{ cursor: { createdAt: 10, id: 'iss_tie_b' }, limit: 10, direction: 'before' }
+		);
+		expect(older.items.map((issue) => issue.id)).toEqual(['iss_tie_a']);
+		expect(newer.items.map((issue) => issue.id)).toEqual(['iss_tie_c']);
 	});
 });
 

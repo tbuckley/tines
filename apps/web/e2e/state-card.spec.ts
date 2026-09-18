@@ -1,7 +1,17 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	gotoHydrated,
+	readSettled,
+	runId,
+	signIn,
+	stateCard,
+	issuePath
+} from './helpers';
 
 /**
  * The State card's transition stack (Tines/128): buttons used to be a
@@ -9,9 +19,18 @@ import { apiClient, body, runId, signIn } from './helpers';
  * longest Engineering labels overflowed the 22rem column outright — while the
  * reason each blocked button was dead sat in one detached list below all of
  * them, so a user had to name-match a button against a paragraph. Now every
- * button is full width with its target right-aligned, each requirement line
- * sits directly under its own button, and enabled transitions sort first. On a
- * phone the whole card moves above the description.
+ * button is full width with its target right-aligned, and each requirement
+ * line sits directly under its own button. On a phone the whole card moves
+ * above the description, into a bar pinned over the tab bar.
+ *
+ * Order is `planTransitions`' (Tines/176): forward moves first — enabled, then
+ * blocked — then steps back, then the escape lane, and only the workflow's
+ * expected next step is ever filled. That deliberately reverses Tines/128's
+ * plain "enabled first": a blocked forward move now sorts above an enabled
+ * step back, because its requirement line is the actual next action. The
+ * fixture workflow's states run Research → Design → Implementation → Needs
+ * Clarification → Done → Canceled so that "Needs more research" is genuinely
+ * backward and "Canceled", as the last of two done states, is the escape lane.
  */
 
 const PHONE = { width: 390, height: 844 };
@@ -19,10 +38,12 @@ const DESKTOP = { width: 1280, height: 900 };
 
 /** Long enough to be clipped by the 22rem column, inside the 100-char cap. */
 const LONG_TRANSITION = 'Ask for clarification about this unusually long transition name';
+/** Wider than the phone bar can spare for a state chip at its natural width. */
+const WIDE_STATE = 'Implementation in progress';
 const DESIGN_DOC_DESCRIPTION =
 	'The design document for this issue: scope, the change itself, and how it will be tested before review.';
 
-const projectName = `state-card-${runId}`;
+let projectName: string;
 let project: Project;
 /** In Design with nothing attached: one enabled pair, two blocked. */
 let blocked: IssueDetail;
@@ -32,24 +53,24 @@ let fresh: IssueDetail;
 let stale: IssueDetail;
 /** In Design like `blocked`, but with a description far taller than the card. */
 let tall: IssueDetail;
+/** A second workflow whose state name is far too wide for the phone bar. */
+let wide: IssueDetail;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	projectName = uniqueName('state-card');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 
-	// Transition order here is the workflow's own: a blocked one first, so
-	// "enabled first" is observable rather than incidental.
+	// Transition order here is the workflow's own: the forward moves first, so
+	// the reordering below is observable rather than incidental.
 	const workflow = await body<WorkflowResponse>(
 		await api.post('/api/v1/workflows', {
-			name: `State card ${runId}`,
+			name: uniqueName('State card', { maxLength: 100 }),
 			initial_state: 'Design',
 			states: [
+				{ name: 'Research', category: 'active' },
 				{ name: 'Design', category: 'active' },
 				{ name: 'Implementation', category: 'active' },
-				{ name: 'Research', category: 'active' },
 				{ name: 'Needs Clarification', category: 'awaiting_human' },
 				{ name: 'Done', category: 'done' },
 				{ name: 'Canceled', category: 'done' }
@@ -113,20 +134,38 @@ test.beforeAll(async ({ playwright }) => {
 	await attachDesignDoc(stale.id);
 	await api.post(`/api/v1/issues/${stale.id}/transition`, { action: 'Design complete' });
 
-	await request.dispose();
+	// A second workflow purely for the phone bar's fit arithmetic: a state name
+	// so wide that, at its natural width, the expected next step could not have
+	// a slot at all. Its own workflow, so the fixtures above keep their shape.
+	const wideWorkflow = await body<WorkflowResponse>(
+		await api.post('/api/v1/workflows', {
+			name: uniqueName('Wide state', { maxLength: 100 }),
+			initial_state: WIDE_STATE,
+			states: [
+				{ name: WIDE_STATE, category: 'active' },
+				{ name: 'Done', category: 'done' },
+				{ name: 'Canceled', category: 'done' }
+			],
+			transitions: [
+				{
+					name: 'Ready for review',
+					from: WIDE_STATE,
+					to: 'Done',
+					requires: [{ artifact: 'review-notes', type: 'text' }]
+				},
+				{ name: 'Cancel', from: WIDE_STATE, to: 'Canceled' }
+			]
+		})
+	);
+	wide = await body<IssueDetail>(
+		await api.post(`/api/v1/projects/${project.id}/issues`, {
+			title: `Wide ${runId}`,
+			workflow_id: wideWorkflow.id
+		})
+	);
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
-
-const issueUrl = (issue: IssueDetail) =>
-	`/issues/${encodeURIComponent(projectName)}/${issue.number}`;
-
-const stateCard = (page: Page) =>
-	page
-		.locator('section')
-		.filter({ has: page.getByRole('heading', { name: 'State', exact: true }) });
+test.use({ signedIn: ALICE });
 
 /** A transition button, matched the way a screen reader names it. */
 const transition = (page: Page, name: string) => stateCard(page).getByRole('button', { name });
@@ -145,26 +184,25 @@ async function reasons(page: Page, name: string): Promise<Locator> {
 type Box = { x: number; y: number; width: number; height: number };
 
 /**
- * Boxes for several elements as of ONE settled layout: the issue page keeps
- * resolving streamed panels after the card is visible, and two separate
- * `boundingBox()` reads are two different moments (Tines/123).
+ * Boxes for several elements as of ONE settled layout (`readSettled` in
+ * `helpers.ts`): the issue page keeps resolving streamed panels after the card
+ * is visible, and two separate `boundingBox()` reads are two different moments
+ * (Tines/123).
  */
-async function boxes(locators: Locator[]): Promise<Box[]> {
-	const read = () =>
-		Promise.all(
-			locators.map(async (l) => {
-				const box = await l.boundingBox();
-				expect(box).not.toBeNull();
-				return box!;
-			})
-		);
-	let previous = await read();
-	for (let attempt = 0; attempt < 20; attempt++) {
-		const next = await read();
-		if (JSON.stringify(next) === JSON.stringify(previous)) return next;
-		previous = next;
-	}
-	throw new Error('layout never settled');
+function boxes(locators: Locator[]): Promise<Box[]> {
+	// Bounded, as the hand-rolled loop this replaced was: a layout that never
+	// settles should fail here in seconds, not burn the whole test timeout.
+	return readSettled(
+		() =>
+			Promise.all(
+				locators.map(async (l) => {
+					const box = await l.boundingBox();
+					expect(box).not.toBeNull();
+					return box!;
+				})
+			),
+		{ timeout: 5_000 }
+	);
 }
 
 /**
@@ -178,33 +216,33 @@ async function settled(page: Page): Promise<void> {
 	await expect(page.locator('[data-slot="skeleton"]')).toHaveCount(0);
 }
 
-test('transitions form one full-width stack with the enabled ones first', async ({ page }) => {
+test('transitions form one full-width stack, forward moves first', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(blocked));
+	await page.goto(issuePath(projectName, blocked.number));
 	await settled(page);
 
-	const names = ['Needs more research', 'Cancel', 'Design complete', LONG_TRANSITION];
-	const [research, cancel, complete, clarify, card] = await boxes([
+	const names = ['Design complete', LONG_TRANSITION, 'Needs more research', 'Cancel'];
+	const [complete, clarify, research, cancel, card] = await boxes([
 		...names.map((n) => transition(page, n)),
 		stateCard(page)
 	]);
 
 	// One column: same left edge, same width, none wider than the card.
-	for (const b of [cancel, complete, clarify]) {
-		expect(Math.abs(b.width - research.width)).toBeLessThanOrEqual(1);
-		expect(Math.abs(b.x - research.x)).toBeLessThanOrEqual(1);
+	for (const b of [cancel, research, clarify]) {
+		expect(Math.abs(b.width - complete.width)).toBeLessThanOrEqual(1);
+		expect(Math.abs(b.x - complete.x)).toBeLessThanOrEqual(1);
 	}
-	expect(research.width).toBeGreaterThan(200);
+	expect(complete.width).toBeGreaterThan(200);
 	for (const b of [research, cancel, complete, clarify]) {
 		expect(b.x + b.width).toBeLessThanOrEqual(card.x + card.width);
 		expect(b.height).toBeLessThan(48); // no wrapped label doubling a row
 	}
 
-	// Enabled first (workflow order puts "Design complete" first), workflow
-	// order preserved inside each group.
-	expect(research.y).toBeLessThan(cancel.y);
-	expect(cancel.y).toBeLessThan(complete.y);
+	// Both forward moves lead — blocked though they are — then the step back,
+	// then the escape lane; workflow order preserved inside each group.
 	expect(complete.y).toBeLessThan(clarify.y);
+	expect(clarify.y).toBeLessThan(research.y);
+	expect(research.y).toBeLessThan(cancel.y);
 
 	await expect(transition(page, 'Needs more research')).toBeEnabled();
 	await expect(transition(page, 'Cancel')).toBeEnabled();
@@ -214,7 +252,7 @@ test('transitions form one full-width stack with the enabled ones first', async 
 
 test('each blocking reason sits under its own button', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(blocked));
+	await page.goto(issuePath(projectName, blocked.number));
 	await settled(page);
 
 	const completeReasons = await reasons(page, 'Design complete');
@@ -243,7 +281,7 @@ test('each blocking reason sits under its own button', async ({ page }) => {
 
 test('a long transition label truncates rather than overflowing the card', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(blocked));
+	await page.goto(issuePath(projectName, blocked.number));
 	await settled(page);
 
 	const button = transition(page, LONG_TRANSITION);
@@ -260,7 +298,7 @@ test('a long transition label truncates rather than overflowing the card', async
 
 test('a satisfied requirement reads as a check under its enabled button', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(fresh));
+	await page.goto(issuePath(projectName, fresh.number));
 	await settled(page);
 
 	await expect(transition(page, 'Design complete')).toBeEnabled();
@@ -278,9 +316,22 @@ test('a satisfied requirement reads as a check under its enabled button', async 
 	expect(check.y + check.height).toBeLessThanOrEqual(research.y + 1);
 });
 
+test('an enabled next step is the one filled button in the phone bar', async ({ page }) => {
+	await page.setViewportSize(PHONE);
+	await page.goto(issuePath(projectName, fresh.number));
+	await settled(page);
+
+	const bar = page.getByTestId('transition-bar');
+	const complete = bar.getByRole('button', { name: 'Design complete' });
+	await expect(complete).toBeEnabled();
+	await expect(complete).toHaveClass(/bg-primary/);
+	// Exactly one, and it is that one.
+	await expect(bar.locator('button.bg-primary')).toHaveCount(1);
+});
+
 test('a stale requirement is reported under its blocked button', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(stale));
+	await page.goto(issuePath(projectName, stale.number));
 	await settled(page);
 
 	const ship = transition(page, 'ship');
@@ -294,15 +345,21 @@ test('a stale requirement is reported under its blocked button', async ({ page }
 
 test('on a phone the transitions live in a bar pinned above the tab bar', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl(blocked));
+	await gotoHydrated(page, issuePath(projectName, blocked.number));
 	await settled(page);
 
 	// The State card is a desktop surface; the bar takes its place, on screen
-	// without scrolling and sitting just above the tab bar.
+	// without scrolling and sitting just above the tab bar. The slot goes to
+	// the expected next step even though it is blocked — muted, not filled,
+	// and never to Cancel, which is a tap away in the sheet.
 	await expect(page.getByRole('heading', { name: 'State', exact: true })).toBeHidden();
 	const bar = page.getByTestId('transition-bar');
-	const direct = bar.getByRole('button', { name: 'Needs more research' });
+	const direct = bar.getByRole('button', { name: 'Design complete' });
 	await expect(direct).toBeInViewport();
+	await expect(direct).toHaveAttribute('aria-disabled', 'true');
+	await expect(direct).not.toHaveClass(/bg-primary/);
+	await expect(bar.locator('button.bg-primary')).toHaveCount(0);
+	await expect(bar.getByRole('button', { name: 'Cancel' })).toHaveCount(0);
 	const [barBox, tabs] = await boxes([bar, page.getByRole('navigation', { name: 'Primary' })]);
 	expect(barBox.y + barBox.height).toBeLessThanOrEqual(tabs.y + 1);
 
@@ -310,19 +367,34 @@ test('on a phone the transitions live in a bar pinned above the tab bar', async 
 	await expect(bar.getByRole('button', { name: LONG_TRANSITION })).toHaveCount(0);
 	await expect(bar.getByRole('button', { name: /more transitions/ })).toBeVisible();
 
-	// ...and the state button opens the sheet with every transition, each
-	// blocked one explained exactly as the desktop card would.
-	await page.getByRole('button', { name: /^State: Design/ }).click();
+	// ...and tapping the blocked slot opens the sheet at that same move, first
+	// in the list with its requirement directly under it — every blocked one
+	// explained exactly as the desktop card would.
+	// `force`: the button is deliberately `aria-disabled` rather than
+	// `disabled`, so it still takes the tap that opens the sheet — which
+	// Playwright's actionability check reads as "not enabled".
+	await direct.click({ force: true });
 	const sheet = page.getByRole('dialog', { name: 'State' });
 	await expect(sheet).toBeVisible();
-	await expect(sheet.getByRole('button', { name: LONG_TRANSITION })).toBeVisible();
-	await expect(sheet.getByRole('button', { name: /^Design complete/ })).toBeDisabled();
-	await expect(sheet.getByText(/Needs artifact/).first()).toBeVisible();
+	const lead = sheet.getByRole('button', { name: /^Design complete/ });
+	await expect(lead).toBeDisabled();
+	const leadWhy = sheet.locator(`ul[id="${await lead.getAttribute('aria-describedby')}"]`);
+	await expect(leadWhy).toContainText('Needs artifact');
+	const [leadBox, whyBox, clarifyBox] = await boxes([
+		lead,
+		leadWhy,
+		sheet.getByRole('button', { name: LONG_TRANSITION })
+	]);
+	expect(whyBox.y).toBeGreaterThanOrEqual(leadBox.y + leadBox.height - 1);
+	expect(whyBox.y + whyBox.height).toBeLessThanOrEqual(clarifyBox.y + 1);
+	// Cancel is last, below every other move.
+	const [cancelBox] = await boxes([sheet.getByRole('button', { name: 'Cancel' })]);
+	expect(cancelBox.y).toBeGreaterThan(clarifyBox.y);
 });
 
 test('the desktop layout keeps the State card in the right column', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(blocked));
+	await page.goto(issuePath(projectName, blocked.number));
 	await settled(page);
 
 	const [card, description, agents] = await boxes([
@@ -341,7 +413,7 @@ test('the desktop layout keeps the State card in the right column', async ({ pag
 
 test('the State card does not stretch to fill a tall main column', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issueUrl(tall));
+	await page.goto(issuePath(projectName, tall.number));
 	await settled(page);
 
 	const [card, description, agents] = await boxes([
@@ -377,4 +449,40 @@ test('the State card does not stretch to fill a tall main column', async ({ page
 		);
 	});
 	expect(slack).toBeLessThan(4);
+});
+
+test('the state chip yields width so the expected next step keeps its slot', async ({ page }) => {
+	await page.setViewportSize(PHONE);
+	await page.goto(issuePath(projectName, wide.number));
+	await settled(page);
+
+	// At the chip's natural width there is no room for this button at all; the
+	// chip shrinks to its floor instead, because the header badge already
+	// carries the state's full name and the move is why you are here.
+	const bar = page.getByTestId('transition-bar');
+	const direct = bar.getByRole('button', { name: 'Ready for review' });
+	await expect(direct).toBeVisible();
+	await expect(direct).toHaveAttribute('aria-disabled', 'true');
+
+	const chip = bar.getByRole('button', { name: new RegExp(`^State: ${WIDE_STATE}`) });
+	const label = chip.locator('span.truncate');
+	expect(await label.evaluate((el) => el.scrollWidth > el.clientWidth + 1)).toBe(true);
+	// Nothing is lost: the header badge still shows the state name in full.
+	const badge = page.locator('.state-badge').filter({ hasText: WIDE_STATE }).first();
+	await expect(badge).toBeVisible();
+	expect(await badge.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+
+	// It yields, but only to the floor, and nothing spills out of the bar.
+	const [barBox, chipBox, directBox, more] = await boxes([
+		bar,
+		chip,
+		direct,
+		bar.getByRole('button', { name: /more transitions/ })
+	]);
+	expect(chipBox.width).toBeGreaterThanOrEqual(71);
+	for (const b of [chipBox, directBox, more]) {
+		expect(b.x).toBeGreaterThanOrEqual(barBox.x - 1);
+		expect(b.x + b.width).toBeLessThanOrEqual(barBox.x + barBox.width + 1);
+	}
+	expect(directBox.x).toBeGreaterThanOrEqual(chipBox.x + chipBox.width - 1);
 });

@@ -18,13 +18,20 @@
 		transitions,
 		unmetFor,
 		disabled = false,
+		disabledReason = null,
 		stateEnteredAt,
 		onmove
 	}: {
-		/** Already ordered: enabled first, then blocked. */
+		/**
+		 * Already ordered by `planTransitions`: forward moves first (enabled, then
+		 * blocked, whose requirement line is the next action), then steps back,
+		 * then the escape lane.
+		 */
 		transitions: AllowedTransition[];
 		unmetFor: (t: AllowedTransition) => ArtifactRequirementCheck[];
 		disabled?: boolean;
+		/** Why the buttons are disabled, as their tooltip (archived project). */
+		disabledReason?: string | null;
 		stateEnteredAt: number;
 		onmove: (t: AllowedTransition) => void;
 	} = $props();
@@ -49,7 +56,7 @@
 					disabled={disabled || unmet.length > 0}
 					aria-describedby={transition.requires?.length ? reqId : undefined}
 					onclick={() => onmove(transition)}
-					title={transition.name}
+					title={disabledReason ?? transition.name}
 				>
 					<span class="min-w-0 truncate text-left">{transition.name}</span>
 					<span

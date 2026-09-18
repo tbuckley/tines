@@ -6,6 +6,8 @@ The core of Tines is an issue tracker, which makes work legible to both humans a
 
 Tines acts as a supervisor, assigning tasks to agents across managed services (using your own API keys) as well as local devices (using your own subscriptions). See [Running agents](#running-agents) for how that side works.
 
+Operators can reconcile finalized run spend with the [period usage ledger](docs/usage.md).
+
 ## Repository layout
 
 This is a pnpm workspace:
@@ -16,7 +18,78 @@ This is a pnpm workspace:
 | `tines` | `packages/cli` | The `tines` CLI, published to npm as [`tines`](https://www.npmjs.com/package/tines). Talks to the same API as the web app. |
 | `@tines/shared` | `packages/shared` | Shared API types and client, used by both the web app and the CLI. |
 
+Workflow packages and default-off immutable public snapshots are documented in
+[docs/workflow-packages.md](docs/workflow-packages.md). Public launch remains disabled until the
+separate moderation and operational-readiness review is accepted.
+
 ## Getting started
+
+### Your first project (hosted)
+
+Sign in to the [hosted app](https://tines.tbuckley.dev), open **Projects**, and choose
+**New project**. Pick the starter that matches the work; the preview shows what it will
+create, and the workflows, context, and issues it creates remain editable from
+**Workflows**, **Context**, and the issue page.
+
+**Code repository** needs a project name and a cloneable repository URL; the branch is
+optional and defaults to the repository's default branch. Its editable **How we work**
+conventions cover test commands, base and working branches, pull-request expectations, and
+important paths. It creates or reuses the **Code change** workflow as the project default,
+adds repository context and normally conventions, and opens **Find and fix a bug** in **In
+progress**. Follow the Agents checklist (see [Running agents](#running-agents)) to connect and
+route an agent. The agent should verify a real bug, fix and test it on a branch, open and
+attach a `pr` artifact, then **Submit for review**; in **Review**, a human can **Approve** or
+give feedback and **Send back**. **No bug found** is an honest route to Review with an
+explanation, but it is not a successful bug-to-PR result. Approval records the Tines
+workflow decision; it does not merge the GitHub pull request.
+
+**Plan something together** needs a project name and a useful brief, but no repository. Its
+editable conventions capture the people involved, dates and place, constraints, and what
+the human will decide. It creates or reuses **Idea** as the default workflow, adds a
+**Scout** workflow, conventions, and a project-owned `planning-guide` with the actual
+workflow bindings, then opens **Scout candidates for …** in **Scouting**. The agent should
+research worthwhile, sourced ideas (normally four to six), create each in **New**, attach a
+Markdown `proposal`, and **Propose** it. A human can **Approve**, **Pass**, or give feedback
+and **Send back**; **Reworking** must attach a new proposal version before **Re-propose**.
+Fewer or no qualifying candidates is truthful, but does not demonstrate a successful
+four-proposal result.
+
+**Blank** creates an empty project with no starter-created workflow, repository, or first
+issue. Its optional, non-developer **How work is done here** text becomes a conventions
+prompt; leaving it empty creates no conventions prompt. System and user-created workflows
+and other context can still be available, and you add the work and project context you
+need.
+
+CLI users can [install and sign in](#installing-the-cli-globally), discover the current
+starters, and create the same projects (replace the example URL, branch, and brief with
+your own):
+
+```sh
+tines projects starters
+tines projects create "Website" --starter code --repo https://github.com/you/website.git --branch main
+tines projects create "Family weekend" --starter plan --brief "A family weekend in Boston with two adults and children aged 4 and 7; indoor and outdoor options near our base, with time for lunch and rest."
+tines projects create "Household plans" --starter blank --prompt "Keep proposals practical and explain costs and uncertainties."
+tines projects create "Scratch space" --starter blank --no-prompt
+```
+
+Omit `--branch` to use the repository's default. Code and Plan use their rendered
+conventions templates unless `--prompt "…"` (or `--prompt @conventions.md`) replaces only
+the conventions, or `--no-prompt` omits only the conventions. Their workflow, repository
+or planning guide, and first issue are still created. Clearing the browser's conventions
+text has the same omit behavior. Blank—and CLI project creation without `--starter`—requires
+an explicit `--prompt` or `--no-prompt`; do not combine Code or Plan with
+`--default-workflow`, because each supplies its own default.
+
+An identical workflow is reused rather than duplicated, so edits to that shared workflow
+can affect other projects using it; changing only the conventions does not make a separate
+workflow. Starter creation itself does not add routing rules or change automation settings.
+Continue with the app's current **Agents** checklist and [Running agents](#running-agents);
+the [runner daemon guide](docs/runner-daemon.md) explains how a local runner receives the
+repository and starts its harness. A machine owner can opt into web-adjustable concurrency
+with `--allow-remote-concurrency --max-concurrent N`; `N` remains a local ceiling that the
+web cannot enable or raise.
+
+### Contributor setup
 
 Prereqs: Node 20+, pnpm 10 (`corepack enable`).
 
@@ -43,16 +116,16 @@ With the dev server running, try the CLI with the seeded key (the seed prints it
 export TINES_API_KEY=tines_dev0000000000000000000000000000000000000
 pnpm cli time                             # dev mode (tsx, no build needed)
 pnpm cli projects list
-pnpm cli time -- --json
+pnpm cli time --json                      # flags go straight on; `--` breaks pnpm 10
 
 # or the built binary
 pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI reads the API base URL from `--url` (accepted by every command, without exception), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, `pnpm cli` **always** targets `http://localhost:5173` — its script pins `TINES_API_URL` rather than defaulting it, so a `TINES_API_URL` already in your environment (every agent run has one, pointing at production) is ignored and the snippet above talks to your dev server. To reach any other deployment from source, including a dev server vite moved to another port, pass `--url` (`pnpm cli time --url http://localhost:5174`) or use the installed `tines` / the built binary. `tines config` shows what is in effect and where each value came from.
+The CLI reads the API base URL from `--url` (accepted by every command that talks to the API), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The local-only `logout`, `runner restart`, `runner uninstall`, `runner workspaces`, and `runner workspaces prune` commands take no `--url`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, `pnpm cli` **always** targets `http://localhost:5173` — its script pins `TINES_API_URL` rather than defaulting it, so a `TINES_API_URL` already in your environment (every agent run has one, pointing at production) is ignored and the snippet above talks to your dev server. To reach any other deployment from source, including a dev server vite moved to another port, pass `--url` (`pnpm cli time --url http://localhost:5174`) or use the installed `tines` / the built binary. `tines config` shows what is in effect and where each value came from.
 
-Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
+Paginated `… list` commands return one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command, up to a default 10,000-item safety ceiling; use `--max-items <n>` with `--all-pages` to choose a different positive bound. Exceeding the bound fails without printing a partial result. Without `--all-pages`, `--json` output carries a `next_cursor` and warns on stderr that there is more. Four lists are not paginated and take no such flag: `labels list`, `runners list`, `routing list`, and `issues artifacts list` return the whole collection by design.
 
 ## Installing the CLI globally
 
@@ -137,12 +210,79 @@ That is the whole setup. npmjs then trusts publishes coming from that exact repo
 
 To publish by hand in a pinch: `cd packages/cli && npm login && pnpm publish --no-git-checks` after setting the version yourself. Prefer merging to `main`.
 
+## Projects
+
+Projects are the top-level container for issues. A project you are done with is **archived**
+rather than deleted: archiving hides it from the lists and pickers that feed new work, pauses
+its scheduled tasks, stops agents dispatching on it and makes its issues read-only — while every
+link, ref, artifact and URL keeps resolving. It is reversible at any time.
+
+```sh
+tines projects archive "Paris 2026"      # pauses schedules, stops dispatch, issues read-only
+tines projects unarchive "Paris 2026"    # schedules resume from their next occurrence
+tines projects list --archived           # include archived projects (hidden by default)
+```
+
+An issue can also be **moved to another project** without losing anything. The issue keeps its
+stable ID, its comments, artifacts and versions, labels, links, runs, workflow state, pins,
+attempts and its schedule; it gets the destination's next never-used number, and every address
+it has ever answered to keeps resolving — for reads, for authorized writes, and for old browser
+URLs, which redirect to the current canonical one.
+
+```sh
+tines issues transfer Tines/392 --project Platform --dry-run   # review; writes nothing
+tines issues transfer Tines/392 --project Platform             # review, then confirm
+```
+
+Things worth knowing about a move:
+
+- The review is the point: it exposes guidance the issue loses, gains and retains; the effective
+  repository winner and overridden candidates with scope, URL, branch and checkout directory;
+  retained pins; checkout conflicts; and routing before and after. Missing routes, rule ties,
+  unavailable runners and checkout conflicts are disclosed, not vetoes.
+- A preview allocates nothing. The destination number is assigned by the confirmed move, so a
+  cancelled review consumes no number and emits no event.
+- A move is refused while a run is assigned, launching or running on the issue, and while
+  either project is archived. Nothing is drained or cancelled on your behalf.
+- Only a human session or an ordinary named key may move an issue. A run key may read the
+  review — that is how an agent argues for a move — but never commits one.
+- A project that owns an issue's old address cannot be deleted, even with `--force-context`;
+  archive it instead. Its old refs must keep working.
+- Activity keeps its history honest: the source project's feed retains the events recorded
+  there, the destination's feed picks up the move and everything after it, and the issue's own
+  feed stays complete.
+- `tines issues move` is unrelated: that is a workflow transition.
+
+Things worth knowing:
+
+- `projects list --archived` **includes** archived projects; it does not filter to them.
+- `issues list`, `schedules list` and `context list` have no `--archived` flag. Their default
+  omits an archived project's rows unless you name the project (`--project`), or, for context,
+  name the issue (`--issue`) — naming an anchor overrides the default. At the HTTP level the
+  same lists take `?archived=true|false|all`.
+- A write against an archived project fails with `422 project_archived`, whose message quotes
+  the command that undoes it (`details.unarchive_command` carries it verbatim).
+- Archiving **drains**: runs already under way finish on their own issue, and stay cancellable.
+  Unarchiving re-arms enabled schedules at their next future occurrence rather than replaying
+  missed ones.
+- In the browser, `/projects` hides archived projects behind a "Show archived (n)" toggle, and
+  an archived project's pages carry a read-only banner with an Unarchive action.
+- The browser's project switcher is a sticky, per-user focus for Issues, Context, Activity,
+  Workflows, and the Agents presentation. The Projects tab opens that project's home while
+  focused and the project page's Manage projects breadcrumb returns to the grid. Cross-project
+  issue links preserve the current focus and offer an explicit focus action instead.
+- Focus is presentation only: API lists, CLI commands, launch prompts, runners, fleet queue,
+  quotas, and automation controls remain workspace-wide unless explicitly scoped.
+
+The rules are recorded in [`specs/projects/SPEC.md`](specs/projects/SPEC.md).
+
 ## Running agents
 
 Behind the issue tracker sits a supervisor: it decides which issues agents should take on,
 launches them, streams their output back as a run log, and records what each attempt cost.
-Nothing runs until you arm it — the automation kill switch is **off for a new user**, so
-adding a runner or a routing rule is safe on its own.
+Automation is **on by default**. Eligible work can start as soon as an available runner and
+an explicit matching routing rule exist. The kill switch remains an intentional stop/resume
+control; an account that has saved automation off stays stopped until explicitly resumed.
 
 An issue is eligible for an agent exactly when its state's category is `active` (states in
 `backlog`, `awaiting_human`, and `done` are never touched), it is unblocked, it has no run
@@ -158,13 +298,40 @@ A **runner** is one launch target you own. Two types ship today:
 | `claude_managed` | Sessions in Anthropic's managed sandbox, billed to your own Anthropic API key. | Adding the key on the **Agents** tab. |
 | `local` | A daemon on one of your own machines driving a harness — Claude Code (`claude -p`), codex (`codex exec`), or a custom command template — on that machine's subscription and git credentials. | The daemon registering itself on first start. |
 
-Local runners are why self-hosting Tines usually means running something on a machine of
-your own:
+#### Your first agent run
 
-```sh
-TINES_API_KEY=<your API key> TINES_API_URL=https://your-tines.example \
-  tines runner daemon --name laptop --harness claude-code
-```
+Install → key → runner → rule → observe. Automation needs no separate arming step:
+
+1. **Install** the CLI on the machine that will do the work: `npm install -g tines`.
+2. **Key** — Settings → API keys, or **Create key** inside the Agents tab's *Add runner →
+   Local* dialog, which fills it into the command below for you.
+3. **Runner** — install the daemon as a service, naming it machine-plus-harness:
+
+   Using Codex? Set workspace-write and enable outbound network access before starting the
+   runner, then use `--harness codex`. Follow the
+   [Codex permissions setup](docs/runner-daemon.md#codex-permissions); the
+   [OpenAI configuration reference](https://developers.openai.com/codex/config-reference)
+   defines these settings.
+
+   ```sh
+   TINES_API_KEY=tines_… tines runner install \
+     --url https://tines.tbuckley.dev \
+     --name macbook-claude \
+     --harness claude-code
+   ```
+
+   One command registers the runner, stores its token, and loads the daemon under
+   launchd/systemd, where it survives reboots and restarts itself onto each new release.
+   `macbook-claude` is what every agent comment will say ("you via macbook-claude") and what
+   routing rules address. It appears on the Agents tab, online, within seconds.
+4. **Rule** — a runner takes no work until something routes to it: click **Route everything
+   to macbook-claude** in the dialog, or `tines routing set macbook-claude`.
+5. **Observe** — eligible work starts when the runner is available and routing matches.
+   Descriptions and repository context are useful but optional. If you previously stopped
+   automation, resume it on Agents or with `tines supervisor enable`.
+
+Self-hosters swap the `--url` for their own deployment; local runners are why self-hosting
+Tines usually means running something on a machine of your own.
 
 The daemon polls for work assigned to it, materializes a per-run workspace (the launch
 prompt, the issue's skills, and clones of its repos), runs the harness there, and reports
@@ -172,7 +339,7 @@ the finish. It also keeps its own copy of the `tines` CLI current from npm and p
 the harness's PATH, so agents run the CLI that matches the prompt they were given rather
 than whatever was last installed on the machine. **[docs/runner-daemon.md](docs/runner-daemon.md)**
 covers registration, the flags, token rotation, the managed CLI, failure behaviour, and
-launchd/systemd units for keeping it running.
+the service `tines runner install` sets up.
 
 Managed runners hold an Anthropic API key encrypted at rest with `SECRET_ENCRYPTION_KEY`
 (a Workers secret — see Deploying below); it is write-only after saving. They clone repos
@@ -188,14 +355,20 @@ actually launch.
 
 All of this is edited on the **Agents** tab, and most of it from the CLI too:
 
-- **The kill switch** — `tines supervisor enable` / `tines supervisor disable`, with
-  `tines supervisor status` for a one-screen overview.
+- **The kill switch** — `tines supervisor enable` (resume) / `tines supervisor disable`, with
+  `tines supervisor status` for a one-screen overview — which now also lists the issues
+  waiting for an agent, grouped by why, with the fix for each.
+- **Stage flow** — the Agents tab and `tines supervisor stats --window 7d` compare queue wait,
+  work time, runs per visit, outcomes and sent-back rates with the prior window. Project and
+  event-window filters keep the board and `tines events list` on the same slice.
 - **Routing rules** decide who takes an issue. A rule is scoped globally, per project, per
-  workflow state, or both (most specific wins, no merging), and its payload is an ordered
+  workflow state, or both (most specific wins), and its payload is an ordered
   preference list of `<runner>[:tier]` targets:
-  `tines routing set claude:cheapest laptop --state "Docs Change/Writing"`. An issue no rule
+  `tines routing set claude:cheapest macbook-claude --state "Docs Change/Writing"`. An issue no rule
   matches never dispatches — automation is opt-in. A single issue can override routing with
-  a pin: `tines issues assign <ref> <runner>[:tier]`.
+  a pin: `tines issues assign <ref> <runner>[:tier]`. A scoped singleton such as
+  `tines routing set --state "Docs Change/Writing" '*:smartest'` inherits the next
+  lower-priority rule's ordered runners while overriding every entry to that tier.
 - **Tiers** — rules say `smartest`, `balanced`, or `cheapest` rather than naming model ids
   that go stale; per-runner overrides live in `tines runners tiers <name>`.
 - **Quota policy** — one per user: a global concurrency cap
@@ -278,9 +451,26 @@ pnpm dlx shadcn-svelte@latest add card
 Production is served at <https://tines.tbuckley.dev> via a Workers custom
 domain (`routes` in `apps/web/wrangler.jsonc`); the tbuckley.dev zone must be
 on the same Cloudflare account, and the first deploy creates the DNS record
-and certificate automatically. `workers_dev` is off, so the workers.dev
-subdomain serves no production traffic — it's only used for per-version
-preview URLs (below).
+and certificate automatically. `workers_dev` is on so its hostname can become
+the **artifact sandbox origin**, the cross-site host that executes HTML artifacts.
+The hostname serves only artifacts once `ARTIFACT_SANDBOX_ORIGIN` is configured. `workers.dev` is
+on the Public Suffix List, so a page there is a different registrable domain
+from `tines.tbuckley.dev` and carries none of the app's cookies;
+`hooks.server.ts` serves nothing but `/s/*` on that host. To turn it on, set
+`vars.ARTIFACT_SANDBOX_ORIGIN` in `apps/web/wrangler.jsonc` to
+`https://tines-web.<subdomain>.workers.dev` — `<subdomain>` is the account's
+workers.dev subdomain, which any preview URL (below) spells out. The value must
+be an HTTP(S) origin without credentials, a path, query, or fragment; a trailing
+slash, host capitalization, and default port are normalized. Invalid values
+fall back to same-origin sandboxing. Before enabling it, smoke-test the real
+host: `/issues` and `/api/v1/projects` must return 404, while a minted `/s/…/`
+link must run in the viewer with storage available and API access blocked.
+Leaving the
+var unset is supported and is what local dev, e2e and PR previews do: sites
+are then served from the app origin under CSP `sandbox`, which is equally
+locked down but gives the page an opaque origin, so `localStorage` throws.
+See `specs/artifacts/SPEC.md` "Sites: HTML artifacts". Per-version preview
+URLs (below) are unaffected either way.
 
 One-time setup (needs `wrangler login` or a `CLOUDFLARE_API_TOKEN` in the environment):
 
@@ -312,10 +502,12 @@ everyone types; `pnpm check` fails on any script named after a pnpm command (bar
 ### Continuous integration
 
 `.github/workflows/ci.yml` runs on every pull request and push to `main`: one job
-typechecks (`pnpm check`) and runs the unit tests, another installs Chromium and runs the
-Playwright suite (`pnpm test:e2e`) against a local `wrangler dev` with a throwaway D1. It
-needs no secrets, so it runs for fork PRs too. The deploy and publish workflows below run
-the unit tests again before shipping, but the e2e suite runs only here.
+typechecks (`pnpm check`) and runs the unit tests, and three more each install Chromium's
+headless shell and run one shard of the Playwright suite (`pnpm test:e2e --shard=N/3`)
+against their own local `wrangler dev` with a throwaway D1. A final "Playwright e2e" job
+just reports whether every shard passed, so the check name predates the sharding. It needs
+no secrets, so it runs for fork PRs too. The deploy and publish workflows below run
+unit tests again before shipping, but the e2e suite runs only here.
 
 ### Automatic deploys
 
@@ -346,7 +538,7 @@ is `IF NOT EXISTS`.
 ### PR preview URLs
 
 `.github/workflows/preview.yml` runs on every pull request (from branches in
-this repo): it builds, runs unit tests, applies the PR's migrations to the
+this repo): it builds the web app, applies the PR's migrations to the
 preview database, then uploads the worker with `wrangler versions upload
 --env preview --preview-alias pr-<number>`. Nothing is promoted to live
 traffic; the upload gets a stable per-PR alias URL like
@@ -375,8 +567,67 @@ pnpm run build && pnpm wrangler deploy --env preview   # creates the preview wor
 ```
 
 All PRs share the one preview database, and each PR applies its own pending
-migrations to it. If PRs with conflicting migrations leave it in a bad state,
-throw it away and start over — it holds nothing precious:
+migrations to it.
+
+#### Recover an exactly renamed migration without resetting data
+
+Deleting and recreating the preview database is still the right recovery for
+disposable, genuinely divergent state, but it destroys all preview data. A
+narrower recovery is possible when an applied migration was only renamed and
+the old and new files are byte-for-byte identical. Do not use this procedure to
+hide unknown or partial schema drift.
+
+First, stop concurrent Preview migration runs. From the repository root, prove
+the old and new revisions resolve to the same Git blob, then from `apps/web`
+inspect the remote ledger, the full schema and data invariants established by
+the migration, and the pending list. Continue only if the old filename occurs
+exactly once, the new filename is absent, every expected schema object and
+backfill is present, and `PRAGMA foreign_key_check` returns no rows. For the
+`0026_issue_addresses.sql` to `0027_issue_addresses.sql` incident, for example:
+
+```sh
+git rev-parse <old-revision>:apps/web/migrations/0026_issue_addresses.sql \
+  <new-revision>:apps/web/migrations/0027_issue_addresses.sql
+
+cd apps/web
+pnpm exec wrangler d1 execute tines-preview --remote --env preview --json \
+  --command "SELECT id, name, applied_at FROM d1_migrations ORDER BY id"
+pnpm exec wrangler d1 migrations list tines-preview --remote --env preview
+```
+
+Record a [Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
+bookmark immediately before the repair. A secure full export is optional; it
+briefly blocks requests and can contain sensitive preview data.
+
+```sh
+pnpm exec wrangler d1 time-travel info tines-preview --env preview --json
+pnpm exec wrangler d1 execute tines-preview --remote --env preview --json \
+  --command "UPDATE d1_migrations
+    SET name = '0027_issue_addresses.sql'
+    WHERE name = '0026_issue_addresses.sql'
+      AND NOT EXISTS (
+        SELECT 1 FROM d1_migrations
+        WHERE name = '0027_issue_addresses.sql'
+      )"
+```
+
+Require a successful result with exactly one changed row. Re-read the ledger
+and confirm the new filename retained the old row's `id` and `applied_at`, then
+repeat all schema, data, and foreign-key checks. The renamed migration must
+disappear from `wrangler d1 migrations list`. Finally, run Preview from a
+current same-repository PR and require both the migration step and preview
+upload to succeed; confirm the pending list is empty afterward. If either
+filename is duplicated or missing, the blobs differ, any schema/data check
+fails, or the update changes anything other than one row, stop and investigate
+instead of inserting a ledger row, rerunning the migration, or resetting the
+database. See Cloudflare's [D1 migration
+ledger](https://developers.cloudflare.com/d1/reference/migrations/) and [Time
+Travel restore](https://developers.cloudflare.com/d1/reference/time-travel/)
+documentation; a restore replaces the whole database and discards writes made
+after the bookmark.
+
+For a disposable preview database whose state genuinely diverged, delete and
+recreate it:
 
 ```sh
 pnpm wrangler d1 delete tines-preview
@@ -393,5 +644,7 @@ From the repo root:
 - `pnpm build` — build all packages
 - `pnpm check` — the migration-numbering and script-name guards in `scripts/` and `apps/web/scripts/`, then typecheck all packages (svelte-check + tsc)
 - `pnpm test` — vitest unit tests (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
-- `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/`). Run by `ci.yml` on pull requests, but not by `pnpm test`.
+- `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/` and its README for the suite's motion, hydration and geometry policies). Run by `ci.yml` on pull requests, but not by `pnpm test`.
 - `pnpm cli <command>` — run the CLI from source against the local dev server (`http://localhost:5173`, pinned; pass `--url` for anything else)
+
+  Add exact-model reasoning effort by ordered target number: `tines routing set codex:balanced claude:balanced --project Example --effort 1=low --effort 2=medium`. Re-run the same targets without `--effort` to clear routed effort; `routing clear` deletes the whole scoped rule.

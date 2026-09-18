@@ -1,8 +1,8 @@
 <script lang="ts" module>
 	/** The list filters a page parses from its URL, as the bar reads them. */
 	export interface IssueFilterState {
-		project?: string;
 		category?: string;
+		workflow?: string;
 		state?: string;
 		/** Label ids or names, as they appear in the URL. */
 		labels: string[];
@@ -18,7 +18,7 @@
 	import IconFilter from '@tabler/icons-svelte/icons/filter';
 	import IconSearch from '@tabler/icons-svelte/icons/search';
 	import IconX from '@tabler/icons-svelte/icons/x';
-	import type { Label, Project, StateCategory, WorkflowResponse } from '@tines/shared';
+	import type { Label, StateCategory, WorkflowResponse } from '@tines/shared';
 	import { tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
@@ -28,21 +28,20 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { CATEGORY_LABELS, categoryVar } from '$lib/format';
+	import { clearIssuePagination } from '$lib/issue-pagination';
+	import { issueWorkflowFilterPresentation } from '$lib/issue-workflow-filter';
 
 	let {
 		filters,
 		counts,
 		labels,
-		workflows,
-		projects
+		workflows
 	}: {
 		filters: IssueFilterState;
 		/** Issues per category under every filter but the category itself. */
 		counts: Record<StateCategory, number>;
 		labels: Label[];
 		workflows: WorkflowResponse[];
-		/** Present on the all-issues list; the project page has no scope to pick. */
-		projects?: Project[];
 	} = $props();
 
 	/**
@@ -52,6 +51,10 @@
 	 */
 	function navigate(mutate: (params: URLSearchParams) => void) {
 		const params = new URLSearchParams(page.url.searchParams);
+		// `?project=` on /issues is a one-shot that sets the focus (Tines/259);
+		// carrying it into the next filter click would re-fire it forever.
+		params.delete('project');
+		clearIssuePagination(params);
 		mutate(params);
 		const qs = params.toString();
 		goto(`${page.url.pathname}${qs ? `?${qs}` : ''}`, { keepFocus: true, noScroll: true });
@@ -65,6 +68,9 @@
 	// no tab of its own, but stays reachable by URL and shows as "All" while on.
 	const tabHref = (category: StateCategory | 'all' | null) => {
 		const params = new URLSearchParams(page.url.searchParams);
+		// See `navigate`: the one-shot focus param never rides along.
+		params.delete('project');
+		clearIssuePagination(params);
 		params.delete('category');
 		params.delete('done');
 		if (category === 'all') params.set('done', '1');
@@ -91,6 +97,105 @@
 			: [])
 	] as { key: string; label: string; short: string; count: number; glyph: StateCategory | null }[]);
 
+	// The strip scrolls sideways on a phone: the five tabs and their counts are
+	// ~490px wide in a ~366px container. A hard cut at the container's edge read
+	// as a rendering bug rather than as more tabs (Tines/180), so fade whichever
+	// edge still has tabs behind it, and snap so a tab never rests half-cut.
+	// From `sm` up nothing overflows, both flags stay false and no mask is set.
+	const FADE = 24;
+	/**
+	 * Matches `scroll-px-[24px]` on the nav below: a tab snapped to the start
+	 * therefore rests exactly clear of the left fade, and the first tab's snap
+	 * position clamps to 0, so an unscrolled strip has no left fade.
+	 */
+	const SNAP_PAD = FADE;
+	/** Slack for the sub-pixel rounding a snapped scroll position lands on. */
+	const EDGE = 2;
+	let stripEl: HTMLElement | null = $state(null);
+	let hiddenLeft = $state(false);
+	let hiddenRight = $state(false);
+	const stripMask = $derived(
+		hiddenLeft || hiddenRight
+			? `linear-gradient(to right, ${hiddenLeft ? 'transparent' : '#000'} 0, #000 ${FADE}px, #000 calc(100% - ${FADE}px), ${hiddenRight ? 'transparent' : '#000'} 100%)`
+			: undefined
+	);
+	function measureStrip() {
+		const el = stripEl;
+		if (!el) return;
+		hiddenLeft = el.scrollLeft > EDGE;
+		hiddenRight = el.scrollLeft < el.scrollWidth - el.clientWidth - EDGE;
+	}
+	/**
+	 * Keep the selected tab on screen and out of the fade. Left alone the strip
+	 * loads at `scrollLeft` 0, so a fresh `?category=done` — including the
+	 * bottom nav restoring the last filter — put the highlighted tab entirely
+	 * off-screen and the filtered list read as unfiltered.
+	 *
+	 * The scroll position has to be a real snap position: `snap-proximity`
+	 * re-snaps the strip the moment we write `scrollLeft`, which silently
+	 * cancelled every correction small enough to be within its threshold — a
+	 * selected `Awaiting` was left clipped under the right fade, which is the
+	 * defect this whole change is about.
+	 */
+	function revealActive() {
+		const el = stripEl;
+		if (!el) return;
+		const on = el.querySelector<HTMLElement>('[aria-current="page"]');
+		if (!on) return;
+		const max = el.scrollWidth - el.clientWidth;
+		if (max <= 0) return;
+		const view = el.clientWidth;
+		// Everything in one frame: the offset of a point from the strip's start
+		// edge at `scrollLeft` 0.
+		const left = el.getBoundingClientRect().left - el.scrollLeft;
+		const at = (node: Element) => node.getBoundingClientRect().left - left;
+		const start = at(on);
+		const end = start + on.getBoundingClientRect().width;
+		// Whether the selected tab is whole *and* out of the fade at scroll `s`,
+		// counting only the edges that are faded at that position.
+		const clears = (s: number) =>
+			start - s >= (s > EDGE ? FADE : 0) - 0.5 &&
+			end - s <= view - (s < max - EDGE ? FADE : 0) + 0.5;
+		const current = el.scrollLeft;
+		if (clears(current)) return;
+		const snaps = [...el.querySelectorAll<HTMLElement>('a[href]')].map((node) =>
+			Math.min(Math.max(at(node) - SNAP_PAD, 0), max)
+		);
+		const reachable = snaps
+			.filter(clears)
+			.sort((a, b) => Math.abs(a - current) - Math.abs(b - current));
+		// A tab wider than the strip minus both fades clears nothing: put it at
+		// the start, which is still a snap position and still shows most of it.
+		el.scrollLeft = reachable[0] ?? Math.min(Math.max(start - SNAP_PAD, 0), max);
+	}
+	$effect(() => {
+		// The selection and the tabs themselves both move the edge a fade
+		// belongs on; so does a resize, which is the only one not reactive.
+		void tabs;
+		void active;
+		const el = stripEl;
+		if (!el) return;
+		const sync = () => {
+			revealActive();
+			measureStrip();
+		};
+		sync();
+		// The first run can land before the strip has been laid out, where
+		// every measurement is 0 and nothing looks hidden; the next frame has
+		// real numbers, and the observer picks up every change after that.
+		const frame = requestAnimationFrame(sync);
+		// The nav's own box never changes width, so watch the pill inside it
+		// too: a web font landing or a count gaining a digit reflows the
+		// content without resizing the scroller, and left the flags stale.
+		const observer = new ResizeObserver(sync);
+		observer.observe(el);
+		if (el.firstElementChild) observer.observe(el.firstElementChild);
+		return () => {
+			cancelAnimationFrame(frame);
+			observer.disconnect();
+		};
+	});
+
 	// --- The Filter menu: labels, state, ready ------------------------------
 	let menuOpen = $state(false);
 	let labelQuery = $state('');
@@ -113,14 +218,25 @@
 		setLabels(
 			selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id]
 		);
-	// Distinct state names across the library, for the state filter.
-	const stateNames = $derived([...new Set(workflows.flatMap((w) => w.states.map((s) => s.name)))]);
+	const workflowFilter = $derived(
+		issueWorkflowFilterPresentation(workflows, filters.workflow, filters.state)
+	);
+	const setWorkflow = (value: string) =>
+		navigate((p) => {
+			if (value) p.set('workflow', value);
+			else p.delete('workflow');
+			p.delete('state');
+		});
 	const menuCount = $derived(
-		selectedLabels.length + (filters.state ? 1 : 0) + (filters.ready ? 1 : 0)
+		selectedLabels.length +
+			(filters.workflow ? 1 : 0) +
+			(filters.state ? 1 : 0) +
+			(filters.ready ? 1 : 0)
 	);
 	const clearMenu = () =>
 		navigate((p) => {
 			p.delete('label');
+			p.delete('workflow');
 			p.delete('state');
 			p.delete('ready');
 		});
@@ -142,28 +258,19 @@
 	}
 </script>
 
-<!-- One line from `sm` up: scope, tabs, Filter and its chips, then search at
-     the far right. On a phone, `order` rebuilds it as rows: scope + Filter +
-     search button, then the tabs (scrolling sideways), then any chips, then
-     the search field when opened. -->
+<!-- One line from `sm` up: tabs, Filter and its chips, then search at the far
+     right. On a phone, `order` rebuilds it as rows: Filter + search button,
+     then the tabs (scrolling sideways, faded at whichever edge has more of
+     them), then any chips, then the search field when opened. The project
+     scope is not here: the app chrome owns it (Tines/259). -->
 <div class="mb-6 flex flex-wrap items-center gap-x-3 gap-y-2">
-	{#if projects}
-		<Select
-			class="w-40 max-sm:min-w-0 max-sm:flex-1"
-			value={filters.project ?? ''}
-			onchange={(e) => set('project', e.currentTarget.value)}
-			aria-label="Filter by project"
-		>
-			<option value="">All projects</option>
-			{#each projects as project (project.id)}
-				<option value={project.name}>{project.name}</option>
-			{/each}
-		</Select>
-	{/if}
-
 	<nav
 		aria-label="Category"
-		class="order-3 -mx-1 w-[calc(100%+0.5rem)] [scrollbar-width:none] overflow-x-auto px-1 sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0"
+		bind:this={stripEl}
+		onscroll={measureStrip}
+		style:mask-image={stripMask}
+		style:-webkit-mask-image={stripMask}
+		class="order-3 -mx-1 w-[calc(100%+0.5rem)] snap-x snap-proximity scroll-px-[24px] [scrollbar-width:none] overflow-x-auto px-1 sm:order-none sm:mx-0 sm:w-auto sm:overflow-visible sm:px-0"
 	>
 		<div class="bg-muted/60 inline-flex h-9 items-center gap-0.5 rounded-md border p-[3px]">
 			{#each tabs as tab (tab.key)}
@@ -173,7 +280,7 @@
 					data-sveltekit-noscroll
 					data-sveltekit-keepfocus
 					aria-current={on ? 'page' : undefined}
-					class="flex h-7 items-center gap-1.5 rounded-[5px] px-2.5 text-[13px] whitespace-nowrap transition-colors {on
+					class="flex h-7 snap-start items-center gap-1.5 rounded-[5px] px-2.5 text-[13px] whitespace-nowrap transition-colors {on
 						? 'bg-background text-foreground font-medium shadow-xs'
 						: 'text-muted-foreground hover:text-foreground'}"
 				>
@@ -218,7 +325,7 @@
 				sideOffset={6}
 				align="start"
 				collisionPadding={8}
-				class="bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 ring-foreground/10 z-50 w-72 rounded-lg p-1 shadow-md ring-1 outline-none"
+				class="bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 ring-foreground/10 z-50 max-h-[calc(100vh-16px)] w-72 max-w-[calc(100vw-16px)] overflow-y-auto rounded-lg p-1 shadow-md ring-1 outline-none"
 			>
 				<p
 					class="text-muted-foreground px-2 pt-1.5 pb-1 text-[11px] font-medium tracking-wider uppercase"
@@ -256,20 +363,57 @@
 				<p
 					class="text-muted-foreground mt-1 border-t px-2 pt-2 pb-1 text-[11px] font-medium tracking-wider uppercase"
 				>
+					Workflow
+				</p>
+				<div class="px-1 pb-1">
+					<Select
+						class="h-8 text-sm"
+						value={workflowFilter.workflowSelectValue}
+						onchange={(e) => setWorkflow(e.currentTarget.value)}
+						aria-label="Filter by workflow"
+					>
+						<option value="">Any workflow</option>
+						{#if workflowFilter.workflowSynthetic}
+							<option value={workflowFilter.workflowSynthetic.id} disabled>
+								{workflowFilter.workflowSynthetic.label}
+							</option>
+						{/if}
+						{#each workflowFilter.workflowOptions as workflow (workflow.id)}
+							<option value={workflow.id}>{workflow.label}</option>
+						{/each}
+					</Select>
+				</div>
+				<p
+					class="text-muted-foreground mt-1 border-t px-2 pt-2 pb-1 text-[11px] font-medium tracking-wider uppercase"
+				>
 					State
 				</p>
 				<div class="px-1 pb-1">
 					<Select
 						class="h-8 text-sm"
-						value={filters.state ?? ''}
+						value={workflowFilter.stateSelectValue}
 						onchange={(e) => set('state', e.currentTarget.value)}
 						aria-label="Filter by state"
+						aria-describedby={!workflowFilter.selectedWorkflow
+							? 'issue-filter-state-help'
+							: undefined}
+						disabled={!workflowFilter.selectedWorkflow}
 					>
 						<option value="">Any state</option>
-						{#each stateNames as name (name)}
-							<option value={name}>{name}</option>
+						{#if workflowFilter.stateSynthetic}
+							<option value={workflowFilter.stateSynthetic.id} disabled>
+								{workflowFilter.stateSynthetic.label}
+							</option>
+						{/if}
+						{#each workflowFilter.stateOptions as state (state.id)}
+							<option value={state.id}>{state.name}</option>
 						{/each}
 					</Select>
+					{#if !workflowFilter.selectedWorkflow}
+						<p id="issue-filter-state-help" class="text-muted-foreground px-1 pt-1 text-xs">
+							{workflowFilter.stateHelp}
+						</p>
+					{/if}
 				</div>
 				<div class="mt-1 border-t px-2 pt-2 pb-1.5">
 					<!-- Ready implies not-done: with it on, the Done tab counts 0. -->
@@ -313,16 +457,32 @@
 					<IconX size={13} stroke={2} class="text-muted-foreground" />
 				</button>
 			{/each}
+			{#if filters.workflow}
+				<button
+					type="button"
+					class="bg-background hover:bg-accent flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-full border pr-1.5 pl-2.5 text-xs"
+					aria-label="Remove filter workflow: {workflowFilter.workflowChipLabel}"
+					onclick={() => setWorkflow('')}
+				>
+					<span class="text-muted-foreground shrink-0">workflow</span>
+					<span class="min-w-0 truncate font-medium" title={workflowFilter.workflowChipLabel}
+						>{workflowFilter.workflowChipLabel}</span
+					>
+					<IconX size={13} stroke={2} class="text-muted-foreground shrink-0" />
+				</button>
+			{/if}
 			{#if filters.state}
 				<button
 					type="button"
-					class="bg-background hover:bg-accent flex h-7 items-center gap-1.5 rounded-full border pr-1.5 pl-2.5 text-xs"
-					aria-label="Remove filter state: {filters.state}"
+					class="bg-background hover:bg-accent flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-full border pr-1.5 pl-2.5 text-xs"
+					aria-label="Remove filter state: {workflowFilter.stateChipLabel}"
 					onclick={() => set('state', '')}
 				>
-					<span class="text-muted-foreground">state</span>
-					<span class="max-w-40 truncate font-medium">{filters.state}</span>
-					<IconX size={13} stroke={2} class="text-muted-foreground" />
+					<span class="text-muted-foreground shrink-0">state</span>
+					<span class="min-w-0 truncate font-medium" title={workflowFilter.stateChipLabel}
+						>{workflowFilter.stateChipLabel}</span
+					>
+					<IconX size={13} stroke={2} class="text-muted-foreground shrink-0" />
 				</button>
 			{/if}
 			{#if filters.ready}

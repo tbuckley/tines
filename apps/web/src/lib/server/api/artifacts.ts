@@ -11,6 +11,7 @@
  */
 import {
 	ARTIFACT_FILE_MAX_BYTES,
+	ARTIFACT_SITE_LINK_TTL_MS,
 	ARTIFACT_FOLDER_MAX_BYTES,
 	ARTIFACT_FOLDER_MAX_FILES,
 	ARTIFACT_MAX_VERSIONS,
@@ -19,11 +20,14 @@ import {
 	ARTIFACT_TYPES,
 	canonicalGitHubRepoUrl,
 	parsePrSpec,
+	requirementFix,
+	siteEntry,
 	type Artifact,
 	type ArtifactDetail,
 	type ArtifactRequirement,
 	type ArtifactRequirementCheck,
 	type ArtifactRequirementStatus,
+	type ArtifactSiteLink,
 	type ArtifactType,
 	type ArtifactVersion,
 	type ArtifactVersionFile,
@@ -36,7 +40,17 @@ import {
 	artifactKeyPrefix,
 	getArtifactStore
 } from '$lib/server/artifact-store';
+import {
+	artifactSandboxOrigin,
+	mintSiteToken,
+	resolveSitePath,
+	siteErrorPage,
+	siteHeaders,
+	siteKeyMaterial,
+	verifySiteToken
+} from '$lib/server/artifact-site';
 import { idChunks, newId, type Database } from '$lib/server/db';
+import { assertWritable } from './archive';
 import { ApiFail, notFound, optionalString, runAtomic, type ActorContext } from './core';
 import { actorOf, eventInsert } from './events';
 
@@ -163,8 +177,14 @@ interface IssueRef {
 	id: string;
 	projectId: string;
 	projectName: string;
+	projectArchivedAt: number | null;
 	number: number;
 	stateEnteredAt: number;
+}
+
+/** The gate's view of an artifact issue's project. */
+function artifactProject(issue: IssueRef) {
+	return { id: issue.projectId, name: issue.projectName, archived_at: issue.projectArchivedAt };
 }
 
 async function requireIssue(
@@ -181,7 +201,8 @@ async function requireIssue(
 			'issue.number',
 			'issue.state_entered_at',
 			'issue.created_at',
-			'project.name as project_name'
+			'project.name as project_name',
+			'project.archived_at as project_archived_at'
 		])
 		.where('issue.id', '=', issueId)
 		.where('project.user_id', '=', userId)
@@ -191,6 +212,7 @@ async function requireIssue(
 		id: row.id,
 		projectId: row.project_id,
 		projectName: row.project_name,
+		projectArchivedAt: row.project_archived_at,
 		number: row.number,
 		stateEnteredAt: Number(row.state_entered_at ?? row.created_at)
 	};
@@ -207,7 +229,7 @@ function itemQuery(db: Kysely<Database>, userId: string, issueId: string) {
 
 type ItemRow = Awaited<ReturnType<ReturnType<typeof itemQuery>['execute']>>[number];
 
-function versionQuery(db: Kysely<Database>) {
+export function versionQuery(db: Kysely<Database>) {
 	return (
 		db
 			.selectFrom('artifact_version')
@@ -227,6 +249,9 @@ function versionQuery(db: Kysely<Database>) {
 				'actor_user.name as actor_user_name',
 				'api_key.name as actor_api_key_name',
 				'actor_run.id as actor_run_id',
+				// The run's own issue: a version attributed to a run on *another*
+				// issue must not be folded into this issue's round.
+				'actor_run.issue_id as actor_run_issue_id',
 				'actor_runner.name as actor_runner_name',
 				'actor_run_project.name as actor_run_project_name',
 				'actor_run_issue.number as actor_run_issue_number'
@@ -350,6 +375,74 @@ async function loadVersions(
 	return { byItem, filesByVersion };
 }
 
+/** One artifact version on an issue, with its item's name and its file list. */
+export interface IssueArtifactVersion {
+	item_id: string;
+	name: string;
+	artifact_type: ArtifactType;
+	version: number;
+	actor_run_id: string | null;
+	actor_run_issue_id: string | null;
+	pr_repo_url: string | null;
+	pr_number: number | null;
+	created_at: number;
+	/** folder versions: the snapshot's paths, sorted; empty for other types. */
+	files: string[];
+}
+
+/**
+ * Every version of every artifact on one issue, oldest first. The handoff
+ * derivations need the whole history (they compare `from_version` against what
+ * preceded a run), so this deliberately does not collapse to current versions.
+ */
+export async function loadIssueVersions(
+	db: Kysely<Database>,
+	userId: string,
+	issueId: string
+): Promise<IssueArtifactVersion[]> {
+	const rows = await versionQuery(db)
+		.innerJoin('context_item', 'context_item.id', 'artifact_version.context_item_id')
+		.select(['context_item.name as item_name', 'context_item.config as item_config'])
+		.where('context_item.user_id', '=', userId)
+		.where('context_item.kind', '=', 'artifact')
+		.where('context_item.issue_id', '=', issueId)
+		.orderBy('artifact_version.created_at asc')
+		.orderBy('artifact_version.version asc')
+		.execute();
+	const filesByVersion = new Map<string, string[]>();
+	if (rows.length > 0) {
+		const fileRows = (
+			await Promise.all(
+				idChunks(rows.map((r) => r.id)).map((chunk) =>
+					db
+						.selectFrom('artifact_version_file')
+						.select(['artifact_version_id', 'path'])
+						.where('artifact_version_id', 'in', chunk)
+						.orderBy('path asc')
+						.execute()
+				)
+			)
+		).flat();
+		for (const f of fileRows) {
+			const list = filesByVersion.get(f.artifact_version_id) ?? [];
+			list.push(f.path);
+			filesByVersion.set(f.artifact_version_id, list);
+		}
+	}
+	return rows.map((r) => ({
+		item_id: r.context_item_id,
+		name: r.item_name,
+		artifact_type: artifactTypeOf(r.item_config),
+		version: r.version,
+		actor_run_id: r.actor_run_id,
+		actor_run_issue_id: r.actor_run_issue_id,
+		pr_repo_url: r.pr_repo_url,
+		pr_number: r.pr_number,
+		created_at: r.created_at,
+		files: filesByVersion.get(r.id) ?? []
+	}));
+}
+
 /** Every artifact on an issue, current-version summarized, `fresh` computed. */
 export async function listArtifacts(
 	db: Kysely<Database>,
@@ -410,7 +503,8 @@ export async function getArtifactDetail(
 
 export function checkRequirements(
 	requires: ArtifactRequirement[],
-	artifacts: Pick<Artifact, 'name' | 'artifact_type' | 'fresh' | 'current_version'>[]
+	artifacts: Pick<Artifact, 'name' | 'artifact_type' | 'fresh' | 'current_version'>[],
+	ref: string
 ): ArtifactRequirementCheck[] {
 	return requires.map((r) => {
 		const artifact = artifacts.find((a) => a.name === r.artifact);
@@ -428,7 +522,7 @@ export function checkRequirements(
 		} else {
 			status = 'satisfied';
 		}
-		return {
+		const checked = {
 			...r,
 			status,
 			current_version: artifact
@@ -438,6 +532,14 @@ export function checkRequirements(
 					}
 				: null,
 			current_type: artifact ? artifact.artifact_type : null
+		};
+		// The fix is computed here and nowhere else: the 422, the issue read
+		// and the launch prompt all read it off the check.
+		const fix = requirementFix(checked, ref);
+		return {
+			...checked,
+			fix: fix.command,
+			...(fix.alternative !== undefined ? { fix_alternative: fix.alternative } : {})
 		};
 	});
 }
@@ -844,6 +946,7 @@ async function upsertArtifactOnce(
 	body: UpsertArtifactRequest
 ): Promise<Artifact> {
 	const issue = await requireIssue(db, actor.userId, issueId);
+	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const name = validateArtifactName(rawName);
 	const description = optionalString(body.description, 'description', { max: 1000 });
 	const existing = await loadCurrent(db, actor.userId, issue, name);
@@ -989,6 +1092,7 @@ async function uploadArtifactFileOnce(
 	file: { filename: string; contentType: string; bytes: Uint8Array }
 ): Promise<Artifact> {
 	const issue = await requireIssue(db, actor.userId, issueId);
+	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const name = validateArtifactName(rawName);
 	const filename = validateFilename(file.filename);
 	const contentType = validateContentType(file.contentType);
@@ -1074,6 +1178,7 @@ async function uploadArtifactFolderOnce(
 	files: FolderUploadFile[]
 ): Promise<Artifact> {
 	const issue = await requireIssue(db, actor.userId, issueId);
+	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const name = validateArtifactName(rawName);
 	if (files.length === 0) {
 		throw new ApiFail(422, 'invalid_field', 'A folder snapshot needs at least one file part', {
@@ -1194,6 +1299,7 @@ async function reaffirmArtifactOnce(
 	name: string
 ): Promise<Artifact> {
 	const issue = await requireIssue(db, actor.userId, issueId);
+	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const { item, versions, filesByVersion } = await requireArtifact(db, actor.userId, issue, name);
 	const current = versions[versions.length - 1];
 	const payload: VersionPayload = {
@@ -1252,6 +1358,7 @@ export async function deleteArtifact(
 	name: string
 ): Promise<void> {
 	const issue = await requireIssue(db, actor.userId, issueId);
+	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const { item } = await requireArtifact(db, actor.userId, issue, name);
 	await runAtomic(env, [
 		db
@@ -1372,5 +1479,162 @@ export async function artifactContentResponse(
 	// Inline rendering of user bytes on our origin: the sandbox keeps an SVG
 	// or HTML-ish payload from scripting against the app.
 	if (inline) headers['content-security-policy'] = 'sandbox';
+	return new Response(bytes as unknown as BodyInit, { status: 200, headers });
+}
+
+// ---------------------------------------------------------------------------
+// Sites: HTML artifacts served live (specs/artifacts/SPEC.md "Sites")
+
+/**
+ * The app origin allowed to frame a site. `'self'` covers local dev and e2e,
+ * where the app and the site share an origin.
+ */
+function appOriginOf(env: Env): string {
+	return env.TINES_PUBLIC_URL || env.BETTER_AUTH_URL || "'self'";
+}
+
+/**
+ * Mints a short-lived signed URL rendering one version of an HTML artifact.
+ * Deliberately not control-plane fenced: a run key can already read these
+ * bytes, and an agent linking to its own prototype to screenshot it is the
+ * point of the CLI command.
+ */
+export async function createSiteLink(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issueId: string,
+	name: string,
+	opts: { version?: number; requestOrigin: string }
+): Promise<ArtifactSiteLink> {
+	const issue = await requireIssue(db, actor.userId, issueId);
+	const { item, versions, filesByVersion } = await requireArtifact(db, actor.userId, issue, name);
+	const type = artifactTypeOf(item.config);
+	const row =
+		opts.version === undefined
+			? versions[versions.length - 1]
+			: versions.find((v) => v.version === opts.version);
+	if (!row) throw notFound();
+	const files = filesByVersion.get(row.id) ?? [];
+	if (siteEntry(type, row.content_type, files) === null) {
+		throw new ApiFail(
+			422,
+			'not_a_site',
+			`Artifact "${name}" is not a site: sites are file/text artifacts with content type text/html, or folders with a root index.html (this is ${type}${row.content_type ? ` ${row.content_type}` : ''})`,
+			{
+				artifact_type: type,
+				content_type: row.content_type,
+				...(type === 'folder' ? { paths: files.map((f) => f.path) } : {})
+			}
+		);
+	}
+	const keyMaterial = siteKeyMaterial(env);
+	if (!keyMaterial) {
+		throw new ApiFail(
+			503,
+			'site_unavailable',
+			'Site links need SECRET_ENCRYPTION_KEY or BETTER_AUTH_SECRET to be set on the server'
+		);
+	}
+	const expiresAt = Date.now() + ARTIFACT_SITE_LINK_TTL_MS;
+	const token = await mintSiteToken(
+		{ u: actor.userId, a: item.id, v: row.id, e: expiresAt },
+		keyMaterial
+	);
+	const sandboxOrigin = artifactSandboxOrigin(env.ARTIFACT_SANDBOX_ORIGIN);
+	return {
+		url: `${sandboxOrigin || opts.requestOrigin}/s/${token}/`,
+		version: row.version,
+		expires_at: expiresAt,
+		mode: sandboxOrigin ? 'sandbox-origin' : 'same-origin'
+	};
+}
+
+/**
+ * Serves one byte range of a site under `/s/<token>/<path…>`. There is no
+ * session here — the token is the whole authorization — so everything is
+ * looked up by the ids it carries, and a deleted artifact 404s even while
+ * its token is still in date.
+ */
+export async function artifactSiteResponse(
+	db: Kysely<Database>,
+	env: Env,
+	url: URL,
+	token: string,
+	path: string
+): Promise<Response> {
+	const keyMaterial = siteKeyMaterial(env);
+	if (!keyMaterial) return siteErrorPage(404);
+	const verified = await verifySiteToken(token, keyMaterial);
+	if (!verified.ok) return siteErrorPage(verified.reason === 'expired' ? 403 : 404);
+	const { u, a, v } = verified.payload;
+
+	const item = await db
+		.selectFrom('context_item')
+		.selectAll()
+		.where('id', '=', a)
+		.where('user_id', '=', u)
+		.where('kind', '=', 'artifact')
+		.executeTakeFirst();
+	if (!item) return siteErrorPage(404);
+	const row = await db
+		.selectFrom('artifact_version')
+		.selectAll()
+		.where('id', '=', v)
+		.where('context_item_id', '=', a)
+		.executeTakeFirst();
+	if (!row) return siteErrorPage(404);
+	const type = artifactTypeOf(item.config);
+	const files = await db
+		.selectFrom('artifact_version_file')
+		.selectAll()
+		.where('artifact_version_id', '=', row.id)
+		.orderBy('path asc')
+		.execute();
+	const entry = siteEntry(type, row.content_type, files);
+	if (entry === null) return siteErrorPage(404);
+
+	const resolved = resolveSitePath(entry, files, path);
+	if (resolved.kind === 'missing') return siteErrorPage(404);
+	if (resolved.kind === 'redirect') {
+		return new Response(null, {
+			status: 302,
+			headers: { location: `/s/${token}/${resolved.to}`, 'cache-control': 'no-store' }
+		});
+	}
+
+	let bytes: Uint8Array;
+	let contentType: string;
+	let filename: string;
+	if (type === 'folder') {
+		const file = files.find((f) => f.path === resolved.path);
+		if (!file) return siteErrorPage(404);
+		const object = await getArtifactStore(env).get(file.r2_key);
+		if (!object) return siteErrorPage(404);
+		bytes = object;
+		contentType = file.content_type;
+		filename = sanitizeFilename(file.path.split('/').pop() ?? null, item.name);
+	} else if (type === 'text') {
+		bytes = new TextEncoder().encode(row.content ?? '');
+		contentType = row.content_type ?? 'text/html';
+		filename = sanitizeFilename(row.filename, item.name);
+	} else {
+		const object = row.r2_key ? await getArtifactStore(env).get(row.r2_key) : null;
+		if (!object) return siteErrorPage(404);
+		bytes = object;
+		contentType = row.content_type ?? 'text/html';
+		filename = sanitizeFilename(row.filename, item.name);
+	}
+	const headers = siteHeaders({
+		servedOrigin: url.origin,
+		token,
+		appOrigin: appOriginOf(env),
+		// Sandboxed unless this request landed on the configured sandbox host:
+		// a site reaching the app origin is contained whatever the config says.
+		sandboxed: artifactSandboxOrigin(env.ARTIFACT_SANDBOX_ORIGIN) !== url.origin,
+		contentType,
+		filename
+	});
+	headers['content-length'] = String(bytes.byteLength);
 	return new Response(bytes as unknown as BodyInit, { status: 200, headers });
 }

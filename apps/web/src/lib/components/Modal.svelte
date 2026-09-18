@@ -30,7 +30,8 @@
 		title,
 		size = 'md',
 		children,
-		onclose
+		onclose,
+		initialFocus
 	}: {
 		open?: boolean;
 		title: string;
@@ -38,12 +39,52 @@
 		size?: 'md' | 'xl';
 		children: Snippet;
 		onclose?: () => void;
+		/**
+		 * Where focus should land on open, when the close button is the wrong
+		 * place — a dialog opened as the remedy for one specific field wants the
+		 * caret in that field. Called after the dialog has mounted; returning
+		 * null falls back to the close button. It has to live here rather than in
+		 * the consumer: the modal's own focus parking runs in the flush that
+		 * mounts the dialog, so anything a caller schedules alongside it loses
+		 * the race and silently focuses nothing (Tines/256).
+		 */
+		initialFocus?: () => HTMLElement | null | undefined;
 	} = $props();
 
 	const titleId = $props.id();
 	const dur = () => (prefersReducedMotion() ? 0 : 150);
 
 	let closeButton = $state<HTMLButtonElement | null>(null);
+	let dialog = $state<HTMLElement | null>(null);
+
+	const FOCUSABLE =
+		'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+
+	/**
+	 * Keep Tab inside the dialog. `aria-modal` promises a keyboard user that the
+	 * page behind is unreachable; without this the very next Tab lands on it,
+	 * and the operator confirms a dialog they can no longer see focus in.
+	 */
+	function ontab(e: KeyboardEvent) {
+		if (e.key !== 'Tab' || !dialog) return;
+		const items = [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+			(el) => el.offsetParent !== null || el === document.activeElement
+		);
+		if (items.length === 0) return;
+		const first = items[0];
+		const last = items[items.length - 1];
+		const active = document.activeElement;
+		if (!dialog.contains(active)) {
+			e.preventDefault();
+			(e.shiftKey ? last : first).focus();
+		} else if (e.shiftKey && active === first) {
+			e.preventDefault();
+			last.focus();
+		} else if (!e.shiftKey && active === last) {
+			e.preventDefault();
+			first.focus();
+		}
+	}
 
 	function close() {
 		open = false;
@@ -54,12 +95,15 @@
 	// this modal already handled (bits-ui prevents default but lets the event
 	// bubble on to window).
 	function onkeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape' && open && !e.defaultPrevented) close();
+		if (!open) return;
+		if (e.key === 'Escape' && !e.defaultPrevented) close();
+		else ontab(e);
 	}
 
 	// While open: lock the page behind so a touch drag that reaches the end of
 	// the dialog's scroller doesn't scroll the document instead, and park focus
-	// on the close button so a keyboard user's next Tab starts inside. Cleanup
+	// on the close button (or wherever `initialFocus` names) so a keyboard
+	// user's next Tab starts inside. Cleanup
 	// runs on close *and* on destroy, so navigating away can't leave <body>
 	// locked, and the ref count makes the order of one modal's cleanup against
 	// another's setup irrelevant.
@@ -67,7 +111,11 @@
 		if (!open) return;
 		const previouslyFocused = document.activeElement as HTMLElement | null;
 		lockBodyScroll();
-		tick().then(() => closeButton?.focus({ preventScroll: true }));
+		tick().then(() => {
+			const target = initialFocus?.();
+			if (target) target.focus({ preventScroll: true });
+			else closeButton?.focus({ preventScroll: true });
+		});
 		return () => {
 			unlockBodyScroll();
 			if (previouslyFocused?.isConnected) previouslyFocused.focus({ preventScroll: true });
@@ -110,6 +158,7 @@
 			? 'max-w-4xl'
 			: 'max-w-md'} -translate-x-1/2 flex-col overflow-hidden rounded-xl border shadow-lg sm:top-1/2 sm:-translate-y-1/2"
 		style="max-height: calc(100dvh - 2rem - env(safe-area-inset-bottom, 0px))"
+		bind:this={dialog}
 		use:portal
 		transition:scale|global={{ duration: dur(), start: 0.96 }}
 		role="dialog"

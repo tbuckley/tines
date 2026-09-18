@@ -1,7 +1,8 @@
 import type { IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
-import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { ALICE, BASE_URL } from './constants.mjs';
+import { apiClient, body, gotoHydrated, readSettled, runId, signIn, issuePath } from './helpers';
 
 /**
  * The artifact viewer on a phone (Tines/28): a markdown doc far taller than
@@ -11,23 +12,56 @@ import { apiClient, body, runId, signIn } from './helpers';
  * whatever the content's height, and that the page behind stays put.
  */
 
-const projectName = `viewer-${runId}`;
+let projectName: string;
 let project: Project;
 let issue: IssueDetail;
+let otherIssue: IssueDetail;
 
 const PHONE = { width: 390, height: 844 };
 
 type Box = { x: number; y: number; width: number; height: number };
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName, workerRequest: request }) => {
+	projectName = uniqueName('viewer');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 	issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, { title: `Viewer ${runId}` })
 	);
+	otherIssue = await body<IssueDetail>(
+		await api.post(`/api/v1/projects/${project.id}/issues`, { title: `Other viewer ${runId}` })
+	);
+
+	for (const [target, marker] of [
+		[issue, 'IDENTITY ISSUE A'],
+		[otherIssue, 'IDENTITY ISSUE B']
+	] as const) {
+		const put = await api.put(`/api/v1/issues/${target.id}/artifacts/identity-doc`, {
+			type: 'text',
+			content: marker,
+			content_type: 'text/plain'
+		});
+		expect(put.status(), await put.text()).toBe(200);
+	}
+	for (const [name, content] of [
+		['replace-me', 'ORIGINAL ARTIFACT'],
+		['race-doc', 'VERSION ONE'],
+		['pending-doc', 'RETRIED CONTENT'],
+		['delayed-meta', 'STALE METADATA CONTENT'],
+		['fresh-doc', 'FRESH CONTENT'],
+		['meta-reopen-success', 'METADATA VERSION ONE'],
+		['meta-reopen-failure', 'METADATA FAILURE CONTROL']
+	] as const) {
+		const put = await api.put(`/api/v1/issues/${issue.id}/artifacts/${name}`, {
+			type: 'text',
+			content,
+			content_type: 'text/plain'
+		});
+		expect(put.status(), await put.text()).toBe(200);
+	}
+	await api.post(`/api/v1/issues/${issue.id}/comments`, {
+		body: `[Open the other identity issue](/issues/${encodeURIComponent(projectName)}/${otherIssue.number})`
+	});
 
 	// Far taller than any viewport: ~400 paragraphs of markdown.
 	const paragraphs = Array.from(
@@ -53,18 +87,48 @@ test.beforeAll(async ({ playwright }) => {
 		headers: { authorization: `Bearer ${ALICE.apiKey}` },
 		multipart
 	});
+	// A mixed folder takes the file-list path. The standard Word MIME is long
+	// enough to expose any row that lets metadata crowd out its filename/actions.
+	await request.put(`/api/v1/issues/${issue.id}/artifacts/deliverables/folder`, {
+		headers: { authorization: `Bearer ${ALICE.apiKey}` },
+		multipart: {
+			docx: {
+				name: 'onboarding-review.docx',
+				mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+				buffer: Buffer.from('PK')
+			},
+			readme: { name: 'README.md', mimeType: 'text/markdown', buffer: Buffer.from('# Read me') }
+		}
+	});
+	for (const [name, filename, contentType, bytes] of [
+		['race-image', 'snapshot.png', 'image/png', 'IMAGE VERSION ONE'],
+		['race-pdf', 'snapshot.pdf', 'application/pdf', 'PDF VERSION ONE']
+	] as const) {
+		const uploaded = await request.put(
+			`/api/v1/issues/${issue.id}/artifacts/${name}/file?filename=${filename}`,
+			{
+				headers: { authorization: `Bearer ${ALICE.apiKey}`, 'content-type': contentType },
+				data: Buffer.from(bytes)
+			}
+		);
+		expect(uploaded.status(), await uploaded.text()).toBe(200);
+	}
+	const raceFolder = await request.put(`/api/v1/issues/${issue.id}/artifacts/race-folder/folder`, {
+		headers: { authorization: `Bearer ${ALICE.apiKey}` },
+		multipart: {
+			first: { name: 'first.png', mimeType: 'image/png', buffer: Buffer.from('FOLDER ONE A') },
+			second: { name: 'second.png', mimeType: 'image/png', buffer: Buffer.from('FOLDER ONE B') }
+		}
+	});
+	expect(raceFolder.status(), await raceFolder.text()).toBe(200);
 	// The page behind has to be taller than the phone viewport for the scroll
 	// lock assertions below to mean anything.
 	await api.post(`/api/v1/issues/${issue.id}/comments`, {
 		body: Array.from({ length: 40 }, (_, i) => `Comment paragraph ${i + 1}.`).join('\n\n')
 	});
-
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
 /**
  * On a phone the Artifacts panel folds to one row (Tines/165); open it before
@@ -80,7 +144,251 @@ async function unfoldArtifacts(page: Page): Promise<void> {
 	}).toPass({ timeout: 15_000 });
 }
 
-const issueUrl = () => `/issues/${encodeURIComponent(projectName)}/${issue.number}`;
+function barrier() {
+	let release!: () => void;
+	const promise = new Promise<void>((resolve) => (release = resolve));
+	return { promise, release };
+}
+
+test('reopening retries after an obsolete pending text request fails', async ({ page }) => {
+	const first = barrier();
+	const second = barrier();
+	let requests = 0;
+	await page.route(`**/artifacts/pending-doc/content?version=1`, async (route) => {
+		requests++;
+		if (requests === 1) {
+			await first.promise;
+			await route.abort('failed');
+		} else {
+			await second.promise;
+			await route.continue();
+		}
+	});
+
+	await gotoHydrated(page, issuePath(projectName, issue.number));
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View pending-doc/ }), dialog);
+	await expect.poll(() => requests).toBe(1);
+	await dialog.getByRole('button', { name: 'Close' }).click();
+	await openViewer(page.getByRole('button', { name: /^View pending-doc/ }), dialog);
+	first.release();
+	await expect.poll(() => requests).toBe(2);
+	await expect(dialog.getByText('(failed to load content)')).toHaveCount(0);
+	second.release();
+	await expect(dialog.getByText('RETRIED CONTENT')).toBeVisible();
+	await expect(dialog.getByText('(failed to load content)')).toHaveCount(0);
+});
+
+test('superseded metadata success and failure cannot replace a newer selection', async ({
+	page
+}) => {
+	for (const outcome of ['success', 'failure'] as const) {
+		const held = barrier();
+		let intercepted = false;
+		await page.route(`**/artifacts/delayed-meta`, async (route) => {
+			intercepted = true;
+			await held.promise;
+			if (outcome === 'success') await route.continue();
+			else await route.abort('failed');
+		});
+
+		await gotoHydrated(page, issuePath(projectName, issue.number));
+		const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+		await openViewer(page.getByRole('button', { name: /^View delayed-meta/ }), dialog);
+		await expect.poll(() => intercepted).toBe(true);
+		await dialog.getByRole('button', { name: 'Close' }).click();
+		await openViewer(page.getByRole('button', { name: /^View fresh-doc/ }), dialog);
+		await expect(dialog.getByText('FRESH CONTENT')).toBeVisible();
+		held.release();
+		await page.waitForTimeout(100);
+		await expect(dialog.getByText('FRESH CONTENT')).toBeVisible();
+		await expect(dialog.getByText('STALE METADATA CONTENT')).toHaveCount(0);
+		await expect(dialog.getByText('Couldn’t load this artifact — close and retry.')).toHaveCount(0);
+		await page.unroute(`**/artifacts/delayed-meta`);
+	}
+});
+
+test('reopen owns delayed metadata success and failure for the same selection', async ({
+	page
+}) => {
+	for (const outcome of ['success', 'failure'] as const) {
+		const name = `meta-reopen-${outcome}`;
+		const first = barrier();
+		const second = barrier();
+		let requests = 0;
+		const detailUrl = `**/api/v1/issues/${issue.id}/artifacts/${name}`;
+		await page.route(detailUrl, async (route) => {
+			requests++;
+			const response = outcome === 'success' || requests === 2 ? await route.fetch() : null;
+			await (requests === 1 ? first.promise : second.promise);
+			if (response) await route.fulfill({ response });
+			else await route.abort('failed');
+		});
+
+		await gotoHydrated(page, issuePath(projectName, issue.number));
+		const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+		await openViewer(page.getByRole('button', { name: new RegExp(`^View ${name}`) }), dialog);
+		await expect.poll(() => requests).toBe(1);
+		if (outcome === 'success') {
+			const appended = await page.request.put(`/api/v1/issues/${issue.id}/artifacts/${name}`, {
+				headers: { authorization: `Bearer ${ALICE.apiKey}` },
+				data: { type: 'text', content: 'METADATA VERSION TWO', content_type: 'text/plain' }
+			});
+			expect(appended.status(), await appended.text()).toBe(200);
+		}
+		await dialog.getByRole('button', { name: 'Close' }).click();
+		await openViewer(page.getByRole('button', { name: new RegExp(`^View ${name}`) }), dialog);
+		await expect.poll(() => requests).toBe(2);
+		first.release();
+		await expect(dialog.getByText('Loading…')).toBeVisible();
+		await expect(dialog.getByText('Couldn’t load this artifact — close and retry.')).toHaveCount(0);
+		await expect(dialog.getByText('METADATA VERSION ONE')).toHaveCount(0);
+		second.release();
+		await expect(
+			dialog.getByText(outcome === 'success' ? 'METADATA VERSION TWO' : 'METADATA FAILURE CONTROL')
+		).toBeVisible();
+		await page.unroute(detailUrl);
+	}
+});
+
+test('text cache identity survives client navigation without crossing issues', async ({ page }) => {
+	await gotoHydrated(page, issuePath(projectName, issue.number));
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View identity-doc/ }), dialog);
+	await expect(dialog.getByText('IDENTITY ISSUE A')).toBeVisible();
+	await dialog.getByRole('button', { name: 'Close' }).click();
+
+	await page.evaluate(() => Object.assign(window, { __artifactIdentitySentinel: 'kept' }));
+	await page.getByRole('link', { name: 'Open the other identity issue' }).click();
+	await expect(page).toHaveURL(new RegExp(`/${otherIssue.number}$`));
+	expect(await page.evaluate(() => Reflect.get(window, '__artifactIdentitySentinel'))).toBe('kept');
+
+	await openViewer(page.getByRole('button', { name: /^View identity-doc/ }), dialog);
+	await expect(dialog.getByText('IDENTITY ISSUE B')).toBeVisible();
+	await expect(dialog.getByText('IDENTITY ISSUE A')).toHaveCount(0);
+});
+
+test('delete and recreate cannot reuse text cached under the old artifact id', async ({ page }) => {
+	await gotoHydrated(page, issuePath(projectName, issue.number));
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View replace-me/ }), dialog);
+	await expect(dialog.getByText('ORIGINAL ARTIFACT')).toBeVisible();
+	await dialog.getByRole('button', { name: 'Close' }).click();
+
+	const headers = { authorization: `Bearer ${ALICE.apiKey}` };
+	const removed = await page.request.delete(`/api/v1/issues/${issue.id}/artifacts/replace-me`, {
+		headers
+	});
+	expect(removed.status(), await removed.text()).toBe(204);
+	const recreated = await page.request.put(`/api/v1/issues/${issue.id}/artifacts/replace-me`, {
+		headers,
+		data: { type: 'text', content: 'RECREATED ARTIFACT', content_type: 'text/plain' }
+	});
+	expect(recreated.status(), await recreated.text()).toBe(200);
+
+	await openViewer(page.getByRole('button', { name: /^View replace-me/ }), dialog);
+	await expect(dialog.getByText('RECREATED ARTIFACT')).toBeVisible();
+	await expect(dialog.getByText('ORIGINAL ARTIFACT')).toHaveCount(0);
+});
+
+test('current stays pinned when a newer version lands after metadata resolves', async ({
+	page
+}) => {
+	await page.route(`**/api/v1/issues/${issue.id}/artifacts/race-doc`, async (route) => {
+		const v1Detail = await route.fetch();
+		const appended = await page.request.put(`/api/v1/issues/${issue.id}/artifacts/race-doc`, {
+			headers: { authorization: `Bearer ${ALICE.apiKey}` },
+			data: { content: 'VERSION TWO', content_type: 'text/plain' }
+		});
+		expect(appended.status(), await appended.text()).toBe(200);
+		await route.fulfill({ response: v1Detail });
+	});
+
+	await gotoHydrated(page, issuePath(projectName, issue.number));
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View race-doc/ }), dialog);
+	await expect(dialog.getByText('VERSION ONE')).toBeVisible();
+	const download = dialog.getByRole('link', { name: 'Download', exact: true });
+	const href = await download.getAttribute('href');
+	expect(href).not.toBeNull();
+	expect(new URL(href!, 'http://local').searchParams.get('version')).toBe('1');
+	expect(await (await page.request.get(href!)).text()).toBe('VERSION ONE');
+	expect(
+		await (await page.request.get(`/api/v1/issues/${issue.id}/artifacts/race-doc/content`)).text()
+	).toBe('VERSION TWO');
+});
+
+test('image and PDF preview URLs stay pinned to captured metadata', async ({ page }) => {
+	for (const [name, filename, contentType, oldBytes, newBytes, selector] of [
+		['race-image', 'snapshot.png', 'image/png', 'IMAGE VERSION ONE', 'IMAGE VERSION TWO', 'img'],
+		['race-pdf', 'snapshot.pdf', 'application/pdf', 'PDF VERSION ONE', 'PDF VERSION TWO', 'iframe']
+	] as const) {
+		const detailUrl = `**/api/v1/issues/${issue.id}/artifacts/${name}`;
+		await page.route(detailUrl, async (route) => {
+			const v1Detail = await route.fetch();
+			const appended = await page.request.put(
+				`/api/v1/issues/${issue.id}/artifacts/${name}/file?filename=${filename}`,
+				{
+					headers: { authorization: `Bearer ${ALICE.apiKey}`, 'content-type': contentType },
+					data: Buffer.from(newBytes)
+				}
+			);
+			expect(appended.status(), await appended.text()).toBe(200);
+			await route.fulfill({ response: v1Detail });
+		});
+		await gotoHydrated(page, issuePath(projectName, issue.number));
+		const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+		await openViewer(
+			page.getByRole('button', { name: new RegExp(`^View ${name}`) }).first(),
+			dialog
+		);
+		const previewUrl = await dialog.locator(selector).last().getAttribute('src');
+		expect(new URL(previewUrl!, 'http://local').searchParams.get('version')).toBe('1');
+		expect(await (await page.request.get(previewUrl!)).text()).toBe(oldBytes);
+		expect(
+			await (await page.request.get(`/api/v1/issues/${issue.id}/artifacts/${name}/content`)).text()
+		).toBe(newBytes);
+		await page.unroute(detailUrl);
+	}
+});
+
+test('folder gallery and downloads stay pinned to the panel and viewer snapshot', async ({
+	page
+}) => {
+	const detailUrl = `**/api/v1/issues/${issue.id}/artifacts/race-folder`;
+	await page.route(detailUrl, async (route) => {
+		const v1Detail = await route.fetch();
+		const appended = await page.request.put(
+			`/api/v1/issues/${issue.id}/artifacts/race-folder/folder`,
+			{
+				headers: { authorization: `Bearer ${ALICE.apiKey}`, origin: BASE_URL },
+				multipart: {
+					first: {
+						name: 'first.png',
+						mimeType: 'image/png',
+						buffer: Buffer.from('FOLDER TWO')
+					}
+				}
+			}
+		);
+		expect(appended.status(), await appended.text()).toBe(200);
+		await route.fulfill({ response: v1Detail });
+	});
+	await gotoHydrated(page, issuePath(projectName, issue.number));
+	await expect(page.locator('img[alt="first.png"]').first()).toHaveAttribute(
+		'src',
+		/[?&]version=1(?:&|$)/
+	);
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View race-folder/ }).first(), dialog);
+	const gallery = dialog.locator('img[alt="first.png"]');
+	await expect(gallery).toHaveAttribute('src', /[?&]version=1(?:&|$)/);
+	await dialog.locator('button[title="View first.png"]').click();
+	const download = dialog.getByRole('link', { name: 'Download', exact: true }).last();
+	const href = await download.getAttribute('href');
+	expect(new URL(href!, 'http://local').searchParams.get('version')).toBe('1');
+	expect(await (await page.request.get(href!)).text()).toBe('FOLDER ONE A');
+});
 
 /**
  * Click that survives the SSR-to-hydration window (same shape as
@@ -96,7 +404,7 @@ async function openViewer(opener: Locator, dialog: Locator): Promise<void> {
 
 test('a long markdown artifact stays dismissable on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
@@ -123,8 +431,10 @@ test('a long markdown artifact stays dismissable on a phone', async ({ page }) =
 
 test('a folder set stays within the viewport and dismissable on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
+	const panelThumbnail = page.locator('img[alt="shot-0.png"]');
+	await expect(panelThumbnail).toHaveAttribute('src', /[?&]version=1(?:&|$)/);
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
 	await openViewer(page.getByRole('button', { name: /^View photos/ }).first(), dialog);
@@ -139,6 +449,72 @@ test('a folder set stays within the viewport and dismissable on a phone', async 
 
 	await closeButton.click();
 	await expect(dialog).toBeHidden();
+});
+
+type FileRowGeometry = {
+	row: Box;
+	filename: Box;
+	download: Box;
+	clientWidth: number;
+	scrollWidth: number;
+};
+
+function fileRowGeometry(download: Locator): Promise<FileRowGeometry> {
+	return download.evaluate((link) => {
+		const bounds = (el: Element): Box => {
+			const { x, y, width, height } = el.getBoundingClientRect();
+			return { x, y, width, height };
+		};
+		const row = link.closest('li')!;
+		const text = link.previousElementSibling!;
+		const filename = text.firstElementChild!;
+		return {
+			row: bounds(row),
+			filename: bounds(filename),
+			download: bounds(link),
+			clientWidth: row.clientWidth,
+			scrollWidth: row.scrollWidth
+		};
+	});
+}
+
+test('Office metadata keeps the filename and Download inside a phone row in both themes', async ({
+	page
+}) => {
+	await page.setViewportSize(PHONE);
+
+	for (const colorScheme of ['light', 'dark'] as const) {
+		await page.emulateMedia({ colorScheme });
+		await gotoHydrated(page, issuePath(projectName, issue.number));
+		await expect(page.locator('html')).toHaveClass(
+			colorScheme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
+		);
+		await unfoldArtifacts(page);
+
+		const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+		await openViewer(page.getByRole('button', { name: /^View deliverables/ }).first(), dialog);
+
+		const download = dialog.getByRole('link', { name: 'Download onboarding-review.docx' });
+		await expect(download).toBeInViewport();
+		const geometry = await readSettled(() => fileRowGeometry(download), {
+			timeout: 3_000,
+			bestEffort: true
+		});
+		const dialogBox = await dialog.boundingBox();
+		expect(dialogBox).not.toBeNull();
+
+		expect(geometry.filename.width).toBeGreaterThan(100);
+		expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth);
+		expect(geometry.download.x + geometry.download.width).toBeLessThanOrEqual(
+			geometry.row.x + geometry.row.width
+		);
+		expect(geometry.download.x + geometry.download.width).toBeLessThanOrEqual(
+			dialogBox!.x + dialogBox!.width
+		);
+
+		await dialog.getByRole('button', { name: 'Close' }).click();
+		await expect(dialog).toBeHidden();
+	}
 });
 
 /**
@@ -164,7 +540,7 @@ async function expectPageBehindScrolls(page: Page): Promise<void> {
 
 test('the page behind does not scroll while the viewer is open', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 
 	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
@@ -181,7 +557,7 @@ test('the page behind does not scroll while the viewer is open', async ({ page }
 
 test('two modals open at once still release the page when both close', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 
 	const viewer = page.getByRole('dialog', { name: 'Artifact viewer' });
@@ -210,7 +586,7 @@ test('two modals open at once still release the page when both close', async ({ 
 test('Escape closes the viewer and returns focus to the button that opened it', async ({
 	page
 }) => {
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 
 	const opener = page.getByRole('button', { name: /^View long-doc/ });
@@ -247,7 +623,7 @@ const counterOf = (dialog: Locator) => dialog.locator('span.tabular-nums');
 const pathOf = (dialog: Locator) => dialog.locator('span.font-mono');
 
 test('Prev/Next step through a folder in order and stop at the ends', async ({ page }) => {
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 	const dialog = await openFirstPhoto(page);
 
@@ -290,7 +666,7 @@ test('Prev/Next step through a folder in order and stop at the ends', async ({ p
 });
 
 test('arrow keys step, and are left alone inside the header selects', async ({ page }) => {
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 	const dialog = await openFirstPhoto(page);
 	const counter = counterOf(dialog);
@@ -340,23 +716,14 @@ function navGeometry(dialog: Locator): Promise<NavGeometry> {
 	});
 }
 
-async function settledNavGeometry(dialog: Locator): Promise<NavGeometry> {
-	let settled = await navGeometry(dialog);
-	await expect(async () => {
-		const before = JSON.stringify(settled);
-		settled = await navGeometry(dialog);
-		expect(JSON.stringify(settled)).toBe(before);
-	})
-		.toPass({ intervals: [100, 100, 200, 400], timeout: 3_000 })
-		// Best effort: a row that never stops moving is a failure too, but the
-		// assertions below name it far better than a timeout in here would.
-		.catch(() => {});
-	return settled;
-}
+// Best effort: a row that never stops moving is a failure too, but the
+// assertions below name it far better than a timeout in here would.
+const settledNavGeometry = (dialog: Locator): Promise<NavGeometry> =>
+	readSettled(() => navGeometry(dialog), { timeout: 3_000, bestEffort: true });
 
 test('the file-detail header keeps one line on desktop and wraps on a phone', async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
-	await page.goto(issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 	const dialog = await openFirstPhoto(page);
 

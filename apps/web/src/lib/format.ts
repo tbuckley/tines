@@ -1,3 +1,6 @@
+import type { AgentRun } from '@tines/shared';
+import { isActiveRun } from '@tines/shared';
+
 /** Absolute fallback for timestamps too far out to phrase as a duration. */
 function shortDate(ms: number): string {
 	return new Date(ms).toLocaleDateString(undefined, {
@@ -17,6 +20,35 @@ export function relativeTime(ms: number, now = Date.now()): string {
 	const days = Math.floor(hours / 24);
 	if (days < 30) return `${days}d ago`;
 	return shortDate(ms);
+}
+
+/** Capacity elapsed since assignment, ticking only while a run is active. */
+export function runElapsedLabel(
+	run: Pick<AgentRun, 'status' | 'created_at' | 'ended_at'>,
+	now: number
+): string {
+	const end = run.ended_at ?? (isActiveRun(run.status) ? now : null);
+	if (end === null) return '—';
+	const seconds = Math.floor(Math.max(0, end - run.created_at) / 1000);
+	const hours = Math.floor(seconds / 3600);
+	const minutes = Math.floor((seconds % 3600) / 60);
+	const remainder = seconds % 60;
+	return hours > 0
+		? `${hours}:${minutes.toString().padStart(2, '0')}:${remainder.toString().padStart(2, '0')}`
+		: `${minutes}:${remainder.toString().padStart(2, '0')}`;
+}
+
+/**
+ * A queue wait, scannable in a row rather than phrased for prose: "41 min",
+ * "1.9 h", "21 h", "8.2 d". Shared by the Now row and its annotations
+ * (Tines/256), so a group and the roster row pointing at it never disagree.
+ */
+export function queueAge(enteredAt: number, now = Date.now()): string {
+	const minutes = Math.max(0, Math.round((now - enteredAt) / 60_000));
+	if (minutes < 60) return `${minutes} min`;
+	const hours = minutes / 60;
+	if (hours < 48) return `${hours < 10 ? hours.toFixed(1) : Math.round(hours)} h`;
+	return `${(hours / 24).toFixed(1)} d`;
 }
 
 /**
@@ -83,6 +115,15 @@ function overdueTime(ms: number, late: number): string {
 export function nextRunLabel(nextRunAt: number, now = Date.now()): string {
 	const until = untilTime(nextRunAt, now);
 	return nextRunAt >= now ? `next ${until}` : until;
+}
+
+/** Date only, in the user's locale — for banners that name a day, not a moment. */
+export function formatDate(ms: number): string {
+	return new Date(ms).toLocaleString(undefined, {
+		month: 'short',
+		day: 'numeric',
+		year: 'numeric'
+	});
 }
 
 export function formatDateTime(ms: number): string {

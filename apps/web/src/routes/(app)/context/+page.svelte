@@ -8,17 +8,22 @@
 	} from '@tines/shared';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconSearch from '@tabler/icons-svelte/icons/search';
+	import IconTags from '@tabler/icons-svelte/icons/tags';
 	import IconSparkles from '@tabler/icons-svelte/icons/sparkles';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
+	import ProjectFocusNotice from '$lib/components/ProjectFocusNotice.svelte';
+	import { focusHint } from '$lib/focus.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 
 	let { data } = $props();
+
+	const scopeLabel = $derived(data.focus ? `“${data.focus.name}”` : 'All projects');
 
 	let editorOpen = $state(false);
 	let editing = $state<ContextItem | null>(null);
@@ -62,6 +67,25 @@
 		else params.delete(key);
 		goto(`/context${params.size ? `?${params}` : ''}`, { keepFocus: true, noScroll: true });
 	}
+
+	let clearingFocus = $state(false);
+	let focusError = $state<string | null>(null);
+	async function showAllProjects() {
+		if (clearingFocus) return;
+		clearingFocus = true;
+		focusError = null;
+		try {
+			await api.updatePreferences({ focused_project_id: null });
+			focusHint.clear();
+			const params = new URLSearchParams(page.url.searchParams);
+			params.delete('project');
+			await goto(`/context${params.size ? `?${params}` : ''}`, { invalidateAll: true });
+		} catch (err) {
+			focusError = err instanceof ApiError ? err.message : 'Failed to show all projects.';
+		} finally {
+			clearingFocus = false;
+		}
+	}
 </script>
 
 <svelte:head><title>Context · Tines</title></svelte:head>
@@ -70,12 +94,28 @@
 	<div>
 		<h1 class="text-2xl font-semibold tracking-tight">Context</h1>
 		<p class="text-muted-foreground mt-1 text-sm">
-			Prompts, skills, and repos that scope to projects, workflow states, and issues — and merge
-			into each issue's effective context.
+			Prompts, skills, and repos that scope to projects, workflow states, issue labels, and issues —
+			and merge into each issue's effective context.
 		</p>
 	</div>
-	<Button onclick={openCreate}><IconPlus size={16} /> New item</Button>
+	<div class="flex items-center gap-2">
+		<Button variant="outline" href="/labels"><IconTags size={16} /> Labels</Button>
+		<Button onclick={openCreate}><IconPlus size={16} /> New item</Button>
+	</div>
 </div>
+
+<ProjectFocusNotice notice={data.notice} {scopeLabel} />
+
+{#if data.sharedItemCount !== null}
+	<p class="text-muted-foreground mb-4 text-sm">
+		{data.sharedItemCount} shared {data.sharedItemCount === 1 ? 'item' : 'items'} (global and state-scoped)
+		{data.sharedItemCount === 1 ? 'applies' : 'apply'} here too ·
+		<button class="underline underline-offset-2" onclick={showAllProjects} disabled={clearingFocus}
+			>All projects</button
+		>
+	</p>
+{/if}
+{#if focusError}<p class="text-destructive mb-4 text-sm" role="alert">{focusError}</p>{/if}
 
 <div class="mb-4 flex flex-wrap items-center gap-2">
 	<div class="relative">
@@ -105,17 +145,6 @@
 		<option value="artifact">Artifacts</option>
 	</Select>
 	<Select
-		value={data.filters.project ?? ''}
-		onchange={(e) => setParam('project', e.currentTarget.value)}
-		class="h-9 w-auto text-sm"
-		aria-label="Filter by project"
-	>
-		<option value="">All projects</option>
-		{#each data.projects as project (project.id)}
-			<option value={project.id}>{project.name}</option>
-		{/each}
-	</Select>
-	<Select
 		value={data.filters.workflow ?? ''}
 		onchange={(e) => setParam('workflow', e.currentTarget.value)}
 		class="h-9 w-auto text-sm"
@@ -124,6 +153,17 @@
 		<option value="">All workflows</option>
 		{#each data.workflows as workflow (workflow.id)}
 			<option value={workflow.id}>{workflow.name}</option>
+		{/each}
+	</Select>
+	<Select
+		value={data.filters.label ?? ''}
+		onchange={(e) => setParam('label', e.currentTarget.value)}
+		class="h-9 w-auto text-sm"
+		aria-label="Filter by label"
+	>
+		<option value="">All labels</option>
+		{#each data.labels as label (label.id)}
+			<option value={label.id}>{label.name}</option>
 		{/each}
 	</Select>
 </div>
@@ -152,7 +192,7 @@
 <ContextItemList
 	items={data.items}
 	onselect={openEdit}
-	emptyMessage={data.filters.kind || data.filters.project || data.filters.workflow || data.filters.q
+	emptyMessage={data.filters.kind || data.filters.workflow || data.filters.label || data.filters.q
 		? 'No context items match these filters.'
 		: 'No context items yet. Attach a prompt, skill, or repo to a project, workflow state, or issue.'}
 />
@@ -160,6 +200,7 @@
 <ContextItemEditor
 	bind:open={editorOpen}
 	item={editing}
+	defaults={data.focusId ? { project_id: data.focusId } : {}}
 	projects={data.projects}
 	workflows={data.workflows}
 	onsaved={invalidateAll}

@@ -6,7 +6,8 @@ import type { RequestHandler } from './$types';
 
 /** Incremental add, never a set-replace: concurrent edits both survive. */
 export const POST: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<AddIssueLabelsRequest>(event);
-	return json(await addIssueLabels(db, env, actor, event.params.id, body.labels));
+	const result = await addIssueLabels(db, env, actor, effects, event.params.id, body.labels);
+	return json(result);
 });

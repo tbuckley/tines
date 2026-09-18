@@ -17,6 +17,9 @@ function item(name: string, scope: Partial<ContextItem['scope']> = {}): ContextI
 			project_name: 'Tines',
 			workflow_state_id: null,
 			workflow_state_name: null,
+			label_id: null,
+			label_name: null,
+			label_color: null,
 			workflow_id: null,
 			workflow_name: null,
 			issue_id: null,
@@ -41,14 +44,16 @@ const workflows: Pick<Workflow, 'id' | 'states'>[] = [
 	{
 		id: 'wf_Engineering',
 		states: [
-			{ id: 'st_Research', name: 'Research', category: 'active', position: 0 },
-			{ id: 'st_Design', name: 'Design', category: 'active', position: 1 },
-			{ id: 'st_Done', name: 'Done', category: 'done', position: 2 }
+			{ id: 'st_Research', name: 'Research', category: 'active', position: 0, inherits_from: null },
+			{ id: 'st_Design', name: 'Design', category: 'active', position: 1, inherits_from: null },
+			{ id: 'st_Done', name: 'Done', category: 'done', position: 2, inherits_from: null }
 		]
 	},
 	{
 		id: 'wf_Docs',
-		states: [{ id: 'st_Draft', name: 'Draft', category: 'active', position: 0 }]
+		states: [
+			{ id: 'st_Draft', name: 'Draft', category: 'active', position: 0, inherits_from: null }
+		]
 	}
 ];
 

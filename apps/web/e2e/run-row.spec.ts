@@ -11,13 +11,17 @@
  * here rather than shipping.
  */
 import type { Workflow } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
-import { ALICE, RUNROW, RUNROW_FAILED } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { ALICE, RUNROW, RUNROW_ESTIMATED, RUNROW_FAILED } from './constants.mjs';
+import { apiClient, body, gotoHydrated, resetFocus, signIn } from './helpers';
 
 test.describe('shared run row', () => {
-	test.beforeEach(async ({ context }) => {
-		await signIn(context, ALICE.sessionToken);
+	test.use({ signedIn: ALICE });
+
+	test.beforeEach(async ({ request }) => {
+		// Specs share one user: a focus left behind would scope this one's lists.
+		await resetFocus(request);
 	});
 
 	test('shows cost and the provider console link on the issue page and the Agents tab', async ({
@@ -27,9 +31,13 @@ test.describe('shared run row', () => {
 		// surface that used to show neither field.
 		await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
 
-		const issueRow = page.locator('li', { hasText: RUNROW.runnerName });
+		// li:not([inert]): rows in animated lists are marked inert by Svelte 5's
+		// out() while they are still siblings inside the live <ul>, so an
+		// unscoped li can match a row on its way out (Tines/154, e2e/README.md).
+		const issueRow = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
 		await expect(issueRow).toHaveCount(1);
 		await expect(issueRow).toContainText(RUNROW.costLabel);
+		await expect(issueRow).toContainText(`session: ${RUNROW.providerSessionId}`);
 		// How the end was judged, beside the status: the difference between a
 		// run that cost the issue a strike and one that cost it nothing.
 		await expect(issueRow).toContainText(RUNROW.outcome);
@@ -40,27 +48,103 @@ test.describe('shared run row', () => {
 
 		// The Agents tab hides ended runs behind a toggle, and the fixture is
 		// deliberately `completed` (a live run would be swept and flake).
-		await page.goto('/agents');
+		await gotoHydrated(page, '/agents');
 		await page.getByLabel('Show ended runs').check();
 
-		const agentsRow = page.locator('li', { hasText: RUNROW.runnerName });
+		// li:not([inert]): rows in animated lists are marked inert by Svelte 5's
+		// out() while they are still siblings inside the live <ul>, so an
+		// unscoped li can match a row on its way out (Tines/154, e2e/README.md).
+		const agentsRow = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
 		await expect(agentsRow).toHaveCount(1);
 		await expect(agentsRow).toContainText(RUNROW.costLabel);
+		await expect(agentsRow).toContainText(`session: ${RUNROW.providerSessionId}`);
 		await expect(agentsRow).toContainText(RUNROW.outcome);
 		await expect(agentsRow.getByRole('link', { name: /console/ })).toHaveAttribute(
 			'href',
 			RUNROW.providerUrl
 		);
+		const runnerCard = page.locator('div.rounded-lg', { hasText: RUNROW.runnerName }).first();
+		await expect(runnerCard).toContainText('1 consecutive failure');
+		await expect(runnerCard).not.toContainText('1 consecutive failures');
+	});
+
+	test('distinguishes an empty ended log from a live wait', async ({ page, request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const detail = await body<Record<string, unknown>>(
+			await api.get(`/api/v1/runs/${RUNROW.runId}`)
+		);
+		await page.route(`**/api/v1/runs/${RUNROW.runId}`, (route) =>
+			route.fulfill({ json: { ...detail, log: '' } })
+		);
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`
+		);
+		const row = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
+		await row.getByRole('button', { name: 'Logs' }).click();
+		await expect(row.getByTestId('run-log')).toHaveText('(no log output captured)');
+		await expect(row.getByTestId('run-log-waiting')).toHaveCount(0);
+	});
+
+	test('shows unpriced Codex tokens and a local thread id', async ({ page }) => {
+		await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
+		const row = page.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName });
+		await expect(row).toContainText(RUNROW_FAILED.tokenLabel);
+		await expect(row).toContainText(`session: ${RUNROW_FAILED.providerSessionId}`);
+		await expect(row).toContainText(`resumed run ${RUNROW_FAILED.resumedFromRunId}`);
+		await expect(row.getByRole('link', { name: /resumed run/ })).toHaveCount(0);
+	});
+
+	test('discloses persisted estimate evidence and restores focus without closing logs', async ({
+		page
+	}) => {
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW_ESTIMATED.issueNumber}`
+		);
+		const row = page.locator('li:not([inert])', { hasText: RUNROW_ESTIMATED.runnerName });
+		const estimate = row.getByRole('button', { name: /Estimated/ });
+		await expect(estimate).toHaveText('<$0.01 Estimated');
+		await row.getByRole('button', { name: 'Logs' }).click();
+		await estimate.click();
+		const dialog = page.getByRole('dialog', { name: 'Cost evidence' });
+		await expect(dialog).toContainText('gpt-5.6-sol');
+		await expect(dialog).toContainText('0.00394');
+		await expect(dialog).toContainText('not an invoice or subscription usage');
+		await expect(dialog.getByRole('link', { name: /Official pricing source/ })).toHaveAttribute(
+			'href',
+			'https://developers.openai.com/api/docs/pricing'
+		);
+		await page.keyboard.press('Escape');
+		await expect(estimate).toBeFocused();
+		await expect(row.getByRole('button', { name: 'Hide logs' })).toBeVisible();
+	});
+
+	test('keeps the cost-evidence heading visible inside a phone fold', async ({ page }) => {
+		await page.setViewportSize({ width: 390, height: 844 });
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW_ESTIMATED.issueNumber}`
+		);
+		await page.getByRole('button', { name: /^Agent activity/ }).click();
+		const row = page.locator('li:not([inert])', { hasText: RUNROW_ESTIMATED.runnerName });
+		await row.getByRole('button', { name: /Estimated/ }).click();
+		const dialog = page.getByRole('dialog', { name: 'Cost evidence' });
+		await expect(dialog.getByRole('heading', { name: 'Cost evidence', level: 2 })).toBeVisible();
 	});
 });
 
 test.describe('shared routing-rule row', () => {
-	const STATE_NAME = `Dead ${runId}`;
+	let STATE_NAME: string;
 
 	let workflowId: string;
 	let stateId: string;
+	let runnerId: string;
+	let ruleId: string;
 
-	test.beforeAll(async ({ request }) => {
+	test.beforeAll(async ({ request, uniqueName }) => {
+		STATE_NAME = uniqueName('Dead', { maxLength: 100 });
+		const fixtureName = uniqueName('rulerow');
 		const api = apiClient(request, ALICE.apiKey);
 		/** Fixture setup must not fail silently — a 422 here would look like a UI bug. */
 		const ok = async (res: Awaited<ReturnType<typeof api.post>>, what: string) => {
@@ -71,10 +155,11 @@ test.describe('shared routing-rule row', () => {
 		// A paused runner: this rule must never actually dispatch anything.
 		const runner = await body<{ id: string }>(
 			await ok(
-				await api.post('/api/v1/runners', { type: 'local', name: `rulerow-${runId}` }),
+				await api.post('/api/v1/runners', { type: 'local', name: fixtureName }),
 				'create runner'
 			)
 		);
+		runnerId = runner.id;
 		await ok(await api.patch(`/api/v1/runners/${runner.id}`, { status: 'paused' }), 'pause runner');
 
 		// A custom workflow — the standard one is read-only, so its state
@@ -82,7 +167,7 @@ test.describe('shared routing-rule row', () => {
 		const workflow = await body<Workflow>(
 			await ok(
 				await api.post('/api/v1/workflows', {
-					name: `rulerow-${runId}`,
+					name: fixtureName,
 					initial_state: STATE_NAME,
 					states: [
 						{ name: STATE_NAME, category: 'active' },
@@ -99,13 +184,16 @@ test.describe('shared routing-rule row', () => {
 
 		// Order matters: the rule must be created while the state is still
 		// active, because the server rejects a non-active rule scope outright.
-		await ok(
-			await api.post('/api/v1/routing-rules', {
-				workflow_state_id: stateId,
-				targets: [{ runner_id: runner.id }]
-			}),
-			'create rule'
+		const rule = await body<{ id: string }>(
+			await ok(
+				await api.post('/api/v1/routing-rules', {
+					workflow_state_id: stateId,
+					targets: [{ runner_id: runner.id }]
+				}),
+				'create rule'
+			)
 		);
+		ruleId = rule.id;
 
 		// Now recategorize the state out of `active` — the rule is dead.
 		await ok(
@@ -119,8 +207,19 @@ test.describe('shared routing-rule row', () => {
 		);
 	});
 
-	test.beforeEach(async ({ context }) => {
-		await signIn(context, ALICE.sessionToken);
+	test.afterAll(async ({ apiFor }) => {
+		const api = apiFor(ALICE);
+		if (ruleId) expect((await api.delete(`/api/v1/routing-rules/${ruleId}`)).status()).toBe(204);
+		if (workflowId)
+			expect((await api.delete(`/api/v1/workflows/${workflowId}`)).status()).toBe(204);
+		if (runnerId) expect((await api.delete(`/api/v1/runners/${runnerId}`)).status()).toBe(204);
+	});
+
+	test.use({ signedIn: ALICE });
+
+	test.beforeEach(async ({ request }) => {
+		// Specs share one user: a focus left behind would scope this one's lists.
+		await resetFocus(request);
 	});
 
 	/** The rule row for this suite's state, carrying the dead-rule badge. */
@@ -149,13 +248,18 @@ test.describe('shared routing-rule row', () => {
 test.describe('failed run error', () => {
 	const FULL = RUNROW_FAILED.error;
 
-	test.beforeEach(async ({ context }) => {
-		await signIn(context, ALICE.sessionToken);
+	test.use({ signedIn: ALICE });
+
+	test.beforeEach(async ({ request }) => {
+		// Specs share one user: a focus left behind would scope this one's lists.
+		await resetFocus(request);
 	});
 
 	/** The seeded failed run's row, on whichever surface is loaded. */
 	const failedRow = (page: Page) =>
-		page.locator('li').filter({ has: page.getByTestId('run-error') });
+		page
+			.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName })
+			.filter({ has: page.getByTestId('run-error') });
 
 	test('clamps the error to two lines, not one, on the issue page and the Agents tab', async ({
 		page
@@ -164,7 +268,7 @@ test.describe('failed run error', () => {
 			if (surface === 'issue') {
 				await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
 			} else {
-				await page.goto('/agents');
+				await gotoHydrated(page, '/agents');
 				await page.getByLabel('Show ended runs').check();
 			}
 
@@ -197,7 +301,10 @@ test.describe('failed run error', () => {
 	});
 
 	test('leads the Logs disclosure with the untruncated error', async ({ page }) => {
-		await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`
+		);
 
 		const row = failedRow(page);
 		await row.getByRole('button', { name: 'Logs' }).click();

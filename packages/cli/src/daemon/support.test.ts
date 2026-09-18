@@ -1,5 +1,6 @@
 import { delimiter } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { RunJudgment } from './support';
 import {
 	AMBIENT_CLI,
 	buildHarnessInvocation,
@@ -37,20 +38,52 @@ describe('shellQuote', () => {
 });
 
 describe('expandCommandTemplate', () => {
-	it('substitutes all three placeholders, quoted', () => {
-		expect(expandCommandTemplate('agent {prompt_file} -w {workspace} -m {model}', input)).toBe(
-			`agent '/tmp/ws/run 1/prompt.md' -w '/tmp/ws/run 1' -m 'claude-sonnet-5'`
-		);
+	it('substitutes all four placeholders, quoted', () => {
+		expect(
+			expandCommandTemplate('agent {prompt_file} -w {workspace} -m {model} -e {effort}', {
+				...input,
+				effort: 'high'
+			})
+		).toBe(`agent '/tmp/ws/run 1/prompt.md' -w '/tmp/ws/run 1' -m 'claude-sonnet-5' -e 'high'`);
 	});
 
 	it('an absent model substitutes an empty shell word', () => {
 		expect(expandCommandTemplate('agent {model}', { ...input, model: null })).toBe("agent ''");
 	});
 
+	it.each([
+		['omitted', input],
+		['null', { ...input, effort: null }],
+		['undefined', { ...input, effort: undefined }],
+		['empty', { ...input, effort: '' }]
+	])('an %s effort substitutes an empty shell word', (_label, value) => {
+		expect(expandCommandTemplate('agent {effort}', value)).toBe("agent ''");
+	});
+
+	it('shell-quotes an effort containing spaces, quotes, and metacharacters', () => {
+		expect(
+			expandCommandTemplate('agent {effort}', { ...input, effort: "high speed's $&; $(boom)" })
+		).toBe(`agent 'high speed'\\''s $&; $(boom)'`);
+	});
+
 	it('repeated placeholders all expand', () => {
-		expect(expandCommandTemplate('cat {prompt_file} {prompt_file}', input)).toBe(
-			`cat '/tmp/ws/run 1/prompt.md' '/tmp/ws/run 1/prompt.md'`
+		expect(expandCommandTemplate('agent {effort} {effort}', { ...input, effort: 'xhigh' })).toBe(
+			`agent 'xhigh' 'xhigh'`
 		);
+	});
+
+	it('leaves old templates and placeholder-like input data unchanged', () => {
+		const oldInput = {
+			...input,
+			workspace: '/tmp/{effort}',
+			promptFile: '/tmp/{effort}/prompt.md',
+			model: 'model-{effort}',
+			effort: 'high'
+		};
+		expect(expandCommandTemplate('agent {prompt_file} -w {workspace} -m {model}', oldInput)).toBe(
+			`agent '/tmp/{effort}/prompt.md' -w '/tmp/{effort}' -m 'model-{effort}'`
+		);
+		expect(expandCommandTemplate('agent --fixed', oldInput)).toBe('agent --fixed');
 	});
 });
 
@@ -71,17 +104,58 @@ describe('buildHarnessInvocation', () => {
 		]);
 	});
 
-	it('codex: codex exec [--model] <prompt>', () => {
+	it('claude_code resumes the previous conversation when the assignment carries a session', () => {
+		// Acceptance criterion 1: the send-back launches with `--resume`, in
+		// the kept workspace, against the same prompt file.
+		expect(
+			buildHarnessInvocation({ harness: 'claude_code' }, { ...input, resumeSessionId: "sess-a'b" })
+				.args
+		).toEqual([
+			'-c',
+			`claude -p --resume 'sess-a'\\''b' --output-format stream-json --verbose --model 'claude-sonnet-5' < '/tmp/ws/run 1/prompt.md'`
+		]);
+		// A cold launch is byte-for-byte what it was before the flag existed.
+		expect(buildHarnessInvocation({ harness: 'claude_code' }, input).args[1]).not.toContain(
+			'--resume'
+		);
+	});
+
+	it('codex: codex exec --json --skip-git-repo-check [--model] <prompt>', () => {
 		expect(buildHarnessInvocation({ harness: 'codex' }, input)).toEqual({
 			file: 'codex',
-			args: ['exec', '--model', 'claude-sonnet-5', 'Do the thing']
+			args: [
+				'exec',
+				'--json',
+				'--skip-git-repo-check',
+				'--model',
+				'claude-sonnet-5',
+				'Do the thing'
+			]
 		});
+	});
+
+	it('routes effort through supported harness argv and preserves no-effort argv', () => {
+		const claude = buildHarnessInvocation(
+			{ harness: 'claude_code' },
+			{ ...input, effort: 'xhigh' }
+		);
+		expect(claude.args[1]).toContain("--effort 'xhigh'");
+		const codex = buildHarnessInvocation({ harness: 'codex' }, { ...input, effort: 'ultra' });
+		expect(codex.args).toContain('-c');
+		expect(codex.args).toContain('model_reasoning_effort="ultra"');
+		expect(buildHarnessInvocation({ harness: 'codex' }, input).args).not.toContain('-c');
 	});
 
 	it('custom: sh -c with the expanded template; refuses without one', () => {
 		expect(
-			buildHarnessInvocation({ harness: 'custom', command: 'run {prompt_file}' }, input)
-		).toEqual({ file: 'sh', args: ['-c', `run '/tmp/ws/run 1/prompt.md'`] });
+			buildHarnessInvocation(
+				{ harness: 'custom', command: 'run {prompt_file} --model {model} --effort {effort}' },
+				{ ...input, effort: 'high' }
+			)
+		).toEqual({
+			file: 'sh',
+			args: ['-c', `run '/tmp/ws/run 1/prompt.md' --model 'claude-sonnet-5' --effort 'high'`]
+		});
 		expect(() => buildHarnessInvocation({ harness: 'custom' }, input)).toThrow(/--command/);
 	});
 });
@@ -93,8 +167,29 @@ describe('formatLaunchBanner', () => {
 		const invocation = buildHarnessInvocation({ harness: 'claude_code' }, input);
 		expect(formatLaunchBanner(invocation, input, meta)).toBe(
 			`$ claude -p --output-format stream-json --verbose --model 'claude-sonnet-5' < '/tmp/ws/run 1/prompt.md'\n` +
-				`# tines runner: harness=claude_code model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+				`# tines runner: harness=claude_code model=claude-sonnet-5 effort=(provider-default) timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
 		);
+	});
+
+	it('a resumed launch says so in the banner, naming the run it continues', () => {
+		// The acceptance criterion names the banner: "resumed run <prev-id>"
+		// must be readable from the run's own log, not inferred from a DB row.
+		const resumed = { ...input, resumeSessionId: 'sess-abc' };
+		const banner = formatLaunchBanner(
+			buildHarnessInvocation({ harness: 'claude_code' }, resumed),
+			resumed,
+			{ ...meta, resumedFromRunId: 'arun_prev' }
+		);
+		expect(banner).toContain('resumed=arun_prev');
+		expect(banner).toContain("--resume 'sess-abc'");
+		// Without the lineage the session id is still better than nothing.
+		expect(
+			formatLaunchBanner(buildHarnessInvocation({ harness: 'claude_code' }, resumed), resumed, meta)
+		).toContain('resumed=sess-abc');
+		// A cold launch carries no `resumed=` field at all.
+		expect(
+			formatLaunchBanner(buildHarnessInvocation({ harness: 'claude_code' }, input), input, meta)
+		).not.toContain('resumed=');
 	});
 
 	it('a harness that cannot vary the model reads model=(fixed)', () => {
@@ -111,8 +206,8 @@ describe('formatLaunchBanner', () => {
 	it('codex: argv shell-quoted, quoting only the words that need it', () => {
 		const invocation = buildHarnessInvocation({ harness: 'codex' }, input);
 		expect(formatLaunchBanner(invocation, input, { ...meta, harness: 'codex' })).toBe(
-			`$ codex exec --model claude-sonnet-5 'Do the thing'\n` +
-				`# tines runner: harness=codex model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+			`$ codex exec --json --skip-git-repo-check --model claude-sonnet-5 'Do the thing'\n` +
+				`# tines runner: harness=codex model=claude-sonnet-5 effort=(provider-default) timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
 		);
 	});
 
@@ -122,17 +217,23 @@ describe('formatLaunchBanner', () => {
 		const line = formatLaunchCommand(buildHarnessInvocation({ harness: 'codex' }, big));
 		expect(line.length).toBeLessThan(400);
 		expect(line).toContain('[+24840 chars]');
-		expect(line.startsWith('codex exec --model claude-sonnet-5 ')).toBe(true);
+		expect(
+			line.startsWith('codex exec --json --skip-git-repo-check --model claude-sonnet-5 ')
+		).toBe(true);
 	});
 
 	it('custom: the template as expanded, not as written', () => {
+		const routed = { ...input, effort: 'high' };
 		const invocation = buildHarnessInvocation(
-			{ harness: 'custom', command: 'my-agent --model {model} -w {workspace} < {prompt_file}' },
-			input
+			{
+				harness: 'custom',
+				command: 'my-agent --model {model} --effort {effort} -w {workspace} < {prompt_file}'
+			},
+			routed
 		);
-		expect(formatLaunchBanner(invocation, input, { ...meta, harness: 'custom' })).toBe(
-			`$ my-agent --model 'claude-sonnet-5' -w '/tmp/ws/run 1' < '/tmp/ws/run 1/prompt.md'\n` +
-				`# tines runner: harness=custom model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+		expect(formatLaunchBanner(invocation, routed, { ...meta, harness: 'custom' })).toBe(
+			`$ my-agent --model 'claude-sonnet-5' --effort 'high' -w '/tmp/ws/run 1' < '/tmp/ws/run 1/prompt.md'\n` +
+				`# tines runner: harness=custom model=claude-sonnet-5 effort=high timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
 		);
 	});
 
@@ -307,7 +408,7 @@ describe('RunTable', () => {
 			runId: string;
 			status: string;
 			error?: string;
-			judgment?: 'interrupted';
+			judgment?: RunJudgment;
 		}[] = [];
 		const released: { runId: string; keep: boolean; outcome: RunOutcome }[] = [];
 		const notes: string[] = [];
@@ -367,9 +468,34 @@ describe('RunTable', () => {
 		const h = harness();
 		const run = h.run('arun_1');
 		h.table.track(run);
-		await h.table.finishAndCleanup(run, 'failed', 'daemon shut down', 'interrupted');
+		await h.table.finishAndCleanup(run, 'failed', 'daemon shut down', {
+			judgment: 'interrupted'
+		});
 		expect(h.finishes).toEqual([
-			{ runId: 'arun_1', status: 'failed', error: 'daemon shut down', judgment: 'interrupted' }
+			{
+				runId: 'arun_1',
+				status: 'failed',
+				error: 'daemon shut down',
+				judgment: { judgment: 'interrupted' }
+			}
+		]);
+	});
+
+	it('forwards a rate-limited judgment, resume time and all, unchanged', async () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		h.table.track(run);
+		await h.table.finishAndCleanup(run, 'failed', 'rate limited: session limit', {
+			judgment: 'rate_limited',
+			resume_at: 1_788_739_200_000
+		});
+		expect(h.finishes).toEqual([
+			{
+				runId: 'arun_1',
+				status: 'failed',
+				error: 'rate limited: session limit',
+				judgment: { judgment: 'rate_limited', resume_at: 1_788_739_200_000 }
+			}
 		]);
 	});
 
@@ -517,6 +643,12 @@ describe('buildSpawnEnv', () => {
 		expect(buildSpawnEnv(base, { binDir: null, apiKey: 'k', apiUrl: 'https://t' }).PATH).toBe(
 			'/usr/bin:/bin'
 		);
+	});
+
+	it('canonicalizes the API URL placed in the spawned harness environment', () => {
+		expect(
+			buildSpawnEnv(base, { binDir: null, apiKey: 'k', apiUrl: 'https://t.test///' }).TINES_API_URL
+		).toBe('https://t.test');
 	});
 
 	it('tolerates an environment with no PATH at all', () => {

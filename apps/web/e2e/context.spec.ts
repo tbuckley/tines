@@ -11,7 +11,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, errorBody, runId, signIn } from './helpers';
+import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
 
 /**
  * The context-attachments acceptance loop (specs/context/SPEC.md): scoped
@@ -455,6 +455,7 @@ test.describe.serial('agent-maintained context', () => {
 			await api.post('/api/v1/context', {
 				kind: 'skill',
 				name: `sk-${runId}`,
+				description: 'Use this when the issue needs the synthetic review procedure.',
 				issue_id: issueId,
 				files: [{ path: 'SKILL.md', content: 'x' }]
 			})
@@ -469,6 +470,10 @@ test.describe.serial('agent-maintained context', () => {
 		);
 		const part = ctx.prompt.parts.find((p) => p.is_journal)!;
 		expect(part.version).toBe(3);
+		expect(ctx.skills[0].description).toBe(
+			'Use this when the issue needs the synthetic review procedure.'
+		);
+		expect(ctx.skills[0].files).toEqual([{ path: 'SKILL.md', content: 'x' }]);
 	});
 
 	test('the journal endpoint names the scope a caller owns, and is per-user', async ({
@@ -490,7 +495,7 @@ test.describe.serial('agent-maintained context', () => {
 		expect((await bob.get(`/api/v1/issues/${issueId}/journal`)).status()).toBe(404);
 	});
 
-	test('the launch prompt is id-free with the journal as its one write affordance', async ({
+	test('the launch prompt keeps context IDs private and describes readable skills', async ({
 		request
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
@@ -504,7 +509,10 @@ test.describe.serial('agent-maintained context', () => {
 		);
 		expect(prompt.text).toContain(`\`tines journal append ${issueRef} "- <date>: <lesson>"\``);
 		expect(prompt.text).toContain(`--expect-version 3`);
-		expect(prompt.text).toContain(`Attached to this issue: skill "sk-${runId}" (1 file)`);
+		expect(prompt.text).toContain(
+			`Skill "sk-${runId}" (issue ${issueRef}): read \`skills/sk-${runId}/SKILL.md\` when this applies: Use this when the issue needs the synthetic review procedure.`
+		);
+		expect(prompt.text).toContain(`tines issues context ${issueRef} --json`);
 		expect(prompt.text).toContain(`Also in effect: prompt "guidance-${runId}" (global)`);
 		expect(prompt.text).toContain('file an issue titled `Context change: <scope label>`');
 
@@ -553,7 +561,7 @@ test.describe.serial('context list state chips', () => {
 		context
 	}) => {
 		await signIn(context, ALICE.sessionToken);
-		await page.goto(`/context?workflow=${eng.id}`);
+		await gotoHydrated(page, `/context?workflow=${eng.id}`);
 		// `li:not([inert])`: the old row outros for 180 ms after a filter change
 		// (`transition:slide` in ContextItemList.svelte), and Svelte 5 marks an
 		// outroing element `inert` while it is still a sibling of the new row inside
@@ -576,9 +584,108 @@ test.describe.serial('context list state chips', () => {
 		await expect(row).not.toContainText(engName);
 	});
 
+	test('a chip too long for its cap truncates with an ellipsis, not mid-glyph', async ({
+		page,
+		context,
+		request
+	}) => {
+		// The chip is `inline-flex`, and `text-overflow` only applies to a block
+		// container's own inline text — so `truncate` on the chip itself kept the
+		// `overflow: hidden` half and dropped the ellipsis, clipping names
+		// mid-glyph (Tines/221). Assert on the mechanism rather than the glyph,
+		// which the DOM cannot see: inside a chip that overflows, the element
+		// carrying `text-overflow: ellipsis` has to be a block container.
+		const api = apiClient(request, ALICE.apiKey);
+		const longName = `Chip Overflowing Engineering Workflow ${runId}`;
+		const long = await body<WorkflowResponse>(await api.post('/api/v1/workflows', flow(longName)));
+
+		await signIn(context, ALICE.sessionToken);
+		await page.goto(`/context?workflow=${long.id}`);
+		const row = page.locator('li:not([inert])').filter({ hasText: 'instructions' });
+		await expect(row).toHaveCount(1);
+		const chip = row.getByTitle(`state Review (workflow \u201C${longName}\u201D)`);
+		await expect(chip).toContainText(`${longName} / Review`);
+
+		const measured = await chip.evaluate((el) => {
+			const ellipsised = [el, ...el.querySelectorAll('*')]
+				.filter((n): n is HTMLElement => n instanceof HTMLElement)
+				.filter((n) => getComputedStyle(n).textOverflow === 'ellipsis')
+				.map((n) => ({
+					display: getComputedStyle(n).display,
+					whiteSpace: getComputedStyle(n).whiteSpace,
+					overflowX: getComputedStyle(n).overflowX,
+					overflows: n.scrollWidth > n.clientWidth
+				}));
+			return { width: el.getBoundingClientRect().width, ellipsised };
+		});
+
+		// The name does not fit: the chip is pinned to its `max-w-56` cap.
+		expect(measured.width).toBeGreaterThan(200);
+		expect(measured.width).toBeLessThanOrEqual(225);
+		// …and exactly the clipped element renders an ellipsis. `display` is the
+		// crux: a flex item's text lives in an anonymous box that `text-overflow`
+		// never reaches, so a flex value here means the glyph is cut in half.
+		const clipped = measured.ellipsised.filter((n) => n.overflows);
+		expect(clipped).toHaveLength(1);
+		expect(clipped[0].display).toBe('block');
+		expect(clipped[0].whiteSpace).toBe('nowrap');
+		expect(clipped[0].overflowX).toBe('hidden');
+	});
+
+	test('on a phone the cap narrows so the item name keeps its own room', async ({
+		page,
+		context,
+		request
+	}) => {
+		// The chips wrapper never shrinks below the chip's cap and `ContextItemList`
+		// puts the item name and the chips on one non-wrapping row, so the cap comes
+		// straight out of the name. At the wide (`sm`) cap a 390px phone left the
+		// name a glyph or two, so the cap is `max-w-48 sm:max-w-56` (Tines/221
+		// review). Both halves have to stay legible here — and the chip has to keep
+		// truncating on a block child, i.e. the original bug stays fixed.
+		const api = apiClient(request, ALICE.apiKey);
+		const longName = `Chip Phone Engineering Workflow ${runId}`;
+		const long = await body<WorkflowResponse>(await api.post('/api/v1/workflows', flow(longName)));
+
+		await signIn(context, ALICE.sessionToken);
+		await page.setViewportSize({ width: 390, height: 844 });
+		await page.goto(`/context?workflow=${long.id}`);
+		const row = page.locator('li:not([inert])').filter({ hasText: 'instructions' });
+		await expect(row).toHaveCount(1);
+		const chip = row.getByTitle(`state Review (workflow \u201C${longName}\u201D)`);
+		await expect(chip).toBeVisible();
+
+		const measured = await chip.evaluate((el) => {
+			const name = el.closest('li')!.querySelector<HTMLElement>('span.truncate.font-medium')!;
+			const ellipsised = [el, ...el.querySelectorAll('*')]
+				.filter((n): n is HTMLElement => n instanceof HTMLElement)
+				.filter((n) => getComputedStyle(n).textOverflow === 'ellipsis')
+				.map((n) => ({
+					display: getComputedStyle(n).display,
+					overflows: n.scrollWidth > n.clientWidth
+				}));
+			return {
+				chipWidth: el.getBoundingClientRect().width,
+				nameWidth: name.getBoundingClientRect().width,
+				ellipsised
+			};
+		});
+
+		// The chip is pinned to the narrow cap, not the `sm` one…
+		expect(measured.chipWidth).toBeGreaterThan(150);
+		expect(measured.chipWidth).toBeLessThanOrEqual(200);
+		// …which leaves the item's own name a readable amount of room. (At the wide
+		// cap this measured 13-22px on this viewport, and 0px at 375px.)
+		expect(measured.nameWidth).toBeGreaterThan(30);
+		// The ellipsis still renders on a block child: the fix is not viewport-bound.
+		const clipped = measured.ellipsised.filter((n) => n.overflows);
+		expect(clipped).toHaveLength(1);
+		expect(clipped[0].display).toBe('block');
+	});
+
 	test('the workflow page keeps its own chips short', async ({ page, context }) => {
 		await signIn(context, ALICE.sessionToken);
-		await page.goto(`/workflows/${eng.id}`);
+		await gotoHydrated(page, `/workflows/${eng.id}`);
 		const section = page.getByRole('heading', { name: 'Context by state' }).locator('..');
 		const expander = section.getByRole('button', { name: /^Review/ });
 		// Same live-row scoping as above; this path has no swap, so it is consistency,

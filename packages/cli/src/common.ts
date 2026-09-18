@@ -4,13 +4,15 @@
  * more `commands/*.ts` modules lives here; single-consumer helpers travel with
  * their noun.
  */
-import { formatTable } from './format.js';
+import { formatTable, requirementLines } from './format.js';
 import { parseIssueRef } from './refs.js';
 import {
 	ApiError,
+	ApiNetworkError,
 	createApiClient,
 	listAll,
 	type ApiClient,
+	type ArtifactRequirementCheck,
 	type IssueDetail,
 	type ListResponse,
 	type PageParams,
@@ -36,6 +38,7 @@ export interface ListOpts extends CommonOpts {
 	limit?: number;
 	cursor?: string;
 	allPages?: boolean;
+	maxItems?: number;
 }
 
 /**
@@ -62,19 +65,56 @@ export function withCommon(cmd: Command): Command {
  * the page size rather than a total.
  */
 export function withList(cmd: Command): Command {
-	return withCommon(
-		cmd
-			.option('--limit <n>', 'maximum items to return (page size under --all-pages)', (v) =>
-				Number.parseInt(v, 10)
-			)
-			.option('--cursor <cursor>', 'resume from the next_cursor of a previous page')
-			.addOption(
-				new Option(
-					'--all-pages',
-					'fetch every page, not just the first (slower on large lists)'
-				).conflicts('cursor')
-			)
-	);
+	const listCommand = cmd
+		.option(
+			'--limit <n>',
+			'maximum items to return (page size under --all-pages)',
+			parsePositiveInteger
+		)
+		.option('--cursor <cursor>', 'resume from the next_cursor of a previous page')
+		.addOption(
+			new Option(
+				'--all-pages',
+				'fetch every page, not just the first (default safety ceiling: 10000 items)'
+			).conflicts('cursor')
+		)
+		.option(
+			'--max-items <n>',
+			'safety ceiling for --all-pages (default 10000; exceeding it errors)',
+			parseMaxItems
+		)
+		.hook('preAction', (_thisCommand, actionCommand) => {
+			const opts = actionCommand.opts<ListOpts>();
+			if (opts.maxItems !== undefined && !opts.allPages) {
+				actionCommand.error('--max-items requires --all-pages');
+			}
+		});
+	return withCommon(listCommand);
+}
+
+export function parsePositiveInteger(value: string): number {
+	return parsePositiveIntegerOption(value, 'limit');
+}
+
+function parseMaxItems(value: string): number {
+	return parsePositiveIntegerOption(value, 'max-items');
+}
+
+function parsePositiveIntegerOption(value: string, optionName: string): number {
+	if (!/^[1-9]\d*$/.test(value)) throw new Error(`${optionName} must be a positive integer`);
+	const result = Number(value);
+	if (!Number.isSafeInteger(result)) {
+		throw new Error(`${optionName} must be a positive safe integer`);
+	}
+	return result;
+}
+
+/** Historical usage filters may name owned retained IDs whose metadata was deleted. */
+export function isUsageIdentity(
+	value: string,
+	prefix: 'prj' | 'wf' | 'wfs' | 'rnr' | 'iss'
+): boolean {
+	return value === 'unknown' || new RegExp(`^${prefix}_[A-Za-z0-9]+$`).test(value);
 }
 
 /** Where a resolved setting came from, in precedence order. */
@@ -144,21 +184,22 @@ export function reportError(err: unknown): never {
 		// fix command the server includes, so the loop closes without help.
 		const unmet = err.details?.unmet;
 		if (Array.isArray(unmet)) {
+			// Rendered by the same helper `issues show` uses, so the pre-flight
+			// view of a gate and the failure it produces cannot drift.
 			for (const raw of unmet) {
-				const r = raw as {
-					artifact: string;
-					type?: string;
-					content_type?: string;
-					status?: string;
-					description?: string;
-					fix?: string;
-				};
-				const spec = [r.type, r.content_type].filter(Boolean).join(', ');
-				message += `\nrequires artifact "${r.artifact}"${spec ? ` (${spec})` : ''}: ${r.status ?? 'unmet'}${r.description ? ` — ${r.description}` : ''}`;
-				if (r.fix) message += `\n  fix: ${r.fix}`;
+				for (const line of requirementLines(raw as ArtifactRequirementCheck)) {
+					message += `\n${line}`;
+				}
 			}
 		}
 		die(message);
+	}
+	// A transport failure already names the base URL it tried (ApiNetworkError);
+	// what it cannot know is that the URL is settable, so say where from.
+	if (err instanceof ApiNetworkError) {
+		die(
+			`${err.message}\nhint: set the base URL with --url, TINES_API_URL, or \`tines login --url <url>\` (\`tines config\` shows the one in effect)`
+		);
 	}
 	die(err instanceof Error ? err.message : String(err));
 }
@@ -195,12 +236,20 @@ export function printList<T>(
  * parseable, and agents read run logs. Passing --cursor is deliberate paging,
  * so it is not warned about.
  */
-export async function fetchList<T extends { id: string }>(
+export async function fetchList<T>(
 	opts: ListOpts,
-	fetchPage: (page: PageParams) => Promise<ListResponse<T>>
+	fetchPage: (page: PageParams) => Promise<ListResponse<T>>,
+	identify?: (item: T) => string
 ): Promise<ListResponse<T>> {
 	if (opts.allPages) {
-		return { items: await listAll(fetchPage, { pageSize: opts.limit }), next_cursor: null };
+		return {
+			items: await listAll(fetchPage, {
+				pageSize: opts.limit,
+				maxItems: opts.maxItems,
+				identify: identify ?? ((item) => (item as { id: string }).id)
+			}),
+			next_cursor: null
+		};
 	}
 	const res = await fetchPage({ limit: opts.limit, cursor: opts.cursor });
 	if (res.next_cursor && opts.json && !opts.cursor) {
@@ -219,8 +268,16 @@ export function table(rows: string[][]): void {
 // ---------------------------------------------------------------------------
 // Reference resolution (names are the human interface; the API wants ids)
 
+/**
+ * Archived projects still resolve — an issue ref or an unarchive call must
+ * keep naming one — so this asks for the unfiltered list rather than the
+ * API's non-archived default.
+ */
 export async function resolveProject(api: ApiClient, ref: string): Promise<Project> {
-	const { items } = await api.listProjects();
+	// A historical issue address may belong to any project in the workspace,
+	// including an archived project beyond the first page. Reference resolution
+	// must therefore consume the whole namespace, not the list UI's first page.
+	const items = await listAll((page) => api.listProjects({ ...page, archived: 'all' }));
 	const byId = items.find((p) => p.id === ref);
 	if (byId) return byId;
 	const byName = items.filter((p) => p.name === ref);
@@ -228,11 +285,19 @@ export async function resolveProject(api: ApiClient, ref: string): Promise<Proje
 	if (byName.length > 1) {
 		die(`project name "${ref}" is ambiguous; use an id: ${byName.map((p) => p.id).join(', ')}`);
 	}
-	die(`no project named "${ref}" (have: ${items.map((p) => p.name).join(', ') || 'none'})`);
+	const have = items.map((p) => (p.archived_at ? `${p.name} (archived)` : p.name)).join(', ');
+	die(`no project named "${ref}" (have: ${have || 'none'})`);
 }
 
 export async function resolveWorkflow(api: ApiClient, ref: string): Promise<WorkflowResponse> {
-	const { items } = await api.listWorkflows();
+	return pickWorkflow((await api.listWorkflows()).items, ref);
+}
+
+/**
+ * The matching half of `resolveWorkflow`, for callers that already hold the
+ * library (resolving several refs against one fetch).
+ */
+export function pickWorkflow(items: WorkflowResponse[], ref: string): WorkflowResponse {
 	const found =
 		items.find((w) => w.id === ref) ??
 		(items.filter((w) => w.name === ref).length === 1
@@ -249,6 +314,15 @@ export async function resolveIssue(api: ApiClient, ref: string): Promise<IssueDe
 	const { project, number } = parseIssueRef(ref);
 	const proj = await resolveProject(api, project);
 	return api.getIssueByNumber(proj.id, number);
+}
+
+/** Resolves a label by name (case-insensitive) or id against the library. */
+export async function resolveLabelFlag(api: ApiClient, ref: string): Promise<string> {
+	const match = (await api.listLabels()).items.find(
+		(l) => l.id === ref || l.name.toLowerCase() === ref.toLowerCase()
+	);
+	if (!match) die(`no such label: ${ref}`);
+	return match.id;
 }
 
 /**

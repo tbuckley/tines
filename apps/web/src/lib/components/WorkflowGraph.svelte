@@ -22,12 +22,18 @@
 	let {
 		workflow,
 		currentStateId = null,
-		compact = false
+		compact = false,
+		fit = true,
+		intrinsicScale = 1
 	}: {
 		workflow: GraphWorkflow;
 		/** Highlighted state; changes animate along the traversed edge. */
 		currentStateId?: string | null;
 		compact?: boolean;
+		/** Fit to the container. Disable to fix a full graph at intrinsic size; the caller must contain overflow. */
+		fit?: boolean;
+		/** Scale intrinsic full-mode dimensions without changing graph geometry. */
+		intrinsicScale?: number;
 	} = $props();
 
 	// Unique per instance so several graphs on a page don't share markers.
@@ -143,7 +149,7 @@
 			const a = nodeById.get(t.from_state_id);
 			const b = nodeById.get(t.to_state_id);
 			if (!a || !b) continue;
-			const key = `${t.from_state_id}→${t.to_state_id}`;
+			const key = `${t.from_state_id}→${t.name}`;
 			const label = !compact && t.name ? t.name : null;
 			if (rank.get(a.id)! < rank.get(b.id)!) {
 				// Forward: right edge of source to left edge of target.
@@ -230,7 +236,8 @@
 	<svg
 		viewBox="0 0 {layout.width} {layout.height}"
 		class="h-auto w-full"
-		style="max-width: {layout.width * (compact ? 1 : 1.15)}px"
+		style:max-width={`${!fit && !compact ? layout.width * intrinsicScale : layout.width * (compact ? 1 : 1.15)}px`}
+		style:min-width={!fit && !compact ? `${layout.width * intrinsicScale}px` : undefined}
 		role="img"
 		aria-label="Workflow graph"
 	>

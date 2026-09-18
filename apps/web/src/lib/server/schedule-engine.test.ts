@@ -212,6 +212,17 @@ describe('templates', () => {
 			'{{oops}} {{date} {{}} 1970-01-01'
 		);
 	});
+
+	// The variable set is open: starters (Tines/248) render their own inputs
+	// through the same function, and anything they do not declare is left alone.
+	it('takes any record of strings, not just the schedule placeholders', () => {
+		expect(
+			renderTemplate('{{ repo_name }} on {{ repo_branch }} — {{date}}', {
+				repo_name: 'website',
+				repo_branch: 'trunk'
+			})
+		).toBe('website on trunk — {{date}}');
+	});
 });
 
 describe('describeRecurrence', () => {

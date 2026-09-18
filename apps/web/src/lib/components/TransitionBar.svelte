@@ -3,6 +3,7 @@
 	import IconDots from '@tabler/icons-svelte/icons/dots';
 	import StateGlyph from '$lib/components/StateGlyph.svelte';
 	import { categoryVar } from '$lib/format';
+	import { fitDirect } from '$lib/transitions';
 
 	/**
 	 * The phone's decide-while-reading bar, pinned above the tab bar: the
@@ -10,6 +11,13 @@
 	 * whichever transitions fit whole — at most two, in the list's order — and
 	 * a "more" button whenever any are hidden or the state is terminal. Names
 	 * are never truncated; a transition that does not fit lives in the sheet.
+	 *
+	 * The first slot is the list's head, which `planTransitions` makes the
+	 * workflow's expected next step (muted when it is blocked, and then a tap
+	 * opens the sheet at its requirement). Because that move is the reason to
+	 * come here, the state chip yields width down to `STATE_MIN` so it fits —
+	 * the header's badge carries the state's full name anyway. A second button
+	 * never costs the chip its name.
 	 *
 	 * Fit is measured against an invisible copy of every button, so the
 	 * decision cannot feed back into itself. Before measurement (server render)
@@ -21,55 +29,68 @@
 		unmetFor,
 		primaryId,
 		disabled = false,
+		disabledReason = null,
 		onmove,
 		onopen
 	}: {
 		current: WorkflowState;
 		transitions: AllowedTransition[];
 		unmetFor: (t: AllowedTransition) => ArtifactRequirementCheck[];
-		/** The one filled button: the first enabled forward move, if any. */
+		/** The one filled button: the workflow's expected next step, when it is enabled. */
 		primaryId: string | null;
 		disabled?: boolean;
+		/** Why the buttons are disabled, as their tooltip (archived project). */
+		disabledReason?: string | null;
 		onmove: (t: AllowedTransition) => void;
 		onopen: () => void;
 	} = $props();
 
 	const MAX_DIRECT = 2;
 	const GAP = 8;
+	/** 4.5 rem: glyph 16 + gap 6 + padding 12 + ~38 px of the state's name. */
+	const STATE_MIN = 72;
 
 	let barEl: HTMLElement | undefined = $state();
 	let measureEl: HTMLElement | undefined = $state();
-	let stateEl: HTMLElement | undefined = $state();
+	let stateMeasureEl: HTMLElement | undefined = $state();
 	let widths: number[] = $state([]);
 	let moreWidth = $state(0);
-	let available = $state(0);
+	let barWidth = $state(0);
+	let stateWidth = $state(0);
 
 	const visibleCount = $derived.by(() => {
-		if (widths.length !== transitions.length || available === 0) {
+		if (widths.length !== transitions.length || barWidth === 0) {
 			return Math.min(1, transitions.length);
 		}
-		let used = 0;
-		let count = 0;
-		for (let i = 0; i < Math.min(MAX_DIRECT, transitions.length); i++) {
-			const next = used + (i === 0 ? 0 : GAP) + widths[i];
-			// Room for the "more" button too whenever this one would leave some hidden.
-			const needsMore = i < transitions.length - 1;
-			if (next + (needsMore ? GAP + moreWidth : 0) > available) break;
-			used = next;
-			count = i + 1;
-		}
-		return count;
+		return fitDirect({
+			widths,
+			moreWidth,
+			barWidth,
+			stateWidth,
+			stateMin: STATE_MIN,
+			gap: GAP,
+			max: MAX_DIRECT
+		});
 	});
 	const hidden = $derived(transitions.length - visibleCount);
 
 	const remeasure = () => {
-		if (!barEl || !measureEl || !stateEl) return;
+		if (!barEl || !measureEl || !stateMeasureEl) return;
 		const buttons = [...measureEl.children] as HTMLElement[];
 		const all = buttons.map((el) => el.getBoundingClientRect().width);
-		// The measurement row ends with the "more" button.
+		// The row is [state chip, ...transitions, more].
 		moreWidth = all.pop() ?? 0;
+		all.shift();
 		widths = all;
-		available = barEl.clientWidth - stateEl.getBoundingClientRect().width - GAP;
+		// The content box: `clientWidth` includes the bar's own `px-3`, and with
+		// a chip that can no longer shrink to nothing those 24 px are the
+		// difference between a button that fits and one that spills out.
+		const pad = getComputedStyle(barEl);
+		barWidth = barEl.clientWidth - parseFloat(pad.paddingLeft) - parseFloat(pad.paddingRight);
+		// The chip's *natural* width: it is `min-w-[4.5rem] shrink`, so a chip
+		// already squeezed by a long first button measures at the floor and the
+		// arithmetic would hold its own outcome true.
+		stateWidth = stateMeasureEl?.getBoundingClientRect().width ?? 0;
 	};
 
 	$effect(() => {
@@ -98,9 +119,8 @@
 >
 	<div bind:this={barEl} class="relative flex h-14 items-center gap-2 px-3">
 		<button
-			bind:this={stateEl}
 			type="button"
-			class="flex h-9 min-w-0 shrink items-center gap-1.5 rounded-md px-1.5 text-sm font-medium"
+			class="flex h-9 min-w-[4.5rem] shrink items-center gap-1.5 rounded-md px-1.5 text-sm font-medium"
 			style:color={categoryVar(current.category)}
 			aria-label="State: {current.name}. Show all transitions"
 			onclick={onopen}
@@ -121,7 +141,7 @@
 					)}"
 					aria-disabled={blocked || undefined}
 					{disabled}
-					title={t.name}
+					title={disabledReason ?? t.name}
 					onclick={() => (blocked ? onopen() : onmove(t))}
 				>
 					{t.name}
@@ -139,13 +159,19 @@
 				</button>
 			{/if}
 		</div>
-		<!-- Out of flow and invisible: every button at natural width, plus the
-		     "more" button, purely to be measured. -->
+		<!-- Out of flow and invisible, purely to be measured: the state chip at
+		     its natural width, every transition button, then the "more" button. -->
 		<div
 			bind:this={measureEl}
 			aria-hidden="true"
 			class="pointer-events-none invisible absolute top-0 left-0 flex items-center gap-2"
 		>
+			<span
+				bind:this={stateMeasureEl}
+				class="flex h-9 items-center gap-1.5 px-1.5 text-sm font-medium whitespace-nowrap"
+			>
+				<StateGlyph category={current.category} />{current.name}
+			</span>
 			{#each transitions as t (t.transition_id)}
 				<span class="h-9 rounded-md border px-3 text-sm font-medium whitespace-nowrap"
 					>{t.name}</span

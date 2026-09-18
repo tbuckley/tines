@@ -6,6 +6,7 @@
 		CreateContextItemRequest,
 		Issue,
 		IssueListItem,
+		LabelWithUsage,
 		Project,
 		UpdateContextItemRequest,
 		WorkflowResponse
@@ -27,6 +28,7 @@
 	interface ScopeDefaults {
 		project_id?: string;
 		workflow_state_id?: string;
+		label_id?: string;
 		issue_id?: string;
 	}
 
@@ -34,6 +36,7 @@
 		open = $bindable(false),
 		item = null,
 		defaults = {},
+		defaultKind,
 		projects,
 		workflows,
 		onsaved
@@ -43,6 +46,8 @@
 		item?: ContextItem | null;
 		/** Scope pre-filled on create (e.g. "attach to this issue"). */
 		defaults?: ScopeDefaults;
+		/** Kind pre-selected on create, when the caller opened the editor for a specific one. */
+		defaultKind?: ContextKind;
 		projects: Project[];
 		workflows: WorkflowResponse[];
 		onsaved?: () => void | Promise<void>;
@@ -62,6 +67,7 @@
 	let description = $state('');
 	let projectId = $state('');
 	let stateId = $state('');
+	let labelId = $state('');
 	let issueId = $state('');
 	let body = $state('');
 	let previewBody = $state(false);
@@ -87,11 +93,12 @@
 		if (open && !wasOpen) {
 			errorMessage = null;
 			previewBody = false;
-			kind = item?.kind ?? 'prompt';
+			kind = item?.kind ?? defaultKind ?? 'prompt';
 			name = item?.name ?? '';
 			description = item?.description ?? '';
 			projectId = item ? (item.scope.project_id ?? '') : (defaults.project_id ?? '');
 			stateId = item ? (item.scope.workflow_state_id ?? '') : (defaults.workflow_state_id ?? '');
+			labelId = item ? (item.scope.label_id ?? '') : (defaults.label_id ?? '');
 			issueId = item ? (item.scope.issue_id ?? '') : (defaults.issue_id ?? '');
 			body = item?.body ?? '';
 			files = (item?.files ?? []).map((f) => ({
@@ -128,9 +135,29 @@
 			repoUrl = item?.repo_url ?? '';
 			repoBranch = item?.repo_branch ?? '';
 			repoDir = item?.repo_dir ?? '';
+			// Labels are small and rarely change, so one fetch per open is
+			// cheaper than threading them through all four call sites. A
+			// failure leaves the select empty rather than blocking the save:
+			// an item's existing label_id is preserved by the option below.
+			if (labels.length === 0) {
+				api
+					.listLabels()
+					.then((res) => {
+						labels = res.items;
+					})
+					.catch(() => {});
+			}
 		}
 		wasOpen = open;
 	});
+
+	let labels = $state<LabelWithUsage[]>([]);
+	// The item's own label, when the list has not arrived (or no longer has
+	// it): without an option carrying the current value the select would
+	// silently reset the scope to "any label" on save.
+	const missingLabel = $derived(
+		labelId && !labels.some((l) => l.id === labelId) ? (item?.scope.label_name ?? labelId) : null
+	);
 
 	// --- scope coherence, enforced live -------------------------------------
 
@@ -196,7 +223,7 @@
 	});
 
 	const derivedDir = $derived(repoUrl.trim() ? repoDirFromUrl(repoUrl.trim()) : '');
-	const isGlobal = $derived(!projectId && !stateId && !issueId);
+	const isGlobal = $derived(!projectId && !stateId && !labelId && !issueId);
 
 	async function save(e: SubmitEvent) {
 		e.preventDefault();
@@ -220,6 +247,7 @@
 				if (kind !== 'artifact') {
 					request.project_id = projectId || null;
 					request.workflow_state_id = stateId || null;
+					request.label_id = labelId || null;
 					request.issue_id = issueId || null;
 				}
 				if (kind === 'prompt') request.body = body;
@@ -238,6 +266,7 @@
 					description: description || undefined,
 					project_id: projectId || null,
 					workflow_state_id: stateId || null,
+					label_id: labelId || null,
 					issue_id: issueId || null
 				};
 				if (kind === 'prompt') request.body = body;
@@ -475,6 +504,20 @@
 							{#each workflow.states as state (state.id)}
 								<option value={state.id}>{workflow.name} / {state.name}</option>
 							{/each}
+						{/each}
+					</Select>
+				</div>
+				<div class="space-y-1">
+					<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-label"
+						>Only on issues labelled</label
+					>
+					<Select id="ctx-scope-label" bind:value={labelId} class="h-8 text-xs">
+						<option value="">Any label</option>
+						{#if missingLabel}
+							<option value={labelId}>{missingLabel}</option>
+						{/if}
+						{#each labels as label (label.id)}
+							<option value={label.id}>{label.name}</option>
 						{/each}
 					</Select>
 				</div>

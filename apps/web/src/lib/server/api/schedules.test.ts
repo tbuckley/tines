@@ -1,7 +1,12 @@
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { sweepSchedules } from '../schedule-sweep';
 import type { ActorContext } from './core';
 import { createIssue } from './issues';
+import { archiveProject, unarchiveProject } from './projects';
 import { getSchedule, runScheduleNow, updateSchedule } from './schedules';
 import { createTestDb, type TestDb } from './test-db';
 import { updateWorkflow } from './workflows';
@@ -38,7 +43,7 @@ function seedCustomWorkflow(t: TestDb) {
 }
 
 async function createSchedule(t: TestDb, extra: { state?: string } = {}) {
-	const res = await createIssue(t.db, t.env, actor, 'prj_1', {
+	const res = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'prj_1', {
 		title: 'Daily triage',
 		state: extra.state,
 		schedule: { preset: { kind: 'daily', time: '09:00' } }
@@ -47,6 +52,34 @@ async function createSchedule(t: TestDb, extra: { state?: string } = {}) {
 }
 
 describe('schedule start state', () => {
+	it('dispatch effects: runScheduleNow signals only after its instance batch commits', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		const effects = recordDispatchEffects();
+		const issueId = await runScheduleNow(t.db, t.env, actor, effects, schedule.id);
+		expect(effects.count()).toBe(1);
+		expect(t.all('SELECT id FROM issue WHERE id = ?', issueId)).toHaveLength(1);
+		await expect(runScheduleNow(t.db, t.env, actor, effects, 'tsk_missing')).rejects.toMatchObject({
+			status: 404
+		});
+		expect(effects.count()).toBe(1);
+
+		const beforeIssues = t.all('SELECT id FROM issue').length;
+		const beforeEvents = t.all("SELECT id FROM event WHERE type = 'issue.created'").length;
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		t.env.DB.batch = async () => {
+			throw new Error('injected schedule instance batch failure');
+		};
+		await expect(runScheduleNow(t.db, t.env, actor, effects, schedule.id)).rejects.toThrow(
+			'injected schedule instance batch failure'
+		);
+		t.env.DB.batch = realBatch;
+		expect(effects.count()).toBe(1);
+		expect(t.all('SELECT id FROM issue')).toHaveLength(beforeIssues);
+		expect(t.all("SELECT id FROM event WHERE type = 'issue.created'")).toHaveLength(beforeEvents);
+	});
+
 	it('defaults to the workflow initial state, stored as NULL ("follow the workflow")', async () => {
 		const t = createTestDb();
 		seed(t);
@@ -78,7 +111,13 @@ describe('schedule start state', () => {
 		expect(updated.state_id).toBe('wfs_std_review');
 		expect(updated.state_name).toBe('Human Review');
 
-		const issueId = await runScheduleNow(t.db, t.env, actor, schedule.id);
+		const issueId = await runScheduleNow(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			schedule.id
+		);
 		expect(t.all(`SELECT state_id FROM issue WHERE id = ?`, issueId)).toEqual([
 			{ state_id: 'wfs_std_review' }
 		]);
@@ -107,6 +146,37 @@ describe('schedule start state', () => {
 		);
 		expect(instances).toHaveLength(2); // the initial issue + the swept one
 		expect(instances[1]).toEqual({ state_id: 'wfs_std_review' });
+	});
+
+	it('skips a due schedule while its project is archived, then resumes without a backfill', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		const due = Date.now() - 60_000;
+		t.sqlite
+			.prepare(`UPDATE scheduled_task SET next_run_at = ? WHERE id = ?`)
+			.run(due, schedule.id);
+		await archiveProject(t.db, t.env, actor, 'prj_1', Date.now());
+
+		const instances = () =>
+			t.all(`SELECT id FROM issue WHERE scheduled_task_id = ?`, schedule.id).length;
+		const before = instances();
+		const runCount = () => t.all(`SELECT run_count FROM scheduled_task WHERE id = ?`, schedule.id);
+		const runsBefore = runCount();
+		await sweepSchedules(t.env);
+		await sweepSchedules(t.env);
+		expect(instances()).toBe(before);
+		// Skipping is silent: an archived project is not a schedule problem.
+		expect(t.all(`SELECT id FROM event WHERE type = 'scheduled_task.skipped'`)).toEqual([]);
+		expect(runCount()).toEqual(runsBefore);
+
+		const now = Date.now();
+		await unarchiveProject(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'prj_1', now);
+		const next = (await getSchedule(t.db, 'u1', schedule.id)).next_run_at!;
+		expect(next).toBeGreaterThan(now);
+		// One more sweep at the same instant still fires nothing: no catch-up.
+		await sweepSchedules(t.env);
+		expect(instances()).toBe(before);
 	});
 
 	it('picking the initial state — or explicit null — resets to "follow the workflow"', async () => {
@@ -146,7 +216,13 @@ describe('schedule workflow changes', () => {
 		expect(updated.workflow_name).toBe('Custom');
 		expect(updated.state_id).toBeNull();
 
-		const issueId = await runScheduleNow(t.db, t.env, actor, schedule.id);
+		const issueId = await runScheduleNow(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			schedule.id
+		);
 		expect(t.all(`SELECT workflow_id, state_id FROM issue WHERE id = ?`, issueId)).toEqual([
 			{ workflow_id: 'wf_2', state_id: 'wfs_c_todo' }
 		]);
@@ -191,7 +267,7 @@ describe('workflow editing guard', () => {
 		await updateSchedule(t.db, t.env, actor, schedule.id, { workflow_id: 'wf_2', state: 'Doing' });
 
 		await expect(
-			updateWorkflow(t.db, t.env, actor, 'wf_2', {
+			updateWorkflow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'wf_2', {
 				states: [
 					{ id: 'wfs_c_todo', name: 'Todo', category: 'active' },
 					{ id: 'wfs_c_done', name: 'Done', category: 'done' }
@@ -209,7 +285,7 @@ describe('workflow editing guard', () => {
 
 		// Removing an unscheduled state still works.
 		await updateSchedule(t.db, t.env, actor, schedule.id, { state: null });
-		const updated = await updateWorkflow(t.db, t.env, actor, 'wf_2', {
+		const updated = await updateWorkflow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'wf_2', {
 			states: [
 				{ id: 'wfs_c_todo', name: 'Todo', category: 'active' },
 				{ id: 'wfs_c_done', name: 'Done', category: 'done' }

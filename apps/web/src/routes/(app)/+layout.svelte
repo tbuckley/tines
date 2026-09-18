@@ -2,18 +2,19 @@
 	import IconActivity from '@tabler/icons-svelte/icons/activity';
 	import IconArrowsSplit2 from '@tabler/icons-svelte/icons/arrows-split-2';
 	import IconBooks from '@tabler/icons-svelte/icons/books';
-	import IconDatabaseExport from '@tabler/icons-svelte/icons/database-export';
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
-	import IconKey from '@tabler/icons-svelte/icons/key';
 	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
 	import IconLogout from '@tabler/icons-svelte/icons/logout';
-	import IconTag from '@tabler/icons-svelte/icons/tag';
-	import IconPalette from '@tabler/icons-svelte/icons/palette';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
+	import IconSettings from '@tabler/icons-svelte/icons/settings';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
-	import { goto, invalidateAll, onNavigate } from '$app/navigation';
+	import { goto, invalidate, invalidateAll, onNavigate } from '$app/navigation';
 	import { navigating, page } from '$app/state';
+	import { api } from '$lib/api';
 	import { authClient } from '$lib/auth-client';
+	import ProjectSwitcher from '$lib/components/ProjectSwitcher.svelte';
+	import { focusHint } from '$lib/focus.svelte';
+	import { resolveClientFocus } from '$lib/focus';
 	import { prefersReducedMotion } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
 	import { fade } from 'svelte/transition';
@@ -24,14 +25,52 @@
 	// where it goes — the Issues tab carries the filters you last used, so the
 	// list comes back as you left it. Derived so it tracks the store: the
 	// layout outlives every navigation.
+	const focus = $derived(resolveClientFocus(focusHint.project, data.focus, data.projects));
+
 	const tabs = $derived([
 		{ path: '/issues', href: navMemory.issuesHref, label: 'Issues', icon: IconListDetails },
 		{ path: '/workflows', href: '/workflows', label: 'Workflows', icon: IconSitemap },
-		{ path: '/projects', href: '/projects', label: 'Projects', icon: IconFolder },
+		{
+			path: '/projects',
+			href: focus ? `/projects/${focus.id}` : navMemory.projectsHref,
+			label: 'Projects',
+			icon: IconFolder
+		},
 		{ path: '/context', href: '/context', label: 'Context', icon: IconBooks },
 		{ path: '/agents', href: '/agents', label: 'Agents', icon: IconRobot },
 		{ path: '/activity', href: '/activity', label: 'Activity', icon: IconActivity }
 	]);
+
+	// The project focus is chrome, not a page filter: it only makes sense once
+	// there are two projects to move between (Tines/259).
+	const showSwitcher = $derived(data.projects.length >= 2);
+
+	// The chrome's answer to "what am I looking at": the layout's own data,
+	// unless the client has set the focus since (opening a project page does),
+	// which it records as a hint rather than paying for a load rerun.
+	async function chooseFocus(projectId: string | null) {
+		const predecessor = focusHint.predecessor();
+		const write = predecessor.then(async () => {
+			await api.updatePreferences({ focused_project_id: projectId });
+			// A navigation that began while this write was pending can reuse the
+			// resident layout node. Keep its chrome aligned with the freshly loaded
+			// child data until a later layout refresh replaces the hint.
+			if (navigating.to) {
+				focusHint.set(
+					data.projects.find((project: { id: string }) => project.id === projectId) ?? null
+				);
+			} else {
+				focusHint.clear();
+			}
+		});
+		focusHint.track(write);
+		await write;
+		// Every focus-aware load shares this dependency, including children that
+		// read the app layout through parent(). A navigation already waiting on
+		// this write will load that dependency itself; invalidating the resident
+		// page at the same time can supersede the navigation.
+		if (!navigating.to) await invalidate('app:preferences');
+	}
 
 	let menuOpen = $state(false);
 
@@ -97,8 +136,8 @@
 
 <div class="flex min-h-screen flex-col">
 	<header class="bg-background/90 sticky top-0 z-40 border-b backdrop-blur">
-		<div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-6 px-4">
-			<a href="/issues" class="flex items-center gap-2 font-semibold tracking-tight">
+		<div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4">
+			<a href="/issues" class="flex shrink-0 items-center gap-2 font-semibold tracking-tight">
 				<span
 					class="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-lg"
 				>
@@ -106,8 +145,11 @@
 				</span>
 				Tines
 			</a>
-			<!-- On phones the tabs live in the bottom bar instead. -->
-			<nav class="hidden h-full items-center gap-1 sm:flex">
+			{#if showSwitcher}
+				<ProjectSwitcher projects={data.projects} {focus} onchoose={chooseFocus} />
+			{/if}
+			<!-- Below md the tabs live in the bottom bar instead. -->
+			<nav class="hidden h-full items-center gap-1 md:flex">
 				{#each tabs as tab (tab.path)}
 					{@const active = page.url.pathname.startsWith(tab.path)}
 					<a
@@ -163,29 +205,18 @@
 							<p class="text-muted-foreground truncate text-xs">{data.user.email}</p>
 						</div>
 						<div class="bg-border my-1 h-px"></div>
+						<!--
+							One entry, not one per page: the settings pages carry their own tab row
+							(settings/+layout.svelte). This points at the first tab, which is also
+							where a bare /settings redirects.
+						-->
 						<a
 							href="/settings/appearance"
 							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"
 							role="menuitem"
 							onclick={() => (menuOpen = false)}
 						>
-							<IconPalette size={16} stroke={1.75} /> Appearance
-						</a>
-						<a
-							href="/settings/labels"
-							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"
-							role="menuitem"
-							onclick={() => (menuOpen = false)}
-						>
-							<IconTag size={16} stroke={1.75} /> Labels
-						</a>
-						<a
-							href="/settings/api-keys"
-							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"
-							role="menuitem"
-							onclick={() => (menuOpen = false)}
-						>
-							<IconKey size={16} stroke={1.75} /> API keys
+							<IconSettings size={16} stroke={1.75} /> Settings
 						</a>
 						<button
 							class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm"
@@ -202,15 +233,15 @@
 
 	<!-- Named group so tab slides move the page content but not the chrome. -->
 	<main
-		class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pb-24 sm:pb-8"
+		class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pb-[calc(6rem+env(safe-area-inset-bottom,0px))] md:pb-8"
 		style:view-transition-name="page"
 	>
 		{@render children()}
 	</main>
 
-	<!-- mobile bottom tab bar -->
+	<!-- Compact chrome bottom tab bar below md. -->
 	<nav
-		class="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur sm:hidden"
+		class="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur md:hidden"
 		style="padding-bottom: env(safe-area-inset-bottom)"
 		aria-label="Primary"
 	>

@@ -1,6 +1,7 @@
 /** Wire types for the Tines phase-one API (`/api/v1/*`). All snake_case. */
 
 import type { SchedulePreset } from './schedule.js';
+import type { EffortApplicationStatus, EffortCapabilities, EffortSource } from './effort.js';
 
 export type StateCategory = 'backlog' | 'active' | 'awaiting_human' | 'done';
 
@@ -34,22 +35,33 @@ export interface Actor {
 }
 
 /**
+ * How a run is named wherever one is referred to: "run on demo/12", or
+ * "run <id>" when the issue it worked has been deleted. Shared by
+ * `actorLabel` and the API keys page, so both spell a run the same way.
+ */
+export function runRefLabel(run: ActorRun): string {
+	return run.issue_ref
+		? `run on ${run.issue_ref.project_name}/${run.issue_ref.number}`
+		: `run ${run.run_id}`;
+}
+
+/**
  * Canonical actor rendering everywhere actions are attributed: "alice",
  * "alice via laptop-key", or — for run keys — "alice via laptop-m4 · run on
  * demo/12".
  */
 export function actorLabel(actor: Actor): string {
 	if (actor.run) {
-		const ref = actor.run.issue_ref
-			? `run on ${actor.run.issue_ref.project_name}/${actor.run.issue_ref.number}`
-			: `run ${actor.run.run_id}`;
-		return `${actor.user_name} via ${actor.run.runner_name} · ${ref}`;
+		return `${actor.user_name} via ${actor.run.runner_name} · ${runRefLabel(actor.run)}`;
 	}
 	return actor.api_key_name ? `${actor.user_name} via ${actor.api_key_name}` : actor.user_name;
 }
 
 // ---------------------------------------------------------------------------
 // Projects
+
+/** Project names are measured as JavaScript string length (UTF-16 code units). */
+export const PROJECT_NAME_MAX = 200;
 
 export interface Project {
 	id: string;
@@ -60,6 +72,8 @@ export interface Project {
 	updated_at: number;
 	/** Issues currently in the project (all states). */
 	issue_count: number;
+	/** Set (ms) while the project is archived; null = live. */
+	archived_at: number | null;
 }
 
 export interface CreateProjectRequest {
@@ -69,14 +83,107 @@ export interface CreateProjectRequest {
 	/**
 	 * When present, also creates a project-scoped prompt item named
 	 * "conventions" with this Markdown body, in the same transaction.
+	 * Present (even `''`) beats a starter's `conventions_template`; absent
+	 * falls back to it.
 	 */
 	initial_prompt?: string;
+	/**
+	 * Apply a built-in starter atomically with the project (Tines/248):
+	 * its workflows, context and first issue land in the same batch, or
+	 * nothing does. Absent is equivalent to `{ id: 'blank' }`.
+	 */
+	starter?: { id: string; inputs?: Record<string, string> };
 }
+
+/** The built-in starters. `blank` is today's behaviour, named. */
+export const STARTER_IDS = ['blank', 'code', 'plan'] as const;
+export type StarterId = (typeof STARTER_IDS)[number];
+
+/** The typed inputs a starter can declare. */
+export const STARTER_INPUT_KEYS = ['repo_url', 'repo_branch', 'brief'] as const;
+export type StarterInputKey = (typeof STARTER_INPUT_KEYS)[number];
+
+export interface StarterInputSpec {
+	key: StarterInputKey;
+	/** Form label, e.g. "Repository URL". */
+	label: string;
+	required: boolean;
+	/** Form hint. */
+	description?: string;
+	/** Max length after trimming (default 10_000). */
+	max?: number;
+}
+
+/** What a starter creates, as `GET /api/v1/projects/starters` advertises it. */
+export interface StarterSummary {
+	id: StarterId;
+	name: string;
+	/** One sentence for the chooser card. */
+	description: string;
+	inputs: StarterInputSpec[];
+	/** Prefills the conventions textarea; null for blank. Templated with `{{ key }}`. */
+	conventions_template: string | null;
+	creates: {
+		workflows: { name: string; default: boolean; states: string[] }[];
+		/** Names may still contain `{{ … }}` placeholders. */
+		context: { kind: ContextKind; name: string }[];
+		first_issue: { title: string; workflow: string; state: string } | null;
+	};
+}
+
+export interface ListStartersResponse {
+	items: StarterSummary[];
+}
+
+/** What a starter actually created, reported on the 201. */
+export interface StarterApplied {
+	id: StarterId;
+	/** `reused: true` means an identical-fingerprint workflow already existed. */
+	workflows: { id: string; name: string; reused: boolean }[];
+	context: { id: string; kind: ContextKind; name: string }[];
+	first_issue: { id: string; number: number; ref: string; state_name: string } | null;
+}
+
+/** A created project, plus the starter summary when one applied. */
+export type CreateProjectResponse = Project & { starter?: StarterApplied };
 
 export interface UpdateProjectRequest {
 	name?: string;
 	description?: string;
 	default_workflow_id?: string | null;
+}
+
+/** How `archived` narrows a list; absent means `'false'`. */
+export type ArchivedFilter = 'true' | 'false' | 'all';
+
+export interface ProjectListFilters {
+	/** `'false'` (default) hides archived projects, `'true'` shows only them. */
+	archived?: ArchivedFilter;
+}
+
+/** A run that was still active when its project was archived. */
+export interface DrainingRun {
+	run_id: string;
+	runner_name: string;
+	issue_id: string;
+	issue_number: number;
+}
+
+export interface ArchiveProjectResponse {
+	/** The project with `archived_at` set. */
+	project: Project;
+	/** Enabled schedules that will not fire while the project is archived. */
+	schedules_paused: number;
+	/** Runs allowed to finish on their own issue; nothing new dispatches. */
+	draining_runs: DrainingRun[];
+	/** Issues frozen by the archive. */
+	issues_read_only: number;
+}
+
+export interface UnarchiveProjectResponse {
+	project: Project;
+	/** Enabled schedules whose `next_run_at` was advanced to the next future occurrence. */
+	schedules_resumed: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +194,13 @@ export interface WorkflowState {
 	name: string;
 	category: StateCategory;
 	position: number;
+	/**
+	 * The state this one inherits context from (a `workflow_state` id), or
+	 * null. Items scoped to the base — and to the base's own ancestors —
+	 * are part of an issue's effective context, stitched before this
+	 * state's own layer.
+	 */
+	inherits_from: string | null;
 }
 
 export interface WorkflowTransition {
@@ -129,6 +243,19 @@ export interface WorkflowStateInput {
 	 * context surfaces, not re-sent through workflow updates.
 	 */
 	prompt?: string;
+	/**
+	 * The state whose context this state inherits: one of this request's
+	 * states by id or name, or the id of a state in any workflow you can see
+	 * (your own, or the standard workflow). In a {@link LibraryDocument} the
+	 * cross-workflow form is the portable `"<workflow name>/<state name>"`
+	 * instead of an id, resolved by the importer before it reaches this
+	 * request. Chains are at most 3 states long
+	 * and may not cycle. On an EXISTING state (`id` present) the field is
+	 * merge-patch style — absent = unchanged, `null` = clear — so callers
+	 * that round-trip states without knowing about it cannot clear it. On a
+	 * new state, absent and `null` both mean "no base".
+	 */
+	inherits_from?: string | null;
 }
 
 /**
@@ -171,6 +298,24 @@ export interface UpdateWorkflowRequest {
 	 * (all-or-nothing, one `context.deleted` event each).
 	 */
 	force_delete_context?: boolean;
+	/**
+	 * Removing a state other states inherit from is rejected by default;
+	 * with this flag the removal proceeds and those states' pointers are
+	 * cleared (reported in `cleared_inheritance`, one `inheritance_changed`
+	 * entry each). Separate from `force_delete_context` on purpose: sweeping
+	 * your own context is not consent to change other workflows' prompts.
+	 */
+	force_clear_inheritance?: boolean;
+}
+
+/** A state whose inheritance pointer a forced operation cleared. */
+export interface ClearedInheritance {
+	state_id: string;
+	state_name: string;
+	workflow_id: string;
+	workflow_name: string;
+	/** The base it pointed at, as `<workflow> / <state>`. */
+	was: string;
 }
 
 export interface WorkflowResponse extends Workflow {
@@ -178,16 +323,22 @@ export interface WorkflowResponse extends Workflow {
 	warnings?: string[];
 	/** Context items swept by a forced state removal in this update. */
 	deleted_context?: DeletedContextItem[];
+	/** States whose inheritance pointer a forced removal cleared. */
+	cleared_inheritance?: ClearedInheritance[];
 }
 
 /** Body accepted by project/workflow DELETE; see force_delete_context above. */
 export interface DeleteAnchorRequest {
 	force_delete_context?: boolean;
+	/** Workflow DELETE only (projects have no states): see UpdateWorkflowRequest. */
+	force_clear_inheritance?: boolean;
 }
 
 /** DELETE response when a forced delete swept context items (else 204). */
 export interface DeleteAnchorResponse {
 	deleted_context: DeletedContextItem[];
+	/** States in other workflows whose pointer a forced delete cleared. */
+	cleared_inheritance?: ClearedInheritance[];
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +409,10 @@ export interface Label {
 /** A label in the library listing, with how many issues carry it. */
 export interface LabelWithUsage extends Label {
 	issue_count: number;
+	/** Context items scoped to this label. */
+	context_item_count: number;
+	/** Routing rules scoped to this label. */
+	routing_rule_count: number;
 }
 
 /** The denormalized form that rides along on every issue read. */
@@ -276,10 +431,23 @@ export interface UpdateLabelRequest {
 	description?: string;
 }
 
+export interface DeleteLabelRequest {
+	/**
+	 * Delete the context items and routing rules scoped to this label along
+	 * with it. Without it, a label that scopes anything is refused (422
+	 * `label_in_use`) — deleting scope silently is how a rule gets broadened.
+	 */
+	force?: boolean;
+}
+
 export interface DeleteLabelResponse {
 	deleted: true;
 	/** How many issues carried the label when it was deleted. */
 	issue_count: number;
+	/** Context items deleted with the label (`force` only). */
+	context_items_deleted: { id: string; kind: ContextKind; name: string; scope_label: string }[];
+	/** Routing rules deleted with the label (`force` only). */
+	routing_rules_deleted: { id: string; scope_label: string }[];
 }
 
 export interface AddIssueLabelsRequest {
@@ -300,6 +468,8 @@ export interface Issue {
 	id: string;
 	project_id: string;
 	project_name: string;
+	/** Set (ms) while the issue's project is archived; null = live. */
+	project_archived_at: number | null;
 	number: number;
 	title: string;
 	description: string;
@@ -320,6 +490,9 @@ export interface Issue {
 	/** Set when the issue was created by a scheduled task (null once the schedule is deleted). */
 	scheduled_task_id: string | null;
 	scheduled_task_name: string | null;
+	/** The schedule keeps its original project when an instance moves. */
+	scheduled_task_project_id: string | null;
+	scheduled_task_project_name: string | null;
 	/** Pin: replaces routing-rule matching entirely for this issue. */
 	pinned_runner_id: string | null;
 	pinned_runner_name: string | null;
@@ -329,6 +502,18 @@ export interface Issue {
 	attempt_count: number;
 	/** Parked after striking out; cleared by resume or a manual transition. */
 	needs_attention: boolean;
+	/**
+	 * The transition that brought the issue into its current state. Derived for
+	 * awaiting-human issues only (the handoff rows); null on every other row and
+	 * after a direct workflow change, which re-stamps `state_entered_at` without
+	 * emitting a transition.
+	 */
+	arrived_via: ArrivedVia | null;
+	/**
+	 * What the round that just ended produced, for awaiting-human list rows.
+	 * Null on other rows; absent from reads that do not assemble it.
+	 */
+	round_summary?: RoundSummary | null;
 	/** The run currently holding this issue's exclusive claim, if any. */
 	active_run: { run_id: string; runner_name: string; status: RunStatus } | null;
 	/**
@@ -422,6 +607,115 @@ export interface IssueDetail extends Issue {
 	 * does, so it does not fetch the same list twice). Absent from API reads.
 	 */
 	artifacts?: Artifact[];
+	/**
+	 * The runs on this issue since the human last acted, grouped by the state
+	 * each started in. Only when the caller opted in; null when no run falls
+	 * inside the round (a human moved the issue here directly).
+	 */
+	round?: Round | null;
+	/**
+	 * The human's steer since the previous run ended. Only when the caller opted
+	 * in; null when nothing human happened after it, or there is no previous run.
+	 */
+	since_last_run?: SinceLastRun | null;
+	/** Prompt-only metadata, emitted when launch comment selection is requested. */
+	launch_comments?: { latest_completed_run_comment_id: string | null };
+}
+
+// ---------------------------------------------------------------------------
+// The handoff: what came back from a round, and what the human said since
+
+/** A transition as it appears inside the round / since-last-run derivations. */
+export interface RoundTransition {
+	/** Null on a forced move (`issues edit -s`): render "moved directly". */
+	action: string | null;
+	from_state: { id: string; name: string };
+	to_state: { id: string; name: string };
+	actor: Actor;
+	at: number;
+}
+
+/** The transition into an issue's current state, as list rows carry it. */
+export interface ArrivedVia {
+	action: string | null;
+	from_state_name: string | null;
+	/** True when a run took it, false when a human did. */
+	by_run: boolean;
+	at: number;
+}
+
+/** One artifact a run touched, with the version numbers either side. */
+export interface RoundArtifactChange {
+	name: string;
+	artifact_type: ArtifactType;
+	/** Version before this run touched it; null when the run created it. */
+	from_version: number | null;
+	/** The last version this run attached (a reaffirmation counts). */
+	to_version: number;
+	/** pr artifacts: https://github.com/{owner}/{repo}/pull/{n}. */
+	pr_url: string | null;
+	/** folder artifacts: workspace-relative paths of `to_version`'s snapshot. */
+	files: string[] | null;
+}
+
+/** One run inside a round. */
+export interface RoundRun {
+	run_id: string;
+	runner_name: string;
+	status: RunStatus;
+	outcome: RunEndOutcome | null;
+	started_at: number | null;
+	ended_at: number | null;
+	usage: AgentRunUsage | null;
+	/** The transition this run took, or null (stalled / still running). */
+	transition: RoundTransition | null;
+	/** The run's last comment on this issue — its summary — in full. */
+	summary_comment: { id: string; body: string; created_at: number } | null;
+	/** Ids of the run's earlier comments, oldest first (resolve against `comments`). */
+	earlier_comment_ids: string[];
+	/** Artifact versions whose actor is this run, in name order. */
+	artifacts: RoundArtifactChange[];
+	/**
+	 * For an earlier attempt at a stage: the transition that brought the issue
+	 * back into this run's start state afterwards ("sent back by Automated
+	 * Review"). Null on the stage's latest run.
+	 */
+	returned_via: RoundTransition | null;
+}
+
+/** Every run in the round that started in one state, latest first. */
+export interface RoundStage {
+	state: { id: string; name: string | null; position: number | null };
+	/** Latest run first; `runs.slice(1)` are the earlier attempts to fold. */
+	runs: RoundRun[];
+}
+
+export interface Round {
+	/** The human action the round starts after; null = the issue's creation. */
+	boundary: RoundTransition | null;
+	boundary_at: number;
+	/** In workflow position order; states no longer in the workflow sort last. */
+	stages: RoundStage[];
+	run_count: number;
+}
+
+export interface SinceLastRun {
+	previous_run: { run_id: string; ended_at: number | null; state_at_start_name: string | null };
+	/** The human-taken transition after the previous run, or null (comment only). */
+	transition: RoundTransition | null;
+	/** Human comments after the previous run, oldest first, at most ten (the newest ten). */
+	comments: Comment[];
+	/** Total human comments in the window, so a cap can be reported. */
+	comment_count: number;
+	/** Artifacts whose current version was fresh before the transition and is stale now. */
+	stale_artifacts: string[];
+}
+
+/** Compact "what this round produced", for awaiting-human list rows. */
+export interface RoundSummary {
+	pr_url: string | null;
+	/** Artifacts a run in this round attached or re-versioned. */
+	artifacts: { name: string; artifact_type: ArtifactType; version: number }[];
 }
 
 export interface CreateIssueRequest {
@@ -469,6 +763,8 @@ export interface Schedule {
 	id: string;
 	project_id: string;
 	project_name: string;
+	/** Set (ms) while the schedule's project is archived; null = live. */
+	project_archived_at: number | null;
 	/** Unique within the project; schedules are addressed as `<project>/<name>`. */
 	name: string;
 	title_template: string;
@@ -526,6 +822,8 @@ export interface ScheduleFilters {
 	/** Project id or name. */
 	project?: string;
 	enabled?: boolean;
+	/** Without a project filter, archived projects' schedules are hidden by default. */
+	archived?: ArchivedFilter;
 }
 
 export interface UpdateIssueRequest {
@@ -569,12 +867,14 @@ export interface IssueFilters {
 	hide_done?: boolean;
 	/** Only issues that are not done, not duplicates, and have all blockers effectively done. */
 	ready?: boolean;
-	/** Title/description substring search. */
+	/** Literal title/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	/** Label names or ids; repeated labels narrow (AND). */
 	label?: string[];
 	/** Omit `description` from every list item (saves tokens when scanning). */
 	brief?: boolean;
+	/** Without a project filter, archived projects' issues are hidden by default. */
+	archived?: ArchivedFilter;
 }
 
 // ---------------------------------------------------------------------------
@@ -641,6 +941,14 @@ export interface ContextScope {
 	workflow_name: string | null;
 	issue_id: string | null;
 	issue_ref: { project_name: string; number: number } | null;
+	/**
+	 * The scope's issue label, if any. Set-valued on the target side: the
+	 * scope matches an issue that *carries* this label among its labels.
+	 */
+	label_id: string | null;
+	label_name: string | null;
+	label_color: LabelColor | null;
+	/** The canonical display string — a scope label, not an issue label. */
 	label: string;
 }
 
@@ -683,6 +991,7 @@ export interface CreateContextItemRequest {
 	project_id?: string | null;
 	workflow_state_id?: string | null;
 	issue_id?: string | null;
+	label_id?: string | null;
 	/** prompt */
 	body?: string;
 	/** skill */
@@ -704,6 +1013,7 @@ export interface UpdateContextItemRequest {
 	project_id?: string | null;
 	workflow_state_id?: string | null;
 	issue_id?: string | null;
+	label_id?: string | null;
 	position?: number;
 	body?: string;
 	files?: ContextFile[];
@@ -737,9 +1047,24 @@ export interface ContextListFilters {
 	state?: string;
 	/** Issue id. */
 	issue?: string;
-	/** Name/description search. */
+	/** Label id or name. */
+	label?: string;
+	/** Literal name/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	exact?: boolean;
+	/** Without a project filter, items scoped to archived projects are hidden by default. */
+	archived?: ArchivedFilter;
+}
+
+/**
+ * Where an inherited effective-context part came from: the ancestor state
+ * whose layer it matched through, never the issue's own state.
+ */
+export interface InheritedFrom {
+	state_id: string;
+	state_name: string;
+	workflow_id: string;
+	workflow_name: string;
 }
 
 /** One stitched-prompt part, in layer order. */
@@ -751,16 +1076,22 @@ export interface EffectivePromptPart {
 	version: number;
 	/** True for the journal item (renders under `## Journal (<scope>)`). */
 	is_journal: boolean;
+	/** Set when the part matched through an ancestor of the issue's state. */
+	inherited_from: InheritedFrom | null;
 }
 
 export interface EffectiveSkill {
 	item_id: string;
 	name: string;
+	/** Existing context-item description used as the skill's discovery cue. */
+	description: string;
 	scope: ContextScope;
 	/** Empty when the bundle was assembled without file contents. */
 	files: ContextFile[];
 	file_count: number;
 	version: number;
+	/** Set when the skill matched through an ancestor of the issue's state. */
+	inherited_from: InheritedFrom | null;
 }
 
 export interface EffectiveRepo {
@@ -772,6 +1103,8 @@ export interface EffectiveRepo {
 	/** Always resolved (falls back to the URL's basename minus `.git`). */
 	dir: string;
 	version: number;
+	/** Set when the repo matched through an ancestor of the issue's state. */
+	inherited_from: InheritedFrom | null;
 }
 
 /** A name-collision loser: a more specific item of the same kind+name won. */
@@ -781,6 +1114,145 @@ export interface OverriddenContextItem {
 	name: string;
 	scope: ContextScope;
 	overridden_by: string;
+	/** Repositories only: the losing candidate's checkout details. */
+	repo?: { url: string; branch?: string | null; dir: string };
+	/** Set when the loser matched through an ancestor of the issue's state. */
+	inherited_from: InheritedFrom | null;
+}
+
+// ---------------------------------------------------------------------------
+// Issue project transfer (Tines/392)
+
+/** One address an issue has answered to: its project and number at that time. */
+export interface IssueTransferRef {
+	project_id: string;
+	project_name: string;
+	number: number;
+	/** The copyable `Project/N` form. */
+	ref: string;
+}
+
+export interface IssueTransferProject {
+	id: string;
+	name: string;
+	archived: boolean;
+}
+
+/** Why a transfer cannot be committed right now, and what to do about it. */
+export interface IssueTransferBlocker {
+	code: 'run_key_forbidden' | 'project_archived' | 'issue_busy' | 'transfer_preview_unavailable';
+	message: string;
+	/** Set for `issue_busy`: the run holding the issue. */
+	run_id?: string;
+	run_status?: string;
+	/** A command or action that clears this blocker, when one exists. */
+	remedy?: string;
+}
+
+/**
+ * How one context item's participation changes across the move. `rescoped`
+ * covers the project∧issue rows the commit carries with the issue; `retained`
+ * an issue-only or shared row that matches on both sides unchanged.
+ */
+export type IssueTransferContextChangeKind =
+	'added' | 'removed' | 'retained' | 'rescoped' | 'replaced';
+
+export interface IssueTransferContextChange {
+	item_id: string;
+	name: string;
+	kind: ContextKind;
+	change: IssueTransferContextChangeKind;
+	scope_before: ContextScope | null;
+	scope_after: ContextScope | null;
+	/** Whether the item wins its name (rather than being overridden) each side. */
+	effective_before: boolean;
+	effective_after: boolean;
+	/** Repositories only: the checkout this item contributes, before and after. */
+	repo_before?: { url: string; branch?: string | null; dir: string } | null;
+	repo_after?: { url: string; branch?: string | null; dir: string } | null;
+}
+
+/** The record the move carries with the issue, unchanged. */
+export interface IssueTransferPreserved {
+	title: string;
+	workflow_id: string;
+	state_id: string;
+	state_entered_at: number;
+	created_at: number;
+	labels: { id: string; name: string }[];
+	pinned_runner_id: string | null;
+	pinned_tier: ModelTier | null;
+	attempt_count: number;
+	parked: boolean;
+	/** Snapshot counts at preview time; ordinary collaboration continues. */
+	comment_count: number;
+	artifact_count: number;
+	artifact_version_count: number;
+	run_count: number;
+	link_count: number;
+}
+
+/** The moved instance's schedule, which stays with its original project. */
+export interface IssueTransferSchedule {
+	id: string;
+	name: string;
+	project_id: string;
+	project_name: string;
+	notice: string;
+}
+
+export interface IssueTransferPreview {
+	issue_id: string;
+	source: IssueTransferProject;
+	destination: IssueTransferProject;
+	old_ref: IssueTransferRef;
+	/** Always null: a preview allocates and reserves no destination number. */
+	new_ref: null;
+	/** Rendered where a preview would otherwise imply a reserved number. */
+	number_notice: string;
+	preserved: IssueTransferPreserved;
+	context: {
+		before: EffectiveContext;
+		after: EffectiveContext;
+		changes: IssueTransferContextChange[];
+	};
+	/**
+	 * Destination routing as the next launch would resolve it. Capacity,
+	 * heartbeat and spending inside each explainer are advisory: they may change
+	 * at any moment and never stale the preview.
+	 */
+	routing: { before: DispatchExplainer | null; after: DispatchExplainer | null };
+	schedule: IssueTransferSchedule | null;
+	noop: boolean;
+	can_commit: boolean;
+	blockers: IssueTransferBlocker[];
+	/** Null whenever the transfer is blocked. Binds this exact review. */
+	preview_token: string | null;
+	previewed_at: number;
+}
+
+export interface IssueTransferRequest {
+	project_id: string;
+	preview_token: string;
+}
+
+export interface IssueTransferResult {
+	status: 'transferred' | 'noop';
+	issue_id: string;
+	source: IssueTransferProject;
+	destination: IssueTransferProject;
+	/** The actual addresses: no guessed destination number appears anywhere. */
+	old_ref: IssueTransferRef;
+	new_ref: IssueTransferRef;
+	/** The single audited move event; null for a same-project no-op. */
+	event_id: string | null;
+	/** Canonical browser path for the issue at its current address. */
+	issue_path: string;
+	/** The signed review that this commit validated. */
+	preserved: IssueTransferPreserved;
+	context_changes: IssueTransferContextChange[];
+	routing: IssueTransferPreview['routing'];
+	schedule: IssueTransferSchedule | null;
 }
 
 export interface RepoDirConflict {
@@ -789,12 +1261,35 @@ export interface RepoDirConflict {
 	item_ids: string[];
 }
 
+/**
+ * The one journal an issue's runs may write: the `journal` prompt at
+ * project ∧ the *root* of the state's inheritance chain. Two workflows whose
+ * stages inherit from one base state therefore learn and prune in one file
+ * instead of drifting apart. A state that inherits from nothing is its own
+ * root, so nothing about it changes.
+ *
+ * A legacy journal on a state that has since gained a parent keeps stitching
+ * into the prompt — it is knowledge, and dropping it would lose it — but it is
+ * read-only until a merge helper folds it into the root.
+ */
+export interface EffectiveJournalTarget {
+	/** The state whose `project ∧ state` journal is writable. */
+	state_id: string;
+	/** Null when that state is the issue's own; set when it is an ancestor. */
+	inherited_from: InheritedFrom | null;
+	/** The journal item at that scope, or null if none exists yet. */
+	item_id: string | null;
+	version: number | null;
+}
+
 /** `GET /api/v1/issues/:id/context` — the assembled bundle for an issue. */
 export interface EffectiveContext {
 	prompt: {
 		/** The stitched prompt, `## Context: <scope>` headings included. */
 		text: string;
 		parts: EffectivePromptPart[];
+		/** Which journal this issue's runs write — the root of the state chain. */
+		journal: EffectiveJournalTarget;
 	};
 	skills: EffectiveSkill[];
 	repos: EffectiveRepo[];
@@ -945,6 +1440,25 @@ export interface ArtifactDetail extends Artifact {
 	versions: ArtifactVersion[];
 }
 
+/**
+ * `POST /api/v1/issues/:id/artifacts/:name/site-link` — a short-lived signed
+ * URL that renders an HTML artifact (see specs/artifacts/SPEC.md "Sites").
+ */
+export interface ArtifactSiteLink {
+	/** Absolute `/s/<token>/` URL: the iframe src and the "open full page" href. */
+	url: string;
+	/** The version the link is pinned to. */
+	version: number;
+	/** Epoch ms after which the link 403s. */
+	expires_at: number;
+	/**
+	 * `sandbox-origin`: served from a cross-site host, so storage APIs work.
+	 * `same-origin`: served from the app origin under CSP `sandbox` (opaque
+	 * origin — `localStorage` throws). Local dev, e2e and previews are the latter.
+	 */
+	mode: 'sandbox-origin' | 'same-origin';
+}
+
 export interface ArtifactListResponse {
 	items: Artifact[];
 }
@@ -1000,6 +1514,20 @@ export interface ArtifactRequirementCheck extends ArtifactRequirement {
 	current_version: { version: number; created_at: number } | null;
 	/** The matching artifact's (immutable) type, when one exists. */
 	current_type: ArtifactType | null;
+	/**
+	 * The runnable command that clears this requirement (`requirementFix`) —
+	 * present on every entry, satisfied or not, so the launch prompt, the
+	 * issue read and the 422 all quote the same string. Always exactly one
+	 * command: copy-pastable whole.
+	 */
+	fix: string;
+	/**
+	 * A second command that also clears it, when one exists — today only a
+	 * `stale` requirement's `reaffirm`, whose alternative to re-attaching is
+	 * "the current content still stands". Additive: every consumer that reads
+	 * `fix` alone stays correct (Tines/274).
+	 */
+	fix_alternative?: string;
 }
 
 /** A pull-request reference parsed from user input. */
@@ -1050,6 +1578,26 @@ export const RUNNER_TYPES: readonly RunnerType[] = ['claude_managed', 'gemini_ma
 
 export type RunnerStatus = 'active' | 'paused';
 
+export type RunnerConcurrencyMode = 'legacy' | 'local' | 'remote';
+export type RunnerConcurrencyUnavailableReason =
+	| 'legacy'
+	| 'opted_out'
+	| 'awaiting_policy'
+	| 'unsupported_protocol'
+	| 'invalid_protocol'
+	| 'offline';
+
+export interface RunnerConcurrencyControl {
+	status: 'applied' | 'pending' | 'unavailable';
+	reason: RunnerConcurrencyUnavailableReason | null;
+	requested_cap: number | null;
+	ceiling: number | null;
+	revision: number;
+	applied_cap: number | null;
+	applied_revision: number | null;
+	applied_at: number | null;
+}
+
 /**
  * The routing vocabulary for how hard to think. A closed set: adding a tier
  * is a code change, so routing rules can rely on it staying small.
@@ -1088,8 +1636,20 @@ export const RUN_END_OUTCOMES: readonly RunEndOutcome[] = ['advanced', 'stalled'
 /** Statuses that hold the issue's exclusive claim (and count toward caps). */
 export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['assigned', 'launching', 'running'];
 
+/**
+ * Runner names are CLI addresses (routing rules and `--name` carry them), so
+ * they are constrained to a shell- and URL-safe shape. Shared so the Add
+ * runner dialog validates against the exact regex the server enforces.
+ */
+export const RUNNER_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
 /** Local-runner liveness: online = last poll within this window. */
 export const RUNNER_ONLINE_WINDOW_MS = 2 * 60 * 1000;
+
+export const DEFAULT_RESUME_WINDOW_HOURS = 48;
+export const DEFAULT_RESUME_MAX_TURNS = 25;
+export const DEFAULT_RESUME_MAX_TOKENS = 100_000;
+export const DEFAULT_RESUME_MAX_COST_USD = 2;
 
 /** A local runner unseen this long has its running runs failed by the sweep. */
 export const RUNNER_OFFLINE_FAIL_MS = 5 * 60 * 1000;
@@ -1184,7 +1744,10 @@ export const MODEL_PREDECESSORS: Record<string, readonly string[]> = {
 	'claude-haiku-4-5': ['claude-3-5-haiku-latest'],
 	'gemini-2.5-pro': ['gemini-1.5-pro'],
 	'gemini-2.5-flash': ['gemini-2.0-flash', 'gemini-1.5-flash'],
-	'gemini-2.5-flash-lite': ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b']
+	'gemini-2.5-flash-lite': ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b'],
+	'gpt-6-astra': ['gpt-5-codex'],
+	'gpt-5.6-sol': ['gpt-5-codex'],
+	'gpt-5.6-luna': ['gpt-5-codex']
 };
 
 /** True when a tier override points at a model older than its tier's current built-in. */
@@ -1257,6 +1820,28 @@ export interface SupervisorSettingsResponse extends SupervisorSettings {
 	canceled_runs?: number;
 }
 
+/**
+ * Per-user UI preferences. Never read by agents: `/api/v1/preferences` is
+ * control-plane fenced, GET included. See specs/projects/SPEC.md "Project focus".
+ */
+export interface UserPreferences {
+	/**
+	 * The focused project, or null for "All projects". Raw: it may still name a
+	 * project that has since been archived, until a page load resolves it.
+	 */
+	focused_project_id: string | null;
+	/** The project New issue falls back to under "All projects": last focused or last created-in. */
+	last_project_id: string | null;
+	/** Null until the preferences row has been written at least once. */
+	updated_at: number | null;
+}
+
+/** Merge-patch: an absent field is unchanged, an explicit null clears it. */
+export interface UpdatePreferencesRequest {
+	focused_project_id?: string | null;
+	last_project_id?: string | null;
+}
+
 /** A registered executor. Secrets are never serialized. */
 export interface Runner {
 	id: string;
@@ -1266,7 +1851,15 @@ export interface Runner {
 	status: RunnerStatus;
 	/** The runner's own concurrency cap; always enforced. */
 	max_concurrent: number;
+	/** Local runners only: durable requested cap and daemon acknowledgement state. */
+	concurrency_control: RunnerConcurrencyControl | null;
 	max_run_minutes: number;
+	/** Experimental continuation policy; disabled by default. */
+	resume_enabled: boolean;
+	resume_window_hours: number;
+	resume_max_turns: number;
+	resume_max_tokens: number;
+	resume_max_cost_usd: number;
 	default_tier: ModelTier;
 	/** Per-tier model overrides; null = all built-ins. */
 	tiers: RunnerTierOverrides | null;
@@ -1288,6 +1881,10 @@ export interface Runner {
 	 */
 	online: boolean;
 	last_seen_at: number | null;
+	/** Last capability assertion from this daemon boot; null means a legacy daemon. */
+	effort_capabilities: EffortCapabilities | null;
+	/** Exact-model effort choices projected by the server; null means unknown/unsupported. */
+	effort_models: Record<string, string[]> | null;
 	/**
 	 * Local runners: the daemon is finishing its in-flight runs and will exit
 	 * for its service manager to relaunch a newer version. Nothing new is
@@ -1296,6 +1893,12 @@ export interface Runner {
 	draining: boolean;
 	launch_failures: number;
 	backoff_until: number | null;
+	/**
+	 * Why `backoff_until` is set: 'rate_limit' = the runner's harness account hit
+	 * a usage limit and the hold ends at the reported reset; null = the ordinary
+	 * consecutive-failure backoff counted by `launch_failures`.
+	 */
+	backoff_reason: 'rate_limit' | null;
 	/** Runs currently holding a claim on this runner (assigned/launching/running). */
 	active_runs: number;
 	created_at: number;
@@ -1313,6 +1916,11 @@ export interface CreateRunnerRequest {
 	api_key?: string;
 	max_concurrent?: number;
 	max_run_minutes?: number;
+	resume_enabled?: boolean;
+	resume_window_hours?: number;
+	resume_max_turns?: number;
+	resume_max_tokens?: number;
+	resume_max_cost_usd?: number;
 	default_tier?: ModelTier;
 	tiers?: RunnerTierOverrides;
 	/**
@@ -1331,7 +1939,14 @@ export interface UpdateRunnerRequest {
 	/** Managed types: replace the provider API key (ping-validated first). */
 	api_key?: string;
 	max_concurrent?: number;
+	/** Required when changing a remotely controlled local runner cap. */
+	expected_concurrency_revision?: number;
 	max_run_minutes?: number;
+	resume_enabled?: boolean;
+	resume_window_hours?: number;
+	resume_max_turns?: number;
+	resume_max_tokens?: number;
+	resume_max_cost_usd?: number;
 	default_tier?: ModelTier;
 	/** Replaces the override map wholesale; null clears all overrides. */
 	tiers?: RunnerTierOverrides | null;
@@ -1380,6 +1995,8 @@ export interface RunnerTokenResponse {
 
 /** `POST /api/v1/runners/:id/poll` — runner-token auth. */
 export interface RunnerPollRequest {
+	/** Stable for one daemon boot. Absent only for legacy clients. */
+	instance_id?: string;
 	/** Run ids the daemon is actually executing right now. */
 	owned_runs: string[];
 	/**
@@ -1388,6 +2005,15 @@ export interface RunnerPollRequest {
 	 * effect without re-registering.
 	 */
 	max_concurrent?: number;
+	/** Locally asserted, machine-owned remote concurrency boundary. */
+	concurrency_control?: {
+		version: 1;
+		allow_remote: boolean;
+		ceiling: number;
+		applied?: { revision: number; cap: number };
+	};
+	/** Assignments refused before process launch and awaiting server release. */
+	declined_assignments?: string[];
 	/**
 	 * True while the daemon is finishing its runs before exiting for a
 	 * self-update restart: the dispatcher assigns it nothing new, while runs
@@ -1395,11 +2021,21 @@ export interface RunnerPollRequest {
 	 * the relaunched daemon's first poll reopens the runner.
 	 */
 	draining?: boolean;
+	/** V1 exact-model effort support discovered by this daemon boot. */
+	effort_capabilities?: EffortCapabilities;
 }
 
 /** One delivered assignment: everything the daemon needs to launch. */
 export interface RunnerAssignment {
 	run: AgentRun;
+	/** Enforced launch setting, omitted for provider-default and legacy-tier delivery. */
+	effort?: {
+		version: 1;
+		value: string;
+		source: import('./effort.js').EffortSource;
+		/** Capability catalog the server checked immediately before delivery. */
+		capability_digest: string;
+	};
 	/** Supervisor preamble + stitched context + issue block, assembled at delivery. */
 	prompt: string;
 	/**
@@ -1411,10 +2047,43 @@ export interface RunnerAssignment {
 	run_key: string;
 	/** Minutes until the daemon must kill the harness. */
 	timeout_minutes: number;
+	/**
+	 * Present only when this run continues the previous run's conversation:
+	 * the daemon skips workspace materialization and cloning, launches the
+	 * harness in `workspace_path`, and resumes `provider_session_id`. The
+	 * prompt above is then the reduced continuation message, not a full
+	 * launch prompt. Absent = launch fresh exactly as before.
+	 */
+	resume?: RunnerAssignmentResume;
+}
+
+/** The continuation instructions delivered with a resumed assignment. */
+export interface RunnerAssignmentResume {
+	/** The run whose conversation this one continues. */
+	previous_run_id: string;
+	/** The harness session to reopen (`claude -p --resume <id>`). */
+	provider_session_id: string;
+	/** The predecessor's workspace, kept on disk for exactly this. */
+	workspace_path: string;
+	/**
+	 * Turns already in that conversation, so the daemon can report the
+	 * accumulated count and the next resume decision sees the real size.
+	 */
+	prior_turn_count: number;
 }
 
 export interface RunnerPollResponse {
 	assignments: RunnerAssignment[];
+	concurrency_control?: {
+		version: 1;
+		available: boolean;
+		revision: number;
+		cap: number;
+		ceiling: number | null;
+		reason?: RunnerConcurrencyUnavailableReason;
+	};
+	/** Declines now terminal or absent and safe to forget locally. */
+	released_assignments?: string[];
 	/**
 	 * Run ids to kill WITHOUT finish-reporting: the supervisor has already
 	 * settled these (cancel, timeout, the offline sweep).
@@ -1425,6 +2094,13 @@ export interface RunnerPollResponse {
 /** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */
 export interface AppendRunLogRequest {
 	chunk: string;
+	/** Local launch milestone; accepted only for this run's resolved effort. */
+	effort_application?: {
+		status: 'accepted_unconfirmed' | 'rejected';
+		attempted_effort: string;
+		transport: 'argv';
+		reason?: string;
+	};
 	/**
 	 * Per-run, 1-based, monotonic chunk number assigned by the daemon. A
 	 * chunk whose seq the server has already applied is a retry of a send
@@ -1446,37 +2122,74 @@ export interface AppendRunLogResponse {
 export interface FinishRunRequest {
 	status: 'completed' | 'failed';
 	error?: string;
+	/** Last local launch milestone, repeated so a fast finish can recover a lost log request. */
+	effort_application?: AppendRunLogRequest['effort_application'];
 	/**
 	 * `interrupted` = the daemon died, restarted, or was shut down around the
 	 * run; the work did not fail, so the issue must not take a strike. Only
 	 * honoured with `status: 'failed'`; absent — as from any daemon predating
 	 * the field — is judged exactly as before.
+	 *
+	 * `rate_limited` = the harness's provider refused the work because its usage
+	 * limit was reached. The run is judged like an interruption (no strike), and
+	 * the runner is held until `resume_at`.
 	 */
-	judgment?: 'interrupted';
+	judgment?: 'interrupted' | 'rate_limited';
+	/**
+	 * `rate_limited` only: when the harness's provider said the usage window
+	 * resets, epoch ms. Absent = unknown; the server applies a default hold.
+	 */
+	resume_at?: number;
+	/** Opaque resumable session/thread id reported by the local harness. */
+	provider_session_id?: string;
+	/**
+	 * Assistant turns in THIS run, and in the whole conversation the harness
+	 * ran (they differ only for a resumed run, where the conversation carries
+	 * its predecessors' turns). The conversation count is what the resume
+	 * size guard reads.
+	 */
+	turn_count?: number;
+	conversation_turn_count?: number;
+	/**
+	 * Absolute path of the workspace the run used. Recorded so a later run on
+	 * the same runner can be continued in it; only meaningful together with
+	 * `provider_session_id`.
+	 */
+	workspace_path?: string;
 	/** Whatever the harness reported (Claude Code JSON output, etc.). */
 	usage?: AgentRunUsage;
+	/** Codex invocation and JSONL measurement evidence; rates remain server-owned. */
+	pricing_evidence?: CodexPricingEvidenceV1;
 }
 
 /** One entry of a rule's ordered preference list, as stored/sent. */
 export interface RoutingTarget {
+	/** `'*'` is reserved for a singleton scoped tier-only rule. */
 	runner_id: string;
 	/** Null/absent = the runner's default tier. */
 	tier?: ModelTier | null;
+	/** Explicit routing override; absent inherits the selected runner tier. */
+	effort?: string;
 }
 
 /** A target with its runner denormalized for display. */
 export interface RoutingRuleTarget {
 	runner_id: string;
 	runner_name: string;
-	runner_status: RunnerStatus;
+	/** Null for the `'*'` inherited-runner sentinel. */
+	runner_status: RunnerStatus | null;
 	tier: ModelTier | null;
+	effort?: string;
 }
 
 /**
- * A routing rule: at most one per exact scope (project ∧ state, project,
- * state, or global). The most specific matching rule wins outright —
- * `project ∧ state` > `project` > `state` > global — with no fallback
- * across rules. `scope.issue_id` is always null (pins cover per-issue).
+ * A routing rule: at most one per exact scope (any combination of label,
+ * project and state, or global). The most specific matching rule wins
+ * outright — label beats project beats state, so `label` > `project ∧ state`
+ * — with no fallback across rules. Two rules of equal specificity (only
+ * reachable between two label rules, since an issue carries a *set* of
+ * labels) tie, and a tie dispatches nowhere. `scope.issue_id` is always null
+ * (pins cover per-issue).
  */
 export interface RoutingRule {
 	id: string;
@@ -1489,6 +2202,14 @@ export interface RoutingRule {
 
 /** An authoring-time note that another rule shadows (or is shadowed by) this one. */
 export interface ShadowWarning {
+	/**
+	 * `shadowed` — the named rule is more specific and wins for issues both
+	 * match; `shadows` — this rule wins over the named one; `ambiguous` — the
+	 * two tie, so an issue matching both dispatches to neither until one is
+	 * made more specific. Only labels can produce a tie (an issue carries a
+	 * set of them), so `ambiguous` never appears for project/state scopes.
+	 */
+	kind: 'shadowed' | 'shadows' | 'ambiguous';
 	rule_id: string;
 	scope_label: string;
 	message: string;
@@ -1502,6 +2223,7 @@ export interface RoutingRuleWithWarnings extends RoutingRule {
 export interface CreateRoutingRuleRequest {
 	project_id?: string | null;
 	workflow_state_id?: string | null;
+	label_id?: string | null;
 	targets: RoutingTarget[];
 }
 
@@ -1509,11 +2231,124 @@ export interface UpdateRoutingRuleRequest {
 	/** Scope is merge-patched: omitted = unchanged, explicit null = unset. */
 	project_id?: string | null;
 	workflow_state_id?: string | null;
+	label_id?: string | null;
 	targets?: RoutingTarget[];
 }
 
 // ---------------------------------------------------------------------------
 // Agent runs
+
+export interface CodexRawUsageV1 {
+	input_tokens?: number;
+	cached_input_tokens?: number;
+	cache_write_input_tokens?: number;
+	output_tokens?: number;
+}
+
+export type CodexRequestContextV1 = {
+	version: 1;
+	normalization: 'codex-rollout-delta-v1';
+	harness_version?: string;
+} & (
+	| {
+			status: 'complete';
+			/** A supported Codex CLI version; see `isSupportedCodexRolloutVersion`. */
+			harness_version: string;
+			request_count: number;
+			max_request_input_tokens: number;
+			reconciled_usage: Required<CodexRawUsageV1>;
+	  }
+	| {
+			status: 'unavailable' | 'unsupported' | 'invalid';
+			reason:
+				| 'not_applicable'
+				| 'thread_id_missing'
+				| 'rollout_missing'
+				| 'rollout_ambiguous'
+				| 'unsafe_path'
+				| 'read_failed'
+				| 'limit_exceeded'
+				| 'unsupported_version'
+				| 'metadata_mismatch'
+				| 'malformed'
+				| 'missing_dimension'
+				| 'nonmonotonic'
+				| 'delta_mismatch'
+				| 'terminal_mismatch'
+				| 'model_mismatch';
+	  }
+);
+
+/** Bounded producer evidence for the Codex JSONL accounting contract. */
+export interface CodexPricingEvidenceV1 {
+	version: 1;
+	harness: 'codex';
+	model: string | null;
+	identity_source: 'launch_argument';
+	usage_scope: 'thread_total';
+	session_mode: 'cold' | 'resumed';
+	normalization: 'codex-jsonl-v1';
+	raw_usage?: CodexRawUsageV1;
+	model_rerouted: boolean;
+	measurement_status:
+		'complete' | 'missing' | 'invalid' | 'nonmonotonic' | 'incomplete_attempt' | 'multiple_threads';
+	terminal_snapshots: number;
+	daemon_version?: string;
+	request_context?: CodexRequestContextV1;
+}
+
+export type RunPricingReason =
+	| 'pricing_evidence_missing'
+	| 'invalid_pricing_evidence'
+	| 'model_missing'
+	| 'model_mismatch'
+	| 'model_rerouted'
+	| 'unsupported_model'
+	| 'missing_rate'
+	| 'missing_token_dimension'
+	| 'invalid_token_dimension'
+	| 'long_context_band_unknown'
+	| 'request_context_invalid'
+	| 'long_context_rate_unsupported'
+	| 'attempt_scope_unknown'
+	| 'incomplete_attempt'
+	| 'nonmonotonic_usage'
+	| 'multiple_threads'
+	| 'cost_out_of_range';
+
+export interface RunPricingBasisV1 {
+	calculation_version: 'tokens-times-usd-per-million-v1';
+	provider: 'openai';
+	model: string;
+	model_identity: 'requested_launch_no_observed_reroute';
+	usage_scope: 'attempt';
+	plan: 'api_standard';
+	context_band: 'short' | 'published';
+	rate_id: string;
+	rate_version: number;
+	rate_adopted_at: number;
+	rate_valid_to: number | null;
+	rate_selected_at: number;
+	source_url: string;
+	source_checked_at: string;
+	source_effective_at: string | null;
+	unit_tokens: 1000000;
+	rates: Record<
+		'input_tokens' | 'cache_read_tokens' | 'cache_write_tokens' | 'output_tokens',
+		string | null
+	>;
+	cost_usd_exact: string;
+}
+
+export type RunPricingV1 = {
+	version: 1;
+	evidence?: CodexPricingEvidenceV1;
+	evaluated_at: number;
+} & (
+	| { status: 'calculated'; basis: RunPricingBasisV1 }
+	| { status: 'unpriced'; reason: RunPricingReason }
+	| { status: 'provider_authoritative' }
+);
 
 /** Per-run usage record; fields land as providers report them. */
 export interface AgentRunUsage {
@@ -1523,6 +2358,8 @@ export interface AgentRunUsage {
 	cache_write_tokens?: number;
 	cost_usd?: number;
 	cost_source?: 'provider' | 'priced' | 'none';
+	/** Server-owned immutable pricing decision and its reproducing evidence. */
+	pricing?: RunPricingV1;
 }
 
 /** One attempt at one issue by one runner. */
@@ -1545,17 +2382,56 @@ export interface AgentRun {
 	tier: ModelTier;
 	/** Resolved at launch; null when the harness cannot vary its model. */
 	model: string | null;
+	/** Routed request before runner-tier fallback; immutable after claim. */
+	requested_effort: string | null;
+	/** Final configured intent, not proof of provider application. */
+	resolved_effort: string | null;
+	effort_source: EffortSource | null;
+	effort_application_status: EffortApplicationStatus;
+	effort_application_evidence: Record<string, unknown> | null;
 	usage: AgentRunUsage | null;
+	/** Resolved ledger dimensions, populated only for finalized period evidence. */
+	usage_dimensions?: import('./usage.js').UsageDimensions;
+	/** Accounting classification, populated only for finalized period evidence. */
+	usage_accounting?: import('./usage.js').UsageEvidenceAccounting;
 	state_id_at_start: string;
 	state_at_start_name: string | null;
 	state_id_at_end: string | null;
 	state_at_end_name: string | null;
 	provider_session_id: string | null;
 	provider_url: string | null;
+	turn_count: number | null;
+	conversation_turn_count: number | null;
+	resumed_from_run_id: string | null;
+	resume_expires_at: number | null;
+	resume_fallback_reason:
+		| 'expired'
+		| 'long_context'
+		| 'incompatible'
+		| 'unavailable'
+		| 'unsupported'
+		| 'provider_rejected'
+		| null;
 	error: string | null;
 	created_at: number;
 	started_at: number | null;
 	ended_at: number | null;
+}
+
+/** Historical as-of evidence for a run that had not ended at the reporting cutoff. */
+export interface UsagePendingRun {
+	id: string;
+	issue_id: string;
+	issue_ref: IssueRef | null;
+	runner_id: string;
+	runner_name: string;
+	tier: ModelTier;
+	state_id_at_start: string;
+	state_at_start_name: string | null;
+	created_at: number;
+	pending_at: number;
+	usage_dimensions: Omit<import('./usage.js').UsageDimensions, 'outcome'>;
+	accounting_status: 'pending';
 }
 
 /** Detail read: adds the captured log tail. */
@@ -1580,8 +2456,43 @@ export interface RunFilters {
 	issue?: string;
 	/** Runner id. */
 	runner?: string;
+	/** Workflow state id captured when the run started. */
+	state?: string;
 	/** Only runs holding a claim (assigned/launching/running). */
 	active?: boolean;
+	/** Usage evidence population; requires from/to. */
+	population?: 'finalized' | 'pending';
+	/** Inclusive finalized end bound, ISO UTC/offset timestamp. */
+	from?: string;
+	/** Exclusive cutoff, ISO UTC/offset timestamp. */
+	to?: string;
+	project?: string;
+	workflow?: string;
+	tier?: string;
+	outcome?: RunEndOutcome | 'unknown';
+	accounting_status?: 'priced' | 'unpriced' | 'unreported';
+	/** Period evidence display provenance; must be supplied as a pair. */
+	timezone?: string;
+	timezone_source?: 'supervisor_budget' | 'utc_fallback';
+}
+
+/**
+ * Compact age of a timestamp, in the style of run durations: "42s", "5m",
+ * "3h", "2d". Shared so the launch prompt and the CLI spell an age the same
+ * way; the CLI's ISO-string form delegates here.
+ */
+export function ageLabel(at: number, now: number = Date.now()): string {
+	if (!Number.isFinite(at)) return '—';
+	const seconds = Math.max(0, Math.round((now - at) / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+	if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h`;
+	return `${Math.floor(seconds / 86_400)}d`;
+}
+
+/** A pr version's canonical pull-request URL, or null when it is not a pr. */
+export function prUrlOf(v: Pick<ArtifactVersion, 'pr_repo_url' | 'pr_number'>): string | null {
+	return v.pr_repo_url && v.pr_number !== null ? `${v.pr_repo_url}/pull/${v.pr_number}` : null;
 }
 
 /** Compact duration for run rows: "42s", "12m"; "—" before launch. */
@@ -1598,10 +2509,35 @@ export function runDurationLabel(
 export function runCostLabel(run: Pick<AgentRun, 'usage'>): string | null {
 	const usage = run.usage;
 	if (!usage) return null;
-	if (usage.cost_usd !== undefined) return `$${usage.cost_usd.toFixed(2)}`;
-	if (usage.cost_source === 'none') return 'unreported';
-	const tokens = (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
-	return tokens > 0 ? `${tokens.toLocaleString()} tok` : null;
+	if (usage.cost_usd !== undefined) {
+		const dollars =
+			usage.cost_usd === 0
+				? '$0'
+				: usage.cost_usd < 0.01
+					? '<$0.01'
+					: `$${usage.cost_usd.toFixed(2)}`;
+		const source =
+			usage.cost_source === 'provider'
+				? 'Reported'
+				: usage.cost_source === 'priced'
+					? 'Estimated'
+					: 'Recorded';
+		return `${dollars} ${source}`;
+	}
+	if (usage.pricing?.status === 'unpriced') return 'Unpriced';
+	if (usage.cost_source === 'none') return 'Unreported';
+	const measured = [
+		usage.input_tokens,
+		usage.output_tokens,
+		usage.cache_read_tokens,
+		usage.cache_write_tokens
+	].some((value) => value !== undefined);
+	const tokens =
+		(usage.input_tokens ?? 0) +
+		(usage.output_tokens ?? 0) +
+		(usage.cache_read_tokens ?? 0) +
+		(usage.cache_write_tokens ?? 0);
+	return tokens > 0 ? `${tokens.toLocaleString()} tok` : measured ? 'Unpriced' : null;
 }
 
 /** Whether a run still holds its issue's exclusive claim (and counts toward caps). */
@@ -1657,15 +2593,44 @@ export function utilizationLabel(
 // ---------------------------------------------------------------------------
 // Dispatch explainer
 
+/**
+ * A remedy for a failing check: a place to click and/or a command to run.
+ * Purely presentational — an action never affects `eligible`.
+ */
+export interface DispatchCheckAction {
+	label: string;
+	/** App-relative path. The web renders it as a link; the CLI has no origin, so text mode ignores it. */
+	href?: string;
+	/** A ready-to-paste CLI command. */
+	cli?: string;
+}
+
 /** One eligibility check, pass or fail, with a human-readable detail. */
 export interface DispatchCheck {
-	name: 'automation_enabled' | 'state_active' | 'ready' | 'no_active_run' | 'not_parked' | 'routed';
+	name:
+		| 'automation_enabled'
+		| 'project_archived'
+		| 'state_active'
+		| 'ready'
+		| 'no_active_run'
+		| 'not_parked'
+		| 'routed';
 	ok: boolean;
 	detail: string;
+	/** Present only on checks with something to fix. Optional so published CLIs keep parsing. */
+	action?: DispatchCheckAction;
 }
 
 export type DispatchTargetVerdict =
-	'ok' | 'paused' | 'offline' | 'draining' | 'at_capacity' | 'backing_off' | 'quota_exhausted';
+	| 'ok'
+	| 'paused'
+	| 'offline'
+	| 'draining'
+	| 'at_capacity'
+	| 'backing_off'
+	| 'rate_limited'
+	| 'quota_exhausted'
+	| 'effort_incompatible';
 
 /** One rule/pin target's verdict, in preference order. */
 export interface DispatchTarget {
@@ -1685,8 +2650,18 @@ export interface DispatchExplainer {
 	checks: DispatchCheck[];
 	/** The pin, when set (replaces rule matching entirely). */
 	pin: { runner_id: string; runner_name: string | null; tier: ModelTier | null } | null;
-	/** The winning rule; null when pinned or nothing matches. */
+	/** The winning rule; null when pinned, nothing matches, or two rules tie. */
 	matched_rule: { rule_id: string; scope_label: string } | null;
+	/** Concrete runner source when `matched_rule` is a tier-only rule. */
+	runner_rule?: { rule_id: string; scope_label: string } | null;
+	/** Tier applied to all inherited runner targets. */
+	tier_override?: ModelTier | null;
+	/**
+	 * The rules that tied, when two label rules match an issue at equal
+	 * specificity: the issue does not dispatch until one is made more
+	 * specific. Empty in every other case.
+	 */
+	ambiguous_rules: { rule_id: string; scope_label: string }[];
 	/** Per-target verdicts, in preference order. */
 	targets: DispatchTarget[];
 	parked: boolean;
@@ -1700,6 +2675,247 @@ export interface DispatchExplainer {
 	queue_position: number | null;
 	/** The one-line human verdict the UI and CLI render. */
 	verdict: string;
+}
+
+// ---------------------------------------------------------------------------
+// Fleet queue: the Now row — every eligible issue with no active run, grouped
+// by why it is waiting (Tines/256).
+
+/**
+ * Why an eligible issue is waiting. The target verdicts, plus the routing and
+ * eligibility failures a per-runner verdict cannot express (an issue with no
+ * matching rule has no target to carry a verdict at all).
+ */
+export type QueueVerdict =
+	| DispatchTargetVerdict
+	| 'no_rule'
+	| 'ambiguous_rule'
+	| 'no_targets'
+	| 'pin_missing'
+	| 'automation_off'
+	| 'parked';
+
+/** Which limit is binding, for the capacity and quota verdicts; null for the rest. */
+export type QueueBinding =
+	| {
+			kind: 'max_concurrent';
+			runner_id: string;
+			runner_name: string;
+			current: number;
+			limit: number;
+	  }
+	| { kind: 'global_cap'; current: number; limit: number }
+	| { kind: 'state_roster'; state_id: string; current: number; limit: number; overridden: boolean };
+
+export interface QueueIssueRef {
+	id: string;
+	project_name: string;
+	number: number;
+	title: string;
+	/** `COALESCE(state_entered_at, created_at)` — the wait clock. */
+	entered_at: number;
+	/** Position in the dispatch queue, matching the explainer; null when unrouted or parked. */
+	queue_position: number | null;
+}
+
+/** One `{state, verdict, runner}` bucket of the Now row. */
+export interface QueueGroup {
+	state_id: string;
+	state_name: string;
+	workflow_id: string;
+	workflow_name: string;
+	verdict: QueueVerdict;
+	/** The speaking target's verdict detail, or the routing failure sentence. */
+	detail: string;
+	runner_id: string | null;
+	runner_name: string | null;
+	/** The matched rule, for the "no targets" remedy and rule-row annotations. */
+	rule_id: string | null;
+	/** The tied rules, for `ambiguous_rule`; empty otherwise. */
+	ambiguous_rule_ids: string[];
+	binding: QueueBinding | null;
+	count: number;
+	oldest_entered_at: number;
+	/** Refs in dispatch order, capped at `QUEUE_GROUP_REF_LIMIT`; `count` is authoritative. */
+	issues: QueueIssueRef[];
+}
+
+/** How many issue refs a group carries; the count is always the full size. */
+export const QUEUE_GROUP_REF_LIMIT = 10;
+
+/** `GET /api/v1/supervisor/queue` — the fleet's waiting work. */
+export interface FleetQueue {
+	generated_at: number;
+	project: { id: string; name: string } | null;
+	automation_enabled: boolean;
+	quota: QuotaPolicy;
+	/** Sorted count desc, then oldest first. */
+	groups: QueueGroup[];
+	/** Sum of the group counts; excludes parked and awaiting-human. */
+	waiting: number;
+	parked: { count: number; oldest_entered_at: number | null; issues: QueueIssueRef[] };
+	/** Human stages get a summary line only — no table (Tines/256 scope). */
+	awaiting_human: { count: number; oldest_entered_at: number | null };
+}
+
+// ---------------------------------------------------------------------------
+// Stage stats — the flow board's "This week" row (Tines/257)
+
+/**
+ * How a run ended, for the stage table's outcome mix. `RunEndOutcome` plus the
+ * two buckets the column needs that the stored outcome cannot express: a run
+ * that never started (a launch failure — nothing to judge) and a row that
+ * ended before migration 0016 added the column.
+ */
+export type RunOutcomeBucket = RunEndOutcome | 'failed' | 'unrecorded';
+
+export const RUN_OUTCOME_BUCKETS: readonly RunOutcomeBucket[] = [
+	...RUN_END_OUTCOMES,
+	'failed',
+	'unrecorded'
+];
+
+/** A duration distribution in ms; `n` is how many samples it was measured over. */
+export interface DurationStats {
+	p50: number;
+	p90: number;
+	total: number;
+	n: number;
+}
+
+/** One stage's figures over one window. All durations are ms. */
+export interface StageWindowFigures {
+	since: number;
+	until: number;
+	/** Entries into the state inside the window. */
+	visits: number;
+	/** Exits from the state inside the window; not the same population as `visits`. */
+	exits: number;
+	/** Entry → first started run. Null when nothing was measurable. */
+	queue_wait: DurationStats | null;
+	queue_wait_measured: number;
+	/** Visits still waiting for their first run — excluded from the percentiles. */
+	waiting_now: number;
+	/** Closed visits that never saw a started run. */
+	never_started: number;
+	/** First started run → exit, closed visits only. */
+	work: DurationStats | null;
+	work_measured: number;
+	open_now: number;
+	runs: {
+		total: number;
+		/** Runs bound to visits ÷ all entered visits; null when there are no entered visits. */
+		per_visit: number | null;
+		active: number;
+		/** Runs that could not be bound to a visit in the scan (see `bindRuns`). */
+		unbound: number;
+		/** `unrecorded` rows judged `advanced` from the run key's own transition. */
+		recovered_advanced: number;
+		outcomes: Record<RunOutcomeBucket, number>;
+		top_runner: { id: string; name: string; runs: number } | null;
+	};
+	sent_back: {
+		count: number;
+		/** Of exits; null when there were none. */
+		share: number | null;
+		agent: number;
+		human: number;
+		by_target: {
+			state_id: string;
+			state_name: string;
+			count: number;
+			agent: number;
+			human: number;
+		}[];
+	};
+	received_back: number;
+	/** Reserved for the spend column (Tines/199); always null here. */
+	cost: null;
+}
+
+/** Current − previous per figure; null when either side is unmeasured. */
+export interface StageStatsDelta {
+	visits: number | null;
+	exits: number | null;
+	queue_wait_p50: number | null;
+	queue_wait_p90: number | null;
+	work_p50: number | null;
+	work_p90: number | null;
+	runs_per_visit: number | null;
+	sent_back_share: number | null;
+	outcomes: Record<RunOutcomeBucket, number | null>;
+}
+
+export interface StageStats {
+	state_id: string;
+	state_name: string;
+	workflow_id: string;
+	workflow_name: string;
+	current: StageWindowFigures;
+	previous: StageWindowFigures | null;
+	delta: StageStatsDelta;
+}
+
+export interface MarkerFigures {
+	visits: number;
+	exits: number;
+	sent_back_share: number | null;
+	queue_wait_p50: number | null;
+}
+
+export interface ChangeMarker {
+	id: string;
+	at: number;
+	kind: 'prompt' | 'quota' | 'automation' | 'runner_cap' | 'rule';
+	label: string;
+	event_ids: string[];
+	state_ids: string[];
+	effects: { state_id: string; before: MarkerFigures | null; after: MarkerFigures | null }[];
+}
+
+/** `GET /api/v1/supervisor/stats` — per-stage flow over a rolling window. */
+export interface StageStatsReport {
+	generated_at: number;
+	window: { ms: number; since: number; until: number };
+	previous: { since: number; until: number } | null;
+	project: { id: string; name: string } | null;
+	/**
+	 * The oldest recorded run outcome. Deltas whose previous window starts
+	 * before this are blanked rather than reported as a fall to zero.
+	 */
+	outcome_recorded_since: number | null;
+	/** Active states that saw work in either window, ordered by total queue wait desc. */
+	states: StageStats[];
+	/** Newest prompt, quota, cap and routing edits inside the current window. */
+	markers: ChangeMarker[];
+}
+
+/** Query for `GET /api/v1/supervisor/stats`. */
+export interface StatsQuery {
+	/** `<n>h` or `<n>d`, 1h–90d; default `7d`. */
+	window?: string;
+	/** `previous` (default) computes the prior window and the deltas. */
+	compare?: 'previous' | 'none';
+	/** Project id or name; narrows both board rows. */
+	project?: string;
+}
+
+/** Evidence behind one stage's sent-back figure. */
+export interface SentBackDrilldown {
+	state: { id: string; name: string; workflow_id: string; workflow_name: string };
+	window: { since: number; until: number };
+	prompt: { context_id: string; name: string; current_version: number; edit_url: string } | null;
+	items: {
+		issue: { id: string; project_name: string; number: number; title: string };
+		transitioned_at: number;
+		to_state_id: string;
+		to_state_name: string;
+		action: string | null;
+		actor: Actor;
+		comment: { id: string; excerpt: string; created_at: number } | null;
+		prompt_version: number | null;
+		prompt_context_id: string | null;
+	}[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1736,6 +2952,7 @@ export interface UpdateCommentRequest {
 export const EVENT_TYPES = [
 	'issue.created',
 	'issue.updated',
+	'issue.transferred',
 	'issue.transitioned',
 	'issue.commented',
 	'issue.comment_edited',
@@ -1750,6 +2967,8 @@ export const EVENT_TYPES = [
 	'project.created',
 	'project.updated',
 	'project.deleted',
+	'project.archived',
+	'project.unarchived',
 	'workflow.created',
 	'workflow.updated',
 	'workflow.deleted',
@@ -1764,8 +2983,10 @@ export const EVENT_TYPES = [
 	'context.deleted',
 	'runner.registered',
 	'runner.updated',
+	'runner.daemon_replaced',
 	'runner.removed',
 	'runner.errored',
+	'runner.rate_limited',
 	'routing_rule.created',
 	'routing_rule.updated',
 	'routing_rule.deleted',
@@ -1801,7 +3022,14 @@ export interface EventFilters {
 	issue?: string;
 	/** Project id. */
 	project?: string;
+	/** One event type or a comma-separated list. */
 	type?: string;
+	/** Inclusive lower time bound, epoch ms or ISO 8601. */
+	since?: number | string;
+	/** Exclusive upper time bound, epoch ms or ISO 8601. */
+	until?: number | string;
+	/** Workflow state id referenced by an event payload. */
+	state?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1815,6 +3043,22 @@ export interface ApiKey {
 	created_at: number;
 	last_used_at: number | null;
 	revoked_at: number | null;
+	/**
+	 * Set on *run keys*: the agent run this key was minted for, resolved to the
+	 * runner and the run's issue. Absent on user-created keys.
+	 */
+	run?: ActorRun | null;
+}
+
+/** Which run keys a listing includes alongside the user's own keys. */
+export type RunKeyFilter = 'none' | 'active' | 'all';
+
+export const RUN_KEY_FILTERS: readonly RunKeyFilter[] = ['none', 'active', 'all'];
+
+/** How many run keys a user has, split by whether they can still act. */
+export interface RunKeyCounts {
+	active: number;
+	revoked: number;
 }
 
 export interface ApiKeyCreated extends ApiKey {
@@ -1833,6 +3077,18 @@ export interface ListResponse<T> {
 	items: T[];
 	/** Pass back as `?cursor=` to fetch the next page; null = no more. */
 	next_cursor: string | null;
+	/** Present on stable period-run evidence pages. */
+	usage_window?: {
+		from: number;
+		to: number;
+		timezone: string;
+		population: 'finalized' | 'pending';
+		timezone_source: 'supervisor_budget' | 'utc_fallback';
+		cursor_version: 'usage-runs-v2';
+		scan_complete: boolean;
+		accounting_basis: 'finalized_by_ended_at_v1';
+		attribution_basis: 'current_issue_project_start_state_workflow_v1';
+	};
 }
 
 export interface PageParams {
@@ -1861,8 +3117,17 @@ export interface ApiErrorBody {
 
 /** Discriminator on the exported document; guards against feeding in a stray JSON file. */
 export const LIBRARY_FORMAT = 'tines.library';
-/** Bumped when the document shape changes incompatibly; import refuses anything higher. */
-export const LIBRARY_VERSION = 1;
+/**
+ * Bumped when the document shape changes incompatibly; import refuses anything
+ * higher. Version history:
+ *
+ * - **1** — projects, workflows (states, transitions, artifact requirements)
+ *   and context items, all referenced by name.
+ * - **2** — a state may carry `inherits_from` (Tines/270): the state whose
+ *   context it inherits, as `"<workflow name>/<state name>"`. Version 1
+ *   documents read unchanged — they simply have no pointers.
+ */
+export const LIBRARY_VERSION = 2;
 
 /** Document-level caps, checked before the entries are walked. */
 export const LIBRARY_MAX_BYTES = 5 * 1024 * 1024;
@@ -1877,6 +3142,8 @@ export const LIBRARY_MAX_ENTRIES = 1000;
 export interface LibraryScopeRef {
 	project?: string;
 	state?: { workflow: string; name: string };
+	/** Issue label by name; created on import when this deployment lacks it. */
+	label?: string;
 }
 
 /** A project carried only as a scope referent — no issues come with it. */
@@ -1920,7 +3187,9 @@ export interface LibraryContextEntry {
  *
  * The system `Standard` workflow is never exported (it is seeded with
  * identical ids on every instance); items scoped to its states are, and
- * re-resolve by name.
+ * re-resolve by name — as does a state's `inherits_from`, which points at
+ * its base as `"<workflow name>/<state name>"` (version 2 and up) so that a
+ * pointer survives a move between deployments that share no ids.
  */
 export interface LibraryDocument {
 	format: typeof LIBRARY_FORMAT;
@@ -1932,12 +3201,19 @@ export interface LibraryDocument {
 }
 
 export interface ExportLibraryOptions {
+	/** v3 is the default; v2 is available for older importers. */
+	version?: 2 | 3;
 	/** Journals are deployment-specific memory; opt out to leave them behind. */
 	journals?: boolean;
 }
 
 export interface ImportLibraryRequest {
-	document: LibraryDocument;
+	document: LibraryDocument | import('./library/types.js').LibraryV3Document;
+	/** Explicit destination choice keyed by document-local workflow ID (v3 only). */
+	workflow_targets?: Record<
+		string,
+		{ kind: 'target'; workflow_id: string } | { kind: 'create'; name: string }
+	>;
 	/** Plan only: returns exactly the plan an apply would follow. */
 	dry_run?: boolean;
 	/** Context items only; workflow definition conflicts always refuse. */
@@ -1959,7 +3235,12 @@ export const IMPORT_ACTIONS: readonly ImportAction[] = [
 ];
 
 export interface ImportPlanEntry {
-	section: 'project' | 'workflow' | 'context';
+	section: 'project' | 'workflow' | 'context' | 'label';
+	/** Stable source identity for v3 reports. */
+	local_id?: string;
+	target_id?: string;
+	/** Resolved destination name, present for successful v3 workflow plans and receipts. */
+	target_name?: string;
 	/** Human-readable identity, e.g. `prompt "instructions" (state Engineering / Research)`. */
 	ref: string;
 	action: ImportAction;

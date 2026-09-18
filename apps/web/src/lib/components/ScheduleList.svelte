@@ -1,12 +1,16 @@
 <script lang="ts">
 	import type { Schedule, UpdateScheduleRequest, WorkflowResponse } from '@tines/shared';
 	import { ApiError, describeRecurrence } from '@tines/shared';
+	import IconAlertCircle from '@tabler/icons-svelte/icons/alert-circle';
+	import IconCheck from '@tabler/icons-svelte/icons/check';
+	import IconClock from '@tabler/icons-svelte/icons/clock';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconPlayerPlay from '@tabler/icons-svelte/icons/player-play';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import { onMount } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
@@ -28,14 +32,19 @@
 		schedules,
 		workflows,
 		highlightId = null,
+		disabledReason = null,
 		onerror
 	}: {
 		schedules: Schedule[];
 		workflows: WorkflowResponse[];
 		/** Row to highlight (?schedule= deep links from issue badges). */
 		highlightId?: string | null;
+		/** When set, every mutating control is disabled and carries this as its tooltip. */
+		disabledReason?: string | null;
 		onerror: (e: unknown) => void;
 	} = $props();
+
+	const readOnly = $derived(disabledReason != null);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -52,6 +61,60 @@
 
 	// One in-flight mutation at a time keeps the optimistic states simple.
 	let busyId = $state<string | null>(null);
+	type RunResult =
+		| { kind: 'success'; projectName: string; number: number; refreshError?: string }
+		| { kind: 'error'; message: string };
+	let runResults = $state<Record<string, RunResult | undefined>>({});
+	const refreshError =
+		'Issue created, but the list could not refresh. Reload the page to update it.';
+	const runRecoveryKey = 'tines:schedule-run-recovery';
+	type RunRecovery = {
+		scheduleId: string;
+		projectName: string;
+		number: number;
+		pathname: string;
+		createdAt: number;
+	};
+
+	function stageRunRecovery(recovery: RunRecovery) {
+		try {
+			sessionStorage.setItem(runRecoveryKey, JSON.stringify(recovery));
+		} catch {
+			// The in-memory receipt still works when storage is unavailable. Storage
+			// only bridges SvelteKit's native-reload fallback after a failed refresh.
+		}
+	}
+
+	function clearRunRecovery() {
+		try {
+			sessionStorage.removeItem(runRecoveryKey);
+		} catch {
+			// See stageRunRecovery: storage can be unavailable without blocking Run now.
+		}
+	}
+
+	onMount(() => {
+		let recovery: RunRecovery | undefined;
+		try {
+			recovery = JSON.parse(sessionStorage.getItem(runRecoveryKey) ?? '') as RunRecovery;
+		} catch {
+			// Missing, unavailable, or malformed recovery state is simply discarded.
+		}
+		clearRunRecovery();
+		if (
+			!recovery ||
+			recovery.pathname !== location.pathname ||
+			Date.now() - recovery.createdAt > 30_000 ||
+			!schedules.some((schedule) => schedule.id === recovery.scheduleId)
+		)
+			return;
+		runResults[recovery.scheduleId] = {
+			kind: 'success',
+			projectName: recovery.projectName,
+			number: recovery.number,
+			refreshError
+		};
+	});
 
 	async function mutate(id: string, fn: () => Promise<unknown>) {
 		if (busyId) return;
@@ -69,7 +132,58 @@
 	const toggleEnabled = (s: Schedule) =>
 		mutate(s.id, () => api.updateSchedule(s.id, { enabled: !s.enabled }));
 
-	const runNow = (s: Schedule) => mutate(s.id, () => api.runSchedule(s.id));
+	async function runNow(s: Schedule) {
+		if (busyId || readOnly) return;
+		busyId = s.id;
+		runResults[s.id] = undefined;
+		try {
+			let issue;
+			try {
+				issue = await api.runSchedule(s.id);
+			} catch (e) {
+				runResults[s.id] = {
+					kind: 'error',
+					message: e instanceof ApiError ? e.message : 'Something went wrong — try again.'
+				};
+				return;
+			}
+
+			runResults[s.id] = {
+				kind: 'success',
+				projectName: issue.project_name,
+				number: issue.number
+			};
+			stageRunRecovery({
+				scheduleId: s.id,
+				projectName: issue.project_name,
+				number: issue.number,
+				pathname: location.pathname,
+				createdAt: Date.now()
+			});
+			try {
+				await invalidateAll();
+				// SvelteKit resolves invalidation after replacing this page with its
+				// error boundary, so a catch alone cannot distinguish a failed refresh.
+				// Reload the unchanged URL; onMount consumes the staged receipt and
+				// explains that creation succeeded even though this refresh did not.
+				if (page.status >= 400) {
+					location.reload();
+					return;
+				}
+				clearRunRecovery();
+			} catch {
+				clearRunRecovery();
+				runResults[s.id] = {
+					kind: 'success',
+					projectName: issue.project_name,
+					number: issue.number,
+					refreshError
+				};
+			}
+		} finally {
+			busyId = null;
+		}
+	}
 
 	async function remove(s: Schedule) {
 		const ok = await confirmDialog({
@@ -150,16 +264,22 @@
 
 <ul class="divide-y rounded-lg border">
 	{#each schedules as s (s.id)}
+		{@const runResult = runResults[s.id]}
 		<li
 			id="schedule-{s.id}"
-			class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 transition-[opacity,background-color] duration-200 {s.enabled
-				? ''
-				: 'opacity-60'} {highlightId === s.id ? 'bg-accent/60' : ''}"
+			class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 transition-colors duration-200 {highlightId ===
+			s.id
+				? 'bg-accent/60'
+				: ''}"
 			in:fade={{ duration: dur() }}
 		>
-			<div class="min-w-0 flex-1">
-				<p class="truncate text-sm font-medium">{s.name}</p>
-				<p class="text-muted-foreground text-xs">
+			<div
+				class="min-w-0 basis-full transition-opacity duration-200 sm:flex-1 sm:basis-auto {s.enabled
+					? ''
+					: 'opacity-60'}"
+			>
+				<p class="text-sm font-medium [overflow-wrap:anywhere]">{s.name}</p>
+				<p class="text-muted-foreground text-xs [overflow-wrap:anywhere]">
 					{describeRecurrence(s.preset, s.cron)}, {s.timezone}
 					{#if s.require_all_closed}
 						· only when closed
@@ -167,8 +287,14 @@
 					· {s.workflow_name}{s.state_name ? ` / ${s.state_name}` : ''}
 				</p>
 			</div>
-			<div class="text-muted-foreground hidden shrink-0 text-right text-xs sm:block">
-				{#if s.enabled}
+			<div
+				class="text-muted-foreground flex min-w-0 basis-full flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:block sm:shrink-0 sm:basis-auto sm:text-right"
+			>
+				{#if s.project_archived_at !== null}
+					<!-- The sweep skips an archived project's schedules without clearing
+					     `enabled`, so the honest label is neither "next …" nor "paused". -->
+					<p>paused · project archived</p>
+				{:else if s.enabled}
 					<p title={new Date(s.next_run_at).toLocaleString()}>{nextRunLabel(s.next_run_at)}</p>
 				{:else}
 					<p>paused</p>
@@ -179,15 +305,22 @@
 					{/if}
 					{s.open_instances} open
 				</p>
+				{#if s.require_all_closed && s.open_instances > 0}
+					<p class="flex items-center gap-1 text-amber-700 sm:justify-end dark:text-amber-400">
+						<IconClock size={14} aria-hidden="true" />
+						Waiting for {s.open_instances} open {s.open_instances === 1 ? 'issue' : 'issues'}
+					</p>
+				{/if}
 			</div>
-			<div class="flex shrink-0 items-center gap-1">
+			<div class="flex basis-full items-center gap-1 sm:shrink-0 sm:basis-auto">
 				<!-- Pause/resume: a toggle that morphs between states. -->
 				<button
 					type="button"
 					role="switch"
 					aria-checked={s.enabled}
 					aria-label={s.enabled ? `Pause schedule ${s.name}` : `Resume schedule ${s.name}`}
-					disabled={busyId !== null}
+					disabled={busyId !== null || readOnly}
+					title={disabledReason}
 					class="relative h-5 w-9 rounded-full transition-colors duration-200 {s.enabled
 						? 'bg-primary'
 						: 'bg-muted-foreground/30'}"
@@ -203,8 +336,8 @@
 					size="sm"
 					variant="ghost"
 					aria-label="Run schedule {s.name} now"
-					title="Run now"
-					disabled={busyId !== null}
+					title={disabledReason ?? 'Run now'}
+					disabled={busyId !== null || readOnly}
 					onclick={() => runNow(s)}
 				>
 					<IconPlayerPlay size={15} />
@@ -213,8 +346,8 @@
 					size="sm"
 					variant="ghost"
 					aria-label="Edit schedule {s.name}"
-					title="Edit"
-					disabled={busyId !== null}
+					title={disabledReason ?? 'Edit'}
+					disabled={busyId !== null || readOnly}
 					onclick={() => openEdit(s)}
 				>
 					<IconPencil size={15} />
@@ -223,13 +356,52 @@
 					size="sm"
 					variant="ghost"
 					aria-label="Delete schedule {s.name}"
-					title="Delete (existing issues are kept)"
-					disabled={busyId !== null}
+					title={disabledReason ?? 'Delete (existing issues are kept)'}
+					disabled={busyId !== null || readOnly}
 					onclick={() => remove(s)}
 				>
 					<IconTrash size={15} />
 				</Button>
 			</div>
+			<div
+				class="min-w-0 basis-full text-sm [overflow-wrap:anywhere]"
+				role="status"
+				aria-live="polite"
+				aria-atomic="true"
+			>
+				{#if runResult?.kind === 'success'}
+					<div class="space-y-1" in:fade={{ duration: dur() }}>
+						<p class="flex items-start gap-1 text-emerald-600 dark:text-emerald-400">
+							<IconCheck class="mt-0.5 shrink-0" size={16} aria-hidden="true" />
+							<a
+								class="focus-visible:ring-ring rounded-sm underline underline-offset-2 focus-visible:ring-2 focus-visible:outline-none"
+								href="/issues/{encodeURIComponent(runResult.projectName)}/{runResult.number}"
+							>
+								Created {runResult.projectName}/#{runResult.number}
+							</a>
+						</p>
+					</div>
+				{/if}
+			</div>
+			{#if runResult?.kind === 'error'}
+				<p
+					class="text-destructive flex min-w-0 basis-full items-start gap-1 text-sm [overflow-wrap:anywhere]"
+					role="alert"
+					in:fade={{ duration: dur() }}
+				>
+					<IconAlertCircle class="mt-0.5 shrink-0" size={16} aria-hidden="true" />
+					{runResult.message}
+				</p>
+			{:else if runResult?.kind === 'success' && runResult.refreshError}
+				<p
+					class="text-destructive flex min-w-0 basis-full items-start gap-1 text-sm [overflow-wrap:anywhere]"
+					role="alert"
+					in:fade={{ duration: dur() }}
+				>
+					<IconAlertCircle class="mt-0.5 shrink-0" size={16} aria-hidden="true" />
+					{runResult.refreshError}
+				</p>
+			{/if}
 		</li>
 	{/each}
 </ul>

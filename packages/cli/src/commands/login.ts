@@ -5,7 +5,7 @@
  * config, default (see common.ts); `config` shows which one is in effect.
  */
 import { readFileSync } from 'node:fs';
-import { ApiError, createApiClient } from '@tines/shared';
+import { ApiError, ApiNetworkError, createApiClient } from '@tines/shared';
 import type { Command } from 'commander';
 import {
 	DEFAULT_URL,
@@ -56,10 +56,13 @@ export function register(program: Command): void {
 						die(`${url} rejected the API key (${err.message}); nothing stored`);
 					}
 					if (err instanceof ApiError) throw err;
-					// Network failure: fetch's own message is just "fetch failed".
-					const cause = (err as { cause?: { code?: string } }).cause?.code;
+					// Network failure. The client's own message leads with the
+					// method and path, which say nothing here — this command
+					// only ever probes one endpoint — so rebuild it around the
+					// URL being stored.
+					const code = err instanceof ApiNetworkError ? err.code : undefined;
 					die(
-						`could not reach ${url}${cause ? ` (${cause})` : ''}; nothing stored (pass --no-verify to store anyway)`
+						`could not reach ${url}${code ? ` (${code})` : ''}; nothing stored (pass --no-verify to store anyway)`
 					);
 				}
 			}

@@ -1,7 +1,14 @@
 import type { IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
+
+// This file exercises the animation itself; the suite default is reduced
+// motion (playwright.config.ts). The reduced-motion tests below still call
+// page.emulateMedia({ reducedMotion: 'reduce' }) per test, which overrides
+// this file-level setting. See e2e/README.md.
+test.use({ reducedMotion: 'no-preference' });
 
 // Named to sort after `artifacts-panel.spec.ts`, not for tidiness: that spec's
 // desktop row-wrap assertion depends on the relative-age string in the row's
@@ -16,15 +23,13 @@ import { apiClient, body, runId, signIn } from './helpers';
 // assert the *computed* animation-name, which is `none` whenever the variant
 // selector fails to match (Tines/110).
 
-const projectName = `alertanim-${runId}`;
+let projectName: string;
 let project: Project;
 let issue: IssueDetail;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	projectName = uniqueName('alertanim');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 	issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, {
@@ -32,20 +37,14 @@ test.beforeAll(async ({ playwright }) => {
 			description: 'Fixture for the AlertDialog animation assertions.'
 		})
 	);
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
-/** Click that survives the SSR-to-hydration window (see ui.spec.ts). */
-async function clickUntil(button: Locator, done: () => Promise<void>): Promise<void> {
-	await expect(async () => {
-		if (await button.isVisible()) await button.click();
-		await done();
-	}).toPass({ timeout: 15_000 });
-}
+test.beforeEach(async ({ request }) => {
+	// Specs share one user: a focus left behind would scope this one's lists.
+	await resetFocus(request);
+});
 
 /**
  * Deleting a comment is the cheapest route to a real AlertDialog: it is the
@@ -57,7 +56,7 @@ async function openConfirmDialog(page: Page): Promise<Locator> {
 	const commentBody = `Animation fixture ${Date.now().toString(36)}`;
 	await api.post(`/api/v1/issues/${issue.id}/comments`, { body: commentBody });
 
-	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
+	await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${issue.number}`);
 	const comment = page.locator('article').filter({ hasText: commentBody }).first();
 	await expect(comment).toBeVisible();
 
@@ -84,11 +83,8 @@ test('the open alert dialog runs its enter animation', async ({ page }) => {
 });
 
 // The pair matters: `none` is also what a dialog that never animated reports,
-// so this assertion only means something alongside the test above.
-//
-// `page.emulateMedia`, not `test.use({ reducedMotion })` — the context option
-// does not reach the page under Playwright 1.62.1 (`matchMedia(...).matches`
-// stays false), which would make this pass for the wrong reason.
+// so this assertion only means something alongside the test above. The
+// in-test `emulateMedia` overrides this file's `test.use` opt-out.
 test('a reduced-motion preference suppresses the alert dialog animation', async ({ page }) => {
 	await page.emulateMedia({ reducedMotion: 'reduce' });
 	const dialog = await openConfirmDialog(page);

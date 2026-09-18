@@ -1,5 +1,8 @@
 # Supervisor — User Flows
 
+> **Decision amendment (2026-09-09):** The historical off-by-default and first-time arming
+> passages below are superseded by [automation enabled by default](./AUTOMATION_DEFAULT_2026-09-09.md).
+
 Twenty user flows derived from [SPEC.md](./SPEC.md), ordered from the core automation loop outward to niche and operational flows. Each was reviewed individually; **Decisions** sections record the calls made during that review, including a few deliberate deltas from SPEC.md (collected at the end).
 
 ## Contents
@@ -44,7 +47,7 @@ Plus: [Spec deltas from this review](#spec-deltas-from-this-review) · [Future w
 
 **Persona & starting point:** an existing Tines user (projects, workflows, issues, context items from phase one) who has never used the supervisor. They want their laptop to start working the backlog with Claude Code.
 
-1. They open the new **Agents tab**. It's empty-state: no runners, no rules, and the kill switch is **off** (the default for a new user — see Decisions).
+1. They open the new **Agents tab**. Before their first run it leads with the **first-run checklist** (Tines/253) rather than the off-state banner: seven derived items — issue, CLI, runner, rule, automation, issue content, first run — each carrying the control that completes it, ticking live and retiring account-wide once one run exists. No runners, no rules, and the kill switch is **off** (the default for a new user — see Decisions).
 2. They click **Add runner → Local**. The UI shows a copy-pasteable bootstrap: `tines runner daemon --name laptop-m4 --harness claude-code`, with the registration step explained (first start with their `TINES_API_KEY` registers and persists a runner token).
 3. In a terminal, they run the command. The daemon registers, stores its token, and starts polling. Back in the browser, the runner card appears: online dot, 0/1 runs, hostname/platform.
 4. Still on the Agents tab, they create a **global routing rule** targeting `laptop-m4` (no tier — the runner's `default_tier`, `balanced`, applies). The empty state nudged them here (see Decisions).
@@ -146,7 +149,7 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
    - **Per-target verdicts**, in preference order: `gemini (cheapest → gemini-flash-lite)` — daily budget exhausted, resets at 00:00 Europe/London; `claude` — at max_concurrent (3/3); `laptop-m4` — offline (last seen 12 min ago).
    - **Pin status**, if pinned: only the pinned runner is evaluated, and the explainer says so.
    - **Queue position** when eligible but capacity-bound (see Decisions): "3 eligible issues ahead of this one" in the oldest-`updated_at`-first queue.
-3. Each verdict points at its remedy, and the remedies are the other flows: blocked → resolve the blocker; no rule → create one (flow 7); parked → resume (flow 9); runner offline → restart the daemon (flow 18); budget → wait or raise it (flow 12); at cap → wait, or bump `max_concurrent`.
+3. Each verdict points at its remedy, and the remedies are the other flows: blocked → resolve the blocker; no rule → create one (flow 7); parked → resume (flow 9); runner offline → restart the daemon (flow 18); budget → wait or raise it (flow 12); at cap → wait, or bump `max_concurrent`. From Tines/256 the same remedies appear **fleet-wide** on the Agents tab's Now row, as controls beside each waiting group, for the operator who is asking about the whole fleet rather than one issue.
 4. The user fixes the actual cause, and because every fixing action fires an opportunistic dispatch pass, the panel flips to an active run within seconds — closing the loop in the same view they diagnosed it in.
 
 **Success criterion:** for any idle issue, the user reaches a specific, actionable reason — never "it just isn't running" — in one click or one command, and the fix takes effect visibly in the same place.
@@ -327,6 +330,14 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 
 ## 13. Tune concurrency
 
+For a local runner, the machine owner first opts in with
+`--allow-remote-concurrency --max-concurrent 4`. The Agents editor then labels the value
+**Requested concurrency**, shows the effective cap and local ceiling, and reports
+**Pending** until that daemon acknowledges the revision. Repeated polls, reconnects, and
+ordinary restarts do not overwrite the request. Lowering below the active count lets those
+runs finish but admits no new work. **At local ceiling** sends the operator back to the
+machine; the web cannot enable opt-in or raise the ceiling.
+
 **Persona & starting point:** the fleet is either drowning (six PRs landed in review at once) or starving (issues queue while runners idle). This flow is the two knobs — quota policy and per-runner caps — and knowing which to reach for.
 
 1. **The default experience:** `global_cap` at 3. The user notices issues queuing ("Eligible — waiting for capacity", queue position from flow 5) while they could review more, and bumps the limit to 5 in the settings' quota section. Takes effect next pass; running work is never killed by a policy change.
@@ -340,7 +351,7 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 **Decisions**
 
 - **Roster default stays 1 for unlisted and newly created states**; the editor lists every state (grouped by workflow) showing the inherited default, so no state's limit is a surprise.
-- **Utilization is included in the summary surfaces** — `tines supervisor status` and the Runs section header — cheap aggregation over data the guards already query.
+- **Utilization is included in the summary surfaces** — `tines supervisor status` and the Runs section header — cheap aggregation over data the guards already query. From Tines/256 the same surfaces carry the **Now row**: what is waiting, why, which limit binds, and the remedy for each group as a control.
 
 ---
 
@@ -439,6 +450,11 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 
 ## 18. Daemon lifecycle on a dev machine
 
+Remote concurrency consent is process/service configuration, not server state. `runner restart`
+preserves it. To enable, disable, or change the ceiling, pause the runner, wait for zero active
+runs, and relaunch or reinstall with the complete desired flags. A new daemon instance reports
+policy before receiving work; a legacy or malformed report fails closed to local authority.
+
 **Persona & starting point:** the local runner lives on a laptop that sleeps, reboots, changes networks, and occasionally has its terminal closed mid-run. This flow is the daemon being a well-behaved citizen of a messy machine.
 
 **Normal operation**
@@ -457,12 +473,13 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
    All three read the same to the user: the run is `failed` with outcome **`interrupted`** — no strike, because the daemon died, not the work. The issue keeps its attempt budget and re-enters the pool in its current state (the reconciliation path queues a dispatch pass, so that is seconds rather than the next cron); a runner that keeps dropping runs is what gets flagged, backing off on its card exactly as a runner that keeps failing to launch does. Board, explainer and run rows reflect it.
 6. **Sleep mid-run, wake later** (the subtle one): the harness was suspended, not dead. A short nap (<5 min): polls resume, the run continues. Longer: the sweep already failed the run and revoked its key — on wake, the daemon's next poll learns via `cancels` that the run is dead and **kills the still-suspended harness without re-reporting it as its own failure** (see Decisions). Wasted partial work is bounded; a re-run picks the issue up with the thread as continuity.
 7. **Machine reboot:** combine 4 and 5 — on next daemon start (automatic under launchd/systemd), orphan cleanup runs against the state file, then normal polling resumes.
+8. **A copied token starts a second daemon:** every current daemon boot sends a stable random instance id. The newly admitted boot atomically becomes current; the old boot's next poll gets `409 runner_conflict` before its `owned_runs` can interrupt the winner's work, logs that runner *name* was superseded, cleans up its local runs as interrupted, and exits. The winner's first trusted `owned_runs` report reconciles work the old boot left behind. This fence deliberately remembers only the immediate predecessor, legacy daemons that omit the id remain compatible and unfenced, and a poll admitted just before takeover may finish. If launchd `KeepAlive` or systemd `Restart=always` keeps relaunching a duplicate service, stop/disable that service or register it under a separate runner name; process exit cannot disable an external service manager.
 
 **Success criterion:** no daemon failure mode ever wedges an issue for longer than 5 minutes or leaves a harness spending against a live key; recovery from any of them is at most "start the daemon again," and the run record always says honestly what happened.
 
 **Decisions**
 
-- **Service-manager snippets ship in the docs** (launchd/systemd) — the runner is supposed to be infrastructure; docs-only, no product surface.
+- **Service-manager snippets ship in the docs** (launchd/systemd) — the runner is supposed to be infrastructure; docs-only, no product surface. Operators must disable a duplicate service sharing a token rather than letting two always-restart units repeatedly create new boots.
 - **Spec clarification to carry into implementation:** a run id appearing in a poll response's `cancels` means "kill the process now; do not `finish`-report it" — the supervisor has already settled that run's fate.
 
 ---
@@ -474,6 +491,7 @@ The steady-state loop once setup is done — the flow that happens dozens of tim
 **What happened**
 
 1. The **activity feed** is the chronological record: every lifecycle moment — runner registered/paused/removed, `agent_run.started` (tier + resolved model in payload), `agent_run.ended` (status, outcome `advanced`/`stalled`/`interrupted`, runner, states, final usage), `issue.parked`/`resumed`, settings changes (secrets elided) — attributed "via *runner* · run …" alongside the human's own actions. Skimming it reads like a team standup log.
+   Across the global, recorded, and issue feeds, run starts use a primary robot; completed runs use a green check; failed runs use a destructive X; and interrupted, stalled, timed-out, or canceled runs use an amber warning. Precedence is interrupted, failed, stalled, completed, then timeout/cancel. Unknown or malformed terminal payloads keep the muted robot, and the event sentence remains the accessible description.
 2. Per issue, the **thread** is the durable narrative: agent comments, transitions, human corrections, in order. An issue's history is legible without ever opening a run log.
 3. Per run, `tines runs list --runner gemini` / `--issue acme/7` filter the attempt history; `runs show <id> --json` includes the full stored log tail and provider link — greppable post-mortems across runs.
 
@@ -545,3 +563,14 @@ Items deliberately deferred during this review:
 - **Outcome-rate analytics** — per-runner advanced-% and cost-per-outcome surfaces (flow 19).
 - **Ledger retention policy** — indefinite retention is the current conscious non-decision (flow 19).
 - **Active→active ping-pong detection** — agent-to-agent transition loops never strike out; budgets/quotas are the only bound today (flow 4 clarification).
+
+## Inspect the week (Tines/257, revised after Human Review)
+
+1. Open **Agents → Analysis**, then open **State analysis · Last 7 days**. Choose **State project**, or keep All projects. It is the same scope as **Board project** on Now; highlights, changes and evidence use it, while Spend filters and chrome focus remain unchanged.
+2. Choose **Most measured wait** to expand Timing and visits. Read the timed sample and excluded waiting/never-started visits, then **View stage capacity** to focus the currently saved global or roster limit. Inspect before deciding whether to edit.
+3. Choose **Most send-backs**, or a stage’s sent-back share. Compare the previous share and percentage-point delta, then inspect each event’s issue, actor, related comment and historical prompt context ID/version. **Edit current stage prompt** is explicitly a current editor; a historical version is not a content snapshot.
+4. Choose **Most failed starts** to inspect complete outcomes and recording coverage. **View stage runs** opens latest state/project runs with ended runs included, preserving the board filter; the list is not labelled as an exact seven-day cohort. Clearing the state keeps the project. Fleet utilization remains unfiltered.
+5. Open a stage’s **Changes**, or the window’s changes list. Inspect dated Before/Since samples and nullable measures, then use the recorded event or setting link. Unequal periods and other edits prevent causal attribution. Markers remain reachable when no stage has work.
+6. The weekly report loads on first open, retries inline after an error, and stays cached only while the same Analysis view and project remain mounted. The evidence dialog retains its frozen query through errors and Retry; closing or changing project invalidates late responses. Keyboard focus returns to its invoking control. The four-column overview becomes labelled stage cards on a phone, with all supporting measurements available in disclosures.
+
+No number, highlight or delta changes dispatch, alerts, strikes or policy.

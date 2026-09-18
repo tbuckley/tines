@@ -39,6 +39,16 @@ function event(
 const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'issue.created': { title: 'A title' },
 	'issue.updated': { changed: ['title', 'description'] },
+	'issue.transferred': {
+		source_project_id: 'prj_a',
+		source_project_name: 'Alpha',
+		destination_project_id: 'prj_b',
+		destination_project_name: 'Beta',
+		old_number: 4,
+		new_number: 9,
+		old_ref: 'Alpha/4',
+		new_ref: 'Beta/9'
+	},
 	'issue.transitioned': {
 		action: 'Start work',
 		from_state_name: 'Backlog',
@@ -73,6 +83,13 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'project.created': { name: 'Tines' },
 	'project.updated': { name: 'Tines' },
 	'project.deleted': { name: 'Tines' },
+	'project.archived': {
+		name: 'Tines',
+		schedules_paused: 2,
+		draining_runs: 1,
+		issues_read_only: 91
+	},
+	'project.unarchived': { name: 'Tines', schedules_resumed: 2 },
 	'workflow.created': { name: 'Engineering' },
 	'workflow.updated': { name: 'Engineering' },
 	'workflow.deleted': { name: 'Engineering' },
@@ -86,6 +103,7 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 		context_id: 'ctx_1',
 		kind: 'prompt',
 		name: 'house-style',
+		version: 2,
 		scope: { label: 'project Tines' }
 	},
 	'context.updated': {
@@ -102,11 +120,20 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	},
 	'runner.registered': { name: 'macbook-claude' },
 	'runner.updated': { name: 'macbook-claude' },
+	'runner.daemon_replaced': { runner_id: 'rnr_1', name: 'macbook-claude' },
 	'runner.removed': { name: 'macbook-claude' },
 	'runner.errored': {
 		runner_name: 'macbook-claude',
 		consecutive_failures: 3,
 		error: 'spawn failed'
+	},
+	'runner.rate_limited': {
+		runner_name: 'macbook-claude',
+		run_id: 'run_1',
+		error: 'rate limited: session limit · resets 3pm (America/New_York)',
+		resets_at: 1_788_739_260_000,
+		reported_reset_at: 1_788_739_200_000,
+		limit: 'five_hour'
 	},
 	'routing_rule.created': { scope_label: 'project Tines' },
 	'routing_rule.updated': { scope_label: 'project Tines' },
@@ -263,6 +290,19 @@ describe('wording carried over from both surfaces', () => {
 	it('omits the model clause when the run has none', () => {
 		const ev = event('agent_run.started', { runner_name: 'macbook-claude', tier: 'fast' });
 		expect(eventSummary(ev)).toBe('started a fast run via "macbook-claude" on Tines/#49');
+	});
+
+	it('renders a workflow event by name, whatever else the payload carries', () => {
+		// `inheritance_changed` (Tines/238) rides along on workflow.created /
+		// .updated / .deleted; the feed names the workflow and nothing else, so
+		// the key needs no renderer of its own.
+		const ev = event('workflow.updated', {
+			name: 'Engineering',
+			inheritance_changed: [
+				{ workflow: 'Engineering', state: 'Merging', from: null, to: 'Shared stages / Merging' }
+			]
+		});
+		expect(eventSummary(ev)).toBe(eventSummary(event('workflow.updated', { name: 'Engineering' })));
 	});
 
 	it('keeps the web workflow-change clause on issue.updated', () => {

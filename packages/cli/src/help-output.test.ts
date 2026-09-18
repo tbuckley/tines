@@ -3,18 +3,17 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
+import { CLI_BIN, NODE } from './test-bin.js';
 
 const run = promisify(execFile);
 
 const here = dirname(fileURLToPath(import.meta.url));
-const tsx = join(here, '..', 'node_modules', '.bin', 'tsx');
-const entry = join(here, 'index.ts');
 
 const SECRET = 'tines_help-must-never-print-this';
 
-/** Runs the CLI from source through the real bin. */
+/** Runs the built CLI through the real bin. */
 function cli(args: string[], env: NodeJS.ProcessEnv) {
-	return run(tsx, [entry, ...args], {
+	return run(NODE, [CLI_BIN, ...args], {
 		env: { ...process.env, ...env },
 		timeout: 60_000
 	});
@@ -39,6 +38,25 @@ describe('the shipped bin', () => {
 		expect(stdout).not.toContain('https://api.example.test');
 		expect(stdout).toContain('TINES_API_KEY');
 		expect(stdout).toContain('TINES_API_URL');
+	}, 60_000);
+
+	// The positional source's typing rules live in an addHelpText('after')
+	// epilogue, which commander's helpInformation() leaves out — so
+	// program.test.ts's snapshot of all 84 commands cannot see it, and only the
+	// real bin's rendered --help can.
+	it('documents how a positional source is typed on attach --help', async () => {
+		const { stdout } = await cli(['issues', 'artifacts', 'attach', '--help'], {
+			TINES_API_KEY: SECRET,
+			TINES_API_URL: 'http://127.0.0.1:1'
+		});
+		expect(stdout).toContain(
+			'Usage: tines issues artifacts attach [options] <ref> <name> [source]'
+		);
+		expect(stdout).toContain("typed by the slot's gate");
+		// The ungated rule an agent is most likely to get wrong.
+		expect(stdout).toContain('a .md path included');
+		expect(stdout).toContain('--ignore-gates');
+		expect(stdout).not.toContain(SECRET);
 	}, 60_000);
 
 	/**

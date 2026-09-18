@@ -3,6 +3,7 @@ import {
 	LABEL_COLORS,
 	LABEL_NAME_MAX,
 	type AddIssueLabelsResponse,
+	type ContextKind,
 	type CreateLabelRequest,
 	type DeleteLabelResponse,
 	type IssueLabel,
@@ -19,9 +20,16 @@ import {
 	optionalString,
 	requireString,
 	runAtomic,
+	runKeyForbidden,
 	type ActorContext
 } from './core';
+import { assertWritable, issueProject } from './archive';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
+import { contextItemQuery, deleteContextItem } from './context';
+import { routingRuleDeletes, rulesScopedToLabel } from './routing';
 import { eventInsert } from './events';
+import { insertValues, type QueryGuard } from './query-guard';
+import { scopeLabel } from './scope';
 
 /**
  * Exactly what `newId('lbl')` mints (16 chars of `ID_ALPHABET`). A ref of
@@ -124,15 +132,26 @@ export async function listLabels(db: Kysely<Database>, userId: string): Promise<
 	const rows = await db
 		.selectFrom('label')
 		.selectAll('label')
-		.select(
+		.select([
 			sql<number>`(SELECT COUNT(*) FROM issue_label il WHERE il.label_id = label.id)`.as(
 				'issue_count'
+			),
+			sql<number>`(SELECT COUNT(*) FROM context_item ci WHERE ci.label_id = label.id)`.as(
+				'context_item_count'
+			),
+			sql<number>`(SELECT COUNT(*) FROM routing_rule rr WHERE rr.label_id = label.id)`.as(
+				'routing_rule_count'
 			)
-		)
+		])
 		.where('user_id', '=', userId)
 		.orderBy(sql`name COLLATE NOCASE`)
 		.execute();
-	return rows.map((r) => ({ ...serializeLabel(r), issue_count: Number(r.issue_count) }));
+	return rows.map((r) => ({
+		...serializeLabel(r),
+		issue_count: Number(r.issue_count),
+		context_item_count: Number(r.context_item_count),
+		routing_rule_count: Number(r.routing_rule_count)
+	}));
 }
 
 async function resolveByName(
@@ -164,6 +183,29 @@ async function assertNameFree(
 	}
 }
 
+/** Strict creation: unlike on-the-fly labelInserts, a collision must fail the batch. */
+export function labelInsertQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	label: Label,
+	options: { guard?: QueryGuard; eventId?: string } = {}
+): CompiledQuery[] {
+	return [
+		insertValues(db, 'label', { ...label, user_id: actor.userId }, options.guard),
+		eventInsert(
+			db,
+			actor,
+			{
+				id: options.eventId,
+				createdAt: label.created_at,
+				type: 'label.created',
+				payload: { label_id: label.id, name: label.name, color: label.color }
+			},
+			options.guard
+		)
+	];
+}
+
 export async function createLabel(
 	db: Kysely<Database>,
 	env: Env,
@@ -184,16 +226,7 @@ export async function createLabel(
 		created_at: now,
 		updated_at: now
 	};
-	await runAtomic(env, [
-		db
-			.insertInto('label')
-			.values({ ...label, user_id: actor.userId })
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'label.created',
-			payload: { label_id: label.id, name, color }
-		})
-	]);
+	await runAtomic(env, labelInsertQueries(db, actor, label));
 	return label;
 }
 
@@ -235,17 +268,75 @@ export async function updateLabel(
 }
 
 /**
- * Deletes a label and detaches it everywhere. A label is a tag, not a
- * container: being in use is reported, not refused.
+ * Deletes a label and detaches it everywhere.
+ *
+ * Being *carried* by issues is reported, not refused — a label is a tag. But
+ * a label a context item or a routing rule is **scoped to** is more than a
+ * tag: dropping it would silently change what an agent is handed or where it
+ * runs. Those are refused (422 `label_in_use`) unless `force`, which deletes
+ * the scoped items and rules along with the label. A rule is deleted rather
+ * than label-stripped on purpose: stripping would broaden
+ * `label docs ∧ project X` into `project X`, quietly routing more work.
  */
 export async function deleteLabel(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	labelRef: string
+	effects: DispatchEffects,
+	labelRef: string,
+	options: { force?: boolean } = {}
 ): Promise<DeleteLabelResponse> {
 	const label = await resolveLabelRef(db, actor.userId, labelRef);
 	if (!label) throw notFound();
+	const scopedItems = (
+		await contextItemQuery(db, actor.userId).where('context_item.label_id', '=', label.id).execute()
+	).map((row) => ({
+		id: row.id,
+		kind: row.kind as ContextKind,
+		name: row.name,
+		scope_label: scopeLabel({
+			projectId: row.project_id,
+			projectName: row.scope_project_name,
+			workflowStateId: row.workflow_state_id,
+			stateName: row.scope_state_name,
+			labelId: row.label_id,
+			labelName: row.scope_label_name,
+			issueId: row.issue_id,
+			issueProjectName: row.scope_issue_project_name,
+			issueNumber: row.scope_issue_number
+		})
+	}));
+	const scopedRules = await rulesScopedToLabel(db, actor.userId, label.id);
+	if ((scopedItems.length > 0 || scopedRules.length > 0) && !options.force) {
+		const parts: string[] = [];
+		if (scopedItems.length > 0) {
+			const shown = scopedItems
+				.slice(0, 5)
+				.map((i) => `${i.kind} "${i.name}" (${i.scope_label})`)
+				.join(', ');
+			parts.push(
+				`${scopedItems.length} context item${scopedItems.length === 1 ? '' : 's'} (${shown}${scopedItems.length > 5 ? ', …' : ''})`
+			);
+		}
+		if (scopedRules.length > 0) {
+			const shown = scopedRules
+				.slice(0, 5)
+				.map((r) => r.scope_label)
+				.join(', ');
+			parts.push(
+				`${scopedRules.length} routing rule${scopedRules.length === 1 ? '' : 's'} (${shown}${scopedRules.length > 5 ? ', …' : ''})`
+			);
+		}
+		throw new ApiFail(
+			422,
+			'label_in_use',
+			`Cannot delete label "${label.name}": it scopes ${parts.join(' and ')}. Pass "force": true to delete them with the label — rules are deleted, not broadened`,
+			{ context_items: scopedItems, routing_rules: scopedRules }
+		);
+	}
+	for (const item of scopedItems) {
+		await deleteContextItem(db, env, actor, item.id);
+	}
 	const used = await db
 		.selectFrom('issue_label')
 		.select((eb) => eb.fn.countAll<number>().as('n'))
@@ -254,15 +345,30 @@ export async function deleteLabel(
 	const issueCount = Number(used?.n ?? 0);
 
 	await runAtomic(env, [
+		// A label-scoped rule goes with the label: see `routingRuleDeletes`.
+		...routingRuleDeletes(db, actor, scopedRules),
 		// Explicit, because D1 does not enforce foreign keys by default.
 		db.deleteFrom('issue_label').where('label_id', '=', label.id).compile(),
 		db.deleteFrom('label').where('id', '=', label.id).where('user_id', '=', actor.userId).compile(),
 		eventInsert(db, actor, {
 			type: 'label.deleted',
-			payload: { label_id: label.id, name: label.name, issue_count: issueCount }
+			payload: {
+				label_id: label.id,
+				name: label.name,
+				issue_count: issueCount,
+				context_item_count: scopedItems.length,
+				routing_rule_count: scopedRules.length,
+				forced: options.force === true
+			}
 		})
 	]);
-	return { deleted: true, issue_count: issueCount };
+	if (scopedRules.length > 0) effects.signalDispatch();
+	return {
+		deleted: true,
+		issue_count: issueCount,
+		context_items_deleted: scopedItems,
+		routing_rules_deleted: scopedRules.map((r) => ({ id: r.id, scope_label: r.scope_label }))
+	};
 }
 
 export interface ResolvedLabels {
@@ -409,7 +515,13 @@ async function requireIssue(db: Kysely<Database>, userId: string, ref: string) {
 	let q = db
 		.selectFrom('issue')
 		.innerJoin('project', 'project.id', 'issue.project_id')
-		.select(['issue.id', 'issue.project_id', 'project.name as project_name', 'issue.number'])
+		.select([
+			'issue.id',
+			'issue.project_id',
+			'project.name as project_name',
+			'project.archived_at as project_archived_at',
+			'issue.number'
+		])
 		.where('project.user_id', '=', userId);
 	q = match
 		? q.where('project.name', '=', match[1]).where('issue.number', '=', Number(match[2]))
@@ -420,6 +532,43 @@ async function requireIssue(db: Kysely<Database>, userId: string, ref: string) {
 }
 
 /**
+ * A run key may classify its own issue, but not with a label a routing rule
+ * is scoped to. Routing is resolved at dispatch, so such a change cannot
+ * re-route the *current* run — but it can route the issue's next attempt
+ * (say, to the smartest tier), which is the self-escalation the control-plane
+ * fence exists to prevent. Label-scoped *context* is guidance, not control,
+ * and stays freely self-applicable.
+ *
+ * One indexed lookup on `routing_rule_label_idx`, run-key actors only, and it
+ * runs before anything is written: the call is all-or-nothing, like an
+ * `unknown_label` miss.
+ */
+async function assertLabelsDoNotRoute(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	labels: Label[]
+): Promise<void> {
+	if (!actor.agentRunId || labels.length === 0) return;
+	const rules = await db
+		.selectFrom('routing_rule')
+		.select(['id', 'label_id'])
+		.where('user_id', '=', actor.userId)
+		.where(
+			'label_id',
+			'in',
+			labels.map((l) => l.id)
+		)
+		.execute();
+	if (rules.length === 0) return;
+	const routed = labels.filter((l) => rules.some((r) => r.label_id === l.id));
+	throw runKeyForbidden({
+		reason: 'routing_label',
+		labels: routed.map((l) => l.name),
+		rule_ids: rules.map((r) => r.id)
+	});
+}
+
+/**
  * Adds labels to an issue. Idempotent: re-adding an attached label is a 200
  * with an empty `added`, so a retrying agent never sees an error.
  */
@@ -427,11 +576,14 @@ export async function addIssueLabels(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	issueRef: string,
 	refs: unknown
 ): Promise<AddIssueLabelsResponse> {
 	const issue = await requireIssue(db, actor.userId, issueRef);
+	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	const { labels, toCreate } = await resolveOrCreateLabels(db, actor, refs);
+	await assertLabelsDoNotRoute(db, actor, labels);
 
 	const already = new Set((await loadIssueLabels(db, issue.id)).map((l) => l.id));
 	const added = labels.filter((l) => !already.has(l.id));
@@ -441,6 +593,7 @@ export async function addIssueLabels(
 			...labelInserts(db, actor, toCreate),
 			...issueLabelInserts(db, actor, issue, added, now)
 		]);
+		effects.signalDispatch();
 	}
 	const final = await loadIssueLabels(db, issue.id);
 	// Report the chips that actually landed: a label created on the fly may
@@ -448,6 +601,7 @@ export async function addIssueLabels(
 	// in which case the id in hand was ignored and the winner's is live.
 	const byName = new Map(final.map((l) => [l.name.toLowerCase(), l]));
 	const landed = (l: Label) => byName.get(l.name.toLowerCase()) ?? chip(l);
+	if (added.length === 0) effects.signalDispatch();
 	return {
 		labels: final,
 		added: added.map(landed),
@@ -459,10 +613,12 @@ export async function removeIssueLabel(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	issueRef: string,
 	labelRef: string
 ): Promise<void> {
 	const issue = await requireIssue(db, actor.userId, issueRef);
+	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	const label = await resolveLabelRef(db, actor.userId, labelRef);
 	const attached = label
 		? await db
@@ -480,6 +636,8 @@ export async function removeIssueLabel(
 		);
 	}
 
+	await assertLabelsDoNotRoute(db, actor, [label]);
+
 	await runAtomic(env, [
 		db
 			.deleteFrom('issue_label')
@@ -493,4 +651,5 @@ export async function removeIssueLabel(
 			payload: { label_id: label.id, name: label.name, color: label.color }
 		})
 	]);
+	effects.signalDispatch();
 }

@@ -120,6 +120,55 @@ describe('renderStreamEvent', () => {
 });
 
 describe('ClaudeStreamRenderer', () => {
+	it('captures provider accounting and session metadata from result events', () => {
+		const renderer = new ClaudeStreamRenderer(() => {});
+		renderer.write(
+			JSON.stringify({
+				type: 'result',
+				session_id: 'session_123',
+				total_cost_usd: 0.42,
+				num_turns: 3,
+				duration_ms: 1200,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 20,
+					cache_read_input_tokens: 30,
+					cache_creation_input_tokens: 40
+				}
+			}) + '\n'
+		);
+		expect(renderer.summary()).toEqual({
+			providerSessionId: 'session_123',
+			numTurns: 3,
+			durationMs: 1200,
+			usage: {
+				cost_source: 'provider',
+				cost_usd: 0.42,
+				input_tokens: 10,
+				output_tokens: 20,
+				cache_read_tokens: 30,
+				cache_write_tokens: 40
+			}
+		});
+	});
+
+	it('accepts cost without a usage block and metadata alone creates no usage', () => {
+		const renderer = new ClaudeStreamRenderer(() => {});
+		renderer.write('{"type":"result","session_id":"s1"}\n');
+		expect(renderer.summary()).toEqual({ providerSessionId: 's1' });
+		renderer.write('{"type":"result","total_cost_usd":0}\n');
+		expect(renderer.summary().usage).toEqual({ cost_source: 'provider', cost_usd: 0 });
+	});
+
+	it('does not let malformed or empty later snapshots erase valid accounting', () => {
+		const renderer = new ClaudeStreamRenderer(() => {});
+		renderer.write('{"type":"result","usage":{"output_tokens":2}}\n');
+		renderer.write('{"type":"result","usage":null,"total_cost_usd":-1}\n');
+		const summary = renderer.summary();
+		summary.usage!.output_tokens = 99;
+		expect(renderer.summary().usage).toEqual({ cost_source: 'provider', output_tokens: 2 });
+	});
+
 	it('renders a whole session into readable prose', () => {
 		expect(
 			render([
@@ -185,5 +234,46 @@ describe('ClaudeStreamRenderer', () => {
 		renderer.write('\n\n  \n');
 		renderer.finish();
 		expect(out).toEqual([]);
+	});
+});
+
+describe('rate limit events', () => {
+	it('renders a rejected limit — it is why the run is about to end', () => {
+		expect(
+			renderStreamEvent({
+				type: 'rate_limit_event',
+				rate_limit_info: { status: 'rejected', resetsAt: 1_788_739_200, rateLimitType: 'five_hour' }
+			})
+		).toEqual(['[session] rate limit: five_hour rejected — resets 2026-09-07T00:00:00.000Z']);
+	});
+
+	it('still drops the allowed ones, which are ~18% of the stream', () => {
+		expect(
+			renderStreamEvent({
+				type: 'rate_limit_event',
+				rate_limit_info: { status: 'allowed', resetsAt: 1_788_739_200 }
+			})
+		).toEqual([]);
+	});
+
+	it('says so when a rejection carries no reset', () => {
+		expect(
+			renderStreamEvent({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } })
+		).toEqual(['[session] rate limit: usage rejected — resets unknown']);
+	});
+
+	it('hands every parsed event to onEvent, and nothing that was not one', () => {
+		const seen: unknown[] = [];
+		const renderer = new ClaudeStreamRenderer(
+			() => {},
+			(event) => seen.push(event)
+		);
+		renderer.write('{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n');
+		renderer.write('not json at all\n');
+		renderer.write('{oops\n');
+		renderer.finish();
+		expect(seen).toEqual([
+			{ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }
+		]);
 	});
 });
