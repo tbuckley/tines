@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { AgentRun, DispatchExplainer, IssueDetail, ModelTier, Runner } from '@tines/shared';
-	import { MODEL_TIERS, runDurationLabel } from '@tines/shared';
-	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
+	import { MODEL_TIERS } from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconPin from '@tabler/icons-svelte/icons/pin';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
@@ -9,28 +8,40 @@
 	import { slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
-	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
+	import RunRow from '$lib/components/RunRow.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
-	import { prefersReducedMotion, relativeTime, runStatusClass } from '$lib/format';
+	import type { Snippet } from 'svelte';
+	import { prefersReducedMotion } from '$lib/format';
 
 	let {
 		issue,
 		dispatch,
 		runs,
 		runners,
+		disabledReason = null,
+		checklist,
 		onerror
 	}: {
 		issue: IssueDetail;
 		dispatch: DispatchExplainer | null;
 		runs: AgentRun[];
 		runners: Runner[];
+		/** When set, the pin controls render disabled with this as their tooltip. Cancel run stays live. */
+		disabledReason?: string | null;
+		/**
+		 * The first-run checklist, before the account's first run. It replaces
+		 * both the verdict-and-checks and the Runs list — its last item *is* the
+		 * first run, and a second copy of that row would double the log fetches.
+		 * The page owns every handler; this card stays dumb.
+		 */
+		checklist?: Snippet;
 		onerror: (e: unknown) => void;
 	} = $props();
 
-	const dur = () => (prefersReducedMotion() ? 0 : 180);
+	const readOnly = $derived(disabledReason != null);
 
-	const ACTIVE_STATUSES = ['assigned', 'launching', 'running'];
+	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
 	// --- pin control ------------------------------------------------------------
 
@@ -46,8 +57,6 @@
 		pinRunnerId !== (issue.pinned_runner_id ?? '') || pinTier !== (issue.pinned_tier ?? '')
 	);
 
-	/** Runs expanded to their log-tail viewer. */
-	let expandedLogs = $state<Record<string, boolean>>({});
 	let savingPin = $state(false);
 	async function savePin() {
 		if (savingPin) return;
@@ -71,7 +80,9 @@
 		<IconRobot size={16} stroke={1.75} /> Agent activity
 	</h2>
 
-	{#if dispatch}
+	{#if checklist}
+		{@render checklist()}
+	{:else if dispatch}
 		<!-- the one-line verdict -->
 		<p class="text-sm {dispatch.parked ? 'font-medium text-amber-700 dark:text-amber-400' : ''}">
 			{dispatch.verdict}
@@ -79,7 +90,9 @@
 
 		<!-- the full explainer -->
 		<details class="group mt-2">
-			<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none">
+			<summary
+				class="text-muted-foreground hover:text-foreground cursor-pointer text-xs select-none"
+			>
 				Why?
 			</summary>
 			<div class="mt-2 space-y-2 text-xs" transition:slide={{ duration: dur() }}>
@@ -87,17 +100,42 @@
 					{#each dispatch.checks as check (check.name)}
 						<li class="flex items-start gap-1.5">
 							{#if check.ok}
-								<IconCheck size={14} class="mt-px shrink-0 text-emerald-600 dark:text-emerald-400" />
+								<IconCheck
+									size={14}
+									class="mt-px shrink-0 text-emerald-600 dark:text-emerald-400"
+								/>
 							{:else}
 								<IconX size={14} class="mt-px shrink-0 text-amber-700 dark:text-amber-400" />
 							{/if}
-							<span class={check.ok ? 'text-muted-foreground' : ''}>{check.detail}</span>
+							<span class={check.ok ? 'text-muted-foreground' : ''}>
+								{check.detail}
+								{#if check.action}
+									{#if check.action.href}
+										<a href={check.action.href} class="ml-1 underline underline-offset-2"
+											>{check.action.label}</a
+										>
+									{:else if check.action.cli}
+										<code class="bg-muted ml-1 rounded px-1 py-0.5">{check.action.cli}</code>
+									{/if}
+								{/if}
+							</span>
 						</li>
 					{/each}
 				</ul>
 				{#if dispatch.matched_rule}
 					<p class="text-muted-foreground">
-						Matched rule: <span class="text-foreground font-medium">{dispatch.matched_rule.scope_label}</span>
+						Matched rule: <span class="text-foreground font-medium"
+							>{dispatch.matched_rule.scope_label}</span
+						>
+					</p>
+				{/if}
+				{#if dispatch.tier_override}
+					<p class="text-muted-foreground">
+						Tier override: <span class="text-foreground font-medium">{dispatch.tier_override}</span>
+						{#if dispatch.runner_rule}
+							· runners from <span class="text-foreground font-medium"
+								>{dispatch.runner_rule.scope_label}</span
+							>{/if}
 					</p>
 				{/if}
 				{#if dispatch.targets.length > 0}
@@ -145,30 +183,50 @@
 		{#if runners.length === 0}
 			<p class="text-muted-foreground text-xs italic">No runners registered yet.</p>
 		{:else}
-			<div class="flex items-center gap-1.5">
-				<Select class="h-8 flex-1 text-xs" bind:value={pinRunnerId} aria-label="Pinned runner">
-					<option value="">No pin — routing rules apply</option>
-					{#each runners as runner (runner.id)}
-						<option value={runner.id}>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option>
-					{/each}
-				</Select>
+			<p class="text-muted-foreground mb-1.5 text-xs">No pin uses routing rules.</p>
+			<div class="grid min-w-0 gap-1.5">
 				<Select
-					class="h-8 w-28 text-xs"
-					bind:value={pinTier}
-					aria-label="Pinned tier"
-					disabled={!pinRunnerId}
+					class="h-8 w-full min-w-0 text-xs"
+					bind:value={pinRunnerId}
+					aria-label="Pinned runner"
 				>
-					<option value="">default tier</option>
-					{#each MODEL_TIERS as tier (tier)}
-						<option value={tier}>{tier}</option>
+					<option value="">No pin</option>
+					{#each runners as runner (runner.id)}
+						<option value={runner.id}
+							>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
+						>
 					{/each}
 				</Select>
-				<Button size="sm" variant="outline" class="h-8" disabled={!pinDirty || savingPin} onclick={savePin}>
-					{savingPin ? '…' : 'Save'}
-				</Button>
+				<div class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5">
+					<Select
+						class="h-8 w-full min-w-0 text-xs"
+						bind:value={pinTier}
+						aria-label="Pinned tier"
+						disabled={!pinRunnerId || readOnly}
+						title={disabledReason}
+					>
+						<option value="">Default tier</option>
+						{#each MODEL_TIERS as tier (tier)}
+							<option value={tier}>{tier}</option>
+						{/each}
+					</Select>
+					<Button
+						size="sm"
+						variant="outline"
+						class="h-8"
+						disabled={!pinDirty || savingPin || readOnly}
+						title={disabledReason}
+						onclick={savePin}
+					>
+						{savingPin ? '…' : 'Save'}
+					</Button>
+				</div>
 			</div>
 			{#if issue.pinned_runner_id}
-				<p class="mt-1.5 text-xs text-amber-700 dark:text-amber-400" transition:slide={{ duration: dur() }}>
+				<p
+					class="mt-1.5 text-xs text-amber-700 dark:text-amber-400"
+					transition:slide={{ duration: dur() }}
+				>
 					Pinned to {issue.pinned_runner_name}{issue.pinned_tier ? `:${issue.pinned_tier}` : ''} — only
 					this runner will take it.
 				</p>
@@ -176,51 +234,19 @@
 		{/if}
 	</div>
 
-	<!-- this issue's runs -->
-	<div class="mt-4 border-t pt-3">
-		<p class="text-muted-foreground mb-1.5 text-xs font-medium">Runs</p>
-		{#if runs.length === 0}
-			<p class="text-muted-foreground text-xs italic">No runs yet.</p>
-		{:else}
-			<ul class="space-y-1.5">
-				{#each runs as run (run.id)}
-					<li class="text-xs" transition:slide={{ duration: dur() }}>
-						<div class="flex flex-wrap items-center gap-x-1.5">
-							{#if ACTIVE_STATUSES.includes(run.status)}
-								<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"></span>
-							{/if}
-							<span class="font-medium">{run.runner_name}</span>
-							<span class="text-muted-foreground">{run.tier}{run.model ? ` · ${run.model}` : ''}</span>
-							<span class={runStatusClass(run.status)}>{run.status.replaceAll('_', ' ')}</span>
-							{#if run.started_at}
-								<span class="text-muted-foreground">· {runDurationLabel(run)}</span>
-							{/if}
-							<span class="text-muted-foreground ml-auto" title={new Date(run.created_at).toLocaleString()}>
-								{relativeTime(run.created_at)}
-							</span>
-							<button
-								type="button"
-								class="text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
-								aria-expanded={expandedLogs[run.id] === true}
-								onclick={() => (expandedLogs = { ...expandedLogs, [run.id]: !expandedLogs[run.id] })}
-							>
-								{expandedLogs[run.id] ? 'hide logs' : 'logs'}
-							</button>
-						</div>
-						{#if run.error}
-							<p class="text-muted-foreground mt-0.5 flex items-start gap-1">
-								<IconAlertTriangle size={12} class="mt-px shrink-0 text-amber-600 dark:text-amber-400" />
-								{run.error}
-							</p>
-						{/if}
-						{#if expandedLogs[run.id]}
-							<div transition:slide={{ duration: dur() }}>
-								<RunLogViewer runId={run.id} />
-							</div>
-						{/if}
-					</li>
-				{/each}
-			</ul>
-		{/if}
-	</div>
+	<!-- this issue's runs (the checklist's last item shows them instead) -->
+	{#if !checklist}
+		<div class="mt-4 border-t pt-3">
+			<p class="text-muted-foreground mb-1.5 text-xs font-medium">Runs</p>
+			{#if runs.length === 0}
+				<p class="text-muted-foreground text-xs italic">No runs yet.</p>
+			{:else}
+				<ul class="divide-y rounded-lg border">
+					{#each runs as run (run.id)}
+						<RunRow {run} />
+					{/each}
+				</ul>
+			{/if}
+		</div>
+	{/if}
 </section>

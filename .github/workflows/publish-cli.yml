@@ -23,21 +23,28 @@ jobs:
       # Auth is OIDC trusted publishing — no stored npm token anywhere. npmjs
       # trusts this exact repository + workflow filename (configured under the
       # package's Settings on npmjs.com; see "Publishing the CLI to npm" in the
-      # README), and pnpm exchanges the GitHub-minted id-token for a short-lived
+      # README), and npm exchanges the GitHub-minted id-token for a short-lived
       # publish credential. Requires a GitHub-hosted runner.
       id-token: write
     steps:
       # Full history: the patch number is the commit count (see below).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4 # version comes from "packageManager" in package.json
+      - uses: pnpm/action-setup@v6 # version comes from "packageManager" in package.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
+
+      # Node 22 bundles npm 10.x, which predates trusted publishing; the OIDC
+      # exchange needs npm >= 11.5.1. This matters even though we publish with
+      # pnpm: `pnpm publish` delegates the actual publish — auth included — to
+      # the npm on PATH, and with npm 10 the run dies with ENEEDAUTH without
+      # ever attempting the token exchange.
+      - run: npm install -g npm@11
 
       - run: pnpm install --frozen-lockfile
 
@@ -74,10 +81,14 @@ jobs:
         if: steps.version.outputs.skip == 'false'
         run: npm pkg set "version=${{ steps.version.outputs.version }}" --prefix packages/cli
 
-      - run: pnpm build
+      # Only the CLI ships from here: build it, and test it and the shared
+      # package it bundles (`tines...` selects the package and its workspace
+      # dependencies). The web app's build and tests are ci.yml's, on this
+      # same commit.
+      - run: pnpm --filter tines build
         if: steps.version.outputs.skip == 'false'
 
-      - run: pnpm test
+      - run: pnpm --filter 'tines...' test
         if: steps.version.outputs.skip == 'false'
 
       # No explicit auth step: with no token in the environment, pnpm publish
@@ -86,11 +97,14 @@ jobs:
       # publisher on npmjs doesn't match this repo + workflow filename yet —
       # see the README's one-time setup.
       # --no-git-checks: the manifest is intentionally dirty from the version
-      # stamp above. No --provenance: attestations require a public source
-      # repository, and tbuckley/tines is private.
+      # stamp above. Provenance is pinned off because attestations require a
+      # public source repository and tbuckley/tines is private — and npm >= 11.5
+      # may otherwise try to generate one by default when publishing via OIDC.
       - name: Publish to npm
         if: steps.version.outputs.skip == 'false'
         working-directory: packages/cli
+        env:
+          NPM_CONFIG_PROVENANCE: 'false'
         run: pnpm publish --no-git-checks --access public
 
       - name: Summary

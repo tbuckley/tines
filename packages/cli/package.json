@@ -16,18 +16,16 @@
 		"dist"
 	],
 	"scripts": {
-		"build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --external:commander --banner:js=\"#!/usr/bin/env node\" --outfile=dist/index.js",
-		"start": "tsx src/index.ts",
+		"build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --banner:js=\"#!/usr/bin/env node\" --outfile=dist/index.js",
+		"start": "TINES_API_URL=http://localhost:5173 tsx src/index.ts",
 		"check": "tsc --noEmit",
 		"test": "vitest run",
 		"prepublishOnly": "pnpm run build"
 	},
-	"dependencies": {
-		"commander": "^15.0.0"
-	},
 	"devDependencies": {
 		"@tines/shared": "workspace:*",
 		"@types/node": "^26.2.0",
+		"commander": "^15.0.0",
 		"esbuild": "^0.28.2",
 		"tsx": "^4.23.12",
 		"typescript": "^6.0.3",

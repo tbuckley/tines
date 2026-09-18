@@ -1,0 +1,178 @@
+{
+  "format": "tines.library",
+  "version": 3,
+  "profile": "workflow",
+  "exported_at": 1789063200000,
+  "digest": "sha256:758f33fd2a2936ac9a7ef72b8c9c9aa7f7cde88d098dd12006dc9f193c878e74",
+  "main_workflow_id": "workflow:1",
+  "workflows": [
+    {
+      "id": "workflow:1",
+      "name": "Reviewer",
+      "description": "Review {{filing_label:qa}} work",
+      "initial_state_id": "state:1",
+      "states": [
+        {
+          "id": "state:1",
+          "name": "Review",
+          "category": "active",
+          "inherits_from": {
+            "kind": "bundled_state",
+            "state_id": "state:3"
+          }
+        },
+        {
+          "id": "state:2",
+          "name": "Handoff",
+          "category": "done",
+          "inherits_from": null
+        }
+      ],
+      "transitions": [
+        {
+          "id": "transition:1",
+          "name": "Submit evidence",
+          "from_state_id": "state:1",
+          "to_state_id": "state:2",
+          "requires": [
+            {
+              "artifact": "evidence",
+              "type": "text",
+              "content_type": "text/markdown",
+              "description": "Review evidence"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "workflow:2",
+      "name": "Shared",
+      "description": "Shared review instructions",
+      "initial_state_id": "state:3",
+      "states": [
+        {
+          "id": "state:3",
+          "name": "Base",
+          "category": "active",
+          "inherits_from": null
+        }
+      ],
+      "transitions": []
+    }
+  ],
+  "context": [
+    {
+      "id": "context:1",
+      "state_id": "state:3",
+      "kind": "prompt",
+      "name": "instructions",
+      "description": "",
+      "body": "File work with label {{filing_label:qa}}. Preserve {{date}}."
+    },
+    {
+      "id": "context:2",
+      "state_id": "state:3",
+      "kind": "skill",
+      "name": "review",
+      "description": "Review guide",
+      "files": [
+        {
+          "id": "file:1",
+          "path": "SKILL.md",
+          "content": "Review the change and write evidence."
+        }
+      ]
+    },
+    {
+      "id": "context:3",
+      "state_id": "state:1",
+      "kind": "repo",
+      "name": "code",
+      "description": "",
+      "repo_url": "https://github.com/example/code",
+      "repo_branch": "main",
+      "repo_dir": "code"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "input:1",
+      "key": "filing_label",
+      "type": "label",
+      "label": "Filing label",
+      "description": "Label used in instructions",
+      "required": true,
+      "default": "qa"
+    },
+    {
+      "id": "input:2",
+      "key": "project",
+      "type": "project",
+      "label": "Destination project",
+      "description": "",
+      "required": true,
+      "default": null
+    }
+  ],
+  "text_uses": [
+    {
+      "id": "use:1",
+      "target": {
+        "record_id": "workflow:1",
+        "field": "description"
+      },
+      "input_id": "input:1",
+      "token": "{{filing_label:qa}}"
+    },
+    {
+      "id": "use:2",
+      "target": {
+        "record_id": "context:1",
+        "field": "body"
+      },
+      "input_id": "input:1",
+      "token": "{{filing_label:qa}}"
+    }
+  ],
+  "schedules": [
+    {
+      "id": "schedule:1",
+      "workflow": {
+        "kind": "bundled_workflow",
+        "workflow_id": "workflow:1"
+      },
+      "project": {
+        "kind": "input_project",
+        "input_id": "input:2"
+      },
+      "name": "Weekly review",
+      "title_template": "Review {{date}}",
+      "description_template": "Review queued work.",
+      "recurrence": {
+        "kind": "preset",
+        "preset": {
+          "kind": "weekly",
+          "time": "09:00",
+          "weekday": 1
+        }
+      },
+      "timezone": "America/New_York",
+      "require_all_closed": true,
+      "start_state": null
+    }
+  ],
+  "routing": [
+    {
+      "id": "routing:1",
+      "scope": {
+        "state_id": "state:1",
+        "project": {
+          "kind": "input_project",
+          "input_id": "input:2"
+        }
+      },
+      "tier": "balanced"
+    }
+  ]
+}

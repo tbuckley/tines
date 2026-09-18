@@ -1,5 +1,6 @@
 import {
 	actorLabel,
+	ageLabel,
 	AGENT_GUIDELINES_BODY,
 	AGENT_GUIDELINES_DESCRIPTION,
 	AGENT_GUIDELINES_NAME,
@@ -11,31 +12,38 @@ import {
 	SKILL_MAX_TOTAL_BYTES,
 	SKILL_NAME_PATTERN,
 	type AppendContextRequest,
+	type ArchivedFilter,
 	type Artifact,
 	type ArtifactRequirementCheck,
+	type ArtifactType,
 	type ContextFile,
 	type ContextItem,
 	type ContextKind,
 	type ContextScope,
+	type InheritedFrom,
 	type ContextSummary,
 	type CreateContextItemRequest,
 	type DeletedContextItem,
 	type EffectiveContext,
+	type EffectiveJournalTarget,
 	type EffectivePromptPart,
 	type EffectiveRepo,
 	type EffectiveSkill,
+	type SinceLastRun,
 	type IssueDetail,
 	type IssueJournalResponse,
 	type OverriddenContextItem,
 	type RepoDirConflict,
 	type UpdateContextItemRequest
 } from '@tines/shared';
+import { insertValues, type QueryGuard } from './query-guard';
 import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { artifactKeyPrefix, getArtifactStore } from '$lib/server/artifact-store';
-import { newId, type Database } from '$lib/server/db';
+import { idChunks, newId, type Database } from '$lib/server/db';
 import {
 	ApiFail,
+	MAX_INHERITANCE_CHAIN,
 	notFound,
 	optionalString,
 	requireString,
@@ -44,7 +52,9 @@ import {
 	type Page
 } from './core';
 import { artifactTypeOf } from './artifacts';
+import { assertScopeWritable } from './archive';
 import { eventInsert } from './events';
+import { substringMatch } from './search';
 import {
 	resolveScope,
 	scopeLabel,
@@ -97,8 +107,10 @@ export function validateWorkspacePath(path: unknown, field: string): string {
 	if (p.startsWith('/')) throw fail('paths must be relative (no leading "/")');
 	if (p.includes('=')) throw fail('paths cannot contain "="');
 	const segments = p.split('/');
-	if (segments.some((s) => s === '')) throw fail('paths cannot have empty segments or trailing slashes');
-	if (segments.some((s) => s === '..' || s === '.')) throw fail('paths cannot contain "." or ".." segments');
+	if (segments.some((s) => s === ''))
+		throw fail('paths cannot have empty segments or trailing slashes');
+	if (segments.some((s) => s === '..' || s === '.'))
+		throw fail('paths cannot contain "." or ".." segments');
 	return p;
 }
 
@@ -123,10 +135,15 @@ function validateFiles(value: unknown): ContextFile[] {
 		const input = f as { path?: unknown; content?: unknown };
 		const path = validateWorkspacePath(input.path, `files[${i}].path`);
 		if (seen.has(path)) {
-			throw new ApiFail(422, 'duplicate_path', `Skill file path "${path}" is listed more than once`, {
-				field: 'files',
-				path
-			});
+			throw new ApiFail(
+				422,
+				'duplicate_path',
+				`Skill file path "${path}" is listed more than once`,
+				{
+					field: 'files',
+					path
+				}
+			);
 		}
 		seen.add(path);
 		if (typeof input.content !== 'string') {
@@ -203,17 +220,22 @@ export function contextItemQuery(db: Kysely<Database>, userId: string) {
 		.leftJoin('project as scope_project', 'scope_project.id', 'context_item.project_id')
 		.leftJoin('workflow_state as scope_state', 'scope_state.id', 'context_item.workflow_state_id')
 		.leftJoin('workflow as scope_workflow', 'scope_workflow.id', 'scope_state.workflow_id')
+		.leftJoin('label as scope_label', 'scope_label.id', 'context_item.label_id')
 		.leftJoin('issue as scope_issue', 'scope_issue.id', 'context_item.issue_id')
 		.leftJoin('project as issue_project', 'issue_project.id', 'scope_issue.project_id')
 		.selectAll('context_item')
 		.select([
 			'scope_project.name as scope_project_name',
 			'scope_state.name as scope_state_name',
+			'scope_label.name as scope_label_name',
+			'scope_label.color as scope_label_color',
 			'scope_workflow.id as scope_workflow_id',
 			'scope_workflow.name as scope_workflow_name',
 			'scope_issue.number as scope_issue_number',
 			'scope_issue.project_id as scope_issue_project_id',
-			'issue_project.name as scope_issue_project_name'
+			'issue_project.name as scope_issue_project_name',
+			'scope_project.archived_at as scope_project_archived_at',
+			'issue_project.archived_at as scope_issue_project_archived_at'
 		])
 		.select((eb) =>
 			eb
@@ -231,14 +253,19 @@ function rowScope(row: ItemRow): ResolvedScope {
 	return {
 		projectId: row.project_id,
 		workflowStateId: row.workflow_state_id,
+		labelId: row.label_id,
 		issueId: row.issue_id,
 		projectName: row.scope_project_name,
 		stateName: row.scope_state_name,
+		labelName: row.scope_label_name,
+		labelColor: row.scope_label_color,
 		workflowId: row.scope_workflow_id,
 		workflowName: row.scope_workflow_name,
 		issueNumber: row.scope_issue_number,
 		issueProjectName: row.scope_issue_project_name,
-		issueProjectId: row.scope_issue_project_id
+		issueProjectId: row.scope_issue_project_id,
+		projectArchivedAt: row.scope_project_archived_at,
+		issueProjectArchivedAt: row.scope_issue_project_archived_at
 	};
 }
 
@@ -271,18 +298,26 @@ function serializeItem(row: ItemRow, files?: ContextFile[]): ContextItem {
 	return item;
 }
 
-async function loadFiles(
+/** Skill file bodies for a batch of items, keyed by item id, ordered by path. */
+export async function loadFiles(
 	db: Kysely<Database>,
 	itemIds: string[]
 ): Promise<Map<string, ContextFile[]>> {
 	const map = new Map<string, ContextFile[]>();
 	if (itemIds.length === 0) return map;
-	const rows = await db
-		.selectFrom('context_item_file')
-		.select(['context_item_id', 'path', 'content'])
-		.where('context_item_id', 'in', itemIds)
-		.orderBy('path asc')
-		.execute();
+	const chunks = idChunks([...new Set(itemIds)]);
+	const rows = (
+		await Promise.all(
+			chunks.map((chunk) =>
+				db
+					.selectFrom('context_item_file')
+					.select(['context_item_id', 'path', 'content'])
+					.where('context_item_id', 'in', chunk)
+					.orderBy('path asc')
+					.execute()
+			)
+		)
+	).flat();
 	for (const row of rows) {
 		const list = map.get(row.context_item_id) ?? [];
 		list.push({ path: row.path, content: row.content });
@@ -296,7 +331,9 @@ export async function getContextItem(
 	userId: string,
 	id: string
 ): Promise<ContextItem> {
-	const row = await contextItemQuery(db, userId).where('context_item.id', '=', id).executeTakeFirst();
+	const row = await contextItemQuery(db, userId)
+		.where('context_item.id', '=', id)
+		.executeTakeFirst();
 	if (!row) throw notFound();
 	const files =
 		row.kind === 'skill' ? ((await loadFiles(db, [row.id])).get(row.id) ?? []) : undefined;
@@ -305,16 +342,32 @@ export async function getContextItem(
 
 export interface ContextItemFilters {
 	kind?: string;
+	/** Web-only: items anchored directly on a project or on one of its issues. */
+	touchesProjectId?: string;
 	/** Project id or name. */
 	project?: string;
 	/** Workflow state id. */
 	state?: string;
+	/**
+	 * Workflow id: items scoped to any state of that workflow. A grouping
+	 * convenience for the Context page's filter row, not a scope dimension —
+	 * the HTTP list endpoint deliberately does not expose it.
+	 */
+	workflow?: string;
 	/** Issue id. */
 	issue?: string;
-	/** Name/description substring search. */
+	/** Label id or name. */
+	label?: string;
+	/** Literal name/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	/** Restrict to items whose scope sets only the given dimensions. */
 	exact?: boolean;
+	/**
+	 * Items anchored on an archived project, when no project is named:
+	 * `'false'` (the default) hides them, `'true'` shows only them. Global and
+	 * state-scoped items are anchored on no project and always show.
+	 */
+	archived?: ArchivedFilter;
 }
 
 /**
@@ -347,24 +400,67 @@ export async function listContextItems(
 	} else if (filters.exact) {
 		q = q.where('context_item.project_id', 'is', null);
 	}
+	if (filters.touchesProjectId) {
+		q = q.where((eb) =>
+			eb.or([
+				eb('context_item.project_id', '=', filters.touchesProjectId!),
+				eb('scope_issue.project_id', '=', filters.touchesProjectId!)
+			])
+		);
+	}
 	if (filters.state) {
 		q = q.where('context_item.workflow_state_id', '=', filters.state);
 	} else if (filters.exact) {
 		q = q.where('context_item.workflow_state_id', 'is', null);
+	}
+	if (filters.workflow) {
+		q = q.where('scope_workflow.id', '=', filters.workflow);
+	}
+	if (filters.label) {
+		const l = filters.label;
+		q = q.where((eb) =>
+			eb.or([
+				eb('context_item.label_id', '=', l),
+				eb(
+					'context_item.label_id',
+					'in',
+					eb.selectFrom('label').select('id').where('name', '=', l).where('user_id', '=', userId)
+				)
+			])
+		);
+	} else if (filters.exact) {
+		q = q.where('context_item.label_id', 'is', null);
 	}
 	if (filters.issue) {
 		q = q.where('context_item.issue_id', '=', filters.issue);
 	} else if (filters.exact) {
 		q = q.where('context_item.issue_id', 'is', null);
 	}
+	// An item is "archived" when either anchor — its own project scope or the
+	// project of its scoped issue — is archived. Naming an anchor (a project or
+	// an issue) overrides the default, the same way `applyScopeFilters` and
+	// `listSchedules` treat an explicit project filter: the caller asked for a
+	// specific place, so its state is not a reason to hide what is there.
+	if (!filters.project && !filters.issue && !filters.touchesProjectId) {
+		if ((filters.archived ?? 'false') === 'false') {
+			q = q
+				.where('scope_project.archived_at', 'is', null)
+				.where('issue_project.archived_at', 'is', null);
+		} else if (filters.archived === 'true') {
+			q = q.where((eb) =>
+				eb.or([
+					eb('scope_project.archived_at', 'is not', null),
+					eb('issue_project.archived_at', 'is not', null)
+				])
+			);
+		}
+	}
 	if (filters.q) {
-		// Plain substring search; % and _ act as wildcards, which is harmless
-		// (and occasionally useful) for a search box.
-		const like = `%${filters.q}%`;
+		const term = filters.q;
 		q = q.where((eb) =>
 			eb.or([
-				eb('context_item.name', 'like', like),
-				eb('context_item.description', 'like', like)
+				substringMatch(eb.ref('context_item.name'), term),
+				substringMatch(eb.ref('context_item.description'), term)
 			])
 		);
 	}
@@ -382,7 +478,27 @@ export async function listContextItems(
 		.orderBy('context_item.id desc')
 		.limit(page.limit + 1)
 		.execute();
-	return { items: rows.slice(0, page.limit).map((r) => serializeItem(r)), hasMore: rows.length > page.limit };
+	return {
+		items: rows.slice(0, page.limit).map((r) => serializeItem(r)),
+		hasMore: rows.length > page.limit
+	};
+}
+
+/** Global and state-scoped library context that applies alongside a focused project list. */
+export async function countSharedContextItems(
+	db: Kysely<Database>,
+	userId: string
+): Promise<number> {
+	const row = await db
+		.selectFrom('context_item')
+		.select((eb) => eb.fn.countAll<number>().as('count'))
+		.where('user_id', '=', userId)
+		.where('kind', '!=', 'artifact')
+		.where('project_id', 'is', null)
+		.where('issue_id', 'is', null)
+		.where('label_id', 'is', null)
+		.executeTakeFirstOrThrow();
+	return Number(row.count);
 }
 
 /** Items scoped to any of the given states (the workflow page's sections). */
@@ -414,6 +530,14 @@ async function runContextWrite(env: Env, queries: CompiledQuery[]): Promise<D1Re
 	try {
 		return await runAtomic(env, queries);
 	} catch (e) {
+		if (e instanceof Error && e.message.includes('incoherent_issue_project_scope')) {
+			throw new ApiFail(
+				409,
+				'scope_incoherent',
+				'The issue changed projects while this context write was in flight; re-read its scope and retry',
+				{ field: 'project_id' }
+			);
+		}
 		if (
 			e instanceof Error &&
 			e.message.includes('UNIQUE constraint failed') &&
@@ -447,6 +571,7 @@ async function assertNameAvailable(
 	for (const [column, value] of [
 		['project_id', scope.projectId],
 		['workflow_state_id', scope.workflowStateId],
+		['label_id', scope.labelId],
 		['issue_id', scope.issueId]
 	] as const) {
 		q = value === null ? q.where(column, 'is', null) : q.where(column, '=', value);
@@ -463,7 +588,11 @@ async function assertNameAvailable(
 	}
 }
 
-async function nextPosition(db: Kysely<Database>, userId: string, scope: ScopeIds): Promise<number> {
+async function nextPosition(
+	db: Kysely<Database>,
+	userId: string,
+	scope: ScopeIds
+): Promise<number> {
 	let q = db
 		.selectFrom('context_item')
 		.select((eb) => eb.fn.max('position').as('m'))
@@ -471,6 +600,7 @@ async function nextPosition(db: Kysely<Database>, userId: string, scope: ScopeId
 	for (const [column, value] of [
 		['project_id', scope.projectId],
 		['workflow_state_id', scope.workflowStateId],
+		['label_id', scope.labelId],
 		['issue_id', scope.issueId]
 	] as const) {
 		q = value === null ? q.where(column, 'is', null) : q.where(column, '=', value);
@@ -491,39 +621,73 @@ function scopeEventPayload(scope: ResolvedScope) {
 	return {
 		project_id: scope.projectId,
 		workflow_state_id: scope.workflowStateId,
+		label_id: scope.labelId,
+		label_name: scope.labelName,
 		issue_id: scope.issueId,
 		label: scopeLabel(scope)
 	};
 }
 
-export async function createContextItem(
-	db: Kysely<Database>,
-	env: Env,
-	actor: ActorContext,
-	body: CreateContextItemRequest
-): Promise<ContextItem> {
+/**
+ * Every endpoint that writes an artifact payload, in one place: the 422 that
+ * turns a generic create away has to name all of them, and enumerating them
+ * by hand is how `folder` went missing from the message once already. `types`
+ * is what makes the omission testable — the list has to cover ARTIFACT_TYPES.
+ */
+const ARTIFACT_WRITE_ENDPOINTS: readonly {
+	method: string;
+	path: string;
+	types: readonly ArtifactType[];
+	accepts: string;
+}[] = [
+	{
+		method: 'PUT',
+		path: '/api/v1/issues/:id/artifacts/:name',
+		types: ['text', 'link', 'pr'],
+		accepts: 'JSON for text/link/pr'
+	},
+	{
+		method: 'PUT',
+		path: '/api/v1/issues/:id/artifacts/:name/file',
+		types: ['file'],
+		accepts: 'raw upload'
+	},
+	{
+		method: 'PUT',
+		path: '/api/v1/issues/:id/artifacts/:name/folder',
+		types: ['folder'],
+		accepts: 'multipart snapshot'
+	}
+];
+
+/**
+ * The prose half of the same list: the first endpoint in full, the rest
+ * abbreviated from `/:name` the way the docs and the spec write them.
+ */
+function artifactEndpointsMessage(): string {
+	const parts = ARTIFACT_WRITE_ENDPOINTS.map((e, i) =>
+		i === 0
+			? `${e.method} ${e.path} (${e.accepts})`
+			: `…${e.path.slice(e.path.indexOf('/:name'))} (${e.accepts})`
+	);
+	const last = parts.pop();
+	return `Artifacts are created through the artifact endpoints: ${parts.join(', ')}, or ${last}`;
+}
+
+/** Pure ordinary payload validation, shared with library preview. */
+export function validateContextCreateFields(body: CreateContextItemRequest) {
 	const kind = requireKind(body.kind);
 	// One creation path is saner than two, and file payloads can't ride a
 	// JSON create: artifacts are created via their own endpoints only.
 	if (kind === 'artifact') {
-		throw new ApiFail(
-			422,
-			'use_artifact_endpoints',
-			'Artifacts are created through the artifact endpoints: PUT /api/v1/issues/:id/artifacts/:name (JSON for text/link/pr) or …/:name/file (raw upload)',
-			{ field: 'kind' }
-		);
+		throw new ApiFail(422, 'use_artifact_endpoints', artifactEndpointsMessage(), {
+			field: 'kind',
+			endpoints: ARTIFACT_WRITE_ENDPOINTS
+		});
 	}
 	const name = validateName(kind, body.name);
 	const description = optionalString(body.description, 'description', { max: 1000 }) ?? '';
 	rejectForeignPayload(kind, body as unknown as Record<string, unknown>);
-
-	const scope = await resolveScope(db, actor.userId, {
-		projectId: body.project_id ?? null,
-		workflowStateId: body.workflow_state_id ?? null,
-		issueId: body.issue_id ?? null
-	});
-	await assertNameAvailable(db, actor.userId, kind, name, scope);
-
 	let promptBody: string | null = null;
 	let files: ContextFile[] = [];
 	let repoUrl: string | null = null;
@@ -542,13 +706,33 @@ export async function createContextItem(
 				: validateWorkspacePath(body.repo_dir, 'repo_dir');
 	}
 
-	const now = Date.now();
-	const id = newId('ctx');
-	const position = await nextPosition(db, actor.userId, scope);
-	const queries: CompiledQuery[] = [
-		db
-			.insertInto('context_item')
-			.values({
+	return { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir };
+}
+
+/** Validated ordinary payload plus a resolved prospective scope. No writes or lookups. */
+export function contextItemInsertQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	options: {
+		id: string;
+		fields: ReturnType<typeof validateContextCreateFields>;
+		scope: ResolvedScope;
+		position: number;
+		now: number;
+		fileIds?: string[];
+		eventId?: string;
+		guard?: QueryGuard;
+	}
+): CompiledQuery[] {
+	const { id, fields, scope, position, now } = options;
+	const { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir } = fields;
+	if (options.fileIds && options.fileIds.length !== files.length)
+		throw new Error('Context file ID allocation must match the validated files');
+	return [
+		insertValues(
+			db,
+			'context_item',
+			{
 				id,
 				user_id: actor.userId,
 				kind,
@@ -556,6 +740,7 @@ export async function createContextItem(
 				description,
 				project_id: scope.projectId,
 				workflow_state_id: scope.workflowStateId,
+				label_id: scope.labelId,
 				issue_id: scope.issueId,
 				body: promptBody,
 				repo_url: repoUrl,
@@ -565,27 +750,67 @@ export async function createContextItem(
 				version: 1,
 				created_at: now,
 				updated_at: now
-			})
-			.compile(),
-		...files.map((f) =>
-			db
-				.insertInto('context_item_file')
-				.values({
-					id: newId('ctf'),
+			},
+			options.guard
+		),
+		...files.map((f, index) =>
+			insertValues(
+				db,
+				'context_item_file',
+				{
+					id: options.fileIds?.[index] ?? newId('ctf'),
 					context_item_id: id,
 					path: f.path,
 					content: f.content,
 					created_at: now,
 					updated_at: now
-				})
-				.compile()
+				},
+				options.guard
+			)
 		),
-		eventInsert(db, actor, {
-			type: 'context.created',
-			...eventRefs(scope),
-			payload: { context_id: id, kind, name, scope: scopeEventPayload(scope) }
-		})
+		eventInsert(
+			db,
+			actor,
+			{
+				id: options.eventId,
+				createdAt: now,
+				type: 'context.created',
+				...eventRefs(scope),
+				payload: { context_id: id, kind, name, scope: scopeEventPayload(scope) }
+			},
+			options.guard
+		)
 	];
+}
+
+export async function createContextItem(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	body: CreateContextItemRequest
+): Promise<ContextItem> {
+	const fields = validateContextCreateFields(body);
+	const { kind, name } = fields;
+
+	const scope = await resolveScope(db, actor.userId, {
+		projectId: body.project_id ?? null,
+		workflowStateId: body.workflow_state_id ?? null,
+		labelId: body.label_id ?? null,
+		issueId: body.issue_id ?? null
+	});
+	await assertScopeWritable(db, actor, scope);
+	await assertNameAvailable(db, actor.userId, kind, name, scope);
+
+	const now = Date.now();
+	const id = newId('ctx');
+	const position = await nextPosition(db, actor.userId, scope);
+	const queries = contextItemInsertQueries(db, actor, {
+		id,
+		fields,
+		scope,
+		position,
+		now
+	});
 	await runContextWrite(env, queries);
 	return getContextItem(db, actor.userId, id);
 }
@@ -597,14 +822,22 @@ export async function createContextItem(
 function guardedContextEvent(
 	db: Kysely<Database>,
 	actor: ActorContext,
-	input: { type: string; issueId: string | null; projectId: string | null; payload: Record<string, unknown> },
+	input: {
+		type: string;
+		issueId: string | null;
+		projectId: string | null;
+		payload: Record<string, unknown>;
+	},
 	itemId: string,
 	versionAfter: number
 ): CompiledQuery {
+	const projectId = input.issueId
+		? sql`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
+		: sql`${input.projectId}`;
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${newId('evt')}, ${actor.userId}, ${input.type}, ${actor.userId}, ${actor.apiKeyId},
-			${input.issueId}, ${input.projectId}, ${JSON.stringify(input.payload)}, ${Date.now()}
+			${input.issueId}, ${projectId}, ${JSON.stringify(input.payload)}, ${Date.now()}
 		WHERE EXISTS (
 			SELECT 1 FROM context_item WHERE id = ${itemId} AND version = ${versionAfter}
 		)`.compile(db);
@@ -633,6 +866,7 @@ export async function updateContextItem(
 		.where('context_item.id', '=', id)
 		.executeTakeFirst();
 	if (!row) throw notFound();
+	await assertScopeWritable(db, actor, rowScope(row));
 	const kind = row.kind as ContextKind;
 
 	if (body.expected_version !== undefined && body.expected_version !== row.version) {
@@ -640,10 +874,15 @@ export async function updateContextItem(
 	}
 
 	if (body.kind !== undefined && body.kind !== kind) {
-		throw new ApiFail(422, 'kind_immutable', 'A context item\'s kind cannot be changed after creation', {
-			field: 'kind',
-			kind
-		});
+		throw new ApiFail(
+			422,
+			'kind_immutable',
+			"A context item's kind cannot be changed after creation",
+			{
+				field: 'kind',
+				kind
+			}
+		);
 	}
 	rejectForeignPayload(kind, body as unknown as Record<string, unknown>);
 
@@ -658,16 +897,19 @@ export async function updateContextItem(
 	const scopeTouched =
 		body.project_id !== undefined ||
 		body.workflow_state_id !== undefined ||
+		body.label_id !== undefined ||
 		body.issue_id !== undefined;
 	const targetIds: ScopeIds = {
 		projectId: body.project_id !== undefined ? body.project_id : row.project_id,
 		workflowStateId:
 			body.workflow_state_id !== undefined ? body.workflow_state_id : row.workflow_state_id,
+		labelId: body.label_id !== undefined ? body.label_id : row.label_id,
 		issueId: body.issue_id !== undefined ? body.issue_id : row.issue_id
 	};
 	const scopeChanged =
 		targetIds.projectId !== row.project_id ||
 		targetIds.workflowStateId !== row.workflow_state_id ||
+		targetIds.labelId !== row.label_id ||
 		targetIds.issueId !== row.issue_id;
 	// Artifacts are pinned to exactly their issue: rename and description are
 	// legitimate PATCHes here (a rename re-keys requirement matching, which
@@ -682,6 +924,8 @@ export async function updateContextItem(
 	}
 	const scope =
 		scopeTouched || scopeChanged ? await resolveScope(db, actor.userId, targetIds) : currentScope;
+	// Moving an item *into* an archived project is a write on that project too.
+	if (scopeChanged) await assertScopeWritable(db, actor, scope);
 
 	if (name !== row.name || scopeChanged) {
 		await assertNameAvailable(db, actor.userId, kind, name, targetIds, id);
@@ -694,7 +938,8 @@ export async function updateContextItem(
 	let repoBranch = row.repo_branch;
 	let repoDir = row.repo_dir;
 	if (kind === 'repo') {
-		if (body.repo_url !== undefined) repoUrl = requireString(body.repo_url, 'repo_url', { max: 1000 }).trim();
+		if (body.repo_url !== undefined)
+			repoUrl = requireString(body.repo_url, 'repo_url', { max: 1000 }).trim();
 		if (body.repo_branch !== undefined) {
 			repoBranch = optionalString(body.repo_branch, 'repo_branch', { max: 200 })?.trim() || null;
 		}
@@ -711,7 +956,9 @@ export async function updateContextItem(
 	if (scopeChanged) position = await nextPosition(db, actor.userId, targetIds);
 	if (body.position !== undefined) {
 		if (typeof body.position !== 'number' || !Number.isInteger(body.position)) {
-			throw new ApiFail(422, 'invalid_field', '"position" must be an integer', { field: 'position' });
+			throw new ApiFail(422, 'invalid_field', '"position" must be an integer', {
+				field: 'position'
+			});
 		}
 		position = body.position;
 	}
@@ -765,6 +1012,7 @@ export async function updateContextItem(
 	// update goes first, and the file replacement plus the event only land
 	// if it did (they check for the bumped version).
 	const newVersion = row.version + 1;
+	payload.version = newVersion;
 	queries.push(
 		db
 			.updateTable('context_item')
@@ -773,6 +1021,7 @@ export async function updateContextItem(
 				description,
 				project_id: scope.projectId,
 				workflow_state_id: scope.workflowStateId,
+				label_id: scope.labelId,
 				issue_id: scope.issueId,
 				body: promptBody,
 				repo_url: repoUrl,
@@ -784,6 +1033,13 @@ export async function updateContextItem(
 			})
 			.where('id', '=', id)
 			.where('version', '=', row.version)
+			// Transfer deliberately preserves version. Fence the complete scope
+			// tuple too, so an edit read before a move can neither restore the
+			// source project nor attach files/events to the wrong scope.
+			.where(sql<boolean>`project_id IS ${row.project_id}`)
+			.where(sql<boolean>`workflow_state_id IS ${row.workflow_state_id}`)
+			.where(sql<boolean>`label_id IS ${row.label_id}`)
+			.where(sql<boolean>`issue_id IS ${row.issue_id}`)
 			.compile()
 	);
 	if (filesChanged && files !== undefined) {
@@ -834,6 +1090,7 @@ export async function deleteContextItem(
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	const scope = rowScope(row);
+	await assertScopeWritable(db, actor, scope);
 	await runAtomic(env, [
 		db.deleteFrom('context_item_file').where('context_item_id', '=', id).compile(),
 		db
@@ -880,10 +1137,16 @@ export async function appendContextItem(
 			.where('context_item.id', '=', id)
 			.executeTakeFirst();
 		if (!row) throw notFound();
+		await assertScopeWritable(db, actor, rowScope(row));
 		if (row.kind !== 'prompt') {
-			throw new ApiFail(422, 'not_a_prompt', `Only prompt items can be appended to (this is a ${row.kind})`, {
-				kind: row.kind
-			});
+			throw new ApiFail(
+				422,
+				'not_a_prompt',
+				`Only prompt items can be appended to (this is a ${row.kind})`,
+				{
+					kind: row.kind
+				}
+			);
 		}
 		if (body.expected_version !== undefined && body.expected_version !== row.version) {
 			throw versionConflict(row);
@@ -914,6 +1177,7 @@ export async function appendContextItem(
 						name: row.name,
 						changed: ['body'],
 						appended: true,
+						version: newVersion,
 						scope: scopeEventPayload(scope)
 					}
 				},
@@ -959,18 +1223,29 @@ export function isJournal(row: {
 }
 
 /**
- * Layer rank of an exact scope. Treating (issue, state, project) as bits of
- * a binary number yields exactly the spec's seven-layer order — global (0),
- * project (1), state (2), project ∧ state (3), issue (4), issue ∧ project
- * (5), issue ∧ state (6), issue ∧ project ∧ state (7) — any issue-anchored
- * scope outranks any non-issue-anchored one. Broad layers stitch first.
+ * Layer rank of an exact scope. Treating (issue, label, state, project) as
+ * bits of a binary number yields the spec's layer order: global (0), project
+ * (1), state (2), project ∧ state (3), then every label layer (4–7), then
+ * every issue-anchored layer (8–15). Broad layers stitch first, so the most
+ * specific item wins the by-name dedupe.
+ *
+ * The label bit sits between state and issue because *a label is a per-issue
+ * classification: it outranks the ambient dimensions but not the issue
+ * itself.* Adding it as a new high bit under `issue` is a pure prefix
+ * extension — every layer that shipped keeps its relative order.
  */
 export function layerRank(scope: {
 	projectId?: string | null;
 	workflowStateId?: string | null;
+	labelId?: string | null;
 	issueId?: string | null;
 }): number {
-	return (scope.issueId ? 4 : 0) + (scope.workflowStateId ? 2 : 0) + (scope.projectId ? 1 : 0);
+	return (
+		(scope.issueId ? 8 : 0) +
+		(scope.labelId ? 4 : 0) +
+		(scope.workflowStateId ? 2 : 0) +
+		(scope.projectId ? 1 : 0)
+	);
 }
 
 export interface StitchPart {
@@ -995,42 +1270,246 @@ export function stitchPrompt(parts: StitchPart[]): string {
 		.join('\n\n');
 }
 
-interface MatchTarget {
+export interface MatchTarget {
 	projectId: string;
-	stateId: string;
+	/** The issue's state and its ancestors, root → leaf; the leaf is the issue's own state. */
+	stateChain: string[];
 	issueId: string;
 }
 
-function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchTarget) {
+/**
+ * The chain root → leaf: a state and its inheritance ancestors. Always ends
+ * with `leafStateId`, even for a state whose pointer dangles.
+ *
+ * The `state_chain(id, next_id, depth)` recursive CTE (depth 0 is the state
+ * itself, `MAX_INHERITANCE_CHAIN` bounds the recursion so a hand-edited cycle
+ * terminates at the cap) is written twice on purpose — once here for the
+ * effective-context read, once inside `contextSummaryForIssue`, which must stay
+ * one query. Change one and change the other.
+ */
+async function resolveStateChain(db: Kysely<Database>, leafStateId: string): Promise<string[]> {
+	const rows = await db
+		.withRecursive('state_chain', (cte) =>
+			cte
+				.selectFrom('workflow_state')
+				.where('workflow_state.id', '=', leafStateId)
+				.select([
+					'workflow_state.id as id',
+					'workflow_state.inherits_from_state_id as next_id',
+					sql<number>`0`.as('depth')
+				])
+				.unionAll(
+					cte
+						.selectFrom('state_chain')
+						.innerJoin('workflow_state', 'workflow_state.id', 'state_chain.next_id')
+						.where('state_chain.depth', '<', MAX_INHERITANCE_CHAIN - 1)
+						.select([
+							'workflow_state.id as id',
+							'workflow_state.inherits_from_state_id as next_id',
+							sql<number>`state_chain.depth + 1`.as('depth')
+						])
+				)
+		)
+		.selectFrom('state_chain')
+		.select(['id', 'depth'])
+		.execute();
+	// Keep each state at its shallowest depth, so the leaf stays last even if a
+	// hand-edited loop reached it again, then order root → leaf.
+	const depths = new Map<string, number>();
+	for (const row of rows) {
+		const seen = depths.get(row.id);
+		if (seen === undefined || row.depth < seen) depths.set(row.id, row.depth);
+	}
+	const chain = [...depths.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+	return chain.length > 0 ? chain : [leafStateId];
+}
+
+/**
+ * Reads project∧issue rows of one project as though they belonged to another —
+ * what a transfer does to them atomically at commit. Only the project dimension
+ * and its display names move; identity, version, position and every other
+ * dimension are untouched, here and in the guarded UPDATE.
+ */
+export interface MatchProjection {
+	fromProjectId: string;
+	toProjectId: string;
+	toProjectName: string | null;
+	toProjectArchivedAt: number | null;
+}
+
+function projectRow(row: ItemRow, projection: MatchProjection | undefined): ItemRow {
+	if (!projection) return row;
+	if (row.project_id !== projection.fromProjectId || !row.issue_id) return row;
+	// Only the item's own project dimension moves. The issue reference in its
+	// scope label keeps the address the issue answers to today: a preview has no
+	// destination number yet, and that project's number N belongs to a different
+	// issue. The old ref keeps resolving after the move, so it stays truthful.
+	return {
+		...row,
+		project_id: projection.toProjectId,
+		scope_project_name: projection.toProjectName,
+		scope_project_archived_at: projection.toProjectArchivedAt
+	};
+}
+
+function matchingItemsQuery(
+	db: Kysely<Database>,
+	userId: string,
+	target: MatchTarget,
+	projection?: MatchProjection
+) {
 	// Artifacts are deliberately not part of the effective context: nothing
 	// is stitched into the prompt, nothing is seeded into a workspace.
 	return contextItemQuery(db, userId)
 		.where('context_item.kind', '!=', 'artifact')
 		.where((eb) =>
-		eb.and([
-			eb.or([eb('context_item.project_id', 'is', null), eb('context_item.project_id', '=', target.projectId)]),
-			eb.or([
-				eb('context_item.workflow_state_id', 'is', null),
-				eb('context_item.workflow_state_id', '=', target.stateId)
-			]),
-			eb.or([eb('context_item.issue_id', 'is', null), eb('context_item.issue_id', '=', target.issueId)])
-		])
-	);
+			eb.and([
+				eb.or([
+					eb('context_item.project_id', 'is', null),
+					eb('context_item.project_id', '=', target.projectId),
+					// A transfer preview reads the rows anchored to this issue in the
+					// project it is leaving as if they had already been rescoped: the
+					// commit moves their project dimension with the issue.
+					...(projection
+						? [
+								eb.and([
+									eb('context_item.project_id', '=', projection.fromProjectId),
+									eb('context_item.issue_id', '=', target.issueId)
+								])
+							]
+						: [])
+				]),
+				eb.or([
+					eb('context_item.workflow_state_id', 'is', null),
+					eb('context_item.workflow_state_id', 'in', target.stateChain)
+				]),
+				eb.or([
+					eb('context_item.label_id', 'is', null),
+					eb.exists(
+						eb
+							.selectFrom('issue_label')
+							.select('issue_label.label_id')
+							.whereRef('issue_label.label_id', '=', 'context_item.label_id')
+							.where('issue_label.issue_id', '=', target.issueId)
+					)
+				]),
+				eb.or([
+					eb('context_item.issue_id', 'is', null),
+					eb('context_item.issue_id', '=', target.issueId)
+				])
+			])
+		);
 }
 
-/** Layer order, then position / created_at / id within a layer. */
-function sortMatched(rows: ItemRow[]): ItemRow[] {
+/** The label a same-rank tie orders by: name, then id for a dangling label. */
+function labelSortKey(row: ItemRow): string {
+	return (row.scope_label_name ?? '').toLowerCase() || (row.label_id ?? '');
+}
+
+/**
+ * Layer order, then position / created_at / id within a layer.
+ *
+ * A label is set-valued, so two items in the *same* layer can be scoped to
+ * two different labels an issue carries at once — the one case where a layer
+ * holds more than one exact scope. Those order by label name, so the winner
+ * of a by-name dedupe is deterministic and explainable rather than whichever
+ * item happened to be created first.
+ */
+function sortMatched(rows: ItemRow[], stateChain: string[]): ItemRow[] {
+	// Ancestors stitch before the state that inherits from them, inside the
+	// state dimension's existing rank: a tie-break, not a new layer. Inert for a
+	// parentless state — every matched row then names the one state in the chain.
+	const stateDepth = (row: ItemRow): number =>
+		row.workflow_state_id ? stateChain.indexOf(row.workflow_state_id) : stateChain.length - 1;
 	return [...rows].sort(
 		(a, b) =>
 			layerRank(rowScope(a)) - layerRank(rowScope(b)) ||
+			stateDepth(a) - stateDepth(b) ||
+			(labelSortKey(a) < labelSortKey(b) ? -1 : labelSortKey(a) > labelSortKey(b) ? 1 : 0) ||
 			a.position - b.position ||
 			a.created_at - b.created_at ||
 			(a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 	);
 }
 
+/**
+ * Where a matched row came from, when it came from an ancestor of the issue's
+ * state. Inherited layers render `state <workflow> / <state>` so two same-named
+ * states cannot collide under one `## Context: state X` heading.
+ */
+function inheritedFrom(row: ItemRow, leafStateId: string): InheritedFrom | null {
+	if (!row.workflow_state_id || row.workflow_state_id === leafStateId) return null;
+	return {
+		state_id: row.workflow_state_id,
+		state_name: row.scope_state_name ?? row.workflow_state_id,
+		workflow_id: row.scope_workflow_id ?? '',
+		workflow_name: row.scope_workflow_name ?? ''
+	};
+}
+
+/**
+ * The one journal an issue's runs may write: the `journal` prompt at project ∧
+ * the *root* of the state's inheritance chain (`journalForIssue` resolves the
+ * same state server-side). `rows` are the items already matched for this
+ * issue, so an existing journal costs no extra query; only naming a base state
+ * that has no journal yet needs one.
+ */
+async function journalTarget(
+	db: Kysely<Database>,
+	rows: ItemRow[],
+	target: MatchTarget
+): Promise<EffectiveJournalTarget> {
+	const rootStateId = target.stateChain[0];
+	const leafStateId = target.stateChain[target.stateChain.length - 1];
+	const row = rows.find(
+		(r) => isJournal(r) && r.project_id === target.projectId && r.workflow_state_id === rootStateId
+	);
+	const base = { state_id: rootStateId, item_id: row?.id ?? null, version: row?.version ?? null };
+	// A parentless state is its own root: no provenance to report, and every
+	// surface reading this stays word-for-word what it was before inheritance.
+	if (rootStateId === leafStateId) return { ...base, inherited_from: null };
+	if (row) return { ...base, inherited_from: inheritedFrom(row, leafStateId) };
+	const state = await db
+		.selectFrom('workflow_state')
+		.leftJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
+		.select([
+			'workflow_state.name as state_name',
+			'workflow_state.workflow_id as workflow_id',
+			'workflow.name as workflow_name'
+		])
+		.where('workflow_state.id', '=', rootStateId)
+		.executeTakeFirst();
+	return {
+		...base,
+		inherited_from: {
+			state_id: rootStateId,
+			state_name: state?.state_name ?? rootStateId,
+			workflow_id: state?.workflow_id ?? '',
+			workflow_name: state?.workflow_name ?? ''
+		}
+	};
+}
+
+/** Scope and provenance for one matched row, qualified when it is inherited. */
+function describeRow(
+	row: ItemRow,
+	leafStateId: string
+): { scope: ContextScope; inherited_from: InheritedFrom | null } {
+	const from = inheritedFrom(row, leafStateId);
+	return {
+		scope: toContextScope(rowScope(row), { qualifyState: from !== null }),
+		inherited_from: from
+	};
+}
+
 /** Dedupe by name within a kind: the later (more specific) item wins wholesale. */
-function dedupeByName(rows: ItemRow[]): { winners: ItemRow[]; overridden: OverriddenContextItem[] } {
+function dedupeByName(
+	rows: ItemRow[],
+	leafStateId: string
+): {
+	winners: ItemRow[];
+	overridden: OverriddenContextItem[];
+} {
 	const byName = new Map<string, ItemRow>();
 	const losers: { row: ItemRow; winner: ItemRow }[] = [];
 	for (const row of rows) {
@@ -1045,13 +1524,22 @@ function dedupeByName(rows: ItemRow[]): { winners: ItemRow[]; overridden: Overri
 			item_id: row.id,
 			kind: row.kind as ContextKind,
 			name: row.name,
-			scope: toContextScope(rowScope(row)),
-			overridden_by: winner.id
+			...describeRow(row, leafStateId),
+			overridden_by: winner.id,
+			...(row.kind === 'repo' && row.repo_url
+				? {
+						repo: {
+							url: row.repo_url,
+							branch: row.repo_branch,
+							dir: row.repo_dir ?? repoDirFromUrl(row.repo_url)
+						}
+					}
+				: {})
 		}))
 	};
 }
 
-async function issueMatchTarget(
+export async function issueMatchTarget(
 	db: Kysely<Database>,
 	userId: string,
 	issueId: string
@@ -1064,7 +1552,11 @@ async function issueMatchTarget(
 		.where('project.user_id', '=', userId)
 		.executeTakeFirst();
 	if (!issue) throw notFound();
-	return { projectId: issue.project_id, stateId: issue.state_id, issueId: issue.id };
+	return {
+		projectId: issue.project_id,
+		stateChain: await resolveStateChain(db, issue.state_id),
+		issueId: issue.id
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1133,6 +1625,13 @@ export async function launchStateForRun(
  * `journal` at project ∧ state, where the state is the run's launch state for
  * a run key on this issue and the issue's current state for everyone else.
  *
+ * The journal then follows the *root* of that state's inheritance chain: two
+ * workflows whose stages inherit from one base state share one writable
+ * journal, so a lesson learned in either is pruned and re-read by both. A
+ * state that inherits from nothing is its own root, so this is inert for it.
+ * A legacy journal left on a child keeps stitching into the prompt read-only;
+ * only the root's is handed out.
+ *
  * The decision lives here rather than in the CLI because the run → launch
  * state link (`api_key.agent_run_id` → `agent_run.state_id_at_start`) is only
  * knowable server-side.
@@ -1144,13 +1643,24 @@ export async function journalForIssue(
 ): Promise<IssueJournalResponse> {
 	const target = await issueMatchTarget(db, actor.userId, issueId);
 	const launch = await launchStateForRun(db, actor, issueId);
-	const stateId = launch.stateId ?? target.stateId;
+	// `target.stateChain` is already the issue's own chain, root first; only a
+	// run anchored to some other launch state needs its chain resolved.
+	const leafStateId = launch.stateId ?? target.stateChain[target.stateChain.length - 1];
+	const stateId = launch.stateId
+		? (await resolveStateChain(db, launch.stateId))[0]
+		: target.stateChain[0];
 	const scope = toContextScope(
 		await resolveScope(db, actor.userId, {
 			projectId: target.projectId,
 			workflowStateId: stateId,
+			labelId: null,
 			issueId: null
-		})
+		}),
+		// The CLI echoes this label back ("appended to the <label> journal"), so
+		// a base state names its workflow the way the stitched heading and the
+		// prompt's "your journal is …" line do: two base states in different
+		// workflows may share a name.
+		{ qualifyState: stateId !== leafStateId }
 	);
 	const row = await contextItemQuery(db, actor.userId)
 		.where('context_item.kind', '=', 'prompt')
@@ -1177,16 +1687,36 @@ export async function effectiveContextForIssue(
 	db: Kysely<Database>,
 	userId: string,
 	issueId: string,
-	{ skillFiles = true }: { skillFiles?: boolean } = {}
+	opts: { skillFiles?: boolean } = {}
 ): Promise<EffectiveContext> {
-	const target = await issueMatchTarget(db, userId, issueId);
-	const rows = sortMatched(await matchingItemsQuery(db, userId, target).execute());
+	return effectiveContextForTarget(db, userId, await issueMatchTarget(db, userId, issueId), opts);
+}
+
+/**
+ * The effective context of an explicit match target — the assembly shared by
+ * the issue's own resolution and a transfer preview's hypothetical destination.
+ * One matcher, one precedence: a preview that disagreed with the launch would
+ * be worse than no preview at all.
+ */
+export async function effectiveContextForTarget(
+	db: Kysely<Database>,
+	userId: string,
+	target: MatchTarget,
+	{ skillFiles = true, projection }: { skillFiles?: boolean; projection?: MatchProjection } = {}
+): Promise<EffectiveContext> {
+	const leafStateId = target.stateChain[target.stateChain.length - 1];
+	const rows = sortMatched(
+		(await matchingItemsQuery(db, userId, target, projection).execute()).map((row) =>
+			projectRow(row, projection)
+		),
+		target.stateChain
+	);
 
 	const prompts = rows.filter((r) => r.kind === 'prompt');
 	const parts: EffectivePromptPart[] = prompts.map((r) => ({
 		item_id: r.id,
 		name: r.name,
-		scope: toContextScope(rowScope(r)),
+		...describeRow(r, leafStateId),
 		body: r.body ?? '',
 		version: r.version,
 		is_journal: isJournal(r)
@@ -1195,16 +1725,26 @@ export async function effectiveContextForIssue(
 		parts.map((p) => ({ label: p.scope.label, body: p.body, isJournal: p.is_journal }))
 	);
 
-	const skillDedupe = dedupeByName(rows.filter((r) => r.kind === 'skill'));
-	const repoDedupe = dedupeByName(rows.filter((r) => r.kind === 'repo'));
+	const skillDedupe = dedupeByName(
+		rows.filter((r) => r.kind === 'skill'),
+		leafStateId
+	);
+	const repoDedupe = dedupeByName(
+		rows.filter((r) => r.kind === 'repo'),
+		leafStateId
+	);
 
 	const fileMap = skillFiles
-		? await loadFiles(db, skillDedupe.winners.map((r) => r.id))
+		? await loadFiles(
+				db,
+				skillDedupe.winners.map((r) => r.id)
+			)
 		: new Map<string, ContextFile[]>();
 	const skills: EffectiveSkill[] = skillDedupe.winners.map((r) => ({
 		item_id: r.id,
 		name: r.name,
-		scope: toContextScope(rowScope(r)),
+		description: r.description ?? '',
+		...describeRow(r, leafStateId),
 		files: fileMap.get(r.id) ?? [],
 		file_count: Number(r.file_count ?? 0),
 		version: r.version
@@ -1213,7 +1753,7 @@ export async function effectiveContextForIssue(
 	const repos: EffectiveRepo[] = repoDedupe.winners.map((r) => ({
 		item_id: r.id,
 		name: r.name,
-		scope: toContextScope(rowScope(r)),
+		...describeRow(r, leafStateId),
 		url: r.repo_url ?? '',
 		branch: r.repo_branch,
 		dir: r.repo_dir ?? repoDirFromUrl(r.repo_url ?? ''),
@@ -1230,7 +1770,7 @@ export async function effectiveContextForIssue(
 		.map(([dir, item_ids]) => ({ kind: 'repo_dir', dir, item_ids }));
 
 	return {
-		prompt: { text, parts },
+		prompt: { text, parts, journal: await journalTarget(db, rows, target) },
 		skills,
 		repos,
 		overridden: [...skillDedupe.overridden, ...repoDedupe.overridden],
@@ -1247,14 +1787,52 @@ export async function contextSummaryForIssue(
 	userId: string,
 	target: { projectId: string; stateId: string; issueId: string }
 ): Promise<ContextSummary> {
+	// This predicate must track `matchingItemsQuery`'s: a badge that disagrees
+	// with the panel is a bug report. The state clause spans the inheritance
+	// chain (a CTE, so this stays one query) and the label clause counts only
+	// labels the issue actually carries.
 	const rows = await db
+		.withRecursive('state_chain', (cte) =>
+			cte
+				.selectFrom('workflow_state')
+				.where('workflow_state.id', '=', target.stateId)
+				.select([
+					'workflow_state.id as id',
+					'workflow_state.inherits_from_state_id as next_id',
+					sql<number>`0`.as('depth')
+				])
+				.unionAll(
+					cte
+						.selectFrom('state_chain')
+						.innerJoin('workflow_state', 'workflow_state.id', 'state_chain.next_id')
+						.where('state_chain.depth', '<', MAX_INHERITANCE_CHAIN - 1)
+						.select([
+							'workflow_state.id as id',
+							'workflow_state.inherits_from_state_id as next_id',
+							sql<number>`state_chain.depth + 1`.as('depth')
+						])
+				)
+		)
 		.selectFrom('context_item')
 		.select(['kind', 'name'])
 		.where('user_id', '=', userId)
 		.where((eb) =>
 			eb.and([
 				eb.or([eb('project_id', 'is', null), eb('project_id', '=', target.projectId)]),
-				eb.or([eb('workflow_state_id', 'is', null), eb('workflow_state_id', '=', target.stateId)]),
+				eb.or([
+					eb('workflow_state_id', 'is', null),
+					eb('workflow_state_id', 'in', eb.selectFrom('state_chain').select('state_chain.id'))
+				]),
+				eb.or([
+					eb('label_id', 'is', null),
+					eb.exists(
+						eb
+							.selectFrom('issue_label')
+							.select('issue_label.label_id')
+							.whereRef('issue_label.label_id', '=', 'context_item.label_id')
+							.where('issue_label.issue_id', '=', target.issueId)
+					)
+				]),
 				eb.or([eb('issue_id', 'is', null), eb('issue_id', '=', target.issueId)])
 			])
 		)
@@ -1321,37 +1899,179 @@ function requirementStatusLabel(r: ArtifactRequirementCheck): string {
 	}
 }
 
+/**
+ * How many label names the prompt spells out before falling back to a count.
+ * The vocabulary is an affordance, not a reference: past a few dozen the list
+ * costs more tokens than it saves, and `tines labels list` has the rest.
+ */
+const PROMPT_LABEL_VOCABULARY_MAX = 40;
+
+function shellArg(value: string): string {
+	return /^[A-Za-z0-9_./:-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+export function selectLaunchComments(issue: IssueDetail): {
+	retained: IssueDetail['comments'];
+	omittedAgentIds: string[];
+} {
+	if (!issue.launch_comments) return { retained: issue.comments, omittedAgentIds: [] };
+	const unique = [...new Map(issue.comments.map((comment) => [comment.id, comment])).values()].sort(
+		(a, b) => a.created_at - b.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+	);
+	const protectedId = issue.launch_comments.latest_completed_run_comment_id;
+	const retainedIds = new Set(
+		unique.filter((comment) => !comment.actor.run).map((comment) => comment.id)
+	);
+	if (protectedId && unique.some((comment) => comment.id === protectedId && comment.actor.run)) {
+		retainedIds.add(protectedId);
+	}
+	for (const comment of unique
+		.filter((entry) => entry.actor.run && entry.id !== protectedId)
+		.slice(-3))
+		retainedIds.add(comment.id);
+	return {
+		retained: unique.filter((comment) => retainedIds.has(comment.id)),
+		omittedAgentIds: unique
+			.filter((comment) => comment.actor.run && !retainedIds.has(comment.id))
+			.map((comment) => comment.id)
+	};
+}
+
+/**
+ * `### Since the last run` — the human's steer, rendered for the launch prompt.
+ * Absent entirely when nothing human happened; never a "none" heading.
+ */
+function sinceLastRunLines(since: SinceLastRun, now: number): string[] {
+	const lines = ['### Since the last run', ''];
+	const t = since.transition;
+	if (t) {
+		const via = t.action ? `via "${t.action}"` : 'directly';
+		const stale =
+			since.stale_artifacts.length > 0
+				? ` Now stale: ${since.stale_artifacts.map((n) => `\`${n}\``).join(', ')}.`
+				: '';
+		lines.push(
+			`Moved from **${t.from_state.name}** → ${t.to_state.name} ${via} by ${actorLabel(t.actor)}, ` +
+				`${ageLabel(t.at, now)} ago (${new Date(t.at).toISOString()}).${stale}`,
+			''
+		);
+	} else {
+		const ended = since.previous_run.ended_at;
+		const when = ended === null ? 'not yet ended' : `ended ${ageLabel(ended, now)} ago`;
+		lines.push(
+			`Since the previous run (${since.previous_run.state_at_start_name ?? 'unknown state'}, ` +
+				`${when}) a human commented:`,
+			''
+		);
+	}
+	for (const comment of since.comments) {
+		lines.push(
+			`**${actorLabel(comment.actor)}** (${new Date(comment.created_at).toISOString()}, ID: ${comment.id}):`,
+			comment.body.trim(),
+			''
+		);
+	}
+	if (since.comment_count > since.comments.length) {
+		const hidden = since.comment_count - since.comments.length;
+		lines.push(
+			`… and ${hidden} earlier comment${hidden === 1 ? '' : 's'} — see ### Comments below.`,
+			''
+		);
+	}
+	return lines;
+}
+
 export function issueBlock(
 	issue: IssueDetail,
 	context: EffectiveContext,
-	issueArtifacts: Artifact[] = []
+	issueArtifacts: Artifact[] = [],
+	/** The user's whole label library, so the agent can classify without a round trip. */
+	labelVocabulary: string[] = [],
+	now: number = Date.now()
 ): string {
 	const ref = `${issue.project_name}/${issue.number}`;
 	const lines: string[] = [`## Issue: ${ref} — ${issue.title}`, ''];
 	if (issue.description.trim()) {
 		lines.push(issue.description.trim(), '');
 	}
+	// The human's steer, before anything else the agent reads: what they did to
+	// the issue since the last run ended, and what they said doing it. It
+	// duplicates comments that also appear under `### Comments` below —
+	// deliberately: the steer is the reason this run exists, and an agent that
+	// skims the thread must not be able to miss it.
+	if (issue.since_last_run) {
+		lines.push(...sinceLastRunLines(issue.since_last_run, now));
+	}
 	lines.push(
 		'### Current state',
 		'',
 		`${issue.state.name} (${issue.state.category}), in workflow "${issue.workflow.name}".`,
+		''
+	);
+	// Labels are classification the agent both reads and writes, so the block
+	// carries the current set and the command, the same as comments and
+	// artifacts. The known vocabulary is spelled out because a run key can
+	// only apply labels that already exist.
+	if (issue.labels.length > 0) {
+		lines.push(`Labels: ${issue.labels.map((l) => l.name).join(', ')}`, '');
+	}
+	const vocabulary =
+		labelVocabulary.length > PROMPT_LABEL_VOCABULARY_MAX
+			? `${labelVocabulary.slice(0, PROMPT_LABEL_VOCABULARY_MAX).join(', ')}, ` +
+				`+${labelVocabulary.length - PROMPT_LABEL_VOCABULARY_MAX} more (\`tines labels list\`)`
+			: labelVocabulary.join(', ');
+	lines.push(
+		`Label it: \`tines issues label ${ref} <name...>\`` +
+			(labelVocabulary.length > 0
+				? ` (existing labels only: ${vocabulary})`
+				: ' (no labels exist yet — ask a human to add one)'),
 		'',
 		'### Comments',
 		''
 	);
-	if (issue.comments.length === 0) {
+	const selectedComments = selectLaunchComments(issue);
+	if (selectedComments.retained.length === 0) {
 		lines.push('No comments yet.', '');
 	} else {
-		for (const comment of issue.comments) {
+		for (const comment of selectedComments.retained) {
 			const actor = actorLabel(comment.actor);
 			lines.push(
-				`**${actor}** (${new Date(comment.created_at).toISOString()}):`,
+				`**${actor}** (${new Date(comment.created_at).toISOString()}, ID: ${comment.id}):`,
 				comment.body.trim(),
 				''
 			);
 		}
 	}
-	lines.push(`Add a comment: \`tines issues comment ${ref} "<markdown>"\``, '', '### Artifacts', '');
+	if (selectedComments.omittedAgentIds.length > 0) {
+		const ids = selectedComments.omittedAgentIds;
+		const commandRef = shellArg(ref);
+		const exampleId = shellArg(ids[0]);
+		lines.push(
+			`Older agent comments: ${ids.join(', ')}. Load one (change --arg id to a listed ID): \`tines issues show ${commandRef} --json | jq -er --arg id ${exampleId} 'first(.comments[] | select(.id == $id) | .body) // error("comment not found: \\($id)")'\`. Without jq / for full history: \`tines issues show ${commandRef}\`.`,
+			''
+		);
+	}
+	// A quoted heredoc, not an inline argument: comment bodies are prose full
+	// of backticks, $VARS and apostrophes, and a mangled comment costs a round
+	// trip to repair even now that it can be repaired (Tines/9, Tines/11). The
+	// fallback line is not decoration: a CLI predating that change treats the
+	// `-` as the body itself and posts it, exit 0, so the failure is silent
+	// unless the agent has been told what it looks like. The repair line names
+	// `--json` for ids because an older CLI shows ids nowhere else (a CLI
+	// without the commands at all fails loudly, which is fine).
+	lines.push(
+		'Add a comment (the quoted heredoc keeps backticks, $VARS and quotes literal):',
+		'```',
+		`tines issues comment ${ref} - <<'EOF'`,
+		'<markdown>',
+		'EOF',
+		'```',
+		`A \`tines\` too old for that form posts a literal \`-\` instead of your body, without failing. If \`tines issues comment --help\` does not mention \`@file\`, use \`tines issues comment ${ref} "<markdown>"\` and mind the shell quoting.`,
+		`Fix your own mis-post rather than leaving it in the thread: \`tines issues comment-edit ${ref} <comment-id> -\` (same body forms) replaces a body, \`tines issues comment-delete ${ref} <comment-id>\` removes it. Ids are echoed when you post and listed by \`tines issues show ${ref} --json\`; you can only edit or delete comments you wrote.`,
+		'',
+		'### Artifacts',
+		''
+	);
 	// A listing, never contents: agents fetch on demand.
 	if (issueArtifacts.length === 0) {
 		lines.push('No artifacts attached.', '');
@@ -1362,7 +2082,16 @@ export function issueBlock(
 		lines.push('');
 	}
 	lines.push(
-		`Attach one: \`tines issues artifacts attach ${ref} <name> --file <path>\` (or --text/--url/--pr, or --folder <dir> for a multi-file snapshot)`,
+		// No flag is privileged: naming `--file` first taught agents to reach
+		// for it even under a text gate. The gate decides, and each gated
+		// transition below carries its own exact command (`requires[].fix`) —
+		// which since Tines/274 is a positional source, not a flag, so this
+		// line says "source" and keeps the flag vocabulary for ungated slots.
+		`Attach one: \`tines issues artifacts attach ${ref} <name> …\` — the source follows the gate; each gated transition below names its exact command. Ungated slots: --file <path>, --folder <dir>, --text <md|@file>, --link <url>, --pr <owner/repo#N>.`,
+		// Sites are the one attach whose *content* has rules, and an agent
+		// cannot discover them from a gate: everything must be inline, and the
+		// reader is usually on a phone.
+		`An HTML file (or a folder with a root index.html) renders live as a prototype — keep all CSS/JS inline (external CDNs are blocked), add \`<meta name="viewport" content="width=device-width, initial-scale=1">\`, and \`tines issues artifacts site-link ${ref} <name>\` mints a URL to see it.`,
 		'',
 		'### Available transitions',
 		''
@@ -1378,8 +2107,16 @@ export function issueBlock(
 			// agent both its legal moves and their preconditions.
 			for (const r of t.requires ?? []) {
 				const spec = [r.type, r.content_type].filter(Boolean).join(', ');
+				// An unsatisfied requirement ends in the command that clears it,
+				// server-computed from the gate itself — the agent never has to
+				// guess what this slot takes. Each command gets its own code
+				// span: a span holding two commands is not copy-pastable, and a
+				// `stale` requirement has two (attach, or reaffirm) — Tines/255.
+				const alternative =
+					r.fix_alternative !== undefined ? ` — or reaffirm: \`${r.fix_alternative}\`` : '';
+				const fix = r.status === 'satisfied' ? '' : ` — attach: \`${r.fix}\`${alternative}`;
 				lines.push(
-					`  Requires: artifact \`${r.artifact}\`${spec ? ` (${spec})` : ''} — ${requirementStatusLabel(r)}${r.description ? ` — ${r.description}` : ''}`
+					`  Requires: artifact \`${r.artifact}\`${spec ? ` (${spec})` : ''} — ${requirementStatusLabel(r)}${r.description ? ` — ${r.description}` : ''}${fix}`
 				);
 			}
 		}
@@ -1387,35 +2124,80 @@ export function issueBlock(
 
 	// The journal affordance sits prompt-final, where recency favors it.
 	lines.push('', '### Journal', '');
-	const journal = context.prompt.parts.find((p) => p.is_journal);
-	if (journal) {
+	// The writable journal follows the root of the state's inheritance chain,
+	// so two workflows sharing a base stage learn in one file. For a state that
+	// inherits from nothing the root is the state itself and every line below is
+	// what it has always been, to the byte.
+	const journal = context.prompt.journal;
+	const from = journal.inherited_from;
+	const baseLabel = from ? `${from.workflow_name || from.workflow_id} / ${from.state_name}` : null;
+	// A journal left on the child — or on a state part-way up a longer chain —
+	// by an earlier run still stitches, because it is knowledge, but writes go
+	// to the root until a merge folds it in. Name those sections exactly as
+	// their headings do: there can be more than one, and the state they belong
+	// to need not be the issue's own.
+	const readOnly = context.prompt.parts
+		.filter((p) => p.is_journal && p.item_id !== journal.item_id)
+		.map((p) => `"Journal (${p.scope.label})"`);
+	const readOnlyLines =
+		readOnly.length === 0
+			? []
+			: [
+					`The ${readOnly.slice(0, -1).join(', ')}${readOnly.length > 1 ? ' and ' : ''}${readOnly[readOnly.length - 1]} section${readOnly.length > 1 ? 's' : ''} above ${readOnly.length > 1 ? 'are' : 'is'} read-only;`,
+					'move anything still worth keeping into your journal with your next append.'
+				];
+	if (journal.item_id !== null) {
 		lines.push(
-			'Your journal for this project and stage is the "Journal" section above',
+			baseLabel
+				? `Your journal for this project and stage is the journal of ${baseLabel}`
+				: 'Your journal for this project and stage is the "Journal" section above',
 			`(currently v${journal.version}).`,
-			'',
+			''
+		);
+		if (readOnlyLines.length > 0) lines.push(...readOnlyLines, '');
+		lines.push(
 			// The run key remembers the stage it was launched in, so the old
 			// append-before-you-move ordering trap no longer exists.
-			'Appends land in this stage\'s journal even after you move the issue.',
+			"Appends land in this stage's journal even after you move the issue.",
 			'',
 			`- Append a lesson: \`tines journal append ${ref} "- <date>: <lesson>"\``,
+			'  (or `-` with a quoted heredoc, as for comments, when the body must not be touched by the shell)',
 			`- Fix or prune entries: \`tines journal show ${ref} --json\`, revise, then`,
 			`  \`tines journal rewrite ${ref} --body @file --expect-version ${journal.version}\``
 		);
 	} else {
 		lines.push(
-			`No journal exists yet for project ${issue.project_name} · state ${issue.state.name}. Start one:`,
-			`\`tines journal append ${ref} "- <date>: <lesson>"\``
+			`No journal exists yet for project ${issue.project_name} · state ${baseLabel ?? issue.state.name}. Start one:`,
+			`\`tines journal append ${ref} "- <date>: <lesson>"\``,
+			'(or `-` with a quoted heredoc, as for comments, when the body must not be touched by the shell)'
 		);
+		// The state of the world the day this ships: the children carry their
+		// journals and the new base carries none, so the populated section above
+		// needs explaining here more than anywhere.
+		if (readOnlyLines.length > 0) lines.push('', ...readOnlyLines);
 	}
 
 	// Factual footnotes: this issue's effective artifacts (with the fetch
 	// command — the agent's own attachments are fair game), then the other
 	// prompt items by name and scope label only, whose sole affordance is
 	// the proposal convention.
+	if (context.skills.length > 0) {
+		lines.push('', '### Skills', '');
+		for (const skill of context.skills) {
+			const path = `skills/${skill.name}/SKILL.md`;
+			const description = skill.description.replace(/\s+/g, ' ').trim();
+			lines.push(
+				description
+					? `- Skill "${skill.name}" (${skill.scope.label}): read \`${path}\` when this applies: ${description}`
+					: `- Skill "${skill.name}" (${skill.scope.label}): read \`${path}\` when the "${skill.name}" procedure is relevant.`
+			);
+		}
+		lines.push(
+			'',
+			`If a skill path is unavailable, read its files with \`tines issues context ${ref} --json\`; to write the bundle into a new directory, use \`tines issues context ${ref} --out <dir>\`.`
+		);
+	}
 	const artifacts = [
-		...context.skills.map(
-			(s) => `skill "${s.name}" (${s.file_count} file${s.file_count === 1 ? '' : 's'})`
-		),
 		...context.repos.map((r) => `repo "${r.name}"${r.branch ? ` (branch ${r.branch})` : ''}`)
 	];
 	if (artifacts.length > 0) {
@@ -1435,14 +2217,49 @@ export function issueBlock(
 	return lines.join('\n').trimEnd();
 }
 
+/**
+ * The reduced prompt a resumed run is launched with: the stage-scoped
+ * context (the current state's instructions and its journal — the "current
+ * stage contract" a cross-stage send-back needs and the previous session
+ * never saw) followed by the issue block, which carries the steer, the
+ * current state, the available transitions and the thread.
+ *
+ * Global and project prompts are deliberately dropped: the conversation
+ * being resumed was launched with them, and re-sending them lengthens the
+ * prefix every later turn is priced on without telling the agent anything.
+ */
+export function buildResumePrompt(
+	context: EffectiveContext,
+	issue: IssueDetail,
+	issueArtifacts: Artifact[] = [],
+	labelVocabulary: string[] = []
+): string {
+	const stage = context.prompt.parts.filter((p) => p.scope.workflow_state_id !== null);
+	const block = issueBlock(issue, context, issueArtifacts, labelVocabulary);
+	if (stage.length === 0) return block;
+	const text = stage
+		.map((p) => {
+			const body = p.body.trim();
+			if (!body) return '';
+			const heading = p.is_journal
+				? `## Journal (${p.scope.label})`
+				: `## Context: ${p.scope.label}`;
+			return `${heading}\n\n${body}`;
+		})
+		.filter(Boolean)
+		.join('\n\n');
+	return text ? `${text}\n\n${block}` : block;
+}
+
 /** Context first, the issue block last — the task sits nearest the end. */
 export function buildLaunchPrompt(
 	context: EffectiveContext,
 	issue: IssueDetail,
-	issueArtifacts: Artifact[] = []
+	issueArtifacts: Artifact[] = [],
+	labelVocabulary: string[] = []
 ): string {
 	const text = context.prompt.text.trim();
-	const block = issueBlock(issue, context, issueArtifacts);
+	const block = issueBlock(issue, context, issueArtifacts, labelVocabulary);
 	return text ? `${text}\n\n${block}` : block;
 }
 
@@ -1472,7 +2289,10 @@ export async function findAttachedContext(
 	if (anchor.stateIds !== undefined) {
 		q = q.where('context_item.workflow_state_id', 'in', anchor.stateIds);
 	}
-	const rows = await q.orderBy('context_item.created_at asc').orderBy('context_item.id asc').execute();
+	const rows = await q
+		.orderBy('context_item.created_at asc')
+		.orderBy('context_item.id asc')
+		.execute();
 	return rows.map((row) => ({
 		id: row.id,
 		kind: row.kind as ContextKind,
@@ -1535,19 +2355,101 @@ export function seedPromptQueries(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	opts: {
+		id?: string;
+		eventId?: string;
+		guard?: QueryGuard;
 		name: string;
 		body: string;
 		projectId?: string;
 		workflowStateId?: string;
 		/** Canonical scope label at creation time, for the event payload. */
 		label: string;
+		/** Ordering within the scope; ordinary creation callers default to first. */
+		position?: number;
 		now: number;
 	}
 ): { id: string; queries: CompiledQuery[] } {
 	validatePromptBody(opts.body);
-	const id = newId('ctx');
+	const id = opts.id ?? newId('ctx');
 	const projectId = opts.projectId ?? null;
 	const workflowStateId = opts.workflowStateId ?? null;
+	return {
+		id,
+		queries: [
+			insertValues(
+				db,
+				'context_item',
+				{
+					id,
+					user_id: actor.userId,
+					kind: 'prompt',
+					name: opts.name,
+					description: '',
+					project_id: projectId,
+					workflow_state_id: workflowStateId,
+					label_id: null,
+					issue_id: null,
+					body: opts.body,
+					repo_url: null,
+					repo_branch: null,
+					repo_dir: null,
+					position: opts.position ?? 0,
+					version: 1,
+					created_at: opts.now,
+					updated_at: opts.now
+				},
+				opts.guard
+			),
+			eventInsert(
+				db,
+				actor,
+				{
+					id: opts.eventId,
+					createdAt: opts.now,
+					type: 'context.created',
+					projectId,
+					payload: {
+						context_id: id,
+						kind: 'prompt',
+						name: opts.name,
+						scope: {
+							project_id: projectId,
+							workflow_state_id: workflowStateId,
+							issue_id: null,
+							label: opts.label
+						}
+					}
+				},
+				opts.guard
+			)
+		]
+	};
+}
+
+/**
+ * Statements creating a repo item plus its context.created event, for riding
+ * along in a creation batch — the `repo` sibling of `seedPromptQueries`
+ * (starters, Tines/248). The anchor project is brand new, so the scope is
+ * empty by construction and the name cannot collide.
+ */
+export function seedRepoQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	opts: {
+		name: string;
+		description?: string;
+		repoUrl: string;
+		repoBranch?: string | null;
+		repoDir?: string | null;
+		projectId: string;
+		position: number;
+		/** Canonical scope label at creation time, for the event payload. */
+		label: string;
+		now: number;
+	}
+): { id: string; queries: CompiledQuery[] } {
+	const id = newId('ctx');
+	const projectId = opts.projectId;
 	return {
 		id,
 		queries: [
@@ -1556,17 +2458,18 @@ export function seedPromptQueries(
 				.values({
 					id,
 					user_id: actor.userId,
-					kind: 'prompt',
+					kind: 'repo',
 					name: opts.name,
-					description: '',
+					description: opts.description ?? '',
 					project_id: projectId,
-					workflow_state_id: workflowStateId,
+					workflow_state_id: null,
+					label_id: null,
 					issue_id: null,
-					body: opts.body,
-					repo_url: null,
-					repo_branch: null,
-					repo_dir: null,
-					position: 0,
+					body: null,
+					repo_url: opts.repoUrl,
+					repo_branch: opts.repoBranch ?? null,
+					repo_dir: opts.repoDir ?? null,
+					position: opts.position,
 					version: 1,
 					created_at: opts.now,
 					updated_at: opts.now
@@ -1577,11 +2480,11 @@ export function seedPromptQueries(
 				projectId,
 				payload: {
 					context_id: id,
-					kind: 'prompt',
+					kind: 'repo',
 					name: opts.name,
 					scope: {
 						project_id: projectId,
-						workflow_state_id: workflowStateId,
+						workflow_state_id: null,
 						issue_id: null,
 						label: opts.label
 					}

@@ -19,8 +19,8 @@ Explicitly out of scope, even where the data model anticipates them:
 - **Roles/permissions**: workflows are states + transitions only; anyone authenticated as the owner (session or API key) can perform any action. Per-state roles come with the supervisor.
 - **Collaboration**: no teams, no sharing, no workflow publishing. Everything belongs to a single user.
 - **Project hierarchy**: projects are a single flat layer per user. (Trees come later — the schema must not preclude adding `parent_id`.)
-- **Issue metadata**: no assignee, labels, priority, or due dates.
-- **Issue deletion/archival**: moving an issue to a `done` state is the only way to finish it; deleting issues (and the audit questions it raises) is deferred.
+- **Issue metadata**: no assignee, labels, priority, or due dates. (Labels shipped 2026-09-04, Tines/31; they became a context and routing scope dimension in Tines/168.)
+- **Issue deletion/archival**: moving an issue to a `done` state is the only way to finish it; deleting issues (and the audit questions it raises) is deferred. (Project archival shipped 2026-09-06, Tines/206 and Tines/207 — see `specs/projects/SPEC.md`; issue deletion stays deferred.)
 - **Drag-and-drop workflow editing**: workflows always render as a visual graph, but the graph is not an editing surface — creating and editing happens through a form. Manual node positioning and edge-drawing come later, if ever.
 
 ## Concepts
@@ -83,6 +83,20 @@ The unit of work. An issue has:
 - **Title** (plain text) and **description** (Markdown).
 - **Workflow binding**: chosen per issue at creation from the user's library (defaulting to the project's default workflow, else the standard workflow). Immutable after creation in phase one.
 - **State**: a state id from the bound workflow. New issues start in the workflow's initial state. State changes go through a dedicated transition operation that names the transition being taken (by action name or transition id) and rejects anything not in the workflow's transition set.
+
+**2026-09-10 amendment (Tines/392) — project transfer.** The original phase-one
+constraint above has been superseded: an owner may transfer one idle issue to
+another active project in the same workspace. The stable issue ID and all
+dependent records remain unchanged. The destination allocates its next
+never-used number at commit time, while an append-only address ledger keeps
+every old `<project>/<number>` usable. A signed, expiring preview describes the
+preserved record and the effective context/repository/routing change; commit
+atomically rejects changed dependencies, active work, archived projects and
+competing moves. Historical events keep their recorded project attribution,
+but issue links resolve to the current canonical address. Schedule association
+and closure-gate participation remain with a moved instance; future instances
+stay in the schedule's original project. Project deletion is refused while its
+historical address namespace is still referenced.
 
 ### Comment
 
@@ -152,15 +166,18 @@ JSON over HTTP under `/api/v1/*`, served by the SvelteKit app; shared request/re
 | `GET/PATCH/DELETE /api/v1/projects/:id` | Read / update (name, description, default workflow) / delete (only when issue-less) |
 | `GET/POST /api/v1/workflows` | List library (incl. standard) / create |
 | `GET/PATCH/DELETE /api/v1/workflows/:id` | Read (with states + transitions) / update per editing rules / delete when unreferenced |
-| `GET /api/v1/issues` | Global list across projects; filters: `project`, `state`, `category`, `workflow` |
-| `GET/POST /api/v1/projects/:id/issues` | List (filter by state/category) / create |
+| `GET /api/v1/issues` | Global list across projects; filters include `project`, `state`, `category`, `workflow`, and `q` |
+| `GET/POST /api/v1/projects/:id/issues` | List (including workflow/state/category/`q` filters) / create |
 | `GET/PATCH /api/v1/issues/:id` | Read (incl. workflow, state, comments) / update title & description |
 | `POST /api/v1/issues/:id/transition` | `{ action }` (transition name) or `{ transition_id }`; 422 with the allowed transitions (named) when invalid |
+| `GET/POST /api/v1/issues/:id/transfer` | Preview / commit a signed project transfer; run keys may preview but cannot commit |
 | `GET/POST /api/v1/issues/:id/comments` | List / add comment |
-| `GET /api/v1/events` | Global feed, newest first; filters: `issue`, `project`, `type`; cursor pagination |
+| `GET /api/v1/events` | Global feed, newest first; filters: `issue`, `project`, comma-separated `type`, `since`, `until`, `state`; cursor pagination |
 | `GET/POST /api/v1/api-keys`, `DELETE /api/v1/api-keys/:id` | Manage keys (create/revoke require a browser session, not a key) |
 
 All list endpoints use the same cursor-pagination convention (`?cursor=…&limit=…`, response carries `next_cursor`), newest first for issues and events.
+
+Issue `q` is a complete literal substring match over title and description, case-insensitive for ASCII. Characters such as `%` and `_` have no wildcard meaning, and ordinary queries longer than 48 characters are supported. Both issue-list routes share the same predicate.
 
 Validation failures (workflow editing rules, illegal transitions) return structured errors naming what was violated and, where applicable, what *is* allowed — agents should be able to recover from a 422 without human help.
 
@@ -178,11 +195,23 @@ tines issues list [--project <name>] [--state <name>] [--category <cat>] [--all]
 tines issues create <project> --title <t> [--description <md>] [--workflow <id-or-name>]
 tines issues show <project>/<number>
 tines issues move <project>/<number> <action>       # transition name, e.g. "approve"
+tines issues transfer <project>/<number> --project <destination>
+	[--dry-run] [--inspect <n>] [--yes]               # project transfer, not workflow move
 tines issues comment <project>/<number> <markdown>
-tines events list [--issue <ref>] [--project <name>] [--limit n]
+tines events list [--issue <ref>] [--project <name>] [--type <types>] [--since <time>] [--until <time>] [--state <workflow/state>] [--limit n] [--all-pages [--max-items n]]
 ```
 
 All commands support `--json` for agent consumption. `issues show --json` includes the allowed next transitions — action name plus target state — so an agent always knows its legal moves and what each one means.
+
+List commands return one page by default. `--all-pages` follows cursors and retains the
+complete result in memory with a 10,000-item safety ceiling; `--max-items n` deliberately
+replaces that finite ceiling and is valid only with `--all-pages`. Exceeding either ceiling
+fails rather than returning a partial result. `--limit` controls each request's page size,
+not the aggregate. For example, a larger project event inventory is:
+
+```
+tines events list --project Tines --all-pages --max-items 20000 --json
+```
 
 ## Web UI
 
@@ -192,7 +221,7 @@ SvelteKit + shadcn-svelte, behind sign-in.
 
 A persistent top nav with four tabs — **Issues, Workflows, Projects, Activity** — each a list view with a corresponding detail page. Settings (API keys, account) live under the avatar menu, not in the tabs.
 
-- **Issues** (`/issues`): the default landing tab — a global list across all projects, hiding `done` issues by default. Filter by project, state, and category; rows show number, title, project, state (color-coded by category), and last activity. → detail at `/issues/:project/:number`.
+- **Issues** (`/issues`): the default landing tab — a global list across all projects, hiding `done` issues by default. Filter by project focus, workflow, optional state within that workflow, and category; rows show number, title, project, state (color-coded by category), and last activity. Workflow/state selections use stable IDs, while old name-based URLs remain valid. → detail at `/issues/:project/:number`.
 - **Workflows** (`/workflows`): the library, standard workflow marked read-only. → detail at `/workflows/:id`.
 - **Projects** (`/projects`): list + create. → detail at `/projects/:id`: the project's issues (same list component as the Issues tab, pre-filtered), a new-issue form, and project settings (name, description, default workflow).
 - **Activity** (`/activity`): the global event feed, newest first, filterable by project and type — the "log of work" made visible. Each event links to its issue/project.
@@ -202,7 +231,7 @@ A persistent top nav with four tabs — **Issues, Workflows, Projects, Activity*
 
 - **Issue detail**: title, rendered Markdown description (editable), state with allowed-transition buttons — labeled by action name, with the target state as secondary text — plus a compact graph of the issue's workflow with the current state highlighted, comment thread, and this issue's slice of the activity log — with actors shown throughout.
 - **Workflow detail/editor**: two views of the same FSM, side by side:
-  - A **graph view** — the primary way a workflow is *read*. States are nodes (color-coded by category; initial and dead-end states visually distinguished), transitions are directed edges labeled with their action names (labels elided in compact previews), laid out automatically client-side (no stored positions, no manual arranging). Shown wherever a workflow appears: the detail page, the editor, and as a compact preview when picking a workflow at issue creation.
+  - A **graph view** — the primary way a workflow is *read*. States are nodes (color-coded by category; initial and dead-end states visually distinguished), transitions are directed edges labeled with their action names (labels elided in compact previews), laid out automatically client-side (no stored positions, no manual arranging). Shown wherever a workflow appears: the detail page, the editor, and as a compact preview when picking a workflow at issue creation. The editor defaults to fitting the whole graph to its preview width and offers an exact 1× view with horizontal scrolling inside its named preview region; other surfaces retain fitted rendering.
   - A **form-based editor** — the way a workflow is *written*: add/rename/remove states, set each state's category, pick the initial state, per-state pickers for allowed target states. The graph re-renders live as the form changes, so the user sees the machine they're building. Editing-rule violations surface inline.
 
 ### Look and feel

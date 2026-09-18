@@ -16,8 +16,8 @@
 
 <h1 class="mb-2 text-2xl font-semibold tracking-tight">Appearance</h1>
 <p class="text-muted-foreground mb-6 max-w-2xl text-sm">
-	Choose how Tines looks. <strong class="font-medium">System</strong> follows your device's
-	appearance setting; picking Light or Dark overrides it. The choice is stored in this browser.
+	Choose how Tines looks. <strong class="font-medium">System</strong> follows your device's appearance
+	setting; picking Light or Dark overrides it. The choice is stored in this browser.
 </p>
 
 <div class="inline-flex gap-0.5 rounded-md border p-0.5" role="radiogroup" aria-label="Theme">

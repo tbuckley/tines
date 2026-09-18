@@ -1,7 +1,10 @@
 import { building } from '$app/environment';
+import { jsonifyMethodNotAllowed } from '$lib/server/api/core';
+import { artifactSandboxOrigin } from '$lib/server/artifact-site';
 import { getAuth } from '$lib/server/auth';
 import type { Handle, RequestEvent } from '@sveltejs/kit';
 import { svelteKitHandler } from 'better-auth/svelte-kit';
+import { finalizePublicationResponse } from '$lib/server/publications/response';
 
 const FORM_CONTENT_TYPES = new Set([
 	'application/x-www-form-urlencoded',
@@ -22,7 +25,10 @@ const FORM_CONTENT_TYPES = new Set([
 function crossSiteFormSubmission(event: RequestEvent): boolean {
 	const { request, url } = event;
 	if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) return false;
-	const contentType = (request.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+	const contentType = (request.headers.get('content-type') ?? '')
+		.split(';')[0]
+		.trim()
+		.toLowerCase();
 	if (!FORM_CONTENT_TYPES.has(contentType)) return false;
 	if (!request.headers.get('cookie')) return false;
 	return request.headers.get('origin') !== url.origin;
@@ -52,8 +58,21 @@ function usesBearerAuth(event: RequestEvent): boolean {
 	return !event.request.headers.get('cookie');
 }
 
-export const handle: Handle = async ({ event, resolve }) => {
+const handleRequest: Handle = async ({ event, resolve }) => {
 	if (building || !event.platform) {
+		return resolve(event);
+	}
+	// The sandbox host (ARTIFACT_SANDBOX_ORIGIN) serves artifact sites and
+	// nothing else: no sign-in page, no /api, no app assets — so a prototype's
+	// JavaScript has nothing of ours to reach even on its own origin. It never
+	// carries an app session either, since it is a different registrable domain.
+	const sandboxOrigin = artifactSandboxOrigin(event.platform.env.ARTIFACT_SANDBOX_ORIGIN);
+	if (sandboxOrigin && event.url.origin === sandboxOrigin) {
+		if (!event.url.pathname.startsWith('/s/')) {
+			return new Response('Not found', { status: 404 });
+		}
+		event.locals.user = null;
+		event.locals.session = null;
 		return resolve(event);
 	}
 	if (crossSiteFormSubmission(event)) {
@@ -77,11 +96,15 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 
 	// Mounts the Better Auth handler at /api/auth/* and passes everything else through.
-	const response = await svelteKitHandler({ event, resolve, auth, building });
+	const response = jsonifyMethodNotAllowed(
+		event.url.pathname,
+		event.request.method,
+		await svelteKitHandler({ event, resolve, auth, building })
+	);
 
 	// Server-Timing: per-request server cost, readable in DevTools -> Network
 	// on any deployment. This is the production counterpart to the modelled
-	// `pnpm perf:nav` probe — see docs/PERFORMANCE.md.
+	// `pnpm --filter web perf:nav` probe — see docs/PERFORMANCE.md.
 	try {
 		response.headers.append(
 			'Server-Timing',
@@ -92,3 +115,6 @@ export const handle: Handle = async ({ event, resolve }) => {
 	}
 	return response;
 };
+
+export const handle: Handle = async ({ event, resolve }) =>
+	finalizePublicationResponse(event.request, await handleRequest({ event, resolve }));

@@ -24,14 +24,16 @@ import {
 	type LaunchPromptResponse,
 	type ModelTier,
 	type RunnerBudget,
+	type Runner,
 	type RunnerTierOverrides,
 	canonicalGitHubRepoUrl,
 	LAUNCH_STALL_MS
 } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { decryptSecret } from '../crypto';
-import { getDb, type Database } from '../db';
+import { getDb, newId, type Database } from '../db';
 import type {
+	AdapterEndInput,
 	AdapterLaunchInput,
 	AdapterLaunchResult,
 	AdapterPollResult,
@@ -39,7 +41,18 @@ import type {
 	RunnerAdapter
 } from './adapter';
 import { mapUsage, summarizeEvents } from './claude-events';
-import { buildSupervisorPreamble } from './preamble';
+import {
+	claimResourceDisposal,
+	isResumeProviderSupported,
+	prepareManagedResume,
+	expiredResumeResources,
+	abandonResumeClaim,
+	completeResumeTransfer,
+	resumeFingerprint,
+	retainResumeResource,
+	setTransferPhase
+} from './resume';
+import { buildResumePreamble, buildSupervisorPreamble } from './preamble';
 
 // ---------------------------------------------------------------------------
 // Config shapes (runner.config / agent_run.provider_meta are adapter-owned)
@@ -50,6 +63,8 @@ export interface ClaudeRunnerConfig {
 	environment_id?: string;
 	/** Per-tier managed agents, each with the model/effort it was built for. */
 	agents?: Partial<Record<ModelTier, { agent_id: string; model: string; effort?: string }>>;
+	/** Immutable agent identities keyed by canonical [tier, model, effort]. */
+	agents_by_signature?: Record<string, { agent_id: string; model: string; effort?: string }>;
 }
 
 /** `agent_run.provider_meta` for Claude runs. */
@@ -58,8 +73,18 @@ export interface ClaudeRunMeta {
 	vault_id?: string;
 	/** `processed_at` of the newest session event already rendered to the log. */
 	events_cursor?: string;
+	/** The credential inside `vault_id` holding the run key, for rotation. */
+	credential_id?: string;
 	/** Set once end-of-run provider resources were garbage-collected. */
 	gc_done?: boolean;
+	/**
+	 * Set when the end finalizer retained this run's session for a resume:
+	 * the session is deliberately left idle and its vault alive, so the GC
+	 * below must not treat it as an ended run's leftovers. Retention itself
+	 * lives in `run_resource`; this flag is what makes the provider-side
+	 * sweep agree with it without a join.
+	 */
+	retained?: boolean;
 }
 
 export interface ClaudeAdapterOptions {
@@ -72,7 +97,9 @@ export interface ClaudeAdapterOptions {
 
 function requireEncryptionKey(env: Env): string {
 	if (!env.SECRET_ENCRYPTION_KEY) {
-		throw new Error('SECRET_ENCRYPTION_KEY is not configured; cannot use stored provider credentials');
+		throw new Error(
+			'SECRET_ENCRYPTION_KEY is not configured; cannot use stored provider credentials'
+		);
 	}
 	return env.SECRET_ENCRYPTION_KEY;
 }
@@ -162,9 +189,15 @@ interface ProviderContext {
 		ctx: RunnerContext,
 		tier: ModelTier,
 		model: string,
-		effort: string | undefined
+		effort: string | undefined,
+		record?: AdapterLaunchInput['recordEffortEvidence']
 	): Promise<string>;
-	createRunVault(ctx: RunnerContext, runId: string, runKey: string, apiHost: string): Promise<string>;
+	createRunVault(
+		ctx: RunnerContext,
+		runId: string,
+		runKey: string,
+		apiHost: string
+	): Promise<{ vaultId: string; credentialId: string }>;
 }
 
 function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderContext {
@@ -198,12 +231,29 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		return decryptSecret(settings.github_pat_enc, requireEncryptionKey(env));
 	}
 
-	async function persistConfig(runnerId: string, config: ClaudeRunnerConfig): Promise<void> {
-		await db
-			.updateTable('runner')
-			.set({ config: JSON.stringify(config) })
-			.where('id', '=', runnerId)
-			.execute();
+	async function persistConfig(
+		runnerId: string,
+		merge: (current: ClaudeRunnerConfig) => ClaudeRunnerConfig
+	): Promise<ClaudeRunnerConfig> {
+		for (let attempt = 0; attempt < 5; attempt++) {
+			const stored = await db
+				.selectFrom('runner')
+				.select(['config', 'resume_config_revision'])
+				.where('id', '=', runnerId)
+				.executeTakeFirstOrThrow();
+			const next = merge(parseJson<ClaudeRunnerConfig>(stored.config) ?? {});
+			const updated = await db
+				.updateTable('runner')
+				.set({
+					config: JSON.stringify(next),
+					resume_config_revision: sql<number>`resume_config_revision + 1`
+				})
+				.where('id', '=', runnerId)
+				.where('resume_config_revision', '=', stored.resume_config_revision)
+				.executeTakeFirst();
+			if (Number(updated.numUpdatedRows) === 1) return next;
+		}
+		throw new Error('runner configuration changed repeatedly while caching managed resources');
 	}
 
 	/**
@@ -223,7 +273,7 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		if (opts.fetch) {
 			res = await opts.fetch(url, init);
 		} else if (env.SELF) {
-			res = await env.SELF.fetch(url, init).catch(() => fetchFn(url, init)) as Response;
+			res = (await env.SELF.fetch(url, init).catch(() => fetchFn(url, init))) as Response;
 		} else {
 			res = await fetchFn(url, init);
 		}
@@ -252,8 +302,10 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 			if (!existing) throw e;
 			environmentId = existing.id;
 		}
-		ctx.config.environment_id = environmentId;
-		await persistConfig(ctx.row.id, ctx.config);
+		ctx.config = await persistConfig(ctx.row.id, (current) => ({
+			...current,
+			environment_id: environmentId
+		}));
 		return environmentId;
 	}
 
@@ -268,30 +320,106 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		ctx: RunnerContext,
 		tier: ModelTier,
 		model: string,
-		effort: string | undefined
+		effort: string | undefined,
+		record?: AdapterLaunchInput['recordEffortEvidence']
 	): Promise<string> {
 		const modelParam = effort
 			? { id: model, effort: effort as 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
 			: model;
-		const existing = ctx.config.agents?.[tier];
+		const signature = JSON.stringify([tier, model, effort ?? null]);
+		const existing =
+			ctx.config.agents_by_signature?.[signature] ??
+			(ctx.config.agents?.[tier]?.model === model && ctx.config.agents?.[tier]?.effort === effort
+				? ctx.config.agents[tier]
+				: undefined);
 		if (existing && existing.model === model && existing.effort === effort) {
-			return existing.agent_id;
+			let returned: {
+				model?: string | { id?: string; effort?: string | { type?: string } };
+			} | null = null;
+			try {
+				returned = (await ctx.client.beta.agents.retrieve(existing.agent_id)) as unknown as {
+					model?: string | { id?: string; effort?: string | { type?: string } };
+				};
+			} catch (e) {
+				// A deleted cached agent is a cache miss. Authentication, throttling and
+				// transient provider failures are not proof that replacing it is safe.
+				if (!(e instanceof Anthropic.APIError && e.status === 404)) throw e;
+			}
+			if (returned) {
+				const observedModel =
+					typeof returned.model === 'string' ? returned.model : returned.model?.id;
+				const rawEffort = typeof returned.model === 'object' ? returned.model?.effort : undefined;
+				const observedEffort = typeof rawEffort === 'string' ? rawEffort : rawEffort?.type;
+				const verified =
+					observedModel === model && (effort === undefined || observedEffort === effort);
+				const mismatch =
+					(observedModel !== undefined && observedModel !== model) ||
+					(effort !== undefined && observedEffort !== undefined && observedEffort !== effort);
+				// Evidence names the agent that was actually selected. An
+				// unverifiable cache entry is only a miss; replacement creation
+				// records the first application milestone if it succeeds.
+				if (effort && (verified || mismatch))
+					await record?.({
+						status: mismatch ? 'rejected' : 'confirmed',
+						transport: 'managed_agent_config',
+						attempted_effort: effort,
+						provider_agent_id: existing.agent_id,
+						...(observedModel ? { observed_model: observedModel } : {}),
+						...(observedEffort ? { observed_effort: observedEffort } : {}),
+						...(mismatch
+							? { reason: 'cached provider agent configuration conflicts with intent' }
+							: {})
+					});
+				if (mismatch) throw new Error('cached provider agent configuration conflicts with intent');
+				// A cache key is only a hint. If retrieval omits the fields needed to
+				// verify this signature, provision a fresh agent instead of silently
+				// trusting stale local metadata.
+				if (verified) return existing.agent_id;
+			}
 		}
-		let agentId: string;
-		if (existing) {
-			await ctx.client.beta.agents.update(existing.agent_id, { model: modelParam });
-			agentId = existing.agent_id;
-		} else {
-			const created = await ctx.client.beta.agents.create({
-				name: `tines-${ctx.row.name}-${tier}`,
-				description: `Tines runner "${ctx.row.name}", tier ${tier}`,
-				model: modelParam,
-				tools: [{ type: 'agent_toolset_20260401' }]
+		const created = await ctx.client.beta.agents.create({
+			name: `tines-${ctx.row.name}-${tier}-${effort ?? 'default'}`,
+			description: `Tines runner "${ctx.row.name}", tier ${tier}, effort ${effort ?? 'provider default'}`,
+			model: modelParam,
+			tools: [{ type: 'agent_toolset_20260401' }]
+		});
+		const agentId = created.id;
+		if (effort) {
+			const returned = created as unknown as {
+				model?: string | { id?: string; effort?: string | { type?: string } };
+			};
+			const observedModel =
+				typeof returned.model === 'string' ? returned.model : returned.model?.id;
+			const rawEffort = typeof returned.model === 'object' ? returned.model?.effort : undefined;
+			const observedEffort = typeof rawEffort === 'string' ? rawEffort : rawEffort?.type;
+			const mismatch =
+				(observedModel !== undefined && observedModel !== model) ||
+				(observedEffort !== undefined && observedEffort !== effort);
+			await record?.({
+				status: mismatch
+					? 'rejected'
+					: observedModel === model && observedEffort === effort
+						? 'confirmed'
+						: 'accepted_unconfirmed',
+				transport: 'managed_agent_config',
+				attempted_effort: effort,
+				provider_agent_id: agentId,
+				...(observedModel ? { observed_model: observedModel } : {}),
+				...(observedEffort ? { observed_effort: observedEffort } : {}),
+				...(mismatch ? { reason: 'provider returned a conflicting model or effort' } : {})
 			});
-			agentId = created.id;
+			if (mismatch)
+				throw new Error(
+					`provider returned ${observedModel ?? 'unknown model'} / ${observedEffort ?? 'unknown effort'} for requested ${model} / ${effort}`
+				);
 		}
-		ctx.config.agents = { ...ctx.config.agents, [tier]: { agent_id: agentId, model, ...(effort ? { effort } : {}) } };
-		await persistConfig(ctx.row.id, ctx.config);
+		ctx.config = await persistConfig(ctx.row.id, (current) => ({
+			...current,
+			agents_by_signature: {
+				...current.agents_by_signature,
+				[signature]: { agent_id: agentId, model, ...(effort ? { effort } : {}) }
+			}
+		}));
 		return agentId;
 	}
 
@@ -301,13 +429,13 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		runId: string,
 		runKey: string,
 		apiHost: string
-	): Promise<string> {
+	): Promise<{ vaultId: string; credentialId: string }> {
 		const vault = await ctx.client.beta.vaults.create({
 			display_name: `tines-run-${runId}`,
 			metadata: { tines_run_id: runId }
 		});
 		try {
-			await ctx.client.beta.vaults.credentials.create(vault.id, {
+			const credential = await ctx.client.beta.vaults.credentials.create(vault.id, {
 				display_name: `Tines run key for ${runId}`,
 				auth: {
 					type: 'environment_variable',
@@ -319,11 +447,11 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 					injection_location: { header: true }
 				}
 			});
+			return { vaultId: vault.id, credentialId: credential.id };
 		} catch (e) {
 			await ctx.client.beta.vaults.delete(vault.id).catch(() => {});
 			throw e;
 		}
-		return vault.id;
 	}
 
 	// `persistConfig` stays private: only the two ensure* functions write config.
@@ -345,7 +473,153 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 // client, so they live at module scope and `sweepRunner` is the runner-context
 // guard plus three calls.
 
-async function gcEndedRuns(db: Kysely<Database>, client: Anthropic, runnerId: string): Promise<void> {
+/**
+ * The sessions this runner is deliberately holding for a resume: every
+ * managed resource that is still claimable (`available`) or mid-transfer
+ * (`claimed`). Both provider-side sweeps below consult it before deciding
+ * that an ended run's session is garbage — retention is precisely the state
+ * where a session outlives its run.
+ */
+/**
+ * Expiry GC, provider side: an expired managed resource is claimed for
+ * disposal through the same `available →` predicate a reuse would use (so a
+ * launch in flight keeps its session), then its session is archived and its
+ * vault deleted before the row goes. A failed provider call leaves the row
+ * in `disposing` for the next sweep rather than dropping the only record of
+ * the handles.
+ */
+async function disposeExpiredManagedResources(
+	db: Kysely<Database>,
+	client: Anthropic,
+	runnerId: string,
+	now: number
+): Promise<void> {
+	const expired = await expiredResumeResources(db, now, 25, 'claude_managed', runnerId);
+	for (const row of expired) {
+		// The CAS is per row state: an `available` row must still lose to a
+		// launch claiming it, while a stale `claimed` one is a dead transfer.
+		if (
+			!(await claimResourceDisposal(db, row.id, now, [
+				row.state as 'available' | 'claimed' | 'disposing'
+			]))
+		)
+			continue;
+		try {
+			if (row.provider_session_id) {
+				await client.beta.sessions.archive(row.provider_session_id).catch((e) => {
+					if (!(e instanceof Anthropic.APIError && e.status === 404)) throw e;
+				});
+			}
+			if (row.vault_id) {
+				await client.beta.vaults.delete(row.vault_id).catch((e) => {
+					if (!(e instanceof Anthropic.APIError && e.status === 404)) throw e;
+				});
+			}
+			await db.deleteFrom('run_resource').where('id', '=', row.id).execute();
+		} catch (e) {
+			console.error(`claude sweep: disposing resume resource ${row.id} failed:`, e);
+		}
+	}
+}
+
+/**
+ * The vaults this runner is deliberately holding for a resume. The vault
+ * sweep below finds vaults by *name* (`tines-run-<id>`) and deletes any
+ * whose run has ended — and a retained run has ended by definition, so
+ * without this the retained credential is destroyed on the very next sweep
+ * and the transfer's `credentials.update` 404s.
+ */
+/**
+ * The session and vault handles a *live* run of this runner is using. A
+ * resumed run inherits its predecessor's session and vault, so after the
+ * hand-over both are named by an ended run (the predecessor, by name and by
+ * `provider_meta`) while a running one depends on them — and the resource
+ * row that marked them retained is gone, deleted by the completed transfer.
+ * Every sweep below therefore asks this too: a handle an active run holds is
+ * never garbage, whatever an ended run still says about it.
+ */
+async function liveRunHandles(
+	db: Kysely<Database>,
+	runnerId: string
+): Promise<{ vaults: Set<string>; sessions: Set<string> }> {
+	const rows = await db
+		.selectFrom('agent_run')
+		.select(['provider_session_id', 'provider_meta'])
+		.where('runner_id', '=', runnerId)
+		.where('status', 'in', ['assigned', 'launching', 'running'])
+		.execute();
+	const vaults = new Set<string>();
+	const sessions = new Set<string>();
+	for (const row of rows) {
+		if (row.provider_session_id) sessions.add(row.provider_session_id);
+		const meta = parseJson<ClaudeRunMeta>(row.provider_meta);
+		if (meta?.vault_id) vaults.add(meta.vault_id);
+	}
+	return { vaults, sessions };
+}
+
+async function retainedResourceHandles(
+	db: Kysely<Database>,
+	runnerId: string
+): Promise<{ vaults: Set<string>; sessions: Set<string> }> {
+	const rows = await db
+		.selectFrom('run_resource')
+		.select(['vault_id', 'provider_session_id'])
+		.where('runner_id', '=', runnerId)
+		.where('kind', '=', 'claude_managed')
+		.where('state', 'in', ['available', 'claimed'])
+		.execute();
+	return {
+		vaults: new Set(rows.map((r) => r.vault_id).filter((id): id is string => !!id)),
+		sessions: new Set(rows.map((r) => r.provider_session_id).filter((id): id is string => !!id))
+	};
+}
+
+/**
+ * Everything this runner must not delete: the handles held for a resume
+ * (`run_resource`, still claimable or mid-transfer) plus the handles a live
+ * run is running on.
+ */
+async function protectedHandles(
+	db: Kysely<Database>,
+	runnerId: string
+): Promise<{ vaults: Set<string>; sessions: Set<string> }> {
+	const [retained, live] = await Promise.all([
+		retainedResourceHandles(db, runnerId),
+		liveRunHandles(db, runnerId)
+	]);
+	return {
+		vaults: new Set([...retained.vaults, ...live.vaults]),
+		sessions: new Set([...retained.sessions, ...live.sessions])
+	};
+}
+
+/**
+ * Hands the predecessor's provider resources over on a completed resume: its
+ * `provider_meta` keeps the handles for the run detail view but is marked
+ * collected and no longer retained, so neither the GC nor a future expiry
+ * sweep can act on resources the successor now owns.
+ */
+async function releaseTransferredHandles(db: Kysely<Database>, runId: string): Promise<void> {
+	const row = await db
+		.selectFrom('agent_run')
+		.select('provider_meta')
+		.where('id', '=', runId)
+		.executeTakeFirst();
+	const meta = parseJson<ClaudeRunMeta>(row?.provider_meta ?? null);
+	if (!meta) return;
+	await db
+		.updateTable('agent_run')
+		.set({ provider_meta: JSON.stringify({ ...meta, retained: false, gc_done: true }) })
+		.where('id', '=', runId)
+		.execute();
+}
+
+async function gcEndedRuns(
+	db: Kysely<Database>,
+	client: Anthropic,
+	runnerId: string
+): Promise<void> {
 	// GC: ended runs whose per-run vault (and session) still exist. The
 	// vault holds an already-revoked key, but it must not accumulate.
 	const ended = await db
@@ -357,9 +631,18 @@ async function gcEndedRuns(db: Kysely<Database>, client: Anthropic, runnerId: st
 		.orderBy('ended_at desc')
 		.limit(25)
 		.execute();
+	const protectedIds = await protectedHandles(db, runnerId);
 	for (const run of ended) {
 		const meta = parseJson<ClaudeRunMeta>(run.provider_meta);
 		if (!meta || meta.gc_done) continue;
+		// A retained run's session and vault are the resume path's, not
+		// leftovers: only the resource's disposal (expiry, or a reuse that
+		// ends) may delete them. The same holds once a hand-over completes:
+		// the predecessor still names the handles its successor is running
+		// on, and its meta is stamped `gc_done` by the transfer — but a crash
+		// between the send and that stamp leaves this the only guard.
+		if (run.provider_session_id && protectedIds.sessions.has(run.provider_session_id)) continue;
+		if (meta.vault_id && protectedIds.vaults.has(meta.vault_id)) continue;
 		try {
 			if (meta.vault_id) {
 				await client.beta.vaults.delete(meta.vault_id).catch((e) => {
@@ -380,15 +663,26 @@ async function gcEndedRuns(db: Kysely<Database>, client: Anthropic, runnerId: st
 	}
 }
 
-async function reconcileVaults(db: Kysely<Database>, client: Anthropic, runnerId: string): Promise<void> {
+async function reconcileVaults(
+	db: Kysely<Database>,
+	client: Anthropic,
+	runnerId: string
+): Promise<void> {
 	// Vault fallback sweep, by name: a run canceled between vault creation
 	// and the running-flip never records `provider_meta`, so the GC above
 	// cannot see its vault. Per-run vaults are named `tines-run-<id>`,
 	// which makes them findable regardless — delete any whose run is
 	// unknown or ended.
 	try {
+		const protectedIds = await protectedHandles(db, runnerId);
 		const vaults = await client.beta.vaults.list({ limit: 100 });
 		for (const vault of vaults.data) {
+			// A vault held by a live resource belongs to the resume path, not
+			// to its ended owner run: only disposal may delete it. The same
+			// applies once a hand-over completes: the vault keeps its
+			// `tines-run-<predecessor>` name, so the lookup below would find
+			// an ended run and delete the successor's credential mid-run.
+			if (protectedIds.vaults.has(vault.id)) continue;
 			const runId = vault.display_name?.startsWith('tines-run-')
 				? vault.display_name.slice('tines-run-'.length)
 				: null;
@@ -420,6 +714,7 @@ async function reconcileSessions(
 	// session create and the DB write) — cancel them. Freshly created
 	// sessions get the launch-stall grace period before qualifying.
 	try {
+		const protectedIds = await protectedHandles(db, runnerId);
 		const page = await client.beta.sessions.list({
 			statuses: ['running', 'idle', 'rescheduling'],
 			limit: 100
@@ -428,6 +723,10 @@ async function reconcileSessions(
 			const runId = session.metadata?.tines_run_id;
 			if (!runId) continue; // not ours — never touch foreign sessions
 			if (now - Date.parse(session.created_at) < LAUNCH_STALL_MS) continue;
+			// An idle session held by a live resource is retained on purpose:
+			// its owner run HAS ended, which is exactly what this sweep would
+			// otherwise read as an orphan.
+			if (protectedIds.sessions.has(session.id)) continue;
 			const run = await db
 				.selectFrom('agent_run')
 				.select(['id', 'status'])
@@ -457,13 +756,21 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		const apiHost = new URL(base).hostname;
 		if (!input.model) throw new Error('Claude launches need a resolved model for the tier');
 		const overrides = parseJson<RunnerTierOverrides>(ctx.row.tiers);
-		const effort = overrides?.[input.tier]?.effort;
+		const effort = input.effort ?? undefined;
 
 		// Launch materials, assembled at launch time over our own API.
 		const [issue, prompt, context] = await Promise.all([
 			provider.apiGet<IssueDetail>(base, `/api/v1/issues/${input.issueId}`, input.runKey),
-			provider.apiGet<LaunchPromptResponse>(base, `/api/v1/issues/${input.issueId}/prompt`, input.runKey),
-			provider.apiGet<EffectiveContext>(base, `/api/v1/issues/${input.issueId}/context`, input.runKey)
+			provider.apiGet<LaunchPromptResponse>(
+				base,
+				`/api/v1/issues/${input.issueId}/prompt`,
+				input.runKey
+			),
+			provider.apiGet<EffectiveContext>(
+				base,
+				`/api/v1/issues/${input.issueId}/context`,
+				input.runKey
+			)
 		]);
 		const pat = await provider.githubPat(ctx.row.user_id);
 		if (context.repos.length > 0 && !pat) {
@@ -484,11 +791,130 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			return { ...repo, url: canonical };
 		});
 
-		const environmentId = await provider.ensureEnvironment(ctx);
-		const agentId = await provider.ensureTierAgent(ctx, input.tier, input.model, effort);
-		const vaultId = await provider.createRunVault(ctx, input.runId, input.runKey, apiHost);
-
 		const issueRef = `${issue.project_name}/${issue.number}`;
+
+		// Continuation: the idle session this issue's previous run left on this
+		// runner, when every guard passes. Ownership moves to this run — the
+		// vault credential is rotated to its key and the session retagged —
+		// so the predecessor's revoked key can never be used again. Any
+		// failure before the claim falls through to the fresh launch below.
+		const resume = await prepareManagedResume(db, {
+			runner: {
+				id: ctx.row.id,
+				type: 'claude_managed',
+				config: ctx.config as Record<string, unknown>,
+				resume_enabled: ctx.row.resume_enabled === 1,
+				resume_window_hours: ctx.row.resume_window_hours,
+				resume_max_turns: ctx.row.resume_max_turns,
+				resume_max_tokens: ctx.row.resume_max_tokens,
+				resume_max_cost_usd: ctx.row.resume_max_cost_usd
+			},
+			userId: ctx.row.user_id,
+			issueId: input.issueId,
+			runId: input.runId,
+			model: input.model,
+			effort: input.effort,
+			now: Date.now()
+		});
+		if (resume) {
+			const continuation = await provider.apiGet<LaunchPromptResponse>(
+				base,
+				`/api/v1/issues/${input.issueId}/prompt?resume=1`,
+				input.runKey
+			);
+			const resumePreamble = buildResumePreamble({
+				variant: 'claude_managed',
+				runId: input.runId,
+				runnerName: ctx.row.name,
+				issueRef,
+				timeoutMinutes: input.runner.max_run_minutes,
+				apiUrl: base,
+				repoDirs: repos.map((r) => r.dir),
+				previousRunId: resume.previous_run_id
+			});
+			// Everything up to the send is retryable-by-abandonment: nothing has
+			// reached the agent yet, so a provider error here must degrade to
+			// the fresh launch below rather than fail the run (which would back
+			// the whole runner off for what is only a lost optimisation). The
+			// claim is abandoned so the session and vault are disposed instead
+			// of being pinned by a claim no one will ever complete.
+			let transferred = true;
+			try {
+				// Rotate first: a send the session could answer with the dead run's
+				// key would attribute this run's writes to the previous one.
+				await ctx.client.beta.vaults.credentials.update(resume.credential_id, {
+					vault_id: resume.vault_id,
+					auth: { type: 'environment_variable', secret_value: input.runKey }
+				});
+				await ctx.client.beta.sessions.update(resume.provider_session_id, {
+					title: `Tines run ${input.runId} — ${issueRef}`,
+					metadata: { tines_run_id: input.runId, tines_runner_id: ctx.row.id }
+				});
+				// `sending` is the recovery boundary: a crash after this point may
+				// have delivered the message, so reconciliation must reconcile the
+				// session rather than send again.
+				await setTransferPhase(db, resume.resource_id, 'sending', Date.now());
+			} catch (e) {
+				console.error(`claude launch: resume transfer for run ${input.runId} failed:`, e);
+				await abandonResumeClaim(db, resume.resource_id, Date.now()).catch(() => false);
+				await db
+					.updateTable('agent_run')
+					.set({ resumed_from_run_id: null, resume_fallback_reason: 'unavailable' })
+					.where('id', '=', input.runId)
+					.execute();
+				transferred = false;
+			}
+			if (transferred) {
+				// The send is the one call that cannot be retried or abandoned: a
+				// delivered message the client never saw acknowledged has already
+				// started this run inside the session, so launching fresh would
+				// duplicate it. Let it throw — the run fails, the resource is left
+				// mid-transfer, and the disposal sweep takes it once it goes stale.
+				await ctx.client.beta.sessions.events.send(resume.provider_session_id, {
+					events: [
+						{
+							type: 'user.message',
+							content: [{ type: 'text', text: `${resumePreamble}\n\n${continuation.text}` }]
+						}
+					]
+				});
+				await completeResumeTransfer(db, resume.resource_id, Date.now());
+				// Ownership has moved: the predecessor must stop naming the
+				// session and vault as its own, or the end-of-run GC would
+				// archive the session this run is now talking in and delete the
+				// credential it reads its key from.
+				await releaseTransferredHandles(db, resume.previous_run_id);
+				const resumedMeta: ClaudeRunMeta = {
+					vault_id: resume.vault_id,
+					credential_id: resume.credential_id,
+					// Start the log after the predecessor's last rendered event, so
+					// its conversation does not replay into this run's log — and so
+					// its `end_turn` cannot be read as this run completing.
+					...(resume.events_cursor ? { events_cursor: resume.events_cursor } : {})
+				};
+				return {
+					provider_session_id: resume.provider_session_id,
+					provider_url: `https://platform.claude.com/workspaces/default/sessions/${resume.provider_session_id}`,
+					provider_meta: JSON.stringify(resumedMeta)
+				};
+			}
+		}
+
+		const environmentId = await provider.ensureEnvironment(ctx);
+		const agentId = await provider.ensureTierAgent(
+			ctx,
+			input.tier,
+			input.model,
+			effort,
+			input.recordEffortEvidence
+		);
+		const { vaultId, credentialId } = await provider.createRunVault(
+			ctx,
+			input.runId,
+			input.runKey,
+			apiHost
+		);
+
 		const preamble = buildSupervisorPreamble({
 			variant: 'claude_managed',
 			runId: input.runId,
@@ -514,7 +940,12 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				metadata: { tines_run_id: input.runId, tines_runner_id: ctx.row.id },
 				vault_ids: [vaultId],
 				...(capCents !== undefined
-					? { budget: { type: 'limit', max_list_cost: { amount: String(capCents), currency: 'USD' } } }
+					? {
+							budget: {
+								type: 'limit',
+								max_list_cost: { amount: String(capCents), currency: 'USD' }
+							}
+						}
 					: {}),
 				resources: repos.map((repo) => ({
 					type: 'github_repository' as const,
@@ -524,7 +955,10 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 					...(repo.branch ? { checkout: { type: 'branch' as const, name: repo.branch } } : {})
 				})),
 				initial_events: [
-					{ type: 'user.message', content: [{ type: 'text', text: `${preamble}\n\n${prompt.text}` }] }
+					{
+						type: 'user.message',
+						content: [{ type: 'text', text: `${preamble}\n\n${prompt.text}` }]
+					}
 				]
 			});
 		} catch (e) {
@@ -535,7 +969,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			throw e;
 		}
 
-		const meta: ClaudeRunMeta = { vault_id: vaultId };
+		const meta: ClaudeRunMeta = { vault_id: vaultId, credential_id: credentialId };
 		return {
 			provider_session_id: session.id,
 			// Best-effort console link: correct for default-workspace keys; the
@@ -560,7 +994,10 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			limit: 200
 		});
 
-		const { lines, cursor, idleReason, lastError } = summarizeEvents(events.data, meta.events_cursor);
+		const { lines, cursor, idleReason, lastError } = summarizeEvents(
+			events.data,
+			meta.events_cursor
+		);
 
 		const result: AdapterPollResult = {
 			usage: mapUsage(session.usage),
@@ -582,16 +1019,102 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				result.error = 'per-run cost cap reached (session paused at its platform budget)';
 			} else if (reason === 'requires_action') {
 				result.status = 'failed';
-				result.error = 'session paused awaiting a tool confirmation, which supervisor runs never grant';
+				result.error =
+					'session paused awaiting a tool confirmation, which supervisor runs never grant';
 			} else if (reason === 'retries_exhausted') {
 				result.status = 'failed';
 				result.error = lastError ?? 'session exhausted its retries';
 			} else {
 				result.status = 'completed';
 			}
-			await ctx.client.beta.sessions.archive(run.provider_session_id).catch(() => {});
+			// A clean end on a runner that can retain is NOT archived here:
+			// whether the session lives on is a question about the issue's
+			// end state, which only `finalizeEnd` (after the authoritative
+			// `endRun`) can answer. Every other end archives immediately, as
+			// it always has, and the ended-run GC is the crash backstop.
+			const mayRetain =
+				result.status === 'completed' &&
+				ctx.row.resume_enabled === 1 &&
+				isResumeProviderSupported(
+					ctx.row.type as Runner['type'],
+					ctx.config as Record<string, unknown>
+				);
+			if (!mayRetain) {
+				await ctx.client.beta.sessions.archive(run.provider_session_id).catch(() => {});
+			}
 		}
 		return result;
+	}
+
+	/**
+	 * Called once the server has judged the end (see `RunnerAdapter`). A run
+	 * that advanced its issue into an awaiting state on an opted-in runner
+	 * keeps its session idle and its vault alive behind a `run_resource`;
+	 * anything else disposes both here rather than waiting for the sweep.
+	 */
+	async function finalizeEnd(run: AdapterRunRef, input: AdapterEndInput): Promise<void> {
+		if (!run.provider_session_id) return;
+		const ctx = await provider.runnerContext(run.runner_id);
+		const meta = parseJson<ClaudeRunMeta>(run.provider_meta ?? null) ?? {};
+		const retain =
+			input.outcome === 'advanced' &&
+			input.ended_in_awaiting_state &&
+			ctx.row.resume_enabled === 1 &&
+			isResumeProviderSupported(
+				ctx.row.type as Runner['type'],
+				ctx.config as Record<string, unknown>
+			) &&
+			!!meta.vault_id &&
+			!!meta.credential_id;
+		if (!retain) {
+			await ctx.client.beta.sessions.archive(run.provider_session_id).catch(() => {});
+			if (meta.vault_id) {
+				await ctx.client.beta.vaults.delete(meta.vault_id).catch(() => {});
+			}
+			await db
+				.updateTable('agent_run')
+				.set({ provider_meta: JSON.stringify({ ...meta, gc_done: true }) })
+				.where('id', '=', run.id)
+				.execute();
+			return;
+		}
+		const expiresAt = input.now + ctx.row.resume_window_hours * 60 * 60 * 1000;
+		await retainResumeResource(db, {
+			id: newId('rres'),
+			userId: input.user_id,
+			runnerId: run.runner_id,
+			issueId: input.issue_id,
+			ownerRunId: run.id,
+			kind: 'claude_managed',
+			providerSessionId: run.provider_session_id,
+			workspacePath: null,
+			vaultId: meta.vault_id ?? null,
+			credentialId: meta.credential_id ?? null,
+			fingerprint: resumeFingerprint({
+				runnerId: run.runner_id,
+				harness: 'claude_managed',
+				model: input.model,
+				effort: input.effort,
+				preambleVariant: 'claude_managed'
+			}),
+			expiresAt,
+			now: input.now,
+			// The event boundary the successor starts its log from: without it
+			// the whole predecessor conversation replays into the new run.
+			transferData: meta.events_cursor
+				? JSON.stringify({ events_cursor: meta.events_cursor })
+				: null
+		});
+		// The provider-side sweeps read this flag; the resource row is the
+		// authority, but the flag is what stops a join in the hot GC loop.
+		await db
+			.updateTable('agent_run')
+			.set({
+				provider_meta: JSON.stringify({ ...meta, retained: true }),
+				resume_expires_at: expiresAt
+			})
+			.where('id', '=', run.id)
+			.execute();
 	}
 
 	async function cancel(run: AdapterRunRef): Promise<void> {
@@ -612,10 +1135,11 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		} catch {
 			return; // no key stored (or runner gone) — nothing provider-side to do
 		}
+		await disposeExpiredManagedResources(db, ctx.client, runner.id, now);
 		await gcEndedRuns(db, ctx.client, runner.id);
 		await reconcileVaults(db, ctx.client, runner.id);
 		await reconcileSessions(db, ctx.client, runner.id, now);
 	}
 
-	return { launchMode: 'immediate', launch, poll, cancel, sweepRunner };
+	return { launchMode: 'immediate', launch, poll, cancel, finalizeEnd, sweepRunner };
 }

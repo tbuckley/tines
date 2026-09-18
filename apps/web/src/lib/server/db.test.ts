@@ -48,7 +48,11 @@ describe('ConcurrentD1Dialect', () => {
 	 * into it. Multi-statement writes must go through runAtomic() -> DB.batch().
 	 */
 	it('no source file uses db.transaction()', () => {
-		const sources = import.meta.glob('/src/**/*.ts', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+		const sources = import.meta.glob('/src/**/*.ts', {
+			query: '?raw',
+			import: 'default',
+			eager: true
+		}) as Record<string, string>;
 		// Comments discuss the invariant by name, so strip them before matching.
 		const stripComments = (body: string) =>
 			body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');

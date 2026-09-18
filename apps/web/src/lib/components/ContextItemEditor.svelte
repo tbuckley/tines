@@ -5,6 +5,8 @@
 		ContextKind,
 		CreateContextItemRequest,
 		Issue,
+		IssueListItem,
+		LabelWithUsage,
 		Project,
 		UpdateContextItemRequest,
 		WorkflowResponse
@@ -17,6 +19,7 @@
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
@@ -25,6 +28,7 @@
 	interface ScopeDefaults {
 		project_id?: string;
 		workflow_state_id?: string;
+		label_id?: string;
 		issue_id?: string;
 	}
 
@@ -32,6 +36,7 @@
 		open = $bindable(false),
 		item = null,
 		defaults = {},
+		defaultKind,
 		projects,
 		workflows,
 		onsaved
@@ -41,6 +46,8 @@
 		item?: ContextItem | null;
 		/** Scope pre-filled on create (e.g. "attach to this issue"). */
 		defaults?: ScopeDefaults;
+		/** Kind pre-selected on create, when the caller opened the editor for a specific one. */
+		defaultKind?: ContextKind;
 		projects: Project[];
 		workflows: WorkflowResponse[];
 		onsaved?: () => void | Promise<void>;
@@ -60,6 +67,7 @@
 	let description = $state('');
 	let projectId = $state('');
 	let stateId = $state('');
+	let labelId = $state('');
 	let issueId = $state('');
 	let body = $state('');
 	let previewBody = $state(false);
@@ -85,14 +93,19 @@
 		if (open && !wasOpen) {
 			errorMessage = null;
 			previewBody = false;
-			kind = item?.kind ?? 'prompt';
+			kind = item?.kind ?? defaultKind ?? 'prompt';
 			name = item?.name ?? '';
 			description = item?.description ?? '';
 			projectId = item ? (item.scope.project_id ?? '') : (defaults.project_id ?? '');
 			stateId = item ? (item.scope.workflow_state_id ?? '') : (defaults.workflow_state_id ?? '');
+			labelId = item ? (item.scope.label_id ?? '') : (defaults.label_id ?? '');
 			issueId = item ? (item.scope.issue_id ?? '') : (defaults.issue_id ?? '');
 			body = item?.body ?? '';
-			files = (item?.files ?? []).map((f) => ({ key: nextFileKey++, path: f.path, content: f.content }));
+			files = (item?.files ?? []).map((f) => ({
+				key: nextFileKey++,
+				path: f.path,
+				content: f.content
+			}));
 			// List rows carry only a file count; fetch the files for editing.
 			// Until they arrive, saving is blocked — a PATCH built from the
 			// placeholder empty list would delete every file in the skill.
@@ -106,27 +119,52 @@
 					.getContextItem(itemId)
 					.then((full) => {
 						if (!open || item?.id !== itemId) return;
-						files = (full.files ?? []).map((f) => ({ key: nextFileKey++, path: f.path, content: f.content }));
+						files = (full.files ?? []).map((f) => ({
+							key: nextFileKey++,
+							path: f.path,
+							content: f.content
+						}));
 						filesReady = true;
 					})
 					.catch(() => {
 						if (!open || item?.id !== itemId) return;
-						errorMessage = 'Couldn’t load this skill’s files — close the dialog and reopen to retry.';
+						errorMessage =
+							'Couldn’t load this skill’s files — close the dialog and reopen to retry.';
 					});
 			}
 			repoUrl = item?.repo_url ?? '';
 			repoBranch = item?.repo_branch ?? '';
 			repoDir = item?.repo_dir ?? '';
+			// Labels are small and rarely change, so one fetch per open is
+			// cheaper than threading them through all four call sites. A
+			// failure leaves the select empty rather than blocking the save:
+			// an item's existing label_id is preserved by the option below.
+			if (labels.length === 0) {
+				api
+					.listLabels()
+					.then((res) => {
+						labels = res.items;
+					})
+					.catch(() => {});
+			}
 		}
 		wasOpen = open;
 	});
+
+	let labels = $state<LabelWithUsage[]>([]);
+	// The item's own label, when the list has not arrived (or no longer has
+	// it): without an option carrying the current value the select would
+	// silently reset the scope to "any label" on save.
+	const missingLabel = $derived(
+		labelId && !labels.some((l) => l.id === labelId) ? (item?.scope.label_name ?? labelId) : null
+	);
 
 	// --- scope coherence, enforced live -------------------------------------
 
 	// Issues for the issue selector, constrained to the chosen project. Only
 	// the latest request may land: switching projects fires overlapping
 	// fetches whose responses can resolve out of order.
-	let issues = $state<Issue[]>([]);
+	let issues = $state<IssueListItem[]>([]);
 	let issuesRequest = 0;
 	$effect(() => {
 		if (!open) return;
@@ -164,7 +202,9 @@
 	);
 	/** The fetched list, with the bound issue prepended when it isn't in it. */
 	const issueOptions = $derived(
-		selectedIssue && !issues.some((i) => i.id === selectedIssue.id) ? [selectedIssue, ...issues] : issues
+		selectedIssue && !issues.some((i) => i.id === selectedIssue.id)
+			? [selectedIssue, ...issues]
+			: issues
 	);
 
 	// Picking an issue constrains the state list to its bound workflow.
@@ -177,12 +217,13 @@
 		if (issueId && selectedIssue) {
 			// The issue implies its project; drop a mismatched project pick.
 			if (projectId && projectId !== selectedIssue.project_id) projectId = '';
-			if (stateId && !stateWorkflows.some((w) => w.states.some((s) => s.id === stateId))) stateId = '';
+			if (stateId && !stateWorkflows.some((w) => w.states.some((s) => s.id === stateId)))
+				stateId = '';
 		}
 	});
 
 	const derivedDir = $derived(repoUrl.trim() ? repoDirFromUrl(repoUrl.trim()) : '');
-	const isGlobal = $derived(!projectId && !stateId && !issueId);
+	const isGlobal = $derived(!projectId && !stateId && !labelId && !issueId);
 
 	async function save(e: SubmitEvent) {
 		e.preventDefault();
@@ -206,10 +247,12 @@
 				if (kind !== 'artifact') {
 					request.project_id = projectId || null;
 					request.workflow_state_id = stateId || null;
+					request.label_id = labelId || null;
 					request.issue_id = issueId || null;
 				}
 				if (kind === 'prompt') request.body = body;
-				if (kind === 'skill') request.files = files.map(({ path, content }): ContextFile => ({ path, content }));
+				if (kind === 'skill')
+					request.files = files.map(({ path, content }): ContextFile => ({ path, content }));
 				if (kind === 'repo') {
 					request.repo_url = repoUrl;
 					request.repo_branch = repoBranch.trim() || null;
@@ -223,10 +266,12 @@
 					description: description || undefined,
 					project_id: projectId || null,
 					workflow_state_id: stateId || null,
+					label_id: labelId || null,
 					issue_id: issueId || null
 				};
 				if (kind === 'prompt') request.body = body;
-				if (kind === 'skill') request.files = files.map(({ path, content }): ContextFile => ({ path, content }));
+				if (kind === 'skill')
+					request.files = files.map(({ path, content }): ContextFile => ({ path, content }));
 				if (kind === 'repo') {
 					request.repo_url = repoUrl;
 					request.repo_branch = repoBranch.trim() || null;
@@ -272,7 +317,8 @@
 				<div class="grid gap-1.5">
 					{#each CREATABLE_KINDS as k (k)}
 						<label
-							class="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm {kind === k
+							class="flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-sm {kind ===
+							k
 								? 'border-primary bg-primary/5'
 								: 'hover:bg-muted/50'}"
 						>
@@ -307,7 +353,11 @@
 
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="ctx-description">Description</label>
-			<Input id="ctx-description" bind:value={description} placeholder="Optional one-liner shown in lists" />
+			<Input
+				id="ctx-description"
+				bind:value={description}
+				placeholder="Optional one-liner shown in lists"
+			/>
 		</div>
 
 		<!-- payload -->
@@ -315,7 +365,12 @@
 			<div class="space-y-1.5">
 				<div class="flex items-center justify-between">
 					<label class="text-sm font-medium" for="ctx-body">Body (Markdown)</label>
-					<Button type="button" size="sm" variant="ghost" onclick={() => (previewBody = !previewBody)}>
+					<Button
+						type="button"
+						size="sm"
+						variant="ghost"
+						onclick={() => (previewBody = !previewBody)}
+					>
 						{previewBody ? 'Write' : 'Preview'}
 					</Button>
 				</div>
@@ -369,14 +424,24 @@
 								<IconTrash size={14} />
 							</Button>
 						</div>
-						<Textarea bind:value={file.content} rows={4} class="font-mono text-xs" placeholder="File content…" />
+						<Textarea
+							bind:value={file.content}
+							rows={4}
+							class="font-mono text-xs"
+							placeholder="File content…"
+						/>
 					</div>
 				{/each}
 			</div>
 		{:else if kind === 'repo'}
 			<div class="space-y-1.5">
 				<label class="text-sm font-medium" for="ctx-url">Repository URL</label>
-				<Input id="ctx-url" bind:value={repoUrl} required placeholder="https://github.com/acme/api.git" />
+				<Input
+					id="ctx-url"
+					bind:value={repoUrl}
+					required
+					placeholder="https://github.com/acme/api.git"
+				/>
 			</div>
 			<div class="grid grid-cols-2 gap-3">
 				<div class="space-y-1.5">
@@ -404,70 +469,103 @@
 					: ''} — an artifact's scope cannot be changed.
 			</p>
 		{:else}
-		<fieldset class="space-y-2 rounded-md border p-3">
-			<legend class="px-1 text-sm font-medium">Scope</legend>
-			<p class="text-muted-foreground text-xs">
-				Applies where <em>all</em> chosen dimensions match.
-				{#if isGlobal}
-					<span class="text-foreground font-medium">None chosen — global: applies to every launch prompt.</span>
+			<fieldset class="space-y-2 rounded-md border p-3">
+				<legend class="px-1 text-sm font-medium">Scope</legend>
+				<p class="text-muted-foreground text-xs">
+					Applies where <em>all</em> chosen dimensions match.
+					{#if isGlobal}
+						<span class="text-foreground font-medium"
+							>None chosen — global: applies to every launch prompt.</span
+						>
+					{/if}
+				</p>
+				{#if !issueId}
+					<div class="space-y-1">
+						<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-project"
+							>Project</label
+						>
+						<Select id="ctx-scope-project" bind:value={projectId} class="h-8 text-xs">
+							<option value="">Any project</option>
+							{#each projects as project (project.id)}
+								<option value={project.id}>{project.name}</option>
+							{/each}
+						</Select>
+					</div>
 				{/if}
-			</p>
-			{#if !issueId}
 				<div class="space-y-1">
-					<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-project">Project</label>
-					<Select id="ctx-scope-project" bind:value={projectId} class="h-8 text-xs">
-						<option value="">Any project</option>
-						{#each projects as project (project.id)}
-							<option value={project.id}>{project.name}</option>
+					<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-state">
+						Only in state{selectedIssue
+							? ` (workflow of ${selectedIssue.project_name}/${selectedIssue.number})`
+							: ''}
+					</label>
+					<Select id="ctx-scope-state" bind:value={stateId} class="h-8 text-xs">
+						<option value="">Any state</option>
+						{#each stateWorkflows as workflow (workflow.id)}
+							{#each workflow.states as state (state.id)}
+								<option value={state.id}>{workflow.name} / {state.name}</option>
+							{/each}
 						{/each}
 					</Select>
 				</div>
-			{/if}
-			<div class="space-y-1">
-				<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-state">
-					Only in state{selectedIssue ? ` (workflow of ${selectedIssue.project_name}/${selectedIssue.number})` : ''}
-				</label>
-				<Select id="ctx-scope-state" bind:value={stateId} class="h-8 text-xs">
-					<option value="">Any state</option>
-					{#each stateWorkflows as workflow (workflow.id)}
-						{#each workflow.states as state (state.id)}
-							<option value={state.id}>{workflow.name} / {state.name}</option>
+				<div class="space-y-1">
+					<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-label"
+						>Only on issues labelled</label
+					>
+					<Select id="ctx-scope-label" bind:value={labelId} class="h-8 text-xs">
+						<option value="">Any label</option>
+						{#if missingLabel}
+							<option value={labelId}>{missingLabel}</option>
+						{/if}
+						{#each labels as label (label.id)}
+							<option value={label.id}>{label.name}</option>
 						{/each}
-					{/each}
-				</Select>
-			</div>
-			<div class="space-y-1">
-				<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-issue">Only for issue</label>
-				<Select id="ctx-scope-issue" bind:value={issueId} class="h-8 text-xs">
-					<option value="">Any issue</option>
-					{#each issueOptions as issue (issue.id)}
-						<option value={issue.id}>{issue.project_name}/{issue.number} — {issue.title}</option>
-					{/each}
-				</Select>
-				{#if issueId}
-					<p class="text-muted-foreground text-xs">The issue implies its project.</p>
-				{/if}
-			</div>
-		</fieldset>
+					</Select>
+				</div>
+				<div class="space-y-1">
+					<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-issue"
+						>Only for issue</label
+					>
+					<Select id="ctx-scope-issue" bind:value={issueId} class="h-8 text-xs">
+						<option value="">Any issue</option>
+						{#each issueOptions as issue (issue.id)}
+							<option value={issue.id}>{issue.project_name}/{issue.number} — {issue.title}</option>
+						{/each}
+					</Select>
+					{#if issueId}
+						<p class="text-muted-foreground text-xs">The issue implies its project.</p>
+					{/if}
+				</div>
+			</fieldset>
 		{/if}
 
 		{#if errorMessage}
-			<p class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-xs">
+			<p
+				class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-xs"
+			>
 				{errorMessage}
 			</p>
 		{/if}
 
 		<div class="flex items-center justify-between gap-2 pt-1">
 			{#if item}
-				<Button type="button" variant="destructive" onclick={deleteItem} disabled={saving}>Delete</Button>
+				<Button type="button" variant="destructive" onclick={deleteItem} disabled={saving}
+					>Delete</Button
+				>
 			{:else}
 				<span></span>
 			{/if}
-			<div class="flex gap-2">
-				<Button type="button" variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-				<Button type="submit" disabled={saving || !name.trim() || (kind === 'skill' && !filesReady)}>
-					{saving ? 'Saving…' : kind === 'skill' && !filesReady ? 'Loading files…' : item ? 'Save' : 'Create'}
+			<div class="flex flex-wrap gap-2">
+				<Button type="button" variant="ghost" disabled={saving} onclick={() => (open = false)}>
+					Cancel
 				</Button>
+				<PendingButton
+					type="submit"
+					pending={saving}
+					pendingLabel="Saving…"
+					disabled={!name.trim() || (kind === 'skill' && !filesReady)}
+				>
+					{kind === 'skill' && !filesReady ? 'Loading files…' : item ? 'Save' : 'Create'}
+				</PendingButton>
 			</div>
 		</div>
 	</form>

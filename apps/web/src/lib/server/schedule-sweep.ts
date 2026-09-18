@@ -9,6 +9,7 @@
 import { nextOccurrenceFromCron, renderTemplate, templateVars } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { getDb, newId, type Database } from './db';
+import { nextIssueNumber } from './issue-address';
 
 /** Everything instance creation needs, joined once in the due query. */
 export interface ScheduleExecRow {
@@ -28,6 +29,9 @@ export interface ScheduleExecRow {
 	/** The state instances start in: the schedule's pinned state, else the workflow's initial state. */
 	start_state_id: string;
 	start_state_name: string;
+	/** Archived projects are skipped by the sweep and refuse run-now. */
+	project_name: string;
+	project_archived_at: number | null;
 }
 
 export function scheduleExecQuery(db: Kysely<Database>) {
@@ -37,7 +41,11 @@ export function scheduleExecQuery(db: Kysely<Database>) {
 		.innerJoin('workflow', 'workflow.id', 'scheduled_task.workflow_id')
 		.innerJoin('workflow_state as start_state', (join) =>
 			join.on((eb) =>
-				eb('start_state.id', '=', eb.fn.coalesce('scheduled_task.state_id', 'workflow.initial_state_id'))
+				eb(
+					'start_state.id',
+					'=',
+					eb.fn.coalesce('scheduled_task.state_id', 'workflow.initial_state_id')
+				)
 			)
 		)
 		.select([
@@ -53,6 +61,8 @@ export function scheduleExecQuery(db: Kysely<Database>) {
 			'scheduled_task.next_run_at',
 			'scheduled_task.run_count',
 			'project.user_id as user_id',
+			'project.name as project_name',
+			'project.archived_at as project_archived_at',
 			'start_state.id as start_state_id',
 			'start_state.name as start_state_name'
 		]);
@@ -62,8 +72,15 @@ export function scheduleExecQuery(db: Kysely<Database>) {
 export function openInstancesQuery(db: Kysely<Database>, scheduleId: string) {
 	return db
 		.selectFrom('issue')
+		.innerJoin('project', 'project.id', 'issue.project_id')
 		.innerJoin('workflow_state as state', 'state.id', 'issue.state_id')
-		.select(['issue.id', 'issue.number', 'issue.title'])
+		.select([
+			'issue.id',
+			'issue.number',
+			'issue.title',
+			'issue.project_id',
+			'project.name as project_name'
+		])
 		.where('issue.scheduled_task_id', '=', scheduleId)
 		.where('state.category', '!=', 'done')
 		.orderBy('issue.number asc');
@@ -102,7 +119,7 @@ export function instanceInserts(
 	const issueInsert = sql`
 		INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, scheduled_task_id, created_at, updated_at)
 		SELECT ${issueId}, ${schedule.project_id},
-			(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE project_id = ${schedule.project_id}),
+			${nextIssueNumber(schedule.project_id)},
 			${title}, ${description}, ${schedule.workflow_id}, ${schedule.start_state_id},
 			${schedule.id}, ${now}, ${now}
 		WHERE ${guard}`.compile(db);
@@ -155,15 +172,20 @@ export function scheduleEventInsert(
 			: sql`EXISTS (SELECT 1 FROM scheduled_task WHERE id = ${schedule.id} AND next_run_at = ${opts.guardDue})`;
 	const actorUserId = opts.actor?.userId ?? schedule.user_id;
 	const actorApiKeyId = opts.actor?.apiKeyId ?? null;
+	const projectId = opts.issueId
+		? sql`(SELECT project_id FROM issue WHERE id = ${opts.issueId})`
+		: sql`${schedule.project_id}`;
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${newId('evt')}, ${schedule.user_id}, ${type}, ${actorUserId}, ${actorApiKeyId},
-			${opts.issueId ?? null}, ${schedule.project_id}, ${JSON.stringify(payload)}, ${opts.now}
+			${opts.issueId ?? null}, ${projectId}, ${JSON.stringify(payload)}, ${opts.now}
 		WHERE ${guard}`.compile(db);
 }
 
 async function runBatch(env: Env, queries: CompiledQuery[]): Promise<void> {
-	await env.DB.batch(queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[]))));
+	await env.DB.batch(
+		queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[])))
+	);
 }
 
 /** One due schedule: create an instance or record a gated skip, then advance. */
@@ -192,7 +214,12 @@ async function runDueSchedule(
 						schedule_id: schedule.id,
 						name: schedule.name,
 						occurrence: due,
-						blocking: blockers.map((b) => ({ issue_id: b.id, number: b.number }))
+						blocking: blockers.map((b) => ({
+							issue_id: b.id,
+							project_id: b.project_id,
+							project_name: b.project_name,
+							number: b.number
+						}))
 					},
 					{ now, guardDue: due }
 				),
@@ -226,6 +253,10 @@ export async function sweepSchedules(env: Env, now: number = Date.now()): Promis
 	const due = await scheduleExecQuery(db)
 		.where('scheduled_task.enabled', '=', 1)
 		.where('scheduled_task.next_run_at', '<=', now)
+		// An archived project's schedules are paused, not disabled: `enabled`
+		// records the operator's intent so unarchive can restore it. Skipping
+		// is silent — a paused schedule is not an incident.
+		.where('project.archived_at', 'is', null)
 		.execute();
 	for (const schedule of due) {
 		try {

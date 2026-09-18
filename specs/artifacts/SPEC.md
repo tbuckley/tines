@@ -64,6 +64,9 @@ exist (in the launch prompt's issue block) and fetch content on demand.
   requirement semantics don't want them.
 - **Deleting individual versions**: history is immutable; delete the whole
   artifact or nothing (v1).
+- **Third-party resources in sites**: an HTML artifact is self-contained.
+  A CDN allowlist, a bought user-content domain and Browser-Rendering
+  thumbnails are all deferred (see "Sites: HTML artifacts").
 
 ## Concepts
 
@@ -99,10 +102,13 @@ the issue read can badge them.
 Creation and payload mutation go through dedicated artifact endpoints only —
 `POST /api/v1/context` with `kind: "artifact"` is a 422
 (`use_artifact_endpoints`) because file payloads can't ride a JSON create, and
-one creation path is saner than two. The generic context endpoints still
-**read** artifact items (list/show, payload summarized), still **PATCH**
-name/description (rename re-keys requirement matching, which is the point),
-and still **DELETE** them.
+one creation path is saner than two. That 422 names every write endpoint —
+the JSON upsert, `…/:name/file`, and `…/:name/folder` — in its message and
+again in `details.endpoints` (`method`, `path`, `types`, `accepts`), so the
+redirect stays complete as artifact types are added. The generic context
+endpoints still **read** artifact items (list/show, payload summarized),
+still **PATCH** name/description (rename re-keys requirement matching, which
+is the point), and still **DELETE** them.
 
 ### Versions
 
@@ -309,17 +315,63 @@ The issue block gains an **Artifacts** section between *Comments* and
 - **impl-pr** (pr) — https://github.com/acme/app/pull/123
 
 *("No artifacts attached." when empty. The section ends with:
-Attach one: `tines issues artifacts attach <project>/<number> <name> --file <path>`)*
+Attach one: `tines issues artifacts attach <project>/<number> <name> …` — the
+source follows the gate; each gated transition below names its exact command.
+Ungated slots: --file <path>, --folder <dir>, --text <md|@file>, --link <url>,
+--pr <owner/repo#N>.)*
 ```
 
 And each entry under *Available transitions* appends its requirements with
 live status, so the prompt alone tells an agent both its legal moves and their
-preconditions:
+preconditions. An **unsatisfied** requirement ends in the command that clears
+it — the same `fix` string the 422 and the issue read carry. A gated slot gets
+the one-line **positional** form (Tines/274), and a `stale` slot's second way
+through gets its own code span, because a span holding two commands is not
+copy-pastable (Tines/255):
 
 ```markdown
 - **approve** → Implementation (active): `tines issues move tines/42 "approve"`
-  Requires: artifact `design-doc` (file, text/markdown) — **stale; attach a new version first**
+  Requires: artifact `design-doc` (text, text/markdown) — **stale; attach a new version (or reaffirm) first** — attach: `tines issues artifacts attach tines/42 design-doc design-doc.md` — or reaffirm: `tines issues artifacts reaffirm tines/42 design-doc`
 ```
+
+**One source for every attach hint** (Tines/241). `requirementFix` in
+`@tines/shared` maps an `ArtifactRequirementCheck` plus the issue ref to a
+runnable command and a `kind` (`attach` / `reattach_or_reaffirm` /
+`delete_and_attach`). `checkRequirements` calls it once per requirement, so
+`fix` is a **required field on every** `ArtifactRequirementCheck` — satisfied
+ones included, where it is the command that attaches the next version — and
+therefore rides `allowed_transitions[].requires[]` on
+`GET /api/v1/issues/:id`, the launch prompt's `Requires:` lines, and the 422's
+`unmet[]`, byte-identical in all three. **`fix` is always exactly one runnable
+command** — a requirement with a second way through carries it in an optional
+`fix_alternative` beside it (today `stale` only, whose alternative is
+`reaffirm`), so every consumer that reads `fix` alone keeps working and a
+reader can copy either verbatim (Tines/255).
+
+The source the command names follows the gate. A requirement that declares a
+**type** renders the positional form the CLI types off the gate itself
+(Tines/274): `<slot>.md` under `(text, text/markdown)`, `<slot>.txt` under
+`(text, text/plain)`, `<path>` for any other text/file gate, `<dir>` for
+`folder`, `<url>` for `link`, `<owner/repo#N>` for `pr` — one line, no flag,
+and no `--content-type` tail, because the CLI declares the gate's concrete
+content type with the upload (see "Typing" below). An **untyped** requirement
+keeps a flag form (`--file <path>` by default, or the slot's own type where one
+exists): with no declared type there is nothing for the CLI to type a
+positional source by, and its shape-only inference never guesses `text`.
+Nothing privileges `--file` any more — naming it first in the generic hint
+taught agents to reach for it under gates that wanted something else.
+
+The `transition_requirements_unmet` 422 summary follows the same `kind`: a
+`delete_and_attach` (the slot holds the wrong **immutable** type) says so —
+*the attached "spec" is a link artifact and the gate needs text* — instead of
+the generic "attach it (or a new version)", which would send an agent round
+the identical 422. The type that sentence names is the one the `fix` command
+attaches, `file` for an untyped gate: the gate would take text too, but a
+summary and a command naming different types is what sent readers looking for
+a third answer. `missing` and `stale` keep that wording. The CLI's own pre-flight refusals quote
+the same `fix` verbatim rather than composing a second wording, and `issues
+show` renders it beside the requirement, so the hint an agent reads before it
+attaches and the one it reads after a blocked `move` are the same string.
 
 ### Events, lifecycle
 
@@ -435,11 +487,97 @@ User-uploaded bytes served from our origin are an XSS surface. Downloads
   regardless of the flag. Markdown previews in the UI render through the
   existing micromark component (which escapes raw HTML), never via inline
   serving.
+- `application/json` is deliberately **not** on the allowlist: a `.json`
+  artifact uploads and downloads byte-identically but is always served as an
+  attachment. Mirroring that, the upload endpoint's "this endpoint does not
+  take JSON" 422 fires only when `?filename=` is absent — the filename is
+  what distinguishes an upload from a client that meant the JSON upsert, so
+  a named `.json` file is a file like any other, and the CLI's sniff table
+  keeps mapping `.json` to `application/json`.
 - Folder versions are addressed per file: `…/content?path=<workspace path>`,
   each file under the same header rules (disposition filename = the path's
   basename). A folder `…/content` request without `path` is a 422
   (`folder_path_required`) whose details list the version's paths, so an
   agent self-corrects in one round trip.
+- HTML is the exception that gets its own route rather than a widened
+  allowlist: `?inline=1` still never renders it, and executing HTML happens
+  only under `/s/<token>/` — see "Sites: HTML artifacts" below.
+
+### Sites: HTML artifacts
+
+An HTML artifact renders **live** — scripts running — for quick prototypes,
+interactive PRDs and anything richer than Markdown allows. Serving it is the
+one place we deliberately execute user bytes, so it happens on its own route
+under its own rules; `…/content?inline=1` is unchanged and still never
+renders HTML.
+
+**What is a site.** `siteEntry()` in `@tines/shared` is the single answer,
+used by the server, the viewer and the CLI: a `file` or `text` artifact whose
+`content_type` is `text/html` (the entry is the file itself), or a `folder`
+whose version has a root `index.html`. Nothing else. There is no sixth
+artifact type — a site is a property of the bytes, so requirement gating on
+`content_type: "text/html"` already works. Note that appending a `text`
+version without repeating `content_type` falls back to `text/markdown`, so
+v2 of an HTML text artifact silently stops being a site.
+
+**Link.** `POST …/artifacts/:name/site-link` mints a stateless HMAC
+capability — `v1.<payload>.<sig>`, binding user, item, version and expiry,
+keyed off `SECRET_ENCRYPTION_KEY` (falling back to `BETTER_AUTH_SECRET`) —
+valid for 60 minutes and pinned to one version. Links are snapshots, not
+shares: they are not meant to be pasted into comments, and the residual risk
+is that a URL in browser history works for up to an hour for anyone holding
+it (acceptable single-tenant; `Referrer-Policy: no-referrer` stops it
+leaking outward). Minting is a control-plane write, so a run key cannot do
+it on another user's behalf — an agent mints for its own artifacts through
+its user's key.
+
+**Route.** `GET /s/<token>/<path…>` serves the version's bytes.
+`trailingSlash` is `ignore`, and a folder resolves `dir` → `dir/` (302) →
+`dir/index.html`, so relative URLs inside the entry document (`./app.js`,
+`img/logo.png`) work — the reason folder sites need path-shaped URLs rather
+than the `?path=` addressing downloads use. Errors are HTML pages, since the
+reader is looking at a rendered page: 403 expired/tampered, 404 no such
+file, 503 no signing secret configured.
+
+**Two modes, decided per request from the request's own origin** (never from
+config, so a replayed token is contained):
+
+| | `sandbox-origin` | `same-origin` (fallback) |
+| --- | --- | --- |
+| When | request landed on `ARTIFACT_SANDBOX_ORIGIN` | anywhere else — local dev, e2e, PR previews, an unset var |
+| Origin of the page | the workers.dev host — a different registrable domain (workers.dev is on the Public Suffix List), so no app cookies | the app host, under CSP `sandbox` → **opaque** origin |
+| `localStorage`, cookies | work | throw |
+| iframe `sandbox` | `allow-scripts allow-forms allow-popups allow-same-origin` | same, minus `allow-same-origin` |
+
+Neither mode ever grants top-level navigation. Configure the origin with
+`vars.ARTIFACT_SANDBOX_ORIGIN` in `apps/web/wrangler.jsonc`
+(`https://tines-web.<subdomain>.workers.dev`); `hooks.server.ts` gates that
+hostname to `/s/*` so the app itself is unreachable there. The known
+limitation is that previews and e2e are always the fallback, so a
+storage-using prototype needs production.
+
+**Headers on every served document.** CSP pins each fetchable source to the
+artifact's own `/s/<token>/` prefix — a literal path, never `'self'` — so
+the Tines API is unreachable even in fallback mode (the API also sets no
+CORS headers anywhere, so nothing would be readable in any case);
+`connect-src` restricted to that same signed artifact prefix (sibling fetches only), no external CDNs, `frame-ancestors` naming the app,
+`X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and the
+`sandbox` directive itself whenever the request did not land on the sandbox
+origin. That directive applies to top-level documents too, so "open full
+page" is the same URL in both modes — no wrapper page.
+
+**Responsive nudge.** The reader is often on a phone, so
+`lintHtmlArtifact()` (shared, client-side) warns at attach time — in the CLI
+as `warning:` lines and in the web attach dialog as a note — about a missing
+`<meta name="viewport" content="width=device-width, initial-scale=1">` and
+about external scripts/styles, which the CSP blocks and which therefore make
+a page come up blank. Warnings never block an attach. The launch prompt's
+"Attach one:" hint says the same to agents.
+
+**Deferred** (additive later, no migration): a CDN allowlist var appended to
+`script-src`/`style-src`/`font-src`, a bought user-content domain with
+per-artifact subdomains, Browser-Rendering phone thumbnails, and surfacing
+the frame's console errors in the viewer.
 
 ## API
 
@@ -452,10 +590,12 @@ ergonomics; run keys are allowed everywhere here.
 | `GET /api/v1/issues/:id/artifacts` | List: each artifact with type, description, current version summary, version count, `fresh` flag. |
 | `GET /api/v1/issues/:id/artifacts/:name` | Detail: the artifact plus its full version list (metadata only, no contents). |
 | `PUT /api/v1/issues/:id/artifacts/:name` | **JSON upsert** for `text` / `link` / `pr`: creates the artifact (body declares `type`) or appends a version to it. Payload fields per type; `description` settable alongside. Type mismatch with an existing artifact → 422 `artifact_type_mismatch`. A body with no payload fields is a metadata-only update (no version). |
-| `PUT /api/v1/issues/:id/artifacts/:name/file?filename=…` | **Raw-body upload** for `file`: bytes in the body, MIME in `Content-Type`, creates or appends. Same upsert/type-mismatch semantics. |
+| `PUT /api/v1/issues/:id/artifacts/:name/file?filename=…` | **Raw-body upload** for `file`: bytes in the body, MIME in `Content-Type`, creates or appends. Same upsert/type-mismatch semantics. `filename` is required, and its absence is also what identifies a client that meant the JSON upsert: no filename plus an `application/json` body is a 422 naming that mistake, while a named upload takes any MIME type including `application/json`. |
 | `PUT /api/v1/issues/:id/artifacts/:name/folder` | **Multipart snapshot upload** for `folder`: one part per file (path as the part filename, MIME as the part type), creates the artifact or appends the next whole-set version. Same upsert/type-mismatch semantics. |
 | `POST /api/v1/issues/:id/artifacts/:name/reaffirm` | Append a reaffirming version: copies the current version's payload (same R2 object for files) with a fresh timestamp and the calling actor. 404 if the artifact doesn't exist. |
 | `GET /api/v1/issues/:id/artifacts/:name/content` | Bytes of the current version (`?version=N` for history; `?inline=1` per the serving rules; `?path=…` selects a folder entry — required for folders). `file`/`folder` stream from R2, `text` from D1; `link`/`pr` → 422 `no_content` (the reference *is* the payload). |
+| `POST /api/v1/issues/:id/artifacts/:name/site-link` | Mint a 60-minute signed URL that renders an HTML artifact live (`?version` pinned by the body's `version`, defaulting to current). 422 `not_a_site` when `siteEntry()` says no, 503 when no signing secret is configured. Control-plane: not reachable with a run key. |
+| `GET /s/<token>/<path…>` | **Not under `/api/v1`** — serves the pinned version's bytes to the browser under the site headers. No auth header: the token is the capability. |
 | `DELETE /api/v1/issues/:id/artifacts/:name` | Delete the artifact, all versions, and its R2 objects. |
 
 The upsert PUT is deliberately the whole write surface: "attach a new design
@@ -485,27 +625,92 @@ Artifact reads carry per-type payload summaries: folder versions report
 ```
 tines issues artifacts list <ref>
 tines issues artifacts show <ref> <name>                       # detail + versions
+tines issues artifacts attach <ref> <name> <source>            # gate-typed (Tines/243): a text
+                                                               #   gate reads the path as the
+                                                               #   document, a file gate uploads
+                                                               #   its bytes, a folder gate walks
+                                                               #   it, a link/pr gate takes a URL
+                                                               #   or owner/repo#N; ungated, the
+                                                               #   shape alone types it — dir →
+                                                               #   folder, URL → link (a GitHub PR
+                                                               #   URL → pr), owner/repo#N → pr,
+                                                               #   anything else → file, a .md
+                                                               #   path included. Never text.
 tines issues artifacts attach <ref> <name> --file <path>       # file (MIME sniffed from
                                                                #   extension, --content-type to override)
 tines issues artifacts attach <ref> <name> --text <md|@file>
-tines issues artifacts attach <ref> <name> --url <u> [--title <t>]
+tines issues artifacts attach <ref> <name> --link <u> [--title <t>]
 tines issues artifacts attach <ref> <name> --pr <owner/repo#N | PR URL>
 tines issues artifacts attach <ref> <name> --folder <dir>      # snapshot a directory tree
                                                                #   as one version (MIME per file
                                                                #   sniffed from extensions)
+tines issues artifacts attach <ref> <name> … --ignore-gates    # attach this type even when a
+                                                               #   requirement rejects it
 tines issues artifacts reaffirm <ref> <name>                   # bless current content as fresh
 tines issues artifacts get <ref> <name> [--version N] [--out <path>]   # content; link/pr prints the
                                                                #   URL; a folder writes its tree
+                                                               #   only into a new or empty directory
+tines issues artifacts site-link <ref> <name> [--version N]     # mint a URL that renders an HTML
+                                                               #   artifact live; prints the URL,
+                                                               #   the pinned version and the
+                                                               #   expiry, and says when the
+                                                               #   fallback mode makes storage
+                                                               #   APIs throw
 tines issues artifacts delete <ref> <name>
 ```
 
-`attach` infers the type from the flag used; re-attaching appends a version
-(for a folder, the next whole snapshot — the agent collects locally and
-attaches once, e.g. screenshots taken over a run land as one set).
-`tines issues move` already relays structured errors, so a blocked transition
-prints the unmet requirements and the attach command verbatim from the error
-details — the agent loop closes without any new CLI logic. `tines workflows`
-create/edit accept `requires` inside their transition definitions.
+`attach` infers the type from the flag used, or — with a positional `<source>`
+— from the gate on the slot; re-attaching appends a version (for a folder, the
+next whole snapshot — the agent collects locally and attaches once, e.g.
+screenshots taken over a run land as one set). `tines issues move` already
+relays structured errors, so a blocked transition prints the unmet requirements
+and the attach command verbatim from the error details — the agent loop closes
+without any new CLI logic. `tines workflows` create/edit accept `requires`
+inside their transition definitions. `show` and `attach` print a `site:`
+line when the artifact renders live, and `attach` follows it with the
+`warning:` lines `lintHtmlArtifact()` produces.
+
+Folder downloads preserve the whole-snapshot boundary locally: `get --out`
+accepts a nonexistent directory or an existing empty directory, but refuses
+an existing directory containing any entry (including hidden files, empty
+children, and symlinks) before requesting file content or writing. The CLI
+does not remove content or offer a force override; callers choose or prepare
+an empty destination.
+
+**The CLI uses the gate it can already see** (Tines/243). `resolveIssue`
+fetches the `IssueDetail`, so `allowed_transitions[].requires[]` is in hand
+before the first write and every use below costs no extra request:
+
+- **Typing.** Under a gate the declared type wins over the source's shape, and
+  the gate's *concrete* content type is declared with the upload — so
+  `attach <ref> prd prd.md` against a `(text, text/markdown)` requirement
+  stores bytes identical to `--text @prd.md`. A prefix content type
+  (`image/`) is left to the server to sniff. When several available
+  transitions gate the slot at different types, the shape discriminates; when
+  it cannot, the CLI refuses and names both flags.
+- **Refusal before the write.** A flag whose type *no* available transition's
+  requirement for that slot could ever accept exits 1 having written nothing,
+  quoting the requirement's own `fix` — one gate accepting is enough, and
+  `--ignore-gates` skips the check. A content-type-only miss names
+  `--content-type` instead. A slot that already holds the wrong (immutable)
+  type is refused the same way, with the delete-and-reattach command: the CLI
+  teaches the dance rather than converting. That refusal is checked *after*
+  acceptance, so passing the wrong flag at a slot whose current type already
+  satisfies the gate gets the gate's own fix — never advice to delete the
+  artifact that satisfies it. **No refusal offers `--ignore-gates` over a slot
+  that already holds a different type** (Tines/268): the flag skips the CLI's
+  checks, not the server's, and `artifact_type_mismatch` is raised
+  unconditionally on all three write paths, so both refusals end in the
+  delete-and-reattach advice instead. On an empty slot the escape is real and
+  stays.
+- **Reading the gate.** The line confirming an attach names the transitions the
+  new version satisfies (or what a gate wanted instead); `issues show` prints
+  each gated transition's requirement with its status and `fix`; and
+  `artifacts list` grows a `GATE` column marking rows a gate on the issue
+  rejects.
+
+Inline text is never inferred — a positional source is always a path, a URL or
+`owner/repo#N`, and the document goes in `--text`.
 
 ## Web UI
 
@@ -521,6 +726,33 @@ still stands"), delete, and open-in-viewer. Create via an **Attach
 artifact** button — drag-and-drop / file picker for files, a directory
 picker / folder drop for folders, small forms for text (Markdown editor,
 same component as descriptions), link, and PR.
+
+**The gate types the dialog.** The requirement on an available transition is
+the single source for every attach hint, in the UI as in the CLI. As the slot
+name is typed, a requirement matching it that declares a `type` pre-selects
+the type selector and notes where that came from — *Required by `submit`
+(text, text/markdown)* — listing the other typed gates on the same name after
+the first, in `allowed_transitions` order; an untyped requirement pre-selects
+nothing. The auto-switch never overrides a type the operator picked by hand
+against the gates now matching; typing a name that matches a *different* gate
+re-arms it. A `text` gate naming a concrete content type declares it on the
+`PUT` (a prefix like `image/` declares nothing — the server sniffs it), so a
+document attached through the dialog clears the gate on the first `move`
+rather than storing the default `text/markdown` under a `text/plain` gate. A
+`file` upload declares the picked file's own type and nothing else — the gate
+never stands in for it, or a `.png` under a `(file, application/pdf)` gate
+would look accepted and then fail the move on an artifact whose type cannot
+change.
+
+Choosing a type — or, under a gate naming a content type, a file — no
+available transition's requirement for that name could accept **warns without
+blocking**: *cannot satisfy `submit` (needs text)*, submit still live, because
+the operator may be attaching for a purpose no transition gates. A file not
+yet picked declares nothing, so the content-type half of the warning waits for
+it. On the *attach a new version* path the type is the
+artifact's own and immutable, so the same warning adds "the type cannot
+change; delete and re-attach" — the CLI's `checkExistingSlot` advice, minus
+the refusal.
 
 Rows stay **one line tall**. The only inline content is a lazy image
 thumbnail (image files, and up to a few image entries of a folder — the
@@ -540,7 +772,22 @@ actor, fresh/stale). The body renders by type: Markdown through
 PDFs in an `<iframe>` against the sandboxed inline URL (the dialog is what
 makes PDF preview possible at all), other files as a download link,
 `link`/`pr` as outbound cards. A folder renders as an image-grid gallery
-when every file is an image, else as a file tree with per-file preview.
+when every file is an image, else as a file tree with per-file preview. A
+**site** (see "Sites: HTML artifacts") renders live in a sandboxed iframe
+with a Phone / Tablet / Full width switcher — the reader is usually going to
+be on a phone — an **Open full page** link, and *Files* / *Source* escapes
+back to the ordinary folder and text views.
+
+The viewer resolves **current** to the concrete version returned by its metadata
+read and pins every source, frame, image, PDF, folder entry, download and site
+link to that snapshot. Reopening performs a fresh metadata read; an already-open
+viewer does not live-advance. Immutable text caching is scoped by stable artifact
+id, version and exact folder path, so it cannot cross issues or a delete/recreate
+boundary. Metadata, text failures and site links are rendered only while their
+open selection still owns the request; a superseded response cannot replace the
+active preview. Panel thumbnails likewise use the concrete current version from
+their own artifact row. The public content API remains current-by-default when a
+general caller omits `version`.
 
 ### Transitions
 
@@ -629,7 +876,9 @@ Done when this loop works end-to-end:
    regardless of which files the set contains; each file serves at
    `…/content?path=…` under the safety headers; `…/content` without `path`
    is a 422 listing the paths; re-attaching the directory is v2 (whole set);
-   reaffirm appends v3 reusing v2's objects; `get --out` writes the tree;
+   reaffirm appends v3 reusing v2's objects; `get --out` writes the tree into
+   a new or empty directory, while a populated destination is refused before
+   content requests or mutation and remains unchanged;
    a folder requirement declaring `content_type` is rejected at definition
    time; per-version caps (200 files / 50 MB) reject with 422s naming them.
 7. A human force-sets the state past an unmet gate (recorded `forced: true`);
@@ -703,6 +952,12 @@ From the folders/viewer review:
   version picker); inline expansion had unbounded Markdown height inside the
   issue column and could never host PDFs. The one inline survivor is the
   image thumbnail — the genuinely glanceable case.
+- **Resolved previews are immutable UI snapshots** — "current" is resolved by
+  the metadata read and every downstream URL/request carries that numbered
+  version. Cache identity includes stable artifact id and exact path; reopening
+  is the refresh boundary, and late responses from older selections are ignored.
+  This tightens viewer/panel behavior without changing the API's intentional
+  current-by-default contract for unresolved callers.
 - **Screenshots are a folder, not sibling files** — because workflows are
   generic over issues: a requirement names one fixed slot (`screenshots`),
   while each issue's surfaces differ, so per-screen slot names are invisible
@@ -725,3 +980,22 @@ From the folders/viewer review:
 - **No `content_type` on folder requirements** (422 at definition time):
   mixed-type trees admit no honest all-files/any-file match rule; the gate
   asserts slot + type, prose says what belongs inside.
+- **2026-09-09, Tines/333 — folder downloads never overlay a populated
+  destination**: every folder version is a whole immutable snapshot, so
+  mixing its files with leftovers could create a tree that never existed on
+  the server. The CLI accepts only a new or empty destination and preserves
+  every existing entry on refusal; cleanup and force-overlay behavior stay
+  deliberately absent.
+
+From later work:
+
+- **2026-09-01, Tines/92 — the link payload flag is `--link`, not `--url`**: `-u, --url` is the API base URL on every CLI command without exception. `attach … --url <link>` used to suppress the base-URL flag and attach the link, so an invocation that copied the documented `--url` idiom silently produced a `link` artifact pointing at the API base URL. Renaming makes that misuse an offline arity error carrying the corrective hint; the server-generated `fix:` line and launch-prompt "Attach one:" hint teach `--link`.
+- **2026-09-06, Tines/241 — the requirement is the single source for every attach hint**: the `attachFlag`/`fixFor` logic moved out of the 422 builder into `requirementFix` in `@tines/shared`, and `fix` became a required field on `ArtifactRequirementCheck`. The three surfaces that tell someone how to attach — launch prompt, issue read, 422 — can no longer drift from each other or from the gate, and the CLI can import the same function. Rendering stays on today's *flag* forms (`--text @<slot>.md`, not a positional path): runner CLIs lag npm by days, so a hint the installed CLI cannot parse is worse than a generic one.
+- **2026-09-06, Tines/274 — the rendered hint is the positional form, and one command per code span**: the gate-typed positional `attach <ref> <slot> <source>` shipped in `tines@0.0.141` (Tines/243), so `requirementFix` now renders it for every requirement that declares a `type` — the one-line journey the PRD's "After" shows, and the end of the `--text @<slot>.txt` loop that stored `text/markdown` under a `text/plain` gate. Untyped requirements keep a flag, which is the only thing that can type them. A CLI older than `0.0.141` fails the positional form with commander's `too many arguments`, exit 1 having written nothing — it fails safe, loudly, and at a version that is days old, so there is no fallback rendering. Separately, `fix` stopped packing two commands into one string: the `stale` reaffirm moved to `fix_alternative`, additively, because a code span an agent copies has to run.
+# Public-package renderer boundary (Tines/436)
+
+Public workflow snapshots do not use the private artifact/Markdown renderer, which may support richer
+trusted-account content. They use a closed escaped text renderer that creates no publisher-controlled
+resource attributes and suppresses malformed image/media/embed nodes defensively. This keeps private
+library behavior compatible while public admission and display remain text-only; see
+[`specs/library/PUBLICATIONS.md`](../library/PUBLICATIONS.md).

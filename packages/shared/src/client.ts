@@ -1,8 +1,15 @@
 import type {
+	AddIssueLabelsResponse,
 	AddIssueLinkRequest,
 	AgentRun,
 	AgentRunDetail,
 	ApiErrorBody,
+	CreateLabelRequest,
+	DeleteLabelRequest,
+	DeleteLabelResponse,
+	Label,
+	LabelWithUsage,
+	UpdateLabelRequest,
 	AppendRunLogRequest,
 	AppendRunLogResponse,
 	FinishRunRequest,
@@ -11,11 +18,13 @@ import type {
 	RunnerPollResponse,
 	RunnerTokenResponse,
 	ApiKey,
+	RunKeyFilter,
 	ApiKeyCreated,
 	AppendContextRequest,
 	Artifact,
 	ArtifactDetail,
 	ArtifactListResponse,
+	ArtifactSiteLink,
 	Comment,
 	ContextItem,
 	ContextListFilters,
@@ -25,27 +34,44 @@ import type {
 	CreateIssueRequest,
 	CreateIssueResponse,
 	CreateProjectRequest,
+	CreateProjectResponse,
 	CreateRoutingRuleRequest,
 	CreateRunnerRequest,
 	CreateWorkflowRequest,
+	ExportLibraryOptions,
+	ImportLibraryRequest,
+	ImportLibraryResponse,
+	LibraryDocument,
 	DeleteAnchorRequest,
 	DeleteAnchorResponse,
 	DeleteRunnerRequest,
 	DispatchExplainer,
 	EffectiveContext,
+	IssueTransferPreview,
+	IssueTransferRequest,
+	IssueTransferResult,
 	EventFilters,
+	FleetQueue,
+	SentBackDrilldown,
+	StageStatsReport,
+	StatsQuery,
 	LaunchPromptResponse,
-	Issue,
 	IssueDetail,
 	IssueFilters,
 	IssueJournalResponse,
 	IssueLink,
+	IssueListItem,
 	ListResponse,
+	ListStartersResponse,
 	PageParams,
 	Project,
+	ProjectListFilters,
+	ArchiveProjectResponse,
+	UnarchiveProjectResponse,
 	RoutingRule,
 	RoutingRuleWithWarnings,
 	RunFilters,
+	UsagePendingRun,
 	Runner,
 	Schedule,
 	ScheduleFilters,
@@ -54,6 +80,7 @@ import type {
 	SupervisorSettingsResponse,
 	TinesEvent,
 	TransitionIssueRequest,
+	UpdateCommentRequest,
 	UpdateContextItemRequest,
 	UpdateIssueRequest,
 	UpsertArtifactRequest,
@@ -61,10 +88,21 @@ import type {
 	UpdateRoutingRuleRequest,
 	UpdateRunnerRequest,
 	UpdateScheduleRequest,
+	UpdatePreferencesRequest,
 	UpdateSupervisorSettingsRequest,
 	UpdateWorkflowRequest,
+	UserPreferences,
 	WorkflowResponse
 } from './types.js';
+import type {
+	CohortUsageReport,
+	IssueUsageReport,
+	ResolvedUsageFilters,
+	UsageBy,
+	UsageEvidencePage,
+	UsageReport,
+	UsageWindow
+} from './usage.js';
 
 export interface TimeResponse {
 	/** ISO 8601 timestamp (UTC). */
@@ -97,10 +135,64 @@ export class ApiError extends Error {
 	}
 }
 
+/**
+ * The runtime's own error code for a failed connection, when it has one.
+ * undici wraps the real cause one (DNS/dual-stack failures two, inside an
+ * AggregateError) levels down from the `TypeError: fetch failed` it throws.
+ */
+function causeCode(err: unknown): string | undefined {
+	const seen = new Set<unknown>();
+	let node: unknown = err;
+	while (node && typeof node === 'object' && !seen.has(node)) {
+		seen.add(node);
+		const e = node as { code?: unknown; cause?: unknown; errors?: unknown };
+		if (typeof e.code === 'string') return e.code;
+		node = e.cause ?? (Array.isArray(e.errors) ? e.errors[0] : undefined);
+	}
+	return undefined;
+}
+
+/**
+ * Thrown when the request never reached the server: connection refused, DNS
+ * failure, TLS error, offline. `fetch` itself only says "fetch failed", which
+ * omits the one fact the caller needs — which server was tried — so this
+ * names the base URL and the request, keeping the original error as `cause`.
+ */
+export class ApiNetworkError extends Error {
+	/** Method of the request that never completed. */
+	method: string;
+	/** Request path, query string included. */
+	path: string;
+	/** Base URL the client was built with; `''` for a same-origin caller. */
+	baseUrl: string;
+	/** The URL that was attempted (`baseUrl + path`). */
+	url: string;
+	/** The runtime's code for the failure (`ECONNREFUSED`, `ENOTFOUND`, …), when it gives one. */
+	code?: string;
+
+	constructor(method: string, path: string, baseUrl: string, cause: unknown) {
+		const code = causeCode(cause);
+		const detail = code ?? (cause instanceof Error ? cause.message : String(cause));
+		// An empty base URL means same-origin (the web app): naming it would
+		// print `could not reach  (…)`, so describe it instead.
+		super(`${method} ${path}: could not reach ${baseUrl || 'the server'} (${detail})`, { cause });
+		this.name = 'ApiNetworkError';
+		this.method = method;
+		this.path = path;
+		this.baseUrl = baseUrl;
+		this.url = `${baseUrl}${path}`;
+		this.code = code;
+	}
+}
+
 function query(params: object): string {
 	const search = new URLSearchParams();
 	for (const [key, value] of Object.entries(params) as [string, unknown][]) {
-		if (value !== undefined && value !== '' && value !== null) search.set(key, String(value));
+		if (value === undefined || value === '' || value === null) continue;
+		// Array values repeat the key (`?label=a&label=b`) — the shape the
+		// repeatable filters expect.
+		if (Array.isArray(value)) for (const v of value) search.append(key, String(v));
+		else search.set(key, String(value));
 	}
 	const s = search.toString();
 	return s ? `?${s}` : '';
@@ -110,12 +202,24 @@ export function createApiClient(options: ApiClientOptions) {
 	const base = options.baseUrl.replace(/\/+$/, '');
 	const fetchFn = options.fetch ?? globalThis.fetch;
 
+	/**
+	 * Every request goes through here, so a transport failure is reported as an
+	 * ApiNetworkError naming the base URL rather than a bare "fetch failed".
+	 */
+	async function send(method: string, path: string, init: RequestInit): Promise<Response> {
+		try {
+			return await fetchFn(`${base}${path}`, init);
+		} catch (err) {
+			throw new ApiNetworkError(method, path, base, err);
+		}
+	}
+
 	async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
 		const headers: Record<string, string> = { accept: 'application/json' };
 		if (options.apiKey) headers.authorization = `Bearer ${options.apiKey}`;
 		if (body !== undefined) headers['content-type'] = 'application/json';
 
-		const res = await fetchFn(`${base}${path}`, {
+		const res = await send(method, path, {
 			method,
 			headers,
 			body: body === undefined ? undefined : JSON.stringify(body)
@@ -140,7 +244,10 @@ export function createApiClient(options: ApiClientOptions) {
 	async function raw(
 		method: string,
 		path: string,
-		opts: { body?: string | Uint8Array | ArrayBuffer | FormData; headers?: Record<string, string> } = {}
+		opts: {
+			body?: string | Uint8Array | ArrayBuffer | FormData;
+			headers?: Record<string, string>;
+		} = {}
 	): Promise<Response> {
 		const headers: Record<string, string> = { ...(opts.headers ?? {}) };
 		if (options.apiKey) headers.authorization = `Bearer ${options.apiKey}`;
@@ -148,9 +255,12 @@ export function createApiClient(options: ApiClientOptions) {
 		// implementation in play accepts that shape without lib-specific types.
 		const body =
 			opts.body instanceof Uint8Array
-				? (opts.body.buffer.slice(opts.body.byteOffset, opts.body.byteOffset + opts.body.byteLength) as ArrayBuffer)
+				? (opts.body.buffer.slice(
+						opts.body.byteOffset,
+						opts.body.byteOffset + opts.body.byteLength
+					) as ArrayBuffer)
 				: opts.body;
-		const res = await fetchFn(`${base}${path}`, { method, headers, body });
+		const res = await send(method, path, { method, headers, body });
 		if (!res.ok) {
 			let parsed: ApiErrorBody['error'] | null = null;
 			try {
@@ -170,15 +280,20 @@ export function createApiClient(options: ApiClientOptions) {
 		getTime: () => get<TimeResponse>('/api/time'),
 
 		// Projects
-		listProjects: (page: PageParams = {}) =>
-			get<ListResponse<Project>>(`/api/v1/projects${query(page)}`),
+		listProjects: (params: ProjectListFilters & PageParams = {}) =>
+			get<ListResponse<Project>>(`/api/v1/projects${query(params)}`),
 		createProject: (body: CreateProjectRequest) =>
-			request<Project>('POST', '/api/v1/projects', body),
+			request<CreateProjectResponse>('POST', '/api/v1/projects', body),
+		listStarters: () => get<ListStartersResponse>('/api/v1/projects/starters'),
 		getProject: (id: string) => get<Project>(`/api/v1/projects/${id}`),
 		updateProject: (id: string, body: UpdateProjectRequest) =>
 			request<Project>('PATCH', `/api/v1/projects/${id}`, body),
 		deleteProject: (id: string, body?: DeleteAnchorRequest) =>
 			request<DeleteAnchorResponse | void>('DELETE', `/api/v1/projects/${id}`, body),
+		archiveProject: (id: string) =>
+			request<ArchiveProjectResponse>('POST', `/api/v1/projects/${id}/archive`),
+		unarchiveProject: (id: string) =>
+			request<UnarchiveProjectResponse>('POST', `/api/v1/projects/${id}/unarchive`),
 
 		// Workflows
 		listWorkflows: (page: PageParams = {}) =>
@@ -193,7 +308,21 @@ export function createApiClient(options: ApiClientOptions) {
 
 		// Issues
 		listIssues: (filters: IssueFilters & PageParams = {}) =>
-			get<ListResponse<Issue>>(`/api/v1/issues${query(filters)}`),
+			get<ListResponse<IssueListItem>>(`/api/v1/issues${query(filters)}`),
+		listLabels: () => get<{ items: LabelWithUsage[] }>('/api/v1/labels'),
+		createLabel: (body: CreateLabelRequest) => request<Label>('POST', '/api/v1/labels', body),
+		updateLabel: (labelRef: string, body: UpdateLabelRequest) =>
+			request<Label>('PATCH', `/api/v1/labels/${encodeURIComponent(labelRef)}`, body),
+		deleteLabel: (labelRef: string, body: DeleteLabelRequest = {}) =>
+			request<DeleteLabelResponse>(
+				'DELETE',
+				`/api/v1/labels/${encodeURIComponent(labelRef)}`,
+				body
+			),
+		addIssueLabels: (issueId: string, labels: string[]) =>
+			request<AddIssueLabelsResponse>('POST', `/api/v1/issues/${issueId}/labels`, { labels }),
+		removeIssueLabel: (issueId: string, labelRef: string) =>
+			request<void>('DELETE', `/api/v1/issues/${issueId}/labels/${encodeURIComponent(labelRef)}`),
 		listProjectIssues: (
 			projectId: string,
 			filters: {
@@ -202,8 +331,9 @@ export function createApiClient(options: ApiClientOptions) {
 				hide_done?: boolean;
 				ready?: boolean;
 				q?: string;
+				brief?: boolean;
 			} & PageParams = {}
-		) => get<ListResponse<Issue>>(`/api/v1/projects/${projectId}/issues${query(filters)}`),
+		) => get<ListResponse<IssueListItem>>(`/api/v1/projects/${projectId}/issues${query(filters)}`),
 		createIssue: (projectId: string, body: CreateIssueRequest) =>
 			request<CreateIssueResponse>('POST', `/api/v1/projects/${projectId}/issues`, body),
 		getIssue: (id: string) => get<IssueDetail>(`/api/v1/issues/${id}`),
@@ -229,6 +359,10 @@ export function createApiClient(options: ApiClientOptions) {
 			get<ListResponse<Comment>>(`/api/v1/issues/${issueId}/comments${query(page)}`),
 		createComment: (issueId: string, body: CreateCommentRequest) =>
 			request<Comment>('POST', `/api/v1/issues/${issueId}/comments`, body),
+		updateComment: (issueId: string, commentId: string, body: UpdateCommentRequest) =>
+			request<Comment>('PATCH', `/api/v1/issues/${issueId}/comments/${commentId}`, body),
+		deleteComment: (issueId: string, commentId: string) =>
+			request<void>('DELETE', `/api/v1/issues/${issueId}/comments/${commentId}`),
 
 		// Scheduled tasks
 		listSchedules: (filters: ScheduleFilters & PageParams = {}) =>
@@ -266,12 +400,29 @@ export function createApiClient(options: ApiClientOptions) {
 		/** Launch prompt: stitched context plus the generated issue block. */
 		getIssuePrompt: (issueId: string) =>
 			get<LaunchPromptResponse>(`/api/v1/issues/${issueId}/prompt`),
+		/**
+		 * Review a move to another project: read-only, allocates no number and
+		 * writes nothing. Returns the token that binds this exact review.
+		 */
+		previewIssueTransfer: (issueId: string, destinationProjectId: string) =>
+			get<IssueTransferPreview>(
+				`/api/v1/issues/${issueId}/transfer${query({ project: destinationProjectId })}`
+			),
+		/** Commit the reviewed move. The token must come from a fresh preview. */
+		transferIssue: (issueId: string, body: IssueTransferRequest) =>
+			request<IssueTransferResult>('POST', `/api/v1/issues/${issueId}/transfer`, body),
 
 		// Issue artifacts (name-addressed under the issue)
 		listArtifacts: (issueId: string) =>
 			get<ArtifactListResponse>(`/api/v1/issues/${issueId}/artifacts`),
 		getArtifact: (issueId: string, name: string) =>
 			get<ArtifactDetail>(artifactPath(issueId, name)),
+		/**
+		 * Mints a short-lived signed URL that renders an HTML artifact live
+		 * (422 `not_a_site` when the artifact is not HTML / has no index.html).
+		 */
+		createArtifactSiteLink: (issueId: string, name: string, body: { version?: number } = {}) =>
+			request<ArtifactSiteLink>('POST', artifactPath(issueId, name, '/site-link'), body),
 		/** JSON upsert for text/link/pr: creates the artifact or appends a version. */
 		putArtifact: (issueId: string, name: string, body: UpsertArtifactRequest) =>
 			request<Artifact>('PUT', artifactPath(issueId, name), body),
@@ -303,7 +454,11 @@ export function createApiClient(options: ApiClientOptions) {
 		) => {
 			const form = new FormData();
 			for (const file of files) {
-				form.append('file', new Blob([file.bytes as ArrayBuffer], { type: file.contentType }), file.path);
+				form.append(
+					'file',
+					new Blob([file.bytes as ArrayBuffer], { type: file.contentType }),
+					file.path
+				);
 			}
 			const res = await raw('PUT', artifactPath(issueId, name, '/folder'), { body: form });
 			return (await res.json()) as Artifact;
@@ -363,13 +518,63 @@ export function createApiClient(options: ApiClientOptions) {
 			request<AgentRun>('POST', `/api/v1/runs/${runId}/finish`, body),
 
 		// Agent runs
-		listRuns: (filters: RunFilters & PageParams = {}) =>
-			get<ListResponse<AgentRun>>(`/api/v1/runs${query(filters)}`),
+		listRuns: <F extends RunFilters & PageParams = RunFilters & PageParams>(filters: F = {} as F) =>
+			get<ListResponse<F extends { population: 'pending' } ? UsagePendingRun : AgentRun>>(
+				`/api/v1/runs${query(filters)}`
+			),
+		getUsage: (
+			filters: ResolvedUsageFilters & {
+				window?: UsageWindow;
+				from?: string;
+				to?: string;
+				by?: UsageBy;
+			} = {}
+		) => get<UsageReport>(`/api/v1/usage${query(filters)}`),
+		getIssueUsage: (issue: string) =>
+			get<IssueUsageReport>(`/api/v1/usage${query({ mode: 'issue', issue })}`),
+		getCohortUsage: (filters: {
+			workflow: string;
+			project?: string;
+			window?: UsageWindow;
+			from?: string;
+			to?: string;
+			done_state?: string[];
+		}) => get<CohortUsageReport>(`/api/v1/usage${query({ mode: 'cohort', ...filters })}`),
+		getUsageScope: (scope: string) =>
+			get<UsageReport | IssueUsageReport | CohortUsageReport>(`/api/v1/usage${query({ scope })}`),
+		getUsageEvidence: (filters: {
+			scope: string;
+			kind?: 'issues' | 'runs' | 'entries';
+			population?: 'all' | 'finalized' | 'pending';
+			member?: string;
+			sort?: 'cost' | 'time';
+			direction?: 'asc' | 'desc';
+			limit?: number;
+			cursor?: string;
+		}) => get<UsageEvidencePage>(`/api/v1/usage/evidence${query(filters)}`),
 		getRun: (id: string) => get<AgentRunDetail>(`/api/v1/runs/${id}`),
+		/**
+		 * The run's complete log (not the 256 KB tail `getRun` returns) as a
+		 * streamed Response, so a multi-megabyte log never has to be held in
+		 * memory. `raw` asks for the unrendered harness stream instead.
+		 */
+		getRunLogFull: (id: string, opts: { raw?: boolean } = {}) =>
+			raw('GET', `/api/v1/runs/${id}/log${opts.raw ? '?raw=1' : ''}`, {
+				headers: { accept: 'text/plain' }
+			}),
+		/** Daemon-only: uploads the raw harness stream for a settled run. */
+		putRunLogRaw: (id: string, body: Uint8Array) =>
+			raw('PUT', `/api/v1/runs/${id}/log/raw`, {
+				body,
+				headers: {
+					'content-type': 'application/x-ndjson',
+					'content-length': String(body.byteLength)
+				}
+			}),
 		cancelRun: (id: string) => request<AgentRunDetail>('POST', `/api/v1/runs/${id}/cancel`),
 
 		// Routing rules (one per exact scope; responses carry shadow hints)
-		listRoutingRules: () => get<ListResponse<RoutingRule>>('/api/v1/routing-rules'),
+		listRoutingRules: () => get<ListResponse<RoutingRuleWithWarnings>>('/api/v1/routing-rules'),
 		createRoutingRule: (body: CreateRoutingRuleRequest) =>
 			request<RoutingRuleWithWarnings>('POST', '/api/v1/routing-rules', body),
 		updateRoutingRule: (id: string, body: UpdateRoutingRuleRequest) =>
@@ -377,15 +582,135 @@ export function createApiClient(options: ApiClientOptions) {
 		deleteRoutingRule: (id: string) => request<void>('DELETE', `/api/v1/routing-rules/${id}`),
 
 		// Supervisor settings
+		getPreferences: () => get<UserPreferences>('/api/v1/preferences'),
+		updatePreferences: (body: UpdatePreferencesRequest) =>
+			request<UserPreferences>('PATCH', '/api/v1/preferences', body),
 		getSupervisorSettings: () => get<SupervisorSettings>('/api/v1/supervisor/settings'),
+		getSupervisorQueue: (q: { project?: string } = {}) =>
+			get<FleetQueue>(`/api/v1/supervisor/queue${query(q)}`),
+		getSupervisorStats: (q: StatsQuery = {}) =>
+			get<StageStatsReport>(`/api/v1/supervisor/stats${query(q)}`),
+		getSupervisorSentBack: (q: {
+			state: string;
+			window?: string;
+			project?: string;
+			until?: number;
+		}) => get<SentBackDrilldown>(`/api/v1/supervisor/stats/sent-back${query(q)}`),
 		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>
 			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),
 
 		// API keys (create/revoke require a browser session, not a key)
-		listApiKeys: () => get<ListResponse<ApiKey>>('/api/v1/api-keys'),
+		listApiKeys: (filters: { run_keys?: RunKeyFilter } = {}) =>
+			get<ListResponse<ApiKey>>(`/api/v1/api-keys${query(filters)}`),
 		createApiKey: (body: CreateApiKeyRequest) =>
 			request<ApiKeyCreated>('POST', '/api/v1/api-keys', body),
-		revokeApiKey: (id: string) => request<void>('DELETE', `/api/v1/api-keys/${id}`)
+		revokeApiKey: (id: string) => request<void>('DELETE', `/api/v1/api-keys/${id}`),
+
+		exportWorkflowPackage: (
+			id: string,
+			opts: import('./library/types.js').ExportWorkflowPackageOptions = {}
+		) => {
+			const params = new URLSearchParams();
+			if (opts.source_project_id) params.set('source_project_id', opts.source_project_id);
+			for (const id of opts.schedule_ids ?? []) params.append('schedule_id', id);
+			for (const tier of opts.tiers ?? []) params.append('tier', JSON.stringify(tier));
+			if (opts.authoring) params.set('authoring', JSON.stringify(opts.authoring));
+			return get<import('./library/types.js').WorkflowPackageDocument>(
+				`/api/v1/workflows/${encodeURIComponent(id)}/export${params.size ? '?' + params : ''}`
+			);
+		},
+		prepareWorkflowPackage: (body: import('./library/types.js').PrepareWorkflowPackageRequest) =>
+			request<import('./library/types.js').PrepareWorkflowPackageResponse>(
+				'POST',
+				'/api/v1/library/prepare',
+				body
+			),
+		installWorkflowPackage: (body: import('./library/types.js').WorkflowPackageInstallRequest) =>
+			request<import('./library/types.js').WorkflowPackageReceipt>(
+				'POST',
+				'/api/v1/library/install',
+				body
+			),
+		getWorkflowPackageReceipt: (planId: string) =>
+			get<import('./library/types.js').WorkflowPackageReceipt>(
+				`/api/v1/library/installs/${encodeURIComponent(planId)}`
+			),
+		validatePublication: (body: {
+			document_json: string;
+			metadata?: import('./publications.js').PublicationMetadata;
+		}) =>
+			request<import('./publications.js').ValidatePublicationResponse>(
+				'POST',
+				'/api/v1/publications/validate',
+				body
+			),
+		preparePublication: (body: import('./publications.js').PreparePublicationRequest) =>
+			request<import('./publications.js').PublicationProof>(
+				'POST',
+				'/api/v1/publications/prepare',
+				body
+			),
+		publishPublication: (
+			candidateId: string,
+			body: import('./publications.js').PublishPublicationRequest
+		) =>
+			request<import('./publications.js').PublicationOwnerResult>(
+				'POST',
+				`/api/v1/publications/${encodeURIComponent(candidateId)}/publish`,
+				body
+			),
+		getPublicationResult: (candidateId: string) =>
+			get<import('./publications.js').PublicationOwnerResult>(
+				`/api/v1/publications/${encodeURIComponent(candidateId)}/result`
+			),
+		listPublications: (workflow?: string, page?: PageParams) =>
+			get<ListResponse<import('./publications.js').PublicationOwnerItem>>(
+				`/api/v1/publications${query({ workflow, ...page })}`
+			),
+		withdrawPublication: (snapshotId: string) =>
+			request<import('./publications.js').PublicationOwnerResult>(
+				'POST',
+				`/api/v1/publications/${encodeURIComponent(snapshotId)}/withdraw`
+			),
+		restorePublication: (snapshotId: string) =>
+			request<import('./publications.js').PublicationOwnerResult>(
+				'POST',
+				`/api/v1/publications/${encodeURIComponent(snapshotId)}/restore`
+			),
+		getPublicSnapshot: (snapshotId: string) =>
+			get<import('./publications.js').PublicWorkflowSnapshot>(
+				`/api/v1/publications/public/${encodeURIComponent(snapshotId)}`
+			),
+		getPublicSnapshotStatus: (snapshotId: string) =>
+			get<import('./publications.js').PublicSnapshotStatus>(
+				`/api/v1/publications/public/${encodeURIComponent(snapshotId)}/status`
+			),
+		prepareHostedWorkflowPackage: (snapshotId: string, choices: unknown = {}) =>
+			request<import('./library/types.js').PrepareWorkflowPackageResponse>(
+				'POST',
+				`/api/v1/publications/public/${encodeURIComponent(snapshotId)}/prepare-install`,
+				{ choices }
+			),
+		downloadPublicSnapshot: (snapshotId: string) =>
+			raw('GET', `/api/v1/publications/public/${encodeURIComponent(snapshotId)}/download`),
+		downloadPublicationReuseNotice: (snapshotId: string) =>
+			raw('GET', `/api/v1/publications/public/${encodeURIComponent(snapshotId)}/reuse.txt`),
+
+		validateLibrary: (body: import('./library/types.js').ValidateLibraryRequest) =>
+			request<import('./library/types.js').ValidateLibraryResponse>(
+				'POST',
+				'/api/v1/library/validate',
+				body
+			),
+
+		// Library export / import (workflows + context; no tracker data, no secrets)
+		exportLibrary: (opts: ExportLibraryOptions = {}) =>
+			get<LibraryDocument | import('./library/types.js').LibraryV3Document>(
+				`/api/v1/export${query(opts)}`
+			),
+		/** Plan-then-apply; `dry_run: true` returns the preview the apply follows. */
+		importLibrary: (body: ImportLibraryRequest) =>
+			request<ImportLibraryResponse>('POST', '/api/v1/import', body)
 	};
 }
 

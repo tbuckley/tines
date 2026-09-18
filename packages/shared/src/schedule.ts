@@ -173,7 +173,9 @@ export function compilePreset(preset: SchedulePreset): string {
 		case 'weekly': {
 			const weekday = preset.weekday;
 			if (typeof weekday !== 'number' || !Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
-				throw new ScheduleInputError('Weekly preset needs a weekday between 0 (Sunday) and 6 (Saturday)');
+				throw new ScheduleInputError(
+					'Weekly preset needs a weekday between 0 (Sunday) and 6 (Saturday)'
+				);
 			}
 			return `${minute} ${hour} * * ${weekday}`;
 		}
@@ -224,7 +226,7 @@ export function validateTimezone(tz: string): string {
 	}
 }
 
-interface WallTime {
+export interface WallTime {
 	year: number;
 	month: number; // 1-12
 	day: number; // 1-31
@@ -253,7 +255,7 @@ function tzFormatter(tz: string): Intl.DateTimeFormat {
 }
 
 /** The wall-clock reading of a UTC instant in tz (seconds truncated). */
-function wallTimeOf(utcMs: number, tz: string): WallTime {
+export function wallTimeOf(utcMs: number, tz: string): WallTime {
 	const parts: Record<string, number> = {};
 	for (const p of tzFormatter(tz).formatToParts(utcMs)) {
 		if (p.type !== 'literal') parts[p.type] = Number.parseInt(p.value, 10);
@@ -269,7 +271,7 @@ function wallTimeOf(utcMs: number, tz: string): WallTime {
 }
 
 /** The instants (0, 1, or 2 of them, ascending) whose wall clock in tz reads w. */
-function instantsOfWallTime(w: WallTime, tz: string): number[] {
+export function instantsOfWallTime(w: WallTime, tz: string): number[] {
 	const asUtc = Date.UTC(w.year, w.month - 1, w.day, w.hour, w.minute);
 	// Probe the UTC offset a day either side of the target: any DST transition
 	// near it yields two distinct offsets, giving both fall-back candidates.
@@ -317,7 +319,9 @@ export function nextOccurrence(cron: ParsedCron, tz: string, afterMs: number): n
 	const start = wallTimeOf(afterMs, tz);
 	// Walk local wall-clock minutes on a fake-UTC calendar (Date.UTC used as
 	// plain calendar arithmetic, no timezone meaning).
-	const cal = new Date(Date.UTC(start.year, start.month - 1, start.day, start.hour, start.minute + 1));
+	const cal = new Date(
+		Date.UTC(start.year, start.month - 1, start.day, start.hour, start.minute + 1)
+	);
 	const limit = Date.UTC(start.year + 5, start.month - 1, start.day);
 	let steps = 0;
 	while (cal.getTime() < limit) {
@@ -376,16 +380,23 @@ export function nextOccurrenceFromCron(cronExpr: string, tz: string, afterMs: nu
 // ---------------------------------------------------------------------------
 // Template placeholders
 
-export interface TemplateVars {
+// A type alias, not an interface: `renderTemplate` takes an open
+// `Record<string, string>` and only aliases get the implicit index signature.
+export type TemplateVars = {
 	date: string;
 	time: string;
 	datetime: string;
 	schedule_name: string;
 	count: string;
-}
+};
 
 /** The placeholder values for an instance created at `atMs`, in the schedule's timezone. */
-export function templateVars(scheduleName: string, count: number, tz: string, atMs: number): TemplateVars {
+export function templateVars(
+	scheduleName: string,
+	count: number,
+	tz: string,
+	atMs: number
+): TemplateVars {
 	const w = wallTimeOf(atMs, tz);
 	const pad = (n: number) => String(n).padStart(2, '0');
 	const date = `${w.year}-${pad(w.month)}-${pad(w.day)}`;
@@ -401,12 +412,14 @@ export function templateVars(scheduleName: string, count: number, tz: string, at
 
 /**
  * Renders `{{date}}`-style placeholders (whitespace inside braces tolerated).
+ * The variable set is open (schedules pass `TemplateVars`, starters their own
+ * inputs) — anything a caller does not declare is left alone.
  * Unknown or malformed tokens are left as-is — they are probably literal
  * Markdown, and silently eating text is worse than rendering `{{oops}}`.
  */
-export function renderTemplate(template: string, vars: TemplateVars): string {
+export function renderTemplate(template: string, vars: Record<string, string>): string {
 	return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (token, key: string) =>
-		Object.prototype.hasOwnProperty.call(vars, key) ? vars[key as keyof TemplateVars] : token
+		Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : token
 	);
 }
 

@@ -22,12 +22,18 @@
 	let {
 		workflow,
 		currentStateId = null,
-		compact = false
+		compact = false,
+		fit = true,
+		intrinsicScale = 1
 	}: {
 		workflow: GraphWorkflow;
 		/** Highlighted state; changes animate along the traversed edge. */
 		currentStateId?: string | null;
 		compact?: boolean;
+		/** Fit to the container. Disable to fix a full graph at intrinsic size; the caller must contain overflow. */
+		fit?: boolean;
+		/** Scale intrinsic full-mode dimensions without changing graph geometry. */
+		intrinsicScale?: number;
 	} = $props();
 
 	// Unique per instance so several graphs on a page don't share markers.
@@ -103,7 +109,8 @@
 		}
 		const ranks = [...columns.keys()].sort((a, b) => a - b);
 
-		const widthOf = (s: GraphState) => Math.max(compact ? 54 : 72, s.name.length * charW + (compact ? 30 : 40));
+		const widthOf = (s: GraphState) =>
+			Math.max(compact ? 54 : 72, s.name.length * charW + (compact ? 30 : 40));
 		const colWidths = ranks.map((r) => Math.max(...columns.get(r)!.map(widthOf)));
 		const colHeights = ranks.map((r) => {
 			const n = columns.get(r)!.length;
@@ -142,7 +149,7 @@
 			const a = nodeById.get(t.from_state_id);
 			const b = nodeById.get(t.to_state_id);
 			if (!a || !b) continue;
-			const key = `${t.from_state_id}→${t.to_state_id}`;
+			const key = `${t.from_state_id}→${t.name}`;
 			const label = !compact && t.name ? t.name : null;
 			if (rank.get(a.id)! < rank.get(b.id)!) {
 				// Forward: right edge of source to left edge of target.
@@ -184,7 +191,10 @@
 		}
 
 		const width = x - gapX + M;
-		const height = bottom + (backIndex > 0 ? (compact ? 16 : 24) + (backIndex - 1) * (compact ? 12 : 16) : 0) + M;
+		const height =
+			bottom +
+			(backIndex > 0 ? (compact ? 16 : 24) + (backIndex - 1) * (compact ? 12 : 16) : 0) +
+			M;
 		return { nodes, edges, width, height, font };
 	});
 
@@ -226,7 +236,8 @@
 	<svg
 		viewBox="0 0 {layout.width} {layout.height}"
 		class="h-auto w-full"
-		style="max-width: {layout.width * (compact ? 1 : 1.15)}px"
+		style:max-width={`${!fit && !compact ? layout.width * intrinsicScale : layout.width * (compact ? 1 : 1.15)}px`}
+		style:min-width={!fit && !compact ? `${layout.width * intrinsicScale}px` : undefined}
 		role="img"
 		aria-label="Workflow graph"
 	>
@@ -287,7 +298,12 @@
 			<g>
 				{#if node.isInitial}
 					<!-- start marker: dot + short arrow into the initial state -->
-					<circle cx={node.x - (compact ? 15 : 20)} cy={node.cy} r={compact ? 2.5 : 3} class="fill-muted-foreground/70" />
+					<circle
+						cx={node.x - (compact ? 15 : 20)}
+						cy={node.cy}
+						r={compact ? 2.5 : 3}
+						class="fill-muted-foreground/70"
+					/>
 					<line
 						x1={node.x - (compact ? 12 : 16)}
 						y1={node.cy}
@@ -317,7 +333,9 @@
 					width={node.w}
 					height={node.h}
 					rx={compact ? 7 : 9}
-					style="fill: color-mix(in oklab, {categoryVar(node.category)} {isCurrent ? 16 : 9}%, var(--background)); stroke: {categoryVar(node.category)}"
+					style="fill: color-mix(in oklab, {categoryVar(node.category)} {isCurrent
+						? 16
+						: 9}%, var(--background)); stroke: {categoryVar(node.category)}"
 					stroke-width={isCurrent ? 2 : 1.25}
 					stroke-dasharray={node.isDeadEnd ? '5 3' : undefined}
 				/>
@@ -344,7 +362,15 @@
 		{#if travel}
 			{#key travel.key}
 				<circle r={compact ? 4 : 5} fill="var(--cat-active)" opacity="0.9">
-					<animateMotion dur="0.45s" path={travel.d} fill="freeze" calcMode="spline" keySplines="0.4 0 0.2 1" keyTimes="0;1" keyPoints="0;1" />
+					<animateMotion
+						dur="0.45s"
+						path={travel.d}
+						fill="freeze"
+						calcMode="spline"
+						keySplines="0.4 0 0.2 1"
+						keyTimes="0;1"
+						keyPoints="0;1"
+					/>
 				</circle>
 			{/key}
 		{/if}
