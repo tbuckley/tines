@@ -127,26 +127,19 @@ The CLI reads the API base URL from `--url` (accepted by every command that talk
 
 Paginated `… list` commands return one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command, up to a default 10,000-item safety ceiling; use `--max-items <n>` with `--all-pages` to choose a different positive bound. Exceeding the bound fails without printing a partial result. Without `--all-pages`, `--json` output carries a `next_cursor` and warns on stderr that there is more. Four lists are not paginated and take no such flag: `labels list`, `runners list`, `routing list`, and `issues artifacts list` return the whole collection by design.
 
-## Installing the CLI globally
-
-Normally, install from npm — `npm install -g tines` — which is always current, because every push to `main` publishes a new version (see "Publishing the CLI to npm" below). The rest of this section is for running an unmerged branch.
-
-Installing straight from the repo URL (`npm install -g github:tbuckley/tines`) does **not** work — the repo is a pnpm workspace and the CLI lives in `packages/cli` — so install from a local clone instead. The build bundles `@tines/shared` into `dist/index.js`, so the package folder is installable on its own:
+## Installing the CLI
 
 ```sh
-git clone https://github.com/tbuckley/tines.git
-cd tines
-corepack enable                           # if pnpm isn't set up yet
-pnpm install
-pnpm build
-npm install -g ./packages/cli
+npm install -g tines                      # puts the `tines` command on your PATH
+tines --help
 ```
 
-That puts `tines` on your PATH:
+Every push to `main` publishes a new version (see "Publishing the CLI to npm" below), so a fresh `npm install -g tines` — or `npm install -g tines@latest` to upgrade — tracks this repo. Node 20+ is the only prerequisite.
+
+Agents can skip the install entirely; `npx -y` needs no global install, PATH changes, or prior setup:
 
 ```sh
-tines --help
-tines time                                # https://tines.tbuckley.dev, the default
+npx -y tines time --url https://tines.tbuckley.dev
 ```
 
 Store an API key (Settings → API keys in the web app) once and every command is
@@ -165,22 +158,32 @@ export TINES_API_URL=http://localhost:5173       # the env-var alternative
 (`TINES_API_URL`, `TINES_API_KEY`), which is how agent runs are configured, and `--url` /
 `--api-key` win over both.
 
-To upgrade later: `git pull`, `pnpm install`, `pnpm build`, then re-run `npm install -g ./packages/cli`. To go back to a released build, `npm install -g tines@latest`.
+## Developing the CLI
+
+Day to day, run the CLI straight from the workspace with `pnpm cli <args>` (see "Getting started" above) — no build, no install.
+
+To put an *unreleased* build on your PATH, install from a local clone. Installing straight from the repo URL (`npm install -g github:tbuckley/tines`) does **not** work — the repo is a pnpm workspace and the CLI lives in `packages/cli` — but the build bundles `@tines/shared` into `dist/index.js`, so the package folder is installable on its own:
+
+```sh
+git clone https://github.com/tbuckley/tines.git
+cd tines
+corepack enable                           # if pnpm isn't set up yet
+pnpm install
+pnpm build
+npm install -g ./packages/cli
+```
+
+To pick up later changes: `git pull`, `pnpm install`, `pnpm build`, then re-run `npm install -g ./packages/cli`.
 
 If you're actively hacking on the CLI, run `pnpm link --global` from `packages/cli` instead of `npm install -g` (requires a one-time `pnpm setup`). The global `tines` then symlinks into your clone, so every `pnpm build` is picked up without reinstalling.
+
+Either way you are off the release train until you run `npm install -g tines@latest` again.
 
 ## Publishing the CLI to npm
 
 Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`**. The tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and the build bundles everything — `@tines/shared` and `commander` alike — so the package has **no runtime dependencies**.
 
-Once published, anyone can install or run it:
-
-```sh
-npm install -g tines                      # installs the `tines` command globally
-npx -y tines time                         # one-shot, no install — handy for agents
-```
-
-The `npx -y` form is the most agent-friendly: it needs no global install, PATH changes, or prior setup — just Node 20+.
+Consumers install it with `npm install -g tines`, or run it with no install at all via `npx -y tines` — see "Installing the CLI" above.
 
 ### Releases are automatic
 
