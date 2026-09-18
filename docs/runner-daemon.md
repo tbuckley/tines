@@ -56,7 +56,8 @@ is only needed for registration and never appears in a service unit. Both values
 come from `tines login` (the same directory's `config.json`) instead of the environment; the
 env vars take precedence when set.
 
-Flags (shared by `install` and `daemon`; `install` writes the ones you give into the unit):
+Flags (nine are shared by `install` and `daemon`; `install` writes the shared ones you give
+into the unit):
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
@@ -66,11 +67,14 @@ Flags (shared by `install` and `daemon`; `install` writes the ones you give into
 | `--max-concurrent` | Simultaneous runs on this machine (1–100), or the machine-owned ceiling when remote adjustment is enabled | 1 |
 | `--allow-remote-concurrency` | Let signed-in operators request a cap up to the local ceiling; never enabled remotely | off |
 | `--poll-interval` | Seconds between polls | 15 |
-| `--no-cli-refresh` | Skip the managed CLI install; harnesses use whatever `tines` is on the ambient PATH | refresh on |
-| `--no-self-update` | Never exit for the service manager to relaunch a newer daemon (see "Keeping the daemon itself current") | self-update on |
 | `--keep-workspaces` | Keep settled runs' workspaces for debugging: `never`, `failed`, or `always` | `never` |
 | `--keep-workspaces-for` | Hours a kept workspace survives | 72 |
 | `--keep-workspaces-max` | Most kept workspaces to hold at once (oldest go first) | 20 |
+| `--no-cli-refresh` | Foreground `daemon` only: skip the managed CLI install; harnesses use whatever `tines` is on the ambient PATH | refresh on |
+| `--no-self-update` | Foreground `daemon` only: never exit for the service manager to relaunch a newer daemon (see "Keeping the daemon itself current") | self-update on |
+
+The service created by `runner install` always keeps both the harness-facing CLI and the daemon
+itself current, so `install` does not accept the two `--no-*` flags.
 
 Custom command placeholders are shell-quoted before the daemon passes the expanded template
 to `sh -c`. A missing model or effort expands to the empty shell word `''`, so the flag can
@@ -155,7 +159,8 @@ So the daemon maintains its own copy. At start, and before each launch if the la
 is more than 10 minutes old, it runs:
 
 ```sh
-npm install --prefix ~/.config/tines/cli tines@latest --min-release-age=0 --no-audit --no-fund
+npm install --prefix ~/.config/tines/cli tines@latest \
+  --min-release-age=0 --no-audit --no-fund --loglevel=error
 ```
 
 and prepends `~/.config/tines/cli/node_modules/.bin` to the harness's `PATH`. Notes:
@@ -171,9 +176,15 @@ and prepends `~/.config/tines/cli/node_modules/.bin` to the harness's `PATH`. No
   unchanged.
 - **Failures never fail a run.** npm missing, registry unreachable, or an install hanging
   past 60s all degrade to the last-good copy in the prefix, then to the ambient `PATH`.
-  The daemon logs it, and every run's log records which CLI executed it on its first line.
+  The daemon logs it, and every run's log records which CLI executed it, on the line
+  just after the clones (item 2 below).
 - To reset, delete `~/.config/tines/cli` (it is rebuilt on the next refresh). To opt out
   entirely, pass `--no-cli-refresh`.
+- **Restart the daemon after upgrading it.** The refresh runs inside the daemon process, so
+  a daemon that has been up since before this feature shipped never performs one: the prefix
+  is simply absent and every harness silently falls through to the ambient `PATH`. If agents
+  report a `tines` older than npm's, check the daemon first — `ls ~/.config/tines/cli`
+  (missing prefix), then `tines --version` against `npm view tines version`.
 
 ### Keeping the daemon itself current
 
