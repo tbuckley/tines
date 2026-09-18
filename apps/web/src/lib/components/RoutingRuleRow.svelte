@@ -129,7 +129,8 @@
 			class="bg-muted rounded-full px-2 py-0.5 text-xs"
 			title="Uses the next lower-priority matching rule's runners"
 		>
-			*:{rule.targets[0].tier} · inherited runners
+			*:{rule.targets[0].tier}{rule.targets[0].effort ? ` · effort ${rule.targets[0].effort}` : ''} ·
+			inherited runners
 		</span>
 	{:else}
 		<span class="flex flex-wrap items-center gap-1">
@@ -143,7 +144,9 @@
 						: ''}"
 					title={target.runner_status === 'paused' ? 'paused' : undefined}
 				>
-					{target.runner_name}{target.tier ? `:${target.tier}` : ''}
+					{target.runner_name}{target.tier ? `:${target.tier}` : ''}{target.effort
+						? ` · effort ${target.effort}`
+						: ''}
 				</span>
 			{/each}
 		</span>

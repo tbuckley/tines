@@ -4,12 +4,15 @@
 		EffectiveContext,
 		IssueTransferPreview,
 		IssueTransferResult,
-		Project
+		Project,
+		TransferConflictParticipant
 	} from '@tines/shared';
+	import { deriveTransferConflictDeltas } from '@tines/shared';
 	import { tick } from 'svelte';
 	import { api } from '$lib/api';
 	import Modal from '$lib/components/Modal.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { TransferReviewController, type TransferReviewOwner } from '$lib/issue-transfer-review';
 
 	/**
 	 * "Move to project…": choose a destination, review exactly what changes, and
@@ -47,10 +50,11 @@
 	let uncertain = $state(false);
 	let destinationSelect = $state<HTMLSelectElement | null>(null);
 	let reviewHeading = $state<HTMLHeadingElement | null>(null);
-	/** Only the newest request may render: an older reply must not overwrite it. */
-	let requestSeq = 0;
+	const reviewController = new TransferReviewController();
+	let observedOpen = false;
+	let observedIssueId: string | null = null;
 
-	function reset() {
+	function clearPreview() {
 		destination = '';
 		preview = null;
 		error = null;
@@ -60,23 +64,77 @@
 		committing = false;
 	}
 
+	function closePreviewSession() {
+		reviewController.invalidate();
+		clearPreview();
+		open = false;
+	}
+
+	function backToChooser() {
+		reviewController.supersedeRequest();
+		preview = null;
+		error = null;
+		stale = false;
+	}
+
+	function destinationChanged() {
+		reviewController.supersedeRequest();
+		preview = null;
+		error = null;
+		stale = false;
+		loading = false;
+	}
+
+	// A host can bind the dialog closed or replace the issue without going
+	// through one of our buttons. Treat both as the same session boundary.
+	$effect(() => {
+		const visible = open;
+		const activeIssueId = issueId;
+		if (activeIssueId !== observedIssueId) {
+			reviewController.invalidate();
+			clearPreview();
+			observedIssueId = activeIssueId;
+			observedOpen = false;
+		}
+		if (visible && !observedOpen) {
+			clearPreview();
+			reviewController.open(activeIssueId);
+		} else if (!visible && observedOpen) {
+			reviewController.invalidate();
+			clearPreview();
+		}
+		observedOpen = visible;
+	});
+
 	async function review() {
 		if (!destination) return;
-		const seq = ++requestSeq;
+		const reviewedIssueId = issueId;
+		const reviewedDestination = destination;
 		loading = true;
 		error = null;
 		stale = false;
-		try {
-			const next = await api.previewIssueTransfer(issueId, destination);
-			if (seq !== requestSeq) return;
-			preview = next;
-			await tick();
+		await reviewController.review({
+			issueId: reviewedIssueId,
+			destinationId: reviewedDestination,
+			current: () => ({ open, issueId, destinationId: destination }),
+			transport: () => api.previewIssueTransfer(reviewedIssueId, reviewedDestination),
+			onSuccess: async (next, owner) => {
+				preview = next;
+				await tick();
+				focusReview(owner);
+			},
+			onFailure: (e) => {
+				error = e instanceof Error ? e.message : 'Could not load the review';
+			},
+			onFinally: () => {
+				loading = false;
+			}
+		});
+	}
+
+	function focusReview(owner: TransferReviewOwner) {
+		if (reviewController.isCurrent(owner, { open, issueId, destinationId: destination })) {
 			reviewHeading?.focus({ preventScroll: true });
-		} catch (e) {
-			if (seq !== requestSeq) return;
-			error = e instanceof Error ? e.message : 'Could not load the review';
-		} finally {
-			if (seq === requestSeq) loading = false;
 		}
 	}
 
@@ -91,7 +149,7 @@
 			});
 			open = false;
 			oncompleted(result);
-			reset();
+			clearPreview();
 		} catch (e) {
 			const fail = e as { code?: string; message?: string };
 			error = fail.message ?? 'The move failed';
@@ -142,6 +200,21 @@
 			{ label: 'After', routing: value.routing.after }
 		] satisfies { label: string; routing: DispatchExplainer | null }[];
 
+	const conflictDeltas = $derived(
+		preview ? deriveTransferConflictDeltas(preview.context.before, preview.context.after) : []
+	);
+
+	const conflictParticipants = (participants: TransferConflictParticipant[]) =>
+		participants
+			.map((participant) =>
+				participant.name && participant.scope_label
+					? `${participant.name} (${participant.scope_label})`
+					: participant.item_id
+			)
+			.join(', ');
+	const conflictChange = (change: 'retained' | 'resolved' | 'introduced') =>
+		`${change[0].toUpperCase()}${change.slice(1)}`;
+
 	function itemContent(context: EffectiveContext, itemId: string): string[] {
 		const prompt = context.prompt.parts.find((item) => item.item_id === itemId);
 		if (prompt) return [prompt.body];
@@ -174,7 +247,7 @@
 	bind:open
 	title="Move to project…"
 	size="xl"
-	onclose={reset}
+	onclose={closePreviewSession}
 	initialFocus={() => destinationSelect}
 >
 	{#if !preview}
@@ -187,6 +260,7 @@
 					<select
 						bind:this={destinationSelect}
 						bind:value={destination}
+						onchange={destinationChanged}
 						class="border-input bg-background w-full rounded-md border px-3 py-2 text-sm"
 						data-testid="transfer-destination"
 					>
@@ -205,7 +279,7 @@
 				<p class="text-destructive text-sm" role="alert">{error}</p>
 			{/if}
 			<div class="flex justify-end gap-2">
-				<Button variant="ghost" onclick={() => (open = false)}>Cancel</Button>
+				<Button variant="ghost" onclick={closePreviewSession}>Cancel</Button>
 				<Button disabled={!destination || loading} onclick={review}>
 					{loading ? 'Loading review…' : 'Review move'}
 				</Button>
@@ -298,14 +372,26 @@
 									</p>
 								{/each}
 							{/each}
-							{#each side.context.conflicts as conflict (conflict.dir)}
-								<p class="text-xs wrap-anywhere">
-									Checkout conflict at “{conflict.dir}”: {conflict.item_ids.join(', ')}
-								</p>
-							{/each}
 						</div>
 					{/each}
 				</div>
+			</section>
+
+			<section class="space-y-1">
+				<h4 class="font-medium">Repository checkout conflicts</h4>
+				{#if conflictDeltas.length === 0}
+					<p class="text-muted-foreground text-xs">None.</p>
+				{:else}
+					<ul class="space-y-2">
+						{#each conflictDeltas as delta (delta.key + delta.change)}
+							<li class="min-w-0 text-xs wrap-anywhere" data-testid="transfer-conflict-row">
+								<p class="font-medium">{conflictChange(delta.change)} — {delta.dir}</p>
+								{#if delta.before.length}<p>Before: {conflictParticipants(delta.before)}</p>{/if}
+								{#if delta.after.length}<p>After: {conflictParticipants(delta.after)}</p>{/if}
+							</li>
+						{/each}
+					</ul>
+				{/if}
 			</section>
 
 			<section class="space-y-2">
@@ -323,10 +409,18 @@
 											.routing.pin.tier ?? 'default'}
 									</p>{/if}
 								{#each side.routing.checks as check (check.name)}
-									<p class="text-xs">
-										<strong>{check.ok ? 'Pass' : 'Failed'} {check.name}:</strong>
-										{check.detail}
-									</p>
+									<div class="min-w-0 text-xs wrap-anywhere">
+										<p>
+											<strong>{check.ok ? 'Pass' : 'Failed'} {check.name}:</strong>
+											{check.detail}
+										</p>
+										{#if check.action?.href}
+											<a class="underline" href={check.action.href}>{check.action.label}</a>
+										{:else if check.action?.cli}
+											<code class="block wrap-anywhere whitespace-pre-wrap">{check.action.cli}</code
+											>
+										{/if}
+									</div>
 								{/each}
 								{#if side.routing.matched_rule}<p class="text-xs">
 										Matched rule: {side.routing.matched_rule.scope_label}
@@ -388,8 +482,8 @@
 			{/if}
 
 			<div class="flex justify-end gap-2">
-				<Button variant="ghost" onclick={() => (preview = null)}>Back</Button>
-				<Button variant="ghost" onclick={() => (open = false)}>Cancel</Button>
+				<Button variant="ghost" onclick={backToChooser}>Back</Button>
+				<Button variant="ghost" onclick={closePreviewSession}>Cancel</Button>
 				<Button
 					disabled={!preview.can_commit || committing || loading}
 					onclick={commit}

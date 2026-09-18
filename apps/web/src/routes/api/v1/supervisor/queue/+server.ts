@@ -11,5 +11,9 @@ import type { RequestHandler } from './$types';
  */
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	return json(await loadFleetQueue(db, actor.userId));
+	return json(
+		await loadFleetQueue(db, actor.userId, Date.now(), {
+			project: event.url.searchParams.get('project') ?? undefined
+		})
+	);
 });

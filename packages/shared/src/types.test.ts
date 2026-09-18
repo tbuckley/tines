@@ -15,13 +15,13 @@ describe('runCostLabel', () => {
 	const label = (usage: AgentRunUsage | null) => runCostLabel({ usage });
 
 	it('prefers dollars whenever a cost is known', () => {
-		expect(label({ cost_usd: 1.2, cost_source: 'provider' })).toBe('$1.20');
+		expect(label({ cost_usd: 1.2, cost_source: 'provider' })).toBe('$1.20 Reported');
 		// tokens present too — dollars still win
-		expect(label({ cost_usd: 0, input_tokens: 500, output_tokens: 10 })).toBe('$0.00');
+		expect(label({ cost_usd: 0, input_tokens: 500, output_tokens: 10 })).toBe('$0 Recorded');
 	});
 
 	it('says so when the provider reports no cost at all', () => {
-		expect(label({ cost_source: 'none', input_tokens: 10, output_tokens: 20 })).toBe('unreported');
+		expect(label({ cost_source: 'none', input_tokens: 10, output_tokens: 20 })).toBe('Unreported');
 	});
 
 	it('falls back to summed tokens when only they are known', () => {
@@ -38,10 +38,13 @@ describe('runCostLabel', () => {
 		expect(label({ cache_read_tokens: 600 })).toBe('600 tok');
 	});
 
-	it('renders nothing rather than a misleading zero', () => {
+	it('keeps explicit legacy zero measurements visibly unpriced', () => {
 		expect(label(null)).toBeNull();
 		expect(label({})).toBeNull();
-		expect(label({ input_tokens: 0, output_tokens: 0 })).toBeNull();
+		expect(label({ input_tokens: 0, output_tokens: 0 })).toBe('Unpriced');
+		expect(
+			label({ input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 })
+		).toBe('Unpriced');
 	});
 });
 
@@ -108,6 +111,23 @@ describe('isStaleTierOverride', () => {
 	it('flags a predecessor of the current built-in', () => {
 		expect(isStaleTierOverride('claude-fable-5-1', 'claude-fable-5')).toBe(true);
 		expect(isStaleTierOverride('claude-fable-5-1', 'claude-opus-5')).toBe(true);
+	});
+
+	it('flags the former Codex default for every new built-in', () => {
+		for (const model of ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-astra']) {
+			expect(isStaleTierOverride(model, 'gpt-5-codex')).toBe(true);
+		}
+	});
+
+	it('does not rank the new Codex defaults relative to one another', () => {
+		const models = ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-astra'];
+		for (const builtin of models) {
+			for (const override of models) {
+				expect(isStaleTierOverride(builtin, override)).toBe(false);
+			}
+			expect(isStaleTierOverride(builtin, 'some-custom-model')).toBe(false);
+			expect(isStaleTierOverride(builtin, undefined)).toBe(false);
+		}
 	});
 
 	it('does not flag the built-in itself, unknown models, or missing values', () => {

@@ -9,7 +9,7 @@ import type {
 	UnarchiveProjectResponse,
 	UpdateProjectRequest
 } from '@tines/shared';
-import { ACTIVE_RUN_STATUSES, PROJECT_PROMPT_NAME } from '@tines/shared';
+import { ACTIVE_RUN_STATUSES, PROJECT_NAME_MAX, PROJECT_PROMPT_NAME } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
@@ -24,6 +24,7 @@ import {
 import { assertWritable } from './archive';
 import { eventInsert } from './events';
 import { projectScheduleDeletions, rearmScheduleQueries } from './schedules';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { resolveStarter, starterQueries, type StarterRegistry } from './starters';
 
 function projectQuery(db: Kysely<Database>, userId: string) {
@@ -84,7 +85,7 @@ export async function getProject(
 /** Pure field validation shared by ordinary create and library preview. */
 export function validateProjectFields(body: Pick<CreateProjectRequest, 'name' | 'description'>) {
 	return {
-		name: requireString(body.name, 'name', { max: 200 }).trim(),
+		name: requireString(body.name, 'name', { max: PROJECT_NAME_MAX }).trim(),
 		description: optionalString(body.description, 'description', { max: 10_000 }) ?? ''
 	};
 }
@@ -223,7 +224,9 @@ export async function updateProject(
 	const current = await getProject(db, actor.userId, id);
 	await assertWritable(db, actor, current);
 	const name =
-		body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
+		body.name !== undefined
+			? requireString(body.name, 'name', { max: PROJECT_NAME_MAX }).trim()
+			: current.name;
 	const description =
 		body.description !== undefined
 			? (optionalString(body.description, 'description', { max: 10_000 }) ?? '')
@@ -422,11 +425,15 @@ export async function unarchiveProject(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	now = Date.now()
 ): Promise<UnarchiveProjectResponse> {
 	const project = await getProject(db, actor.userId, id);
-	if (project.archived_at === null) return { project, schedules_resumed: 0 };
+	if (project.archived_at === null) {
+		effects.signalDispatch();
+		return { project, schedules_resumed: 0 };
+	}
 	// Enabled schedules resume from their next future occurrence: a project
 	// archived for a month must not fire a month of catch-up issues.
 	const schedules = await db
@@ -449,6 +456,7 @@ export async function unarchiveProject(
 			payload: { name: project.name, schedules_resumed: rearm.queries.length }
 		})
 	]);
+	effects.signalDispatch();
 	return {
 		project: await getProject(db, actor.userId, id),
 		schedules_resumed: rearm.queries.length

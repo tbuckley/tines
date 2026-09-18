@@ -1,0 +1,14 @@
+{
+	"cases": 38,
+	"finalized": 143,
+	"pending": 107,
+	"raw_http_pages": 256,
+	"all_fields_and_groups_reconciled": true,
+	"source_cli_invocations": 228,
+	"manual_pending_pages": 6,
+	"manual_finalized_pages": 8,
+	"default_limit": 50,
+	"account_and_run_key_isolation": true,
+	"source_cli": "node --import tsx src/index.ts",
+	"generated_at": "2026-09-12T17:01:30.131Z"
+}

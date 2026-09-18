@@ -73,6 +73,22 @@ describe('listAll', () => {
 		expect(await listAll(fetchPage)).toEqual([...rows(3), { id: 'r9' }]);
 	});
 
+	it('uses an explicit identity for rows without an id field', async () => {
+		type Publication = { candidate_id: string };
+		let call = 0;
+		const fetchPage: PageFetcher<Publication> = async () =>
+			call++ === 0
+				? { items: [{ candidate_id: 'a' }], next_cursor: 'next' }
+				: {
+						items: [{ candidate_id: 'a' }, { candidate_id: 'b' }],
+						next_cursor: null
+					};
+		expect(await listAll(fetchPage, { identify: (item) => item.candidate_id })).toEqual([
+			{ candidate_id: 'a' },
+			{ candidate_id: 'b' }
+		]);
+	});
+
 	it('accepts a list exactly at the ceiling', async () => {
 		const { fetchPage } = paged(rows(300));
 		expect(await listAll(fetchPage, { maxItems: 300 })).toHaveLength(300);

@@ -1,8 +1,9 @@
 import type { ArtifactSiteLink, IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { siteHeaders } from '../src/lib/server/artifact-site';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, runId, signIn, issuePath } from './helpers';
 
 /**
  * HTML artifacts served as live sites (Tines/272, specs/artifacts/SPEC.md
@@ -19,7 +20,7 @@ import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
  * the viewer warns about in its own words.
  */
 
-const projectName = `site-${runId}`;
+let projectName: string;
 let project: Project;
 let issue: IssueDetail;
 
@@ -84,11 +85,9 @@ const FOLDER_SUB_HTML = `<!doctype html>
 <body><h1>Sub page index</h1></body></html>
 `;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName, workerRequest: request }) => {
+	projectName = uniqueName('site');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 	issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, { title: `Site ${runId}` })
@@ -103,6 +102,12 @@ test.beforeAll(async ({ playwright }) => {
 		content_type: 'text/html'
 	});
 	expect(put.status(), await put.text()).toBe(200);
+	const raceSite = await api.put(`/api/v1/issues/${issue.id}/artifacts/race-site`, {
+		type: 'text',
+		content: '<h1>SITE VERSION ONE</h1>',
+		content_type: 'text/html'
+	});
+	expect(raceSite.status(), await raceSite.text()).toBe(200);
 
 	const folder = await request.put(`/api/v1/issues/${issue.id}/artifacts/mini-app/folder`, {
 		headers: { authorization: `Bearer ${ALICE.apiKey}` },
@@ -122,15 +127,9 @@ test.beforeAll(async ({ playwright }) => {
 		}
 	});
 	expect(folder.status(), await folder.text()).toBe(200);
-
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
-
-const issueUrl = () => `/issues/${encodeURIComponent(projectName)}/${issue.number}`;
+test.use({ signedIn: ALICE });
 
 /** Mints a link the way the viewer does, for the request-level assertions. */
 async function siteLink(page: Page, name: string): Promise<ArtifactSiteLink> {
@@ -156,8 +155,105 @@ async function openViewer(page: Page, name: string) {
 	return dialog;
 }
 
+function barrier() {
+	let release!: () => void;
+	const promise = new Promise<void>((resolve) => (release = resolve));
+	return { promise, release };
+}
+
+test('superseded site-link success and failure cannot enter a reopened site view', async ({
+	page
+}) => {
+	for (const outcome of ['success', 'failure'] as const) {
+		const first = barrier();
+		const second = barrier();
+		let requests = 0;
+		await page.route(`**/artifacts/prototype/site-link`, async (route) => {
+			requests++;
+			if (requests === 1) {
+				const response = outcome === 'success' ? await route.fetch() : null;
+				await first.promise;
+				if (response) await route.fulfill({ response });
+				else await route.abort('failed');
+			} else {
+				await second.promise;
+				await route.continue();
+			}
+		});
+
+		await gotoHydrated(page, issuePath(projectName, issue.number));
+		const dialog = await openViewer(page, 'prototype');
+		await expect.poll(() => requests).toBe(1);
+		await dialog.getByRole('button', { name: 'Source' }).click();
+		await expect(dialog.getByRole('button', { name: '← Back to the rendered page' })).toBeVisible();
+		await dialog.getByRole('button', { name: '← Back to the rendered page' }).click();
+		await expect.poll(() => requests).toBe(2);
+		first.release();
+		await expect(dialog.getByText('Preparing preview…')).toBeVisible();
+		await expect(dialog.getByText('Couldn’t open this preview — close and retry.')).toHaveCount(0);
+		await expect(dialog.getByRole('link', { name: 'Open full page' })).toHaveCount(0);
+		await expect(dialog.locator('iframe[title="prototype preview"]')).toHaveCount(0);
+		second.release();
+		await expect(dialog.locator('iframe[title="prototype preview"]')).toBeVisible();
+		await page.unroute(`**/artifacts/prototype/site-link`);
+	}
+});
+
+test('site frame, source and download share the metadata snapshot across an upload', async ({
+	page
+}) => {
+	await page.route(`**/api/v1/issues/${issue.id}/artifacts/race-site`, async (route) => {
+		const v1Detail = await route.fetch();
+		const appended = await page.request.put(`/api/v1/issues/${issue.id}/artifacts/race-site`, {
+			headers: { authorization: `Bearer ${ALICE.apiKey}` },
+			data: {
+				type: 'text',
+				content: '<h1>SITE VERSION TWO</h1>',
+				content_type: 'text/html'
+			}
+		});
+		expect(appended.status(), await appended.text()).toBe(200);
+		await route.fulfill({ response: v1Detail });
+	});
+
+	await gotoHydrated(page, issuePath(projectName, issue.number));
+	const dialog = await openViewer(page, 'race-site');
+	await expect(page.frameLocator('iframe[title="race-site preview"]').locator('h1')).toHaveText(
+		'SITE VERSION ONE'
+	);
+	const download = dialog.getByRole('link', { name: 'Download', exact: true });
+	const href = await download.getAttribute('href');
+	expect(new URL(href!, 'http://local').searchParams.get('version')).toBe('1');
+	expect(await (await page.request.get(href!)).text()).toContain('SITE VERSION ONE');
+	await dialog.getByRole('button', { name: 'Source' }).click();
+	await expect(dialog.getByText('<h1>SITE VERSION ONE</h1>', { exact: true })).toBeVisible();
+	await expect(dialog.getByText('SITE VERSION TWO')).toHaveCount(0);
+
+	await page.unroute(`**/api/v1/issues/${issue.id}/artifacts/race-site`);
+	await dialog.getByRole('button', { name: 'Close' }).click();
+	await openViewer(page, 'race-site');
+	await expect(page.frameLocator('iframe[title="race-site preview"]').locator('h1')).toHaveText(
+		'SITE VERSION TWO'
+	);
+	const versions = dialog.getByRole('combobox', { name: 'Version' });
+	await versions.selectOption('1');
+	await expect(page.frameLocator('iframe[title="race-site preview"]').locator('h1')).toHaveText(
+		'SITE VERSION ONE'
+	);
+	await versions.selectOption('current');
+	await expect(page.frameLocator('iframe[title="race-site preview"]').locator('h1')).toHaveText(
+		'SITE VERSION TWO'
+	);
+});
+
 test('an HTML artifact renders live in the viewer, with its scripts running', async ({ page }) => {
-	await gotoHydrated(page, issueUrl());
+	let requestedVersion: number | undefined;
+	page.on('request', (request) => {
+		if (request.url().endsWith(`/artifacts/prototype/site-link`)) {
+			requestedVersion = request.postDataJSON().version;
+		}
+	});
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'prototype');
 
 	const frame = page.frameLocator('iframe[title="prototype preview"]');
@@ -165,6 +261,7 @@ test('an HTML artifact renders live in the viewer, with its scripts running', as
 	// path would show the tags themselves.
 	await expect(frame.locator('h1')).toHaveText('Prototype heading');
 	await expect(frame.locator('#script')).toHaveText('script ran');
+	expect(requestedVersion).toBe(1);
 
 	// The whole security claim, from inside the page: `connect-src` names only
 	// this artifact's own `/s/<token>/` prefix, so the Tines API is unreachable
@@ -179,7 +276,7 @@ test('an HTML artifact renders live in the viewer, with its scripts running', as
 });
 
 test('the width switcher narrows the frame to a phone and back', async ({ page }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'prototype');
 
 	const iframe = dialog.locator('iframe[title="prototype preview"]');
@@ -211,7 +308,7 @@ test('the width switcher narrows the frame to a phone and back', async ({ page }
 });
 
 test('Source shows the markup and comes back to the rendered page', async ({ page }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'prototype');
 	await expect(dialog.locator('iframe[title="prototype preview"]')).toBeVisible();
 
@@ -224,7 +321,7 @@ test('Source shows the markup and comes back to the rendered page', async ({ pag
 });
 
 test('Open full page loads the site as a top-level document', async ({ page, context }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'prototype');
 	await expect(dialog.locator('iframe[title="prototype preview"]')).toBeVisible();
 
@@ -241,7 +338,7 @@ test('Open full page loads the site as a top-level document', async ({ page, con
 });
 
 test('a folder site resolves its relative siblings and steps into subfolders', async ({ page }) => {
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'mini-app');
 
 	const frame = page.frameLocator('iframe[title="mini-app preview"]');
@@ -377,7 +474,7 @@ test('the dedicated-origin iframe permits storage while containing the prototype
 			json: { url, mode: 'sandbox-origin', version: 1, expires_at: Date.now() + 60_000 }
 		})
 	);
-	await gotoHydrated(page, issueUrl());
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	const dialog = await openViewer(page, 'prototype');
 	const iframe = dialog.locator('iframe[title="prototype preview"]');
 	await expect(iframe).toHaveAttribute('src', url);

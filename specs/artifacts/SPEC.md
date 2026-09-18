@@ -778,6 +778,17 @@ with a Phone / Tablet / Full width switcher — the reader is usually going to
 be on a phone — an **Open full page** link, and *Files* / *Source* escapes
 back to the ordinary folder and text views.
 
+The viewer resolves **current** to the concrete version returned by its metadata
+read and pins every source, frame, image, PDF, folder entry, download and site
+link to that snapshot. Reopening performs a fresh metadata read; an already-open
+viewer does not live-advance. Immutable text caching is scoped by stable artifact
+id, version and exact folder path, so it cannot cross issues or a delete/recreate
+boundary. Metadata, text failures and site links are rendered only while their
+open selection still owns the request; a superseded response cannot replace the
+active preview. Panel thumbnails likewise use the concrete current version from
+their own artifact row. The public content API remains current-by-default when a
+general caller omits `version`.
+
 ### Transitions
 
 Transition buttons in the *State & transitions* section show their
@@ -941,6 +952,12 @@ From the folders/viewer review:
   version picker); inline expansion had unbounded Markdown height inside the
   issue column and could never host PDFs. The one inline survivor is the
   image thumbnail — the genuinely glanceable case.
+- **Resolved previews are immutable UI snapshots** — "current" is resolved by
+  the metadata read and every downstream URL/request carries that numbered
+  version. Cache identity includes stable artifact id and exact path; reopening
+  is the refresh boundary, and late responses from older selections are ignored.
+  This tightens viewer/panel behavior without changing the API's intentional
+  current-by-default contract for unresolved callers.
 - **Screenshots are a folder, not sibling files** — because workflows are
   generic over issues: a requirement names one fixed slot (`screenshots`),
   while each issue's surfaces differ, so per-screen slot names are invisible
@@ -975,3 +992,10 @@ From later work:
 - **2026-09-01, Tines/92 — the link payload flag is `--link`, not `--url`**: `-u, --url` is the API base URL on every CLI command without exception. `attach … --url <link>` used to suppress the base-URL flag and attach the link, so an invocation that copied the documented `--url` idiom silently produced a `link` artifact pointing at the API base URL. Renaming makes that misuse an offline arity error carrying the corrective hint; the server-generated `fix:` line and launch-prompt "Attach one:" hint teach `--link`.
 - **2026-09-06, Tines/241 — the requirement is the single source for every attach hint**: the `attachFlag`/`fixFor` logic moved out of the 422 builder into `requirementFix` in `@tines/shared`, and `fix` became a required field on `ArtifactRequirementCheck`. The three surfaces that tell someone how to attach — launch prompt, issue read, 422 — can no longer drift from each other or from the gate, and the CLI can import the same function. Rendering stays on today's *flag* forms (`--text @<slot>.md`, not a positional path): runner CLIs lag npm by days, so a hint the installed CLI cannot parse is worse than a generic one.
 - **2026-09-06, Tines/274 — the rendered hint is the positional form, and one command per code span**: the gate-typed positional `attach <ref> <slot> <source>` shipped in `tines@0.0.141` (Tines/243), so `requirementFix` now renders it for every requirement that declares a `type` — the one-line journey the PRD's "After" shows, and the end of the `--text @<slot>.txt` loop that stored `text/markdown` under a `text/plain` gate. Untyped requirements keep a flag, which is the only thing that can type them. A CLI older than `0.0.141` fails the positional form with commander's `too many arguments`, exit 1 having written nothing — it fails safe, loudly, and at a version that is days old, so there is no fallback rendering. Separately, `fix` stopped packing two commands into one string: the `stale` reaffirm moved to `fix_alternative`, additively, because a code span an agent copies has to run.
+# Public-package renderer boundary (Tines/436)
+
+Public workflow snapshots do not use the private artifact/Markdown renderer, which may support richer
+trusted-account content. They use a closed escaped text renderer that creates no publisher-controlled
+resource attributes and suppresses malformed image/media/embed nodes defensively. This keeps private
+library behavior compatible while public admission and display remain text-only; see
+[`specs/library/PUBLICATIONS.md`](../library/PUBLICATIONS.md).

@@ -7,6 +7,8 @@ import { listLabels } from '$lib/server/api/labels';
 import { listRunners } from '$lib/server/api/runners';
 import { listRoutingRules } from '$lib/server/api/routing';
 import { hasAnyRun, listRuns } from '$lib/server/api/runs';
+import { getIssueUsage } from '$lib/server/api/usage';
+import { mintUsageScope, usageKeyMaterial } from '$lib/server/usage-scope';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { explainDispatch } from '$lib/server/supervisor/explain';
 import { getDb } from '$lib/server/db';
@@ -102,6 +104,27 @@ export const load: PageServerLoad = async ({
 	// Awaited by two deferred entries; created once so the check is not made twice.
 	const hasAnyRunPromise = hasAnyRun(db, userId);
 	hasAnyRunPromise.catch(() => {});
+	const usagePromise = (async () => {
+		const cutoff = Date.now();
+		const report = await getIssueUsage(db, userId, issue.id, cutoff, cutoff);
+		if (!report) throw new Error('Issue usage unavailable');
+		const material = usageKeyMaterial(platform!.env);
+		if (!material) throw new Error('Usage evidence signing is not configured');
+		report.scope = await mintUsageScope(
+			{
+				v: 1,
+				owner: userId,
+				mode: 'issue',
+				issue: issue.id,
+				cutoff,
+				timezone: report.timezone,
+				timezone_source: report.timezone_source
+			},
+			material
+		);
+		return report;
+	})();
+	usagePromise.catch(() => {});
 
 	return {
 		issue: issueDetail,
@@ -130,6 +153,7 @@ export const load: PageServerLoad = async ({
 			issueRuns: listRuns(db, userId, { issue: issue.id }, { cursor: null, limit: 20 }).then(
 				(page) => page.items
 			),
+			usage: usagePromise,
 			runners: listRunners(db, userId),
 			// The first-run checklist: shown only while the account has never had
 			// a run, so the rules it needs are fetched only for that population —

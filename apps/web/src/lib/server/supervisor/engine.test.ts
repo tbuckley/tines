@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import type { ActorContext } from '../api/core';
 import { listIssues, resumeIssue, transitionIssue } from '../api/issues';
@@ -5,6 +6,7 @@ import { createTestDb, type TestDb } from '../api/test-db';
 import { localAdapter } from './adapter';
 import {
 	cancelRun,
+	cancelAssignedRuns,
 	claimRun,
 	endRun,
 	launchClaimedRun,
@@ -12,6 +14,8 @@ import {
 	loadEndableRun,
 	loadEngineRunners,
 	noteRateLimit,
+	releaseDeclinedAssignments,
+	releaseSurplusAssigned,
 	runDispatchPass,
 	sweepSupervisor,
 	targetsForIssue,
@@ -23,6 +27,7 @@ import {
 	addLabel,
 	addRule,
 	addRun,
+	addRunKey,
 	addRunner,
 	addTransitionEvent,
 	addTwoStageWorkflow,
@@ -201,6 +206,126 @@ describe('eligibility', () => {
 		const result = await pass(t);
 		expect(result.claimed).toBe(1);
 		expect(runs(t)[0].issue_id).toBe('iss_stale');
+	});
+});
+
+describe('local concurrency release', () => {
+	it('keeps running work and releases newest surplus assigned claims', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 3 });
+		t.sqlite
+			.prepare(
+				`UPDATE runner SET daemon_instance_id = 'boot_1', concurrency_instance_id = 'boot_1',
+				 concurrency_mode = 'remote', concurrency_ceiling = 1 WHERE id = ?`
+			)
+			.run(runnerId);
+		const runningIssue = addIssue(t, { title: 'running' });
+		const oldIssue = addIssue(t, { title: 'old assignment' });
+		const newIssue = addIssue(t, { title: 'new assignment' });
+		const running = addRun(t, {
+			issueId: runningIssue,
+			runnerId,
+			status: 'running',
+			startedAt: NOW - 100,
+			createdAt: NOW - 300
+		});
+		const oldAssigned = addRun(t, {
+			issueId: oldIssue,
+			runnerId,
+			createdAt: NOW - 200
+		});
+		const newAssigned = addRun(t, {
+			issueId: newIssue,
+			runnerId,
+			createdAt: NOW - 100
+		});
+		let signals = 0;
+		const released = await releaseSurplusAssigned(
+			t.db,
+			t.env,
+			{ userId: USER, runnerId, instanceId: 'boot_1', ceiling: 1, now: NOW },
+			() => signals++
+		);
+
+		expect(released).toEqual([oldAssigned, newAssigned]);
+		expect(runById(t, running)!.status).toBe('running');
+		expect(runById(t, oldAssigned)!.status).toBe('canceled');
+		expect(runById(t, newAssigned)!.status).toBe('canceled');
+		expect(signals).toBe(2);
+	});
+
+	it('rechecks capacity in the release transaction when a running slot opens', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		t.sqlite
+			.prepare(
+				`UPDATE runner SET daemon_instance_id = 'boot_1', concurrency_instance_id = 'boot_1',
+				 concurrency_mode = 'remote', concurrency_ceiling = 1 WHERE id = ?`
+			)
+			.run(runnerId);
+		const running = addRun(t, {
+			issueId: addIssue(t, { title: 'running' }),
+			runnerId,
+			status: 'running',
+			startedAt: NOW - 100,
+			createdAt: NOW - 200
+		});
+		const assigned = addRun(t, {
+			issueId: addIssue(t, { title: 'assigned' }),
+			runnerId,
+			createdAt: NOW - 100
+		});
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let injected = false;
+		t.env.DB.batch = async (statements) => {
+			if (!injected) {
+				injected = true;
+				t.sqlite
+					.prepare("UPDATE agent_run SET status = 'completed', ended_at = ? WHERE id = ?")
+					.run(NOW - 1, running);
+			}
+			return realBatch(statements);
+		};
+
+		const released = await releaseSurplusAssigned(
+			t.db,
+			t.env,
+			{ userId: USER, runnerId, instanceId: 'boot_1', ceiling: 1, now: NOW },
+			() => {}
+		);
+
+		expect(injected).toBe(true);
+		expect(released).toEqual([]);
+		expect(runById(t, assigned)!.status).toBe('assigned');
+	});
+
+	it('decline revokes only the refused run key', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const refused = addRun(t, {
+			issueId: addIssue(t, { title: 'refused' }),
+			runnerId,
+			status: 'launching'
+		});
+		const other = addRun(t, {
+			issueId: addIssue(t, { title: 'other' }),
+			runnerId,
+			status: 'launching'
+		});
+		addRunKey(t, refused);
+		addRunKey(t, other);
+
+		const released = await releaseDeclinedAssignments(
+			t.db,
+			t.env,
+			{ userId: USER, runnerId, runIds: [refused], now: NOW },
+			() => {}
+		);
+
+		expect(released).toEqual([refused]);
+		expect(keyForRun(t, refused)!.revoked_at).toBe(NOW);
+		expect(keyForRun(t, other)!.revoked_at).toBeNull();
+		expect(runById(t, other)!.status).toBe('launching');
 	});
 });
 
@@ -751,6 +876,58 @@ describe('launch failures', () => {
 		expect(runById(t, 'arun_race')!.status).toBe('canceled');
 	});
 
+	it('persists the first managed effort milestone from a null CAS state', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		await claimRun(t.db, t.env, {
+			runId: 'arun_effort_launch',
+			userId: USER,
+			issueId: issue,
+			projectId: PROJECT,
+			stateId: OPEN,
+			runnerId,
+			maxConcurrent: 1,
+			tier: 'balanced',
+			model: 'claude-sonnet-5',
+			requestedEffort: 'high',
+			resolvedEffort: 'high',
+			effortSource: { kind: 'runner_tier', runner_id: runnerId, tier: 'balanced' },
+			quota: { type: 'global_cap', limit: 10 },
+			now: NOW
+		});
+		const fake = createFakeAdapter();
+		const launch = fake.launch.bind(fake);
+		fake.launch = async (input) => {
+			await input.recordEffortEvidence?.({
+				status: 'confirmed',
+				transport: 'managed_agent_config',
+				attempted_effort: 'high',
+				observed_model: 'claude-sonnet-5',
+				observed_effort: 'high'
+			});
+			return launch(input);
+		};
+		const runner = (await loadEngineRunners(t.db, USER)).get(runnerId)!;
+		expect(
+			await launchClaimedRun(t.db, t.env, fake, {
+				userId: USER,
+				runId: 'arun_effort_launch',
+				issueId: issue,
+				projectId: PROJECT,
+				runner,
+				tier: 'balanced',
+				model: 'claude-sonnet-5',
+				effort: 'high',
+				now: NOW
+			})
+		).toBe('launched');
+		expect(runById(t, 'arun_effort_launch')).toMatchObject({
+			status: 'running',
+			effort_application_status: 'confirmed'
+		});
+	});
+
 	it('consecutive failures double the backoff', async () => {
 		const t = world();
 		const fake = createFakeAdapter();
@@ -912,18 +1089,41 @@ describe('end judgment', () => {
 		expect((await pass(t)).claimed).toBe(0);
 	});
 
-	it('a double end applies exactly once (the flip is the CAS)', async () => {
+	it('concurrent finish and cancel reports apply exactly one final report (the flip is the CAS)', async () => {
 		const t = world();
 		const { issue, runId } = await runningRun(t);
 		const run = await loadEndableRun(t.db, USER, runId);
-		expect((await endRun(t.db, t.env, run!, { status: 'completed', now: NOW + 1000 })).ended).toBe(
-			true
-		);
-		expect((await endRun(t.db, t.env, run!, { status: 'canceled', now: NOW + 2000 })).ended).toBe(
-			false
-		);
+		const winnerUsage = JSON.stringify({ cost_usd: 1, cost_source: 'priced' });
+		const [first, second] = await Promise.all([
+			endRun(t.db, t.env, run!, {
+				status: 'completed',
+				now: NOW + 1000,
+				finalReport: { usage: winnerUsage, provider_session_id: 'winner' }
+			}),
+			endRun(t.db, t.env, run!, {
+				status: 'canceled',
+				now: NOW + 2000,
+				finalReport: {
+					usage: JSON.stringify({ cost_usd: 99 }),
+					provider_session_id: 'loser'
+				}
+			})
+		]);
+		expect([first.ended, second.ended].sort()).toEqual([false, true]);
+		const stored = runById(t, runId)!;
+		if (stored.status === 'completed') {
+			expect(stored).toMatchObject({ usage: winnerUsage, provider_session_id: 'winner' });
+		} else {
+			expect(stored).toMatchObject({
+				status: 'canceled',
+				usage: JSON.stringify({ cost_usd: 99 }),
+				provider_session_id: 'loser'
+			});
+		}
 		expect(issueById(t, issue).attempt_count).toBe(1);
-		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
+		const events = eventsOfType(t, 'agent_run.ended');
+		expect(events).toHaveLength(1);
+		expect(events[0].payload.usage).toEqual(JSON.parse(stored.usage as string));
 	});
 
 	it('two ends with identical status and clock still apply exactly once', async () => {
@@ -976,6 +1176,54 @@ describe('end judgment', () => {
 });
 
 describe('cancel', () => {
+	it('reports each durable assigned-run cancellation before a later failure', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRun(t, { issueId: addIssue(t), runnerId: runner, status: 'assigned' });
+		addRun(t, { issueId: addIssue(t), runnerId: runner, status: 'assigned' });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// endRun owns one flip batch and one dependent-write batch. Fail the
+			// next run's flip, after the first win has returned and notified.
+			if (batches === 3) throw new Error('injected later cancellation failure');
+			return realBatch(statements);
+		};
+		let notifications = 0;
+		await expect(
+			cancelAssignedRuns(
+				t.db,
+				t.env,
+				{ userId: USER, runnerId: runner },
+				'runner paused',
+				() => notifications++,
+				NOW
+			)
+		).rejects.toThrow('injected later cancellation failure');
+		expect(notifications).toBe(1);
+		expect(runs(t).filter((run) => run.status === 'canceled')).toHaveLength(1);
+	});
+
+	it('reports no cancellation for zero matches or a lost terminal guard', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		addRun(t, { issueId: issue, runnerId: runner, status: 'running', startedAt: NOW });
+		let notifications = 0;
+		expect(
+			await cancelAssignedRuns(
+				t.db,
+				t.env,
+				{ userId: USER, runnerId: runner },
+				'runner paused',
+				() => notifications++,
+				NOW
+			)
+		).toBe(0);
+		expect(notifications).toBe(0);
+	});
+
 	it('cancels a running run through the adapter and judges it like any end', async () => {
 		const t = world();
 		const fake = createFakeAdapter();
@@ -1001,19 +1249,21 @@ describe('resume and manual transitions', () => {
 	it('resume clears parking, resets the count, fires issue.resumed', async () => {
 		const t = world();
 		const issue = addIssue(t, { needsAttention: true, attemptCount: 3 });
-		const detail = await resumeIssue(t.db, t.env, sessionActor, issue);
+		const detail = await resumeIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue);
 		expect(detail.needs_attention).toBe(false);
 		expect(detail.attempt_count).toBe(0);
 		expect(eventsOfType(t, 'issue.resumed')).toHaveLength(1);
 		// Idempotent: resuming again records nothing new.
-		await resumeIssue(t.db, t.env, sessionActor, issue);
+		await resumeIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue);
 		expect(eventsOfType(t, 'issue.resumed')).toHaveLength(1);
 	});
 
 	it('any non-run-key transition un-parks and resets the count', async () => {
 		const t = world();
 		const issue = addIssue(t, { needsAttention: true, attemptCount: 3 });
-		await transitionIssue(t.db, t.env, sessionActor, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 		const row = issueById(t, issue);
 		expect(row.needs_attention).toBe(0);
 		expect(row.attempt_count).toBe(0);
@@ -1036,7 +1286,9 @@ describe('resume and manual transitions', () => {
 			apiKeyName: 'run key',
 			agentRunId: runs(t)[0].id as string
 		};
-		await transitionIssue(t.db, t.env, runKeyActor, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, runKeyActor, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 		expect(issueById(t, issue).attempt_count).toBe(2);
 		expect(issueById(t, other).attempt_count).toBe(0);
 	});

@@ -104,7 +104,11 @@ test.describe.serial('run-key fence', () => {
 	// `tines supervisor status` and the Now row, and nothing else.
 	test('opens the fleet reads to a run key, without the PAT hint', async ({ request }) => {
 		const api = apiClient(request, RUNROW.runKey);
-		for (const path of ['/api/v1/runners', '/api/v1/supervisor/queue']) {
+		for (const path of [
+			'/api/v1/runners',
+			'/api/v1/supervisor/queue',
+			'/api/v1/supervisor/stats'
+		]) {
 			const res = await api.get(path);
 			expect(res.status(), `GET ${path}`).toBe(200);
 		}

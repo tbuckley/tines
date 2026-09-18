@@ -143,6 +143,8 @@
 				return `${runner} backing off`;
 			case 'rate_limited':
 				return `${runner} rate limited`;
+			case 'effort_incompatible':
+				return `${runner} cannot apply the requested effort`;
 			case 'no_rule':
 				return 'no matching routing rule';
 			case 'no_targets':
@@ -203,8 +205,11 @@
 							</p>
 							{#if block.verdict === 'offline'}
 								<p class="text-muted-foreground mt-1 text-xs">
-									Start the daemon on the machine that registered {block.runnerName ?? 'it'}:
-									<code class="bg-muted rounded px-1 py-0.5">tines runner daemon</code>
+									Start it on the machine that registered {block.runnerName ?? 'it'}:
+									<code class="bg-muted rounded px-1 py-0.5"
+										>tines runner install --name {block.runnerName ?? '<name>'}</code
+									>
+									(reconnects with the stored token and loads the service)
 									{#if runner?.last_seen_at}
 										· last seen {relativeTime(runner.last_seen_at, now)}
 									{/if}
@@ -222,11 +227,35 @@
 								</p>
 							{/if}
 						</div>
-						<span class="flex shrink-0 flex-wrap gap-1">
+						<span
+							class="flex w-full min-w-0 flex-col items-stretch gap-1 sm:w-auto sm:flex-row sm:flex-wrap"
+							data-testid="queue-actions"
+						>
 							{#if block.verdict === 'at_capacity' && runner && onraisecap}
-								<Button size="sm" onclick={() => onraisecap(runner)}>
-									Raise cap on {runner.name}
-								</Button>
+								{#if runner.type !== 'local' || (runner.concurrency_control?.status !== 'unavailable' && runner.max_concurrent < (runner.concurrency_control?.ceiling ?? 0))}
+									<Button
+										size="sm"
+										class="max-w-full whitespace-normal"
+										onclick={() => onraisecap(runner)}
+									>
+										Raise cap on {runner.name}
+									</Button>
+								{:else if runner.concurrency_control?.status === 'unavailable'}
+									<Button
+										size="sm"
+										class="max-w-full whitespace-normal"
+										onclick={() => onraisecap(runner)}
+									>
+										{runner.concurrency_control.reason === 'opted_out'
+											? 'Enable web adjustment locally'
+											: 'Upgrade daemon'}
+									</Button>
+								{:else}
+									<span class="text-muted-foreground max-w-64 text-xs">
+										At local ceiling — relaunch locally with a higher <code>--max-concurrent</code>
+										value.
+									</span>
+								{/if}
 							{/if}
 							{#if block.verdict === 'at_capacity' && onquota}
 								<Button

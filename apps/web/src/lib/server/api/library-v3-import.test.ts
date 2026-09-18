@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { withLibraryDocumentDigest, type LibraryV3Document } from '@tines/shared';
 import { USER, seedBase } from '../supervisor/test-fixtures';
@@ -55,13 +56,24 @@ describe('ID-addressed whole-library import', () => {
 		const { document } = await fixture();
 		const dest = setup();
 		const before = dest.sqlite.prepare('SELECT count(*) n FROM event').get();
-		const preview = await applyImport(dest.db, dest.env, actor, { document, dry_run: true });
+		const preview = await applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document,
+			dry_run: true
+		});
 		expect(dest.sqlite.prepare('SELECT count(*) n FROM event').get()).toEqual(before);
 		expect(workflowEntries(preview).map((e) => e.action)).toEqual(['create', 'create']);
-		const result = await applyImport(dest.db, dest.env, actor, { document });
+		expect(workflowEntries(preview).map((e) => [e.target_name, e.target_id])).toEqual([
+			['Same / name', undefined],
+			['Same / name', undefined]
+		]);
+		const result = await applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
 		expect(result.counts.error).toBe(0);
 		expect(result.counts.refuse).toBe(0);
 		expect(workflowEntries(result).map((e) => e.action)).toEqual(['create', 'create']);
+		expect(workflowEntries(result).every((e) => e.target_name === 'Same / name')).toBe(true);
+		expect(workflowEntries(result).every((e) => e.target_id?.startsWith('wf_'))).toBe(true);
 		const exported = await buildLibraryV3Document(dest.db, USER);
 		expect(exported.workflows.map((w) => w.name)).toEqual(['Same / name', 'Same / name']);
 		for (const source of document.context) {
@@ -85,6 +97,27 @@ describe('ID-addressed whole-library import', () => {
 			document.workflows[0].states[0].id
 		);
 	});
+	it('removes destination identities when a created workflow fails during later application', async () => {
+		const { document } = await fixture();
+		const dest = setup();
+		dest.sqlite.exec(
+			`CREATE TRIGGER fail_library_state_update BEFORE UPDATE OF name ON workflow_state BEGIN SELECT RAISE(ABORT, 'injected state update failure'); END`
+		);
+
+		const result = await applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document
+		});
+
+		expect(workflowEntries(result)).toHaveLength(2);
+		for (const entry of workflowEntries(result)) {
+			expect(entry.action).toBe('error');
+			expect(entry).not.toHaveProperty('target_id');
+			expect(entry).not.toHaveProperty('target_name');
+		}
+		expect(
+			(await loadWorkflows(dest.db, USER)).filter((workflow) => !workflow.is_system)
+		).toHaveLength(2);
+	});
 	it('requires collision mappings and accepts independent collision-safe creates', async () => {
 		const { document } = await fixture();
 		const dest = setup();
@@ -94,14 +127,22 @@ describe('ID-addressed whole-library import', () => {
 			states: [{ name: 'Ready / now', category: 'active' }],
 			transitions: []
 		});
-		const preview = await applyImport(dest.db, dest.env, actor, { document, dry_run: true });
+		const preview = await applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document,
+			dry_run: true
+		});
 		expect(workflowEntries(preview).every((e) => e.action === 'refuse')).toBe(true);
+		expect(workflowEntries(preview).every((e) => e.target_name === undefined)).toBe(true);
 		const workflow_targets = Object.fromEntries(
 			document.workflows.map((w, i) => [w.id, { kind: 'create' as const, name: `Copy ${i}` }])
 		);
-		const result = await applyImport(dest.db, dest.env, actor, { document, workflow_targets });
+		const result = await applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document,
+			workflow_targets
+		});
 		expect(result.counts.error).toBe(0);
 		expect(result.counts.refuse).toBe(0);
+		expect(workflowEntries(result).map((e) => e.target_name)).toEqual(['Copy 0', 'Copy 1']);
 		expect(
 			(await loadWorkflows(dest.db, USER))
 				.filter((w) => !w.is_system)
@@ -116,12 +157,18 @@ describe('ID-addressed whole-library import', () => {
 		);
 		const before = t.sqlite.prepare('SELECT count(*) n FROM event').get();
 		await expect(
-			applyImport(t.db, t.env, actor, { document, workflow_targets: targets })
+			applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				document,
+				workflow_targets: targets
+			})
 		).rejects.toMatchObject({ code: 'many_to_one_workflow_targets' });
 		expect(t.sqlite.prepare('SELECT count(*) n FROM event').get()).toEqual(before);
 		for (const w of document.workflows)
 			targets[w.id].workflow_id = w.states[0].inherits_from ? second.id : first.id;
-		const result = await applyImport(t.db, t.env, actor, { document, workflow_targets: targets });
+		const result = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document,
+			workflow_targets: targets
+		});
 		expect(result.counts.create).toBe(0);
 		expect(result.counts.error).toBe(0);
 		expect(result.counts.refuse).toBe(0);
@@ -163,7 +210,7 @@ describe('ID-addressed whole-library import', () => {
 		});
 		const document = await buildLibraryV3Document(t.db, USER);
 		const dest = setup();
-		const result = await applyImport(dest.db, dest.env, actor, {
+		const result = await applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			document,
 			include_journals: false
 		});
@@ -204,7 +251,9 @@ describe('ID-addressed whole-library import', () => {
 		}
 		for (const c of document.context) c.name = ` ${c.name} `;
 		const normalized = await withLibraryDocumentDigest(document);
-		const result = await applyImport(dest.db, dest.env, actor, { document: normalized });
+		const result = await applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			document: normalized
+		});
 		expect(result.counts.error).toBe(0);
 		expect(
 			(await buildLibraryV3Document(dest.db, USER)).context.filter((c) => c.name === 'instructions')
@@ -215,12 +264,12 @@ describe('ID-addressed whole-library import', () => {
 		const dest = setup();
 		const before = dest.sqlite.prepare('SELECT count(*) n FROM event').get();
 		await expect(
-			applyImport(dest.db, dest.env, actor, {
+			applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 				document: { ...document, digest: 'sha256:' + '0'.repeat(64) }
 			})
 		).rejects.toMatchObject({ code: 'invalid_library' });
 		await expect(
-			applyImport(dest.db, dest.env, actor, {
+			applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 				document,
 				workflow_targets: { unknown: { kind: 'create', name: 'No' } }
 			})
@@ -238,9 +287,18 @@ describe('ID-addressed whole-library import', () => {
 			const request = {
 				document,
 				workflow_targets: { [document.workflows[0].id]: choice }
-			} as Parameters<typeof applyImport>[3];
-			const preview = await applyImport(dest.db, dest.env, actor, { ...request, dry_run: true });
-			const result = await applyImport(dest.db, dest.env, actor, request);
+			} as Parameters<typeof applyImport>[4];
+			const preview = await applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				...request,
+				dry_run: true
+			});
+			const result = await applyImport(
+				dest.db,
+				dest.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				request
+			);
 			expect(workflowEntries(preview)[0].action).toBe('error');
 			expect(workflowEntries(result)[0].action).toBe('error');
 		}
@@ -263,9 +321,12 @@ it('applies a valid cross-workflow edge reversal independent of document workflo
 			[child.id]: { kind: 'target' as const, workflow_id: second.id }
 		}
 	};
-	const preview = await applyImport(t.db, t.env, actor, { ...request, dry_run: true });
+	const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+		...request,
+		dry_run: true
+	});
 	expect(workflowEntries(preview).map((e) => e.action)).toEqual(['overwrite', 'overwrite']);
-	const result = await applyImport(t.db, t.env, actor, request);
+	const result = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, request);
 	expect(result.counts.error).toBe(0);
 	const workflows = await loadWorkflows(t.db, USER);
 	expect(workflows.find((w) => w.id === first.id)!.states[0].inherits_from).toBe(
@@ -292,9 +353,23 @@ it('refused overwrite retains target states for independent context and inherita
 			[sourceChild.id]: { kind: 'target' as const, workflow_id: second.id }
 		}
 	};
-	const preview = await applyImport(t.db, t.env, actor, { ...request, dry_run: true });
-	const result = await applyImport(t.db, t.env, actor, request);
-	expect(workflowEntries(preview).find((e) => e.local_id === sourceBase.id)?.action).toBe('refuse');
+	const preview = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+		...request,
+		dry_run: true
+	});
+	const result = await applyImport(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, request);
+	const previewRefusal = workflowEntries(preview).find((e) => e.local_id === sourceBase.id);
+	const resultRefusal = workflowEntries(result).find((e) => e.local_id === sourceBase.id);
+	expect(previewRefusal).toMatchObject({
+		action: 'refuse',
+		target_id: first.id
+	});
+	expect(previewRefusal).not.toHaveProperty('target_name');
+	expect(resultRefusal).toMatchObject({
+		action: 'refuse',
+		target_id: first.id
+	});
+	expect(resultRefusal).not.toHaveProperty('target_name');
 	expect(result.entries.map((e) => [e.local_id, e.action])).toEqual(
 		preview.entries.map((e) => [e.local_id, e.action])
 	);
@@ -318,10 +393,13 @@ it('never treats an owned workflow named Standard as a typed system reference', 
 	});
 	const document = await buildLibraryV3Document(t.db, USER);
 	const dest = setup();
-	const preview = await applyImport(dest.db, dest.env, actor, { document, dry_run: true });
+	const preview = await applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+		document,
+		dry_run: true
+	});
 	expect(workflowEntries(preview)[0]).toMatchObject({ action: 'refuse' });
 	expect(workflowEntries(preview)[0].target_id).toBeUndefined();
-	const result = await applyImport(dest.db, dest.env, actor, {
+	const result = await applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 		document,
 		workflow_targets: { [document.workflows[0].id]: { kind: 'create', name: 'My Standard copy' } }
 	});

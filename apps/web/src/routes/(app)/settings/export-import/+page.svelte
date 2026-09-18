@@ -192,6 +192,17 @@
 </p>
 
 <section class="mb-8 rounded-lg border p-4">
+	<h2 class="mb-1 text-lg font-medium">Workflow packages</h2>
+	<p class="text-muted-foreground mb-3 max-w-2xl text-sm">
+		Install one reviewed workflow and its required dependencies as an atomic, independent copy.
+		Destination values and optional paused automation are confirmed before anything is created.
+	</p>
+	<a class={buttonVariants({ variant: 'outline' })} href="/workflows/import">
+		<IconUpload size={16} /> Install workflow package
+	</a>
+</section>
+
+<section class="mb-8 rounded-lg border p-4">
 	<h2 class="mb-1 text-lg font-medium">Export</h2>
 	<p class="text-muted-foreground mb-3 max-w-2xl text-sm">
 		Downloads one JSON file with every workflow you own and every context item that is not tied to a
@@ -213,7 +224,7 @@
 	</Button>
 </section>
 
-<section class="rounded-lg border p-4">
+<section class="min-w-0 rounded-lg border p-4">
 	<h2 class="mb-1 text-lg font-medium">Import</h2>
 	<p class="text-muted-foreground mb-3 max-w-2xl text-sm">
 		Upload a file exported from Tines. Existing projects and matching workflows are skipped.
@@ -275,11 +286,11 @@
 	{/if}
 
 	{#if v3 && !result}
-		<fieldset class="mb-4 space-y-3 rounded-lg border p-3" disabled={busy}>
+		<fieldset class="mb-4 min-w-0 space-y-3 rounded-lg border p-3" disabled={busy}>
 			<legend class="px-1 text-sm font-medium">Workflow destinations</legend>
 			{#each v3.workflows as workflow (workflow.id)}
 				{@const targetChoice = workflowTargets[workflow.id]}
-				<div class="space-y-1" data-testid="workflow-mapping">
+				<div class="min-w-0 space-y-1 wrap-anywhere" data-testid="workflow-mapping">
 					<p class="text-sm font-medium">
 						{workflow.name} <span class="text-muted-foreground font-normal">[{workflow.id}]</span>
 					</p>
@@ -337,12 +348,12 @@
 	{/if}
 
 	{#if report}
-		<p class="mb-2 text-sm" data-testid="import-summary">
+		<p class="mb-2 text-sm wrap-anywhere" data-testid="import-summary">
 			{#if result}Imported{fileName ? ` ${fileName}` : ''}: {summary(report)}.
 			{:else}Preview of {fileName}: {summary(report)}. Nothing has been written yet.{/if}
 		</p>
-		<div class="max-h-96 overflow-y-auto rounded-lg border">
-			<table class="w-full text-sm">
+		<div class="max-h-96 min-w-0 overflow-y-auto rounded-lg border" data-testid="import-preview">
+			<table class="w-full table-fixed text-sm">
 				<thead class="bg-muted/50 sticky top-0">
 					<tr class="text-left">
 						<th class="px-3 py-2 font-medium">Item</th>
@@ -353,7 +364,21 @@
 				<tbody class="divide-y">
 					{#each report.entries as entry, i (entry.section + entry.ref + i)}
 						<tr data-testid="import-row">
-							<td class="px-3 py-1.5">{entry.ref}</td>
+							<td class="min-w-0 px-3 py-1.5 wrap-anywhere">
+								<span>{entry.ref}</span>
+								{#if entry.section === 'workflow' && entry.target_name}
+									<span aria-hidden="true"> → </span>
+									{#if entry.target_id}
+										<a
+											href="/workflows/{entry.target_id}"
+											class="text-primary font-medium underline-offset-4 hover:underline"
+											>{entry.target_name}</a
+										>
+									{:else}
+										<span class="font-medium">{entry.target_name}</span>
+									{/if}
+								{/if}
+							</td>
 							<td
 								class="px-3 py-1.5 font-medium {entry.action === 'error' ||
 								entry.action === 'refuse'
@@ -362,7 +387,9 @@
 										? 'text-muted-foreground'
 										: ''}">{entry.action}</td
 							>
-							<td class="text-muted-foreground px-3 py-1.5">{entry.reason ?? ''}</td>
+							<td class="text-muted-foreground px-3 py-1.5 wrap-anywhere">
+								{entry.reason ?? ''}
+							</td>
 						</tr>
 					{/each}
 				</tbody>

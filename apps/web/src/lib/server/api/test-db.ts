@@ -3,7 +3,8 @@
  * (node:sqlite), exposed both as a Kysely instance (for the modules' reads)
  * and as a fake `Env` whose `DB.batch` runs statements in one transaction —
  * the shape runAtomic expects — so tests can exercise actual batch order,
- * guards, and foreign keys instead of mocking them away.
+ * guards, foreign keys, and D1's per-statement parameter budget instead of
+ * mocking them away.
  *
  * Test-only: nothing in the app imports this module.
  */
@@ -34,11 +35,18 @@ const isReader = (sqlText: string) => /^\s*(select|with|pragma)\b/i.test(sqlText
 /** Everything this codebase binds: strings, numbers, and NULLs. */
 type SqlParam = string | number | bigint | null;
 
+const D1_MAX_BOUND_PARAMETERS = 100;
+
 function runStatement<R>(
 	sqlite: DatabaseSync,
 	sqlText: string,
 	params: readonly unknown[]
 ): QueryResult<R> {
+	if (params.length > D1_MAX_BOUND_PARAMETERS) {
+		throw new Error(
+			`D1 parameter limit exceeded: ${params.length} bound parameters (maximum ${D1_MAX_BOUND_PARAMETERS})`
+		);
+	}
 	const stmt = sqlite.prepare(sqlText);
 	if (isReader(sqlText)) return { rows: stmt.all(...(params as SqlParam[])) as R[] };
 	const info = stmt.run(...(params as SqlParam[]));
@@ -48,11 +56,24 @@ function runStatement<R>(
 class NodeSqliteConnection implements DatabaseConnection {
 	constructor(
 		private readonly sqlite: DatabaseSync,
-		private readonly log: string[]
+		private readonly log: string[],
+		private readonly readLog: {
+			sql: string;
+			parameters: readonly unknown[];
+			rows: Record<string, unknown>[];
+		}[]
 	) {}
 	executeQuery<R>(compiled: CompiledQuery): Promise<QueryResult<R>> {
 		this.log.push(compiled.sql);
-		return Promise.resolve(runStatement<R>(this.sqlite, compiled.sql, compiled.parameters));
+		const result = runStatement<R>(this.sqlite, compiled.sql, compiled.parameters);
+		if (isReader(compiled.sql)) {
+			this.readLog.push({
+				sql: compiled.sql,
+				parameters: compiled.parameters,
+				rows: result.rows as Record<string, unknown>[]
+			});
+		}
+		return Promise.resolve(result);
 	}
 	// eslint-disable-next-line require-yield
 	async *streamQuery(): AsyncIterableIterator<never> {
@@ -60,8 +81,12 @@ class NodeSqliteConnection implements DatabaseConnection {
 	}
 }
 
-function dialectFor(sqlite: DatabaseSync, log: string[]): Dialect {
-	const connection = new NodeSqliteConnection(sqlite, log);
+function dialectFor(
+	sqlite: DatabaseSync,
+	log: string[],
+	readLog: { sql: string; parameters: readonly unknown[]; rows: Record<string, unknown>[] }[] = []
+): Dialect {
+	const connection = new NodeSqliteConnection(sqlite, log, readLog);
 	const driver: Driver = {
 		init: async () => {},
 		acquireConnection: async () => connection,
@@ -113,11 +138,22 @@ export interface TestDb {
 	 * rather than just returning the same answer.
 	 */
 	spyOnQueries: () => () => string[];
+	/** Record the actual rows each read transferred to its caller. */
+	spyOnQueryResults: () => () => {
+		sql: string;
+		parameters: readonly unknown[];
+		rows: Record<string, unknown>[];
+	}[];
 }
 
 export function createTestDb(): TestDb {
 	const sqlite = new DatabaseSync(':memory:');
 	const log: string[] = [];
+	const readLog: {
+		sql: string;
+		parameters: readonly unknown[];
+		rows: Record<string, unknown>[];
+	}[] = [];
 	// D1 enforces foreign keys; the tests must too (batch-order bugs show up
 	// as FK failures).
 	sqlite.exec('PRAGMA foreign_keys = ON');
@@ -164,7 +200,9 @@ export function createTestDb(): TestDb {
 	} as unknown as Env;
 
 	return {
-		db: new Kysely<Database>({ dialect: dialectFor(sqlite, log) }),
+		db: new Kysely<Database>({
+			dialect: dialectFor(sqlite, log, readLog)
+		}),
 		env,
 		sqlite,
 		all: (sqlText, ...params) =>
@@ -172,6 +210,10 @@ export function createTestDb(): TestDb {
 		spyOnQueries: () => {
 			const from = log.length;
 			return () => log.slice(from);
+		},
+		spyOnQueryResults: () => {
+			const from = readLog.length;
+			return () => readLog.slice(from);
 		}
 	};
 }
@@ -209,5 +251,5 @@ export function instrumentLatency(t: TestDb, latencyMs: number) {
 		},
 		batch: t.env.DB.batch.bind(t.env.DB)
 	};
-	return { env: { DB } as unknown as Env, sqls, conc };
+	return { env: { ...t.env, DB } as unknown as Env, sqls, conc };
 }

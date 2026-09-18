@@ -279,12 +279,15 @@ export interface PrepareWorkflowPackageResponse {
 	actor_key: string;
 	compiler_version: number;
 	plan_token: string;
-	budget: {
-		statements: number;
-		max_parameters: number;
-		max_sql_bytes: number;
-		max_value_bytes: number;
-	};
+	budget: WorkflowPackageBudget;
+	source?: import('../publications.js').HostedPublicationBinding;
+}
+
+export interface WorkflowPackageBudget {
+	statements: number;
+	max_parameters: number;
+	max_sql_bytes: number;
+	max_value_bytes: number;
 }
 
 export interface PackageOperation {
@@ -295,4 +298,27 @@ export interface PackageOperation {
 	name: string;
 	href: string | null;
 	relationship?: 'main' | 'dependency';
+}
+
+export interface WorkflowPackageInstallRequest {
+	document_json: string;
+	plan_token: string;
+	confirmation: { plan_digest: string };
+}
+
+export interface WorkflowPackageReceipt {
+	id: string;
+	document_digest: string;
+	plan_digest: string;
+	committed_at: number;
+	objects: Array<{
+		kind: string;
+		local_id: string;
+		id: string;
+		name: string;
+		href: string;
+		relationship?: 'main' | 'dependency';
+	}>;
+	reused_inputs: Array<{ input_id: string; type: string; id: string; name: string }>;
+	source?: import('../publications.js').HostedPublicationBinding;
 }

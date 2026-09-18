@@ -1,0 +1,2 @@
+- 2026-09-01: Always preserve source-version conflicts and recurrence marks. (seen again 2026-09-08)
+- 2026-09-02: When project P work inherited from Root is rejected, read the rejection, preserve the root binding, attach a fresh proposal, and Re-propose without self-approval.

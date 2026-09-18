@@ -2,9 +2,11 @@ import {
 	parseLibraryV3Document,
 	canonicalizeLibraryValue,
 	LibraryValidationError,
+	publicationBytesSha256,
 	type WorkflowPackageDocument,
 	type PrepareWorkflowPackageResponse,
-	type PackageOperation
+	type PackageOperation,
+	type HostedPublicationBinding
 } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
@@ -16,6 +18,7 @@ import { validatePackageBatch } from './budgets';
 import { compilePackageInstall, packageReceipt } from './install-queries';
 import {
 	PACKAGE_COMPILER_VERSION,
+	HOSTED_PACKAGE_COMPILER_VERSION,
 	PACKAGE_PLAN_TTL_MS,
 	packageActorKey,
 	packageKeyMaterial,
@@ -54,10 +57,17 @@ export async function prepareWorkflowPackage(
 	env: Pick<Env, 'SECRET_ENCRYPTION_KEY' | 'BETTER_AUTH_SECRET'>,
 	actor: ActorContext,
 	documentJson: string,
-	choices: unknown = {}
+	choices: unknown = {},
+	source?: HostedPublicationBinding
 ): Promise<PrepareWorkflowPackageResponse> {
 	const material = packageKeyMaterial(env);
 	const document = await requireWorkflowDocument(documentJson);
+	if (
+		source &&
+		(source.document_digest !== document.digest ||
+			source.bytes_sha256 !== (await publicationBytesSha256(canonicalizeLibraryValue(document))))
+	)
+		throw new ApiFail(409, 'publication_changed', 'The hosted publication changed; reload it');
 	const allocation = allocatePackageObjects(document);
 	const issuedAt = Date.now();
 	for (let attempt = 0; attempt < 3; attempt++) {
@@ -75,9 +85,9 @@ export async function prepareWorkflowPackage(
 			canonicalizeLibraryValue(selectPackageDestination(initial.data, resolved.selection))
 		)
 			continue;
-		const unsigned: Omit<PackagePlanPayload, 'plan_digest'> = {
+		const base: Omit<PackagePlanPayload, 'plan_digest' | 'budget'> = {
 			version: 1,
-			compiler_version: PACKAGE_COMPILER_VERSION,
+			compiler_version: source ? HOSTED_PACKAGE_COMPILER_VERSION : PACKAGE_COMPILER_VERSION,
 			id: newId('lin'),
 			user_id: actor.userId,
 			actor_key: packageActorKey(actor),
@@ -87,60 +97,54 @@ export async function prepareWorkflowPackage(
 			choices: resolved.choices,
 			allocation,
 			selection: resolved.selection,
-			witness_hash: await sha256Hex(witness.raw)
+			witness_hash: await sha256Hex(witness.raw),
+			...(source ? { source } : {})
 		};
+		const emptyBudget = { statements: 0, max_parameters: 0, max_sql_bytes: 0, max_value_bytes: 0 };
+		const provisional: PackagePlanPayload = {
+			...base,
+			budget: emptyBudget,
+			plan_digest: `sha256:${'0'.repeat(64)}`
+		};
+		const provisionalReceipt = packageReceipt(
+			provisional,
+			resolved,
+			document.main_workflow_id,
+			issuedAt
+		);
+		const provisionalQueries = compilePackageInstall(
+			db,
+			actor,
+			provisional,
+			resolved,
+			witness.raw,
+			await packageRequestDigest(provisional),
+			newId('exe'),
+			provisionalReceipt
+		);
+		const budget = validatePackageBatch(provisionalQueries);
+		const unsigned: Omit<PackagePlanPayload, 'plan_digest'> = { ...base, budget };
 		const payload: PackagePlanPayload = {
 			...unsigned,
 			plan_digest: await packagePlanDigest(unsigned, resolved)
 		};
 		const receipt = packageReceipt(payload, resolved, document.main_workflow_id, issuedAt);
-		const queries = compilePackageInstall(
-			db,
-			actor,
-			payload,
-			resolved,
-			witness.raw,
-			await packageRequestDigest(payload),
-			newId('exe'),
-			receipt
+		validatePackageBatch(
+			compilePackageInstall(
+				db,
+				actor,
+				payload,
+				resolved,
+				witness.raw,
+				await packageRequestDigest(payload),
+				newId('exe'),
+				receipt
+			)
 		);
-		const budget = validatePackageBatch(queries);
 		const operations: PackageOperation[] = receipt.objects.map((object) => ({
 			...object,
 			action: 'create'
 		}));
-		for (const workflow of resolved.workflows) {
-			const href = `/workflows/${allocation.records[workflow.id].id}`;
-			for (const state of workflow.states)
-				operations.push({
-					action: 'create',
-					kind: 'state',
-					local_id: state.id,
-					id: allocation.records[state.id].id,
-					name: state.name,
-					href: `${href}#state-${allocation.records[state.id].id}`
-				});
-			for (const transition of workflow.transitions)
-				operations.push({
-					action: 'create',
-					kind: 'transition',
-					local_id: transition.id,
-					id: allocation.records[transition.id].id,
-					name: transition.name,
-					href
-				});
-		}
-		for (const context of resolved.context)
-			if (context.kind === 'skill')
-				for (const file of context.files)
-					operations.push({
-						action: 'create',
-						kind: 'file',
-						local_id: file.id,
-						id: allocation.records[file.id].id,
-						name: file.path,
-						href: receipt.objects.find((o) => o.local_id === context.id)!.href
-					});
 		for (const input of resolved.inputs)
 			if (input.mode === 'reuse')
 				operations.push({
@@ -180,8 +184,9 @@ export async function prepareWorkflowPackage(
 			issued_at: issuedAt,
 			expires_at: payload.expires_at,
 			actor_key: payload.actor_key,
-			compiler_version: PACKAGE_COMPILER_VERSION,
+			compiler_version: payload.compiler_version,
 			budget,
+			...(source ? { source } : {}),
 			plan_token: await signPackagePlan(payload, material)
 		};
 	}
@@ -209,7 +214,10 @@ export async function reconstructPackagePlan(
 	if (document.digest !== payload.document_digest)
 		throw new ApiFail(409, 'package_changed', 'The package changed after preparation');
 	validatePackageAllocation(document, payload.allocation);
-	if (payload.compiler_version !== PACKAGE_COMPILER_VERSION || payload.expires_at <= Date.now())
+	const expectedCompiler = payload.source
+		? HOSTED_PACKAGE_COMPILER_VERSION
+		: PACKAGE_COMPILER_VERSION;
+	if (payload.compiler_version !== expectedCompiler || payload.expires_at <= Date.now())
 		throw new ApiFail(
 			409,
 			'plan_stale',

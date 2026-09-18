@@ -74,6 +74,14 @@ describe('signed workflow package preparation and reconstruction', () => {
 		expect(preview.document).toEqual(f.document);
 		expect(preview.resolved.context).toHaveLength(3);
 		expect(preview.budget.statements).toBe(20);
+		expect(payload.budget).toEqual(preview.budget);
+		expect(
+			new Set(
+				preview.operations.map(
+					(operation) => `${operation.action}:${operation.kind}:${operation.local_id}`
+				)
+			).size
+		).toBe(preview.operations.length);
 		expect((await readPackageDestination(f.t.db, USER)).raw).toBe(before.raw);
 		expect(await f.t.db.selectFrom('event').selectAll().execute()).toEqual([]);
 		const replay = await reconstructPackagePlan(f.t.db, actor, f.raw, payload);

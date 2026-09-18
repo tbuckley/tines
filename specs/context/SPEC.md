@@ -136,7 +136,7 @@ The issue block is generated (not a context item), formatted as:
 
 ### Comments
 
-**<actor>** (<timestamp, ISO 8601>):
+**<actor>** (<timestamp, ISO 8601>, ID: <comment id>):
 <comment markdown, verbatim>
 
 *(chronological; "No comments yet." when empty. The section ends with:
@@ -151,7 +151,7 @@ Each transition carries its runnable CLI command (action name quoted, so multi-w
 
 Assembly order is context first, issue block last — the same specific-things-last logic as the layer ordering: the agent reads how to work, then what the work is, with the task nearest the end of the prompt. The issue block is purely factual; any instructions (what "being in Review" means, how to report back) belong in context items — state-scoped prompts are the natural home for stage instructions. Tines injects no directive text of its own; that is supervisor-phase territory.
 
-The launch prompt is a read-time formatting of data that already exists, so it stays perfectly in sync with the issue and emits no events. Launching agents with it is explicitly out of scope — for now the user copies it from the UI, or an agent reads it via the CLI.
+The launch prompt is a read-time formatting of data that already exists, so it stays perfectly in sync with the issue and emits no events. It retains every human or unknown-provenance comment, the final comment from the newest completed same-issue run with a comment, and the three newest other run-attributed comments. Older agent bodies become one line of IDs with an `issues show --json` + jq current-body lookup and a full `issues show` fallback; stored comments and ordinary API, CLI, and UI history remain complete. Each effective skill is described once with its scope and conventional `skills/<name>/SKILL.md` path; descriptions are discovery cues, never inlined skill bodies.
 
 ### Events
 
@@ -210,6 +210,8 @@ Under `/api/v1/*` with the existing auth and conventions (cursor pagination, str
 | `GET /api/v1/issues/:id/context` | **Effective context** — see response shape below. |
 | `GET /api/v1/issues/:id/prompt` | **Launch prompt** — `{ "text": "…" }`, the stitched context plus the generated issue block. A pure formatter over the context response and the issue read; consumers needing structure use those endpoints. |
 
+Context `q` is a complete literal substring match over name and description, case-insensitive for ASCII. Characters such as `%` and `_` have no wildcard meaning, and ordinary queries longer than 48 characters are supported. It uses the same server predicate as issue search.
+
 **List filter semantics — "scope includes".** `project=X` matches every item whose scope includes project X (project-only, `project ∧ state`, `issue ∧ project`, …); likewise `state=`, `label=` (by label id or name) and `issue=`. Multiple dimension filters AND together. Adding **`exact=true`** restricts to items whose scope sets *only* the given dimensions — the editor's "items scoped exactly here" views. There is no separate `scoped_to` parameter.
 
 **PATCH semantics.** Merge-patch style: omitted fields are unchanged; an explicit `null` unsets a nullable field (this is how a scope dimension is removed — subject to the ≥1-dimension rule). Payload, name, description, scope, and `position` are updatable; `kind` is not. Re-scoping re-runs coherence validation and the name-uniqueness check against the **target** scope, and re-appends the item at the end of the target scope's position sequence.
@@ -222,7 +224,7 @@ Under `/api/v1/*` with the existing auth and conventions (cursor pagination, str
     "text": "…",                    // the stitched prompt, headings included
     "parts": [ { "item_id", "name", "scope": {…ids + label}, "body" } ]  // layer order
   },
-  "skills": [ { "item_id", "name", "scope": {…}, "files": [ { "path", "content" } ] } ],
+  "skills": [ { "item_id", "name", "description", "scope": {…}, "files": [ { "path", "content" } ] } ],
   "repos":  [ { "item_id", "name", "scope": {…}, "url", "branch"?, "dir" } ],   // dir always resolved
   "overridden": [ { "item_id", "kind", "name", "scope": {…}, "overridden_by": "<item_id>" } ],
   "conflicts": [ { "kind": "repo_dir", "dir": "…", "item_ids": [ … ] } ]
@@ -313,7 +315,7 @@ Done when this loop works end-to-end:
 6. All creates/edits/deletes appear in the activity feed with correct actor attribution, including via API key; an issue-scoped item's events also appear in its project's filtered feed.
 7. Deleting the *Review* state (via workflow PATCH) without `force_delete_context` is rejected with a 422 naming the attached items; retrying with the flag succeeds, reports the swept items, and emits a `context.deleted` event per item. The same posture holds for project and workflow deletion.
 8. The Context tab lists every item with accurate scope chips; `GET /api/v1/context?project=Tines` returns the project's items including `project ∧ state` and `issue ∧ project` ones, and `exact=true` narrows to project-only.
-9. `tines issues prompt tines/1` prints the stitched context followed by the issue block — title, description, current state, every comment with its actor, and the allowed transitions each with its runnable `tines issues move` command (multi-word actions quoted); the same text appears in the issue page's launch-prompt dialog and copies to the clipboard. Adding a comment or transitioning the issue changes the next read accordingly, and pasting a transition's command from the prompt performs that transition.
+9. `tines issues prompt tines/1` prints the stitched context followed by the issue block — title, description, current state, selected essential comments with IDs and actors, recovery commands for older agent comments, effective skill descriptions and paths, and allowed transitions with runnable commands; the same text appears in the launch-prompt dialog. Full issue reads still return every comment.
 
 ## Resolved questions
 

@@ -6,9 +6,10 @@
  * none of its ids.
  */
 import type { ImportLibraryResponse, LibraryDocument } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BOB, RUNROW } from './constants.mjs';
-import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, errorBody, gotoHydrated, signIn } from './helpers';
 
 /** Everything but the per-export timestamp. */
 const comparable = (doc: LibraryDocument) => ({
@@ -24,9 +25,15 @@ const pointersOf = (doc: LibraryDocument, workflow: string) =>
 		.sort();
 
 test.describe.serial('library export / import', () => {
-	const workflowName = `Portable ${runId}`;
-	const promptName = `portable-${runId}`;
-	const projectName = `portable-project-${runId}`;
+	let workflowName: string;
+	let promptName: string;
+	let projectName: string;
+
+	test.beforeAll(async ({ uniqueName }) => {
+		workflowName = uniqueName('Portable', { maxLength: 100 });
+		promptName = uniqueName('portable');
+		projectName = uniqueName('portable-project');
+	});
 
 	test('Alice exports a self-contained library', async ({ request }) => {
 		const alice = apiClient(request, ALICE.apiKey);
@@ -258,11 +265,12 @@ test.describe('export / import settings page', () => {
 test('file preview exposes legacy ambiguous workflows and invalid project names before any write', async ({
 	context,
 	page,
-	request
+	request,
+	uniqueName
 }) => {
 	await signIn(context, ALICE.sessionToken);
 	await gotoHydrated(page, '/settings/export-import');
-	const name = `Ambiguous-file-${runId}`;
+	const name = uniqueName('Ambiguous-file', { maxLength: 100 });
 	const workflow = {
 		name,
 		initial_state: 'Work',
@@ -306,7 +314,10 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 }) => {
 	const alice = apiClient(request, ALICE.apiKey);
 	const bob = apiClient(request, BOB.apiKey);
-	const name = `Duplicate file ${runId}`;
+	// Workflow names may legally be 200 characters. Keep this one unbroken so
+	// the mobile journey guards both the destination labels and preview cells
+	// against expanding the document to their min-content width.
+	const name = 'w'.repeat(190);
 	for (const text of ['First instructions', 'Second instructions']) {
 		const response = await alice.post('/api/v1/workflows', {
 			name,
@@ -369,11 +380,22 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 		await expect(page.getByRole('button', { name: 'Import', exact: true })).toHaveCount(0);
 		await input.blur();
 		await expect(page.getByTestId('import-summary')).toContainText('Nothing has been written yet');
+		const previewRow = page
+			.getByTestId('import-row')
+			.filter({ hasText: `workflow "${name}" [${workflow.id}]` });
+		await expect(previewRow).toContainText(`→ ${name} copy ${index}`);
+		await expect(previewRow.getByRole('link')).toHaveCount(0);
 	}
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await page.screenshot({ path: test.info().outputPath('library-mappings-desktop.png') });
 	await page.setViewportSize({ width: 390, height: 844 });
 	await page.screenshot({ path: test.info().outputPath('library-mappings-phone.png') });
+	for (const region of [
+		page.getByTestId('workflow-mapping').first(),
+		page.getByTestId('import-preview')
+	]) {
+		expect(await region.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+	}
 	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
 		true
 	);
@@ -386,11 +408,16 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 			.getByTestId('import-row')
 			.filter({ hasText: `workflow "${name}" [${workflow.id}]` });
 		await expect(row).toContainText('create');
+		await expect(row).toContainText(`→ ${name} copy ${index}`);
 		const exported = await body<import('@tines/shared').LibraryV3Document>(
 			await bob.get('/api/v1/export')
 		);
 		const copy = exported.workflows.find((w) => w.name === `${name} copy ${index}`)!;
 		expect(copy).toBeTruthy();
+		await expect(row.getByRole('link', { name: copy.name })).toHaveAttribute(
+			'href',
+			/^\/workflows\/wf_/
+		);
 		const sourcePrompt = document.context.find(
 			(c) =>
 				c.scope.state?.kind === 'bundled_state' && c.scope.state.state_id === workflow.states[0].id
@@ -402,6 +429,18 @@ test('v3 browser file transfer maps duplicate workflows and distinct prompts int
 			sourcePrompt?.kind === 'prompt' ? sourcePrompt.body : null
 		);
 	}
+	await page.screenshot({ path: test.info().outputPath('library-receipt-phone.png') });
+	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+		true
+	);
+	const firstName = `${name} copy 0`;
+	const firstLink = page.getByRole('link', { name: firstName });
+	const firstHref = await firstLink.getAttribute('href');
+	// The 200-character boundary fixture makes the inline link taller than the
+	// mobile receipt scroller, so click a visible point instead of its obscured center.
+	await firstLink.click({ position: { x: 2, y: 2 } });
+	await expect(page).toHaveURL(new RegExp(`${firstHref}$`));
+	await expect(page.getByRole('heading', { name: firstName })).toBeVisible();
 });
 
 test('workflow export and strict validation are read-only and allowed to run keys', async ({
@@ -448,4 +487,48 @@ test('workflow export and strict validation are read-only and allowed to run key
 	});
 	const foreign = await run.get('/api/v1/workflows/nonexistent/export');
 	expect(foreign.status()).toBe(404);
+});
+
+test('workflow install commits once, recovers its receipt, and denies run keys', async ({
+	request,
+	uniqueName
+}) => {
+	const alice = apiClient(request, ALICE.apiKey);
+	const run = apiClient(request, RUNROW.runKey);
+	const document = await body<import('@tines/shared').WorkflowPackageDocument>(
+		await alice.get('/api/v1/workflows/wf_standard/export')
+	);
+	const raw = JSON.stringify(document);
+	const installedName = uniqueName('Installed', { maxLength: 100 });
+	const prepared = await body<import('@tines/shared').PrepareWorkflowPackageResponse>(
+		await alice.post('/api/v1/library/prepare', {
+			document_json: raw,
+			choices: { workflow_names: { 'workflow:1': installedName } }
+		})
+	);
+	const requestBody: import('@tines/shared').WorkflowPackageInstallRequest = {
+		document_json: raw,
+		plan_token: prepared.plan_token,
+		confirmation: { plan_digest: prepared.plan_digest }
+	};
+	const installed = await alice.post('/api/v1/library/install', requestBody);
+	expect(installed.status()).toBe(200);
+	const receipt = await body<import('@tines/shared').WorkflowPackageReceipt>(installed);
+	expect(receipt.id).toBe(prepared.plan_id);
+	expect(receipt.objects.find((object) => object.relationship === 'main')?.name).toBe(
+		installedName
+	);
+	expect(await body(await alice.post('/api/v1/library/install', requestBody))).toEqual(receipt);
+	expect(await body(await run.get(`/api/v1/library/installs/${receipt.id}`))).toEqual(receipt);
+
+	const runPrepared = await body<import('@tines/shared').PrepareWorkflowPackageResponse>(
+		await run.post('/api/v1/library/prepare', { document_json: raw })
+	);
+	const denied = await run.post('/api/v1/library/install', {
+		document_json: raw,
+		plan_token: runPrepared.plan_token,
+		confirmation: { plan_digest: runPrepared.plan_digest }
+	});
+	expect(denied.status()).toBe(403);
+	expect((await errorBody(denied)).error.code).toBe('run_key_forbidden');
 });

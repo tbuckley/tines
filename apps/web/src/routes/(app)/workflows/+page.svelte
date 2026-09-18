@@ -1,6 +1,8 @@
 <script lang="ts">
 	import IconLock from '@tabler/icons-svelte/icons/lock';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
+	import IconWorld from '@tabler/icons-svelte/icons/world';
+	import IconUpload from '@tabler/icons-svelte/icons/upload';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 
@@ -60,9 +62,17 @@
 
 <div class="mb-2 flex items-center justify-between">
 	<h1 class="text-2xl font-semibold tracking-tight">Workflows</h1>
-	<Button href="/workflows/new">
-		<IconPlus size={16} /> New workflow
-	</Button>
+	<div class="flex flex-wrap gap-2">
+		<Button href="/publications" variant="outline">
+			<IconWorld size={16} /> Public snapshots
+		</Button>
+		<Button href="/workflows/import" variant="outline">
+			<IconUpload size={16} /> Install package
+		</Button>
+		<Button href="/workflows/new">
+			<IconPlus size={16} /> New workflow
+		</Button>
+	</div>
 </div>
 <p class="text-muted-foreground mb-6 max-w-2xl text-sm">
 	Your library of state machines. Any workflow can drive issues in any project.

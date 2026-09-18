@@ -9,3 +9,11 @@ Both “Sign in” actions open the same native dialog and use the existing Bett
 The page follows the approved concept except for supervisor language superseded by `specs/supervisor/AUTOMATION_DEFAULT_2026-09-09.md`: automation starts enabled, routing chooses eligible work, and operators pause dispatch when needed. The historical Tines/13, PR #64, commit 48eb053, 796-test review, runners, transitions, and #75/#77 examples remain labelled records.
 
 Release review covers 390×844, 1440×900, and 844×390; keyboard focus and 200% zoom; reduced motion and pause/resume; forced rendering failure; navigation cleanup; Safari/iPhone behavior; and low-end-phone performance. Physical-device checks are required release evidence when hardware is available.
+# Snapshot-preserving authentication (Tines/436)
+
+The public `/p/<snapshot>/install` gateway is the only authentication return used for a public
+snapshot. `MarketingSignIn` accepts trusted application-computed success and error callbacks while
+its marketing caller keeps the existing defaults. Only validated opaque snapshot IDs form callbacks;
+external, protocol-relative, encoded-slash/backslash, userinfo, query-injected, and double-encoded
+returns are rejected. Google and magic-link success, error, retry, and session expiry return to the
+same snapshot ID, never a workflow name or latest revision, and redirect loads perform no write.

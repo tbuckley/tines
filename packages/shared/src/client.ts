@@ -52,6 +52,9 @@ import type {
 	IssueTransferResult,
 	EventFilters,
 	FleetQueue,
+	SentBackDrilldown,
+	StageStatsReport,
+	StatsQuery,
 	LaunchPromptResponse,
 	IssueDetail,
 	IssueFilters,
@@ -68,6 +71,7 @@ import type {
 	RoutingRule,
 	RoutingRuleWithWarnings,
 	RunFilters,
+	UsagePendingRun,
 	Runner,
 	Schedule,
 	ScheduleFilters,
@@ -90,6 +94,15 @@ import type {
 	UserPreferences,
 	WorkflowResponse
 } from './types.js';
+import type {
+	CohortUsageReport,
+	IssueUsageReport,
+	ResolvedUsageFilters,
+	UsageBy,
+	UsageEvidencePage,
+	UsageReport,
+	UsageWindow
+} from './usage.js';
 
 export interface TimeResponse {
 	/** ISO 8601 timestamp (UTC). */
@@ -505,8 +518,40 @@ export function createApiClient(options: ApiClientOptions) {
 			request<AgentRun>('POST', `/api/v1/runs/${runId}/finish`, body),
 
 		// Agent runs
-		listRuns: (filters: RunFilters & PageParams = {}) =>
-			get<ListResponse<AgentRun>>(`/api/v1/runs${query(filters)}`),
+		listRuns: <F extends RunFilters & PageParams = RunFilters & PageParams>(filters: F = {} as F) =>
+			get<ListResponse<F extends { population: 'pending' } ? UsagePendingRun : AgentRun>>(
+				`/api/v1/runs${query(filters)}`
+			),
+		getUsage: (
+			filters: ResolvedUsageFilters & {
+				window?: UsageWindow;
+				from?: string;
+				to?: string;
+				by?: UsageBy;
+			} = {}
+		) => get<UsageReport>(`/api/v1/usage${query(filters)}`),
+		getIssueUsage: (issue: string) =>
+			get<IssueUsageReport>(`/api/v1/usage${query({ mode: 'issue', issue })}`),
+		getCohortUsage: (filters: {
+			workflow: string;
+			project?: string;
+			window?: UsageWindow;
+			from?: string;
+			to?: string;
+			done_state?: string[];
+		}) => get<CohortUsageReport>(`/api/v1/usage${query({ mode: 'cohort', ...filters })}`),
+		getUsageScope: (scope: string) =>
+			get<UsageReport | IssueUsageReport | CohortUsageReport>(`/api/v1/usage${query({ scope })}`),
+		getUsageEvidence: (filters: {
+			scope: string;
+			kind?: 'issues' | 'runs' | 'entries';
+			population?: 'all' | 'finalized' | 'pending';
+			member?: string;
+			sort?: 'cost' | 'time';
+			direction?: 'asc' | 'desc';
+			limit?: number;
+			cursor?: string;
+		}) => get<UsageEvidencePage>(`/api/v1/usage/evidence${query(filters)}`),
 		getRun: (id: string) => get<AgentRunDetail>(`/api/v1/runs/${id}`),
 		/**
 		 * The run's complete log (not the 256 KB tail `getRun` returns) as a
@@ -541,7 +586,16 @@ export function createApiClient(options: ApiClientOptions) {
 		updatePreferences: (body: UpdatePreferencesRequest) =>
 			request<UserPreferences>('PATCH', '/api/v1/preferences', body),
 		getSupervisorSettings: () => get<SupervisorSettings>('/api/v1/supervisor/settings'),
-		getSupervisorQueue: () => get<FleetQueue>('/api/v1/supervisor/queue'),
+		getSupervisorQueue: (q: { project?: string } = {}) =>
+			get<FleetQueue>(`/api/v1/supervisor/queue${query(q)}`),
+		getSupervisorStats: (q: StatsQuery = {}) =>
+			get<StageStatsReport>(`/api/v1/supervisor/stats${query(q)}`),
+		getSupervisorSentBack: (q: {
+			state: string;
+			window?: string;
+			project?: string;
+			until?: number;
+		}) => get<SentBackDrilldown>(`/api/v1/supervisor/stats/sent-back${query(q)}`),
 		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>
 			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),
 
@@ -571,6 +625,76 @@ export function createApiClient(options: ApiClientOptions) {
 				'/api/v1/library/prepare',
 				body
 			),
+		installWorkflowPackage: (body: import('./library/types.js').WorkflowPackageInstallRequest) =>
+			request<import('./library/types.js').WorkflowPackageReceipt>(
+				'POST',
+				'/api/v1/library/install',
+				body
+			),
+		getWorkflowPackageReceipt: (planId: string) =>
+			get<import('./library/types.js').WorkflowPackageReceipt>(
+				`/api/v1/library/installs/${encodeURIComponent(planId)}`
+			),
+		validatePublication: (body: {
+			document_json: string;
+			metadata?: import('./publications.js').PublicationMetadata;
+		}) =>
+			request<import('./publications.js').ValidatePublicationResponse>(
+				'POST',
+				'/api/v1/publications/validate',
+				body
+			),
+		preparePublication: (body: import('./publications.js').PreparePublicationRequest) =>
+			request<import('./publications.js').PublicationProof>(
+				'POST',
+				'/api/v1/publications/prepare',
+				body
+			),
+		publishPublication: (
+			candidateId: string,
+			body: import('./publications.js').PublishPublicationRequest
+		) =>
+			request<import('./publications.js').PublicationOwnerResult>(
+				'POST',
+				`/api/v1/publications/${encodeURIComponent(candidateId)}/publish`,
+				body
+			),
+		getPublicationResult: (candidateId: string) =>
+			get<import('./publications.js').PublicationOwnerResult>(
+				`/api/v1/publications/${encodeURIComponent(candidateId)}/result`
+			),
+		listPublications: (workflow?: string, page?: PageParams) =>
+			get<ListResponse<import('./publications.js').PublicationOwnerItem>>(
+				`/api/v1/publications${query({ workflow, ...page })}`
+			),
+		withdrawPublication: (snapshotId: string) =>
+			request<import('./publications.js').PublicationOwnerResult>(
+				'POST',
+				`/api/v1/publications/${encodeURIComponent(snapshotId)}/withdraw`
+			),
+		restorePublication: (snapshotId: string) =>
+			request<import('./publications.js').PublicationOwnerResult>(
+				'POST',
+				`/api/v1/publications/${encodeURIComponent(snapshotId)}/restore`
+			),
+		getPublicSnapshot: (snapshotId: string) =>
+			get<import('./publications.js').PublicWorkflowSnapshot>(
+				`/api/v1/publications/public/${encodeURIComponent(snapshotId)}`
+			),
+		getPublicSnapshotStatus: (snapshotId: string) =>
+			get<import('./publications.js').PublicSnapshotStatus>(
+				`/api/v1/publications/public/${encodeURIComponent(snapshotId)}/status`
+			),
+		prepareHostedWorkflowPackage: (snapshotId: string, choices: unknown = {}) =>
+			request<import('./library/types.js').PrepareWorkflowPackageResponse>(
+				'POST',
+				`/api/v1/publications/public/${encodeURIComponent(snapshotId)}/prepare-install`,
+				{ choices }
+			),
+		downloadPublicSnapshot: (snapshotId: string) =>
+			raw('GET', `/api/v1/publications/public/${encodeURIComponent(snapshotId)}/download`),
+		downloadPublicationReuseNotice: (snapshotId: string) =>
+			raw('GET', `/api/v1/publications/public/${encodeURIComponent(snapshotId)}/reuse.txt`),
 
 		validateLibrary: (body: import('./library/types.js').ValidateLibraryRequest) =>
 			request<import('./library/types.js').ValidateLibraryResponse>(
