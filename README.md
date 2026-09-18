@@ -426,11 +426,17 @@ the way: a `file` (bytes in R2), a `text` document, a `link`, a `pr` reference, 
 already exists appends the next version; nothing is overwritten.
 
 ```sh
-tines issues artifacts attach <ref> design-doc --file design.md
-tines issues artifacts attach <ref> screenshots --folder ./shots
+tines issues artifacts attach <ref> design-doc design.md    # positional: the gate types it
+tines issues artifacts attach <ref> screenshots ./shots
 tines issues artifacts list <ref>
 tines issues artifacts get <ref> design-doc --out .
 ```
+
+Prefer that positional form — it is what a gated slot's own hint prints, and it lets the
+gate decide how to read the path (a `text` gate reads the file as the document, a `file`
+gate uploads its bytes, a `folder` gate walks the directory). Explicit `--file` / `--text` /
+`--folder` / `--link` / `--pr` flags override the gate, and are refused before any write
+when no transition could ever accept what they would create.
 
 Artifacts are what **transition requirements** gate on: a workflow transition can demand a
 *fresh* artifact of a given name (optionally type and content type) before it can be taken.
