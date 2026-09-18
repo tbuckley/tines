@@ -150,6 +150,19 @@ versions so the receipt transaction can reject withdrawal. Cross-instance transf
 the source returns canonical bytes and the destination processes them as an ordinary independent
 file. A destination server never fetches a supplied public URL or receives source credentials.
 
+Tines/550 makes receipt lookup the first saved-plan recovery operation. A matching receipt returns
+before the CLI classifies, resolves, checks, or reads the positional source; only a definite receipt
+404 authorizes loading the exact saved source and retrying the same signed plan.
+
 ## Decision update — 2026-09-14 (Tines/484 browser-authored input edits)
 
 The browser export authoring surface updates an authored input by its stable local ID without rebuilding the candidate. All input fields remain editable; generated inputs are read-only. A key/default change atomically rewrites only that input's active exact occurrences in fields already named by its text-use records and updates those records' canonical tokens. Escaped occurrences, unregistered fields, unrelated declarations, ordering, and candidate-only work remain unchanged. The sealed candidate must pass the ordinary v3 validator before it replaces the prior candidate; Cancel or any failure changes nothing. A successful explicit save invalidates validation and required dependency review, including when its values are unchanged.
+
+## Decision update — 2026-09-15 (Tines/552 publication draft boundary)
+
+Browser-authored variables and exact text edits can be published without first changing the owned
+workflow. Publication submits the full sealed workflow-profile document with the clean owned export's
+digest and timestamp. The publication server admits only new `input:author:` declarations, new
+`use:author:` records, and text changes to workflow/context descriptions, prompt bodies, skill file
+contents, and schedule title/description templates. It reconstructs from the verified baseline, so
+the portable v3 format and installation substitution rules do not change.

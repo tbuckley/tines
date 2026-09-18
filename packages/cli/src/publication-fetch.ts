@@ -2,9 +2,8 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
-import { PUBLIC_WORKFLOW_MAX_BYTES } from '@tines/shared';
+import { parsePublicSnapshotUrl, PUBLIC_WORKFLOW_MAX_BYTES } from '@tines/shared';
 
-const SNAPSHOT_PATH = /^\/p\/[A-Za-z0-9_-]{20,100}(?:\/download)?$/;
 const MAX_REDIRECTS = 3;
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -94,33 +93,55 @@ export function isPublicAddress(address: string): boolean {
 	return false;
 }
 
-function validateHop(url: URL, initial: boolean): void {
+function validateHop(url: URL): void {
 	if (!['http:', 'https:'].includes(url.protocol))
 		throw new Error('publication URL must use HTTPS');
 	if (url.username || url.password) throw new Error('publication URL must not contain credentials');
 	if (url.hash) throw new Error('publication URL must not contain a fragment');
 	if (url.search) throw new Error('publication URL must not contain query parameters');
-	if (initial && !SNAPSHOT_PATH.test(url.pathname))
-		throw new Error('expected a canonical public snapshot or download URL');
 }
 
-async function pinnedAddress(url: URL, lookup: typeof dnsLookup) {
+type PinnedAddress = { address: string; family: number };
+
+async function pinnedAddresses(url: URL, lookup: typeof dnsLookup): Promise<PinnedAddress[]> {
 	const hostname = url.hostname.replace(/^\[|\]$/g, '');
 	const literalFamily = isIP(hostname);
 	const addresses = literalFamily
 		? [{ address: hostname, family: literalFamily }]
 		: await lookup(hostname, { all: true, verbatim: true });
-	if (!addresses.length) throw new Error(`publication host ${url.hostname} did not resolve`);
+	if (
+		!addresses.length ||
+		addresses.some(({ address, family }) => isIP(address) !== family || ![4, 6].includes(family))
+	)
+		throw new Error(`publication host ${url.hostname} did not resolve to valid addresses`);
+	const literalLoopback = Boolean(literalFamily && isLoopback(hostname));
 	const loopbackDevelopment =
 		url.protocol === 'http:' &&
-		(url.hostname === 'localhost' || addresses.every(({ address }) => isLoopback(address)));
+		(url.hostname === 'localhost' || literalLoopback) &&
+		addresses.every(({ address }) => isLoopback(address));
 	if (url.protocol === 'http:' && !loopbackDevelopment)
 		throw new Error(
 			'publication URL must use HTTPS (HTTP is allowed only for loopback development)'
 		);
 	if (!loopbackDevelopment && addresses.some(({ address }) => !isPublicAddress(address)))
 		throw new Error('publication URL resolves to a private or reserved address');
-	return addresses[0];
+	return addresses;
+}
+
+function pinnedLookup(addresses: PinnedAddress[]) {
+	return (
+		_hostname: string,
+		opts: { all?: boolean; family?: number },
+		callback: (error: Error | null, address?: string | PinnedAddress[], family?: number) => void
+	) => {
+		const family = typeof opts.family === 'number' ? opts.family : 0;
+		const matching =
+			family === 4 || family === 6 ? addresses.filter((item) => item.family === family) : addresses;
+		if (!matching.length)
+			return callback(new Error(`publication host has no IPv${family} address`));
+		if (opts.all) return callback(null, matching);
+		return callback(null, matching[0].address, matching[0].family);
+	};
 }
 
 async function readHop(
@@ -129,17 +150,17 @@ async function readHop(
 		lookup: typeof dnsLookup;
 	}
 ): Promise<{ body?: string; redirect?: URL }> {
-	const pinned = await pinnedAddress(url, options.lookup);
+	const pinned = await pinnedAddresses(url, options.lookup);
 	return new Promise((resolve, reject) => {
 		const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(
 			url,
 			{
 				method: 'GET',
 				headers: { accept: 'application/json' },
-				lookup: (_hostname, _opts, callback) =>
-					callback(null, pinned.address, pinned.family as 4 | 6)
+				lookup: pinnedLookup(pinned) as never
 			},
 			(response) => {
+				let responseFailure: Error | undefined;
 				const status = response.statusCode ?? 0;
 				if (status >= 300 && status < 400) {
 					response.resume();
@@ -172,10 +193,15 @@ async function readHop(
 				const chunks: Buffer[] = [];
 				response.on('data', (chunk: Buffer) => {
 					size += chunk.length;
-					if (size > options.maxBytes)
-						response.destroy(new Error('publication download is too large'));
-					else chunks.push(chunk);
+					if (size > options.maxBytes) {
+						responseFailure = new Error('publication download is too large');
+						response.destroy(responseFailure);
+					} else chunks.push(chunk);
 				});
+				response.on('aborted', () =>
+					reject(responseFailure ?? new Error('publication download was aborted'))
+				);
+				response.on('error', reject);
 				response.on('end', () => {
 					try {
 						resolve({
@@ -203,17 +229,11 @@ export async function fetchPublicWorkflowPackage(
 	value: string,
 	options: PublicationFetchOptions = {}
 ): Promise<{ raw: string; sourceUrl: string }> {
-	let url: URL;
-	try {
-		url = new URL(value);
-	} catch {
-		throw new Error('expected a canonical public snapshot or download URL');
-	}
-	validateHop(url, true);
-	if (!url.pathname.endsWith('/download')) url.pathname += '/download';
-	const sourceUrl = url.toString();
+	const parsed = parsePublicSnapshotUrl(value);
+	let url = new URL(parsed.downloadUrl);
+	const sourceUrl = parsed.downloadUrl;
 	for (let redirects = 0; ; redirects += 1) {
-		validateHop(url, false);
+		validateHop(url);
 		const result = await readHop(url, {
 			lookup: options.lookup ?? dnsLookup,
 			timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,

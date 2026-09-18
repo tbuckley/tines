@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -14,7 +14,7 @@ import {
 	type WorkflowPackageDocument
 } from '@tines/shared';
 import { inheritedPackage } from '../../shared/src/library/fixtures.js';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CLI_BIN, NODE } from './test-bin.js';
 import {
 	assertPlanBinding,
@@ -28,6 +28,8 @@ let baseUrl: string;
 let document: WorkflowPackageDocument;
 let plan: PrepareWorkflowPackageResponse;
 let requests: Array<{ method: string; path: string; body: Record<string, unknown> | null }> = [];
+let recoveredReceipt = false;
+let recoveredPlanDigest: string | null = null;
 const dir = mkdtempSync(join(tmpdir(), 'tines-workflow-cli-'));
 const packagePath = join(dir, 'workflow.json');
 const planPath = join(dir, 'plan.json');
@@ -155,7 +157,16 @@ beforeAll(async () => {
 			});
 		} else if (url.pathname === '/api/v1/library/prepare') result = response(plan);
 		else if (url.pathname === '/api/v1/library/installs/plan_1')
-			result = response({ error: { code: 'not_found', message: 'missing' } }, 404);
+			result = recoveredReceipt
+				? response({
+						id: 'plan_1',
+						document_digest: document.digest,
+						plan_digest: recoveredPlanDigest ?? plan.plan_digest,
+						committed_at: Date.now(),
+						objects: [],
+						reused_inputs: []
+					})
+				: response({ error: { code: 'not_found', message: 'missing' } }, 404);
 		else if (
 			url.pathname === '/api/v1/library/install' &&
 			req.headers.authorization === 'Bearer tines_run_key'
@@ -184,6 +195,8 @@ beforeAll(async () => {
 afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
 beforeEach(() => {
 	requests = [];
+	recoveredReceipt = false;
+	recoveredPlanDigest = null;
 });
 
 function cli(args: string[], input?: string): Promise<{ stdout: string; stderr: string }> {
@@ -332,14 +345,16 @@ describe('workflow package CLI', () => {
 
 	it('downloads a foreign public URL without credentials and rechecks exact bytes before install', async () => {
 		const seen: Array<Record<string, string | string[] | undefined>> = [];
+		const sourcePaths: string[] = [];
 		let sourceBody = canonicalizeLibraryValue(document);
 		const source = createServer((request, response) => {
 			seen.push(request.headers);
+			sourcePaths.push(request.url ?? '');
 			response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
 			response.end(sourceBody);
 		});
 		await new Promise<void>((resolve) => source.listen(0, '127.0.0.1', resolve));
-		const sourceBase = `http://127.0.0.1:${(source.address() as AddressInfo).port}`;
+		const sourceBase = `http://localhost:${(source.address() as AddressInfo).port}`;
 		const publicUrl = `${sourceBase}/p/abcdefghijklmnopqrst`;
 		const remotePlan = join(dir, 'remote-plan.json');
 		try {
@@ -348,6 +363,7 @@ describe('workflow package CLI', () => {
 			expect(seen[0].authorization).toBeUndefined();
 			expect(seen[0].cookie).toBeUndefined();
 			expect(seen[0].referer).toBeUndefined();
+			expect(sourcePaths).toEqual(['/api/v1/publications/public/abcdefghijklmnopqrst/download']);
 			expect(readFileSync(remotePlan, 'utf8')).not.toContain('tines_named_key');
 
 			sourceBody = canonicalizeLibraryValue(
@@ -368,6 +384,75 @@ describe('workflow package CLI', () => {
 		} finally {
 			await new Promise<void>((resolve) => source.close(() => resolve()));
 		}
+	});
+
+	it('recovers a completed receipt at the spawned command boundary before reading its source', async () => {
+		await cli(['workflows', 'preview', packagePath, '--plan-out', planPath, '--json']);
+		const unavailable = `${packagePath}.unavailable`;
+		renameSync(packagePath, unavailable);
+		recoveredReceipt = true;
+		requests = [];
+		try {
+			const result = await cli([
+				'workflows',
+				'install',
+				packagePath,
+				'--plan',
+				planPath,
+				'--confirm',
+				plan.plan_digest,
+				'--json'
+			]);
+			expect(JSON.parse(result.stdout)).toMatchObject({ id: plan.plan_id });
+			expect(requests.map((request) => request.path)).toEqual([
+				`/api/v1/library/installs/${plan.plan_id}`
+			]);
+		} finally {
+			renameSync(unavailable, packagePath);
+		}
+	});
+
+	it('recovers a completed hosted receipt before checking withdrawn snapshot status', async () => {
+		const hostedPlanPath = join(dir, 'hosted-recovery-plan.json');
+		await cli(['workflows', 'preview', packagePath, '--plan-out', hostedPlanPath, '--json']);
+		const saved = JSON.parse(readFileSync(hostedPlanPath, 'utf8'));
+		const source = {
+			kind: 'hosted_publication',
+			snapshot_id: 'abcdefghijklmnopqrst',
+			document_digest: plan.document_digest,
+			bytes_sha256: 'sha256:' + 'a'.repeat(64),
+			snapshot_status_version: 1,
+			publisher_status_version: 0
+		};
+		const [prefix, encoded, signature] = saved.plan.plan_token.split('.');
+		const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString());
+		payload.source = source;
+		const { plan_digest: _oldDigest, ...unsigned } = payload;
+		const digest = `sha256:${createHash('sha256')
+			.update(canonicalizeLibraryValue({ plan: unsigned, resolved: saved.plan.resolved }))
+			.digest('hex')}`;
+		payload.plan_digest = digest;
+		saved.plan.source = source;
+		saved.plan.plan_digest = digest;
+		saved.plan.plan_token = `${prefix}.${Buffer.from(canonicalizeLibraryValue(payload)).toString('base64url')}.${signature}`;
+		writeFileSync(hostedPlanPath, JSON.stringify(saved));
+		recoveredReceipt = true;
+		recoveredPlanDigest = digest;
+		requests = [];
+		const result = await cli([
+			'workflows',
+			'install',
+			`${baseUrl}/p/abcdefghijklmnopqrst`,
+			'--plan',
+			hostedPlanPath,
+			'--confirm',
+			digest,
+			'--json'
+		]);
+		expect(JSON.parse(result.stdout)).toMatchObject({ id: plan.plan_id });
+		expect(requests.map((request) => request.path)).toEqual([
+			`/api/v1/library/installs/${plan.plan_id}`
+		]);
 	});
 
 	it('makes no install request without the exact prior-plan confirmation', async () => {
@@ -561,6 +646,30 @@ describe('workflow package helpers', () => {
 		await expect(recoverOrInstall(api as never, JSON.stringify(document), plan)).rejects.toThrow(
 			'receipt does not match'
 		);
+	});
+
+	it('does not load a source when the matching receipt already exists', async () => {
+		const receipt = {
+			id: plan.plan_id,
+			document_digest: plan.document_digest,
+			plan_digest: plan.plan_digest
+		} as never;
+		const loadSource = vi.fn(async () => {
+			throw new Error('source is unavailable');
+		});
+		expect(
+			await recoverOrInstall(
+				{
+					getWorkflowPackageReceipt: async () => receipt,
+					installWorkflowPackage: async () => {
+						throw new Error('must not install');
+					}
+				},
+				loadSource,
+				plan
+			)
+		).toBe(receipt);
+		expect(loadSource).not.toHaveBeenCalled();
 	});
 
 	it('retries the identical request after an uncertain response and recovery 404', async () => {

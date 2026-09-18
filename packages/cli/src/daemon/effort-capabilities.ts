@@ -147,6 +147,15 @@ async function discoverCodex(daemonVersion: string): Promise<EffortCapabilitiesV
 		};
 		const timer = setTimeout(() => fail('Codex model discovery timed out'), DEADLINE_MS);
 		child.on('error', (error) => fail(error.message));
+		// The handshake writes to the app-server's stdin. A Codex that exits
+		// before reading it (an older CLI without `app-server`, a crash at
+		// startup, or simply losing the race to our first write on a loaded
+		// machine) turns that write into EPIPE, and an unhandled stream error
+		// takes the whole daemon down with it. Both are discovery failures.
+		child.stdin.on('error', (error) => fail(`Codex app-server stdin: ${error.message}`));
+		child.on('close', (code, signal) =>
+			fail(`Codex app-server exited (${signal ?? `code ${code}`}) before listing models`)
+		);
 		child.stdout.on('data', (chunk: Buffer) => {
 			bytes += chunk.length;
 			if (bytes > MAX_STDOUT) return fail('Codex model discovery exceeded 1 MiB');

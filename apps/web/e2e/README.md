@@ -8,10 +8,20 @@ already solved once is not re-solved per spec (Tines/170).
 
 - `pnpm test:e2e` from `apps/web`. `pnpm test` does **not** run these; CI does, on every
   pull request, so a green unit run says nothing about end-to-end behaviour.
-- `workers: 1`: the suite shares one D1 database. Specs still use per-run unique names
-  (`runId` in `helpers.ts`).
+- `workers: 1`: the suite shares one D1 database. Allocate runtime server names with the
+  `uniqueName(stem)` fixture; it combines a cryptographic worker namespace with a monotonic
+  counter. Reuse one returned value when equality is under test. Ordinary server objects in
+  retained specs use this allocator. `runId` remains temporarily for the four route-contract
+  specs owned by Tines/87 and for literal content/identifier fixtures whose exact shape is the
+  behavior under test; it is not a naming path for collision-constrained objects.
 - `E2E_PORT` (default 8788) moves the server, end to end — two suites can run side by side
   on one machine.
+- Setup belongs in a typed worker-scoped world fixture, not the first behavioral test. Tests
+  whose only prerequisite is setup must work under `-g`.
+- Intentional ordered journeys remain serial: schedule sweep/lifecycle (`schedules`),
+  export→import→re-import (`library`), Dana's walkthrough (`first-run-checklist`), agent
+  onboarding (`agents-first-run`), and the mutation tails in `projects-archive`,
+  `issue-transfer`, and `queue-panel`. Run the complete block/file on a fresh seed.
 - `E2E_SKIP_BUILD=1` requires an existing build created with `VITE_TINES_E2E=1`; the
   opt-in exposes the public SvelteKit page-state bridge used by the Agents navigation spec.
 - The shared `d1()` CLI helper retries only `SQLITE_BUSY` / `database is locked` process
@@ -19,10 +29,8 @@ already solved once is not re-solved per spec (Tines/170).
   each command as one transactional D1 batch, so replay does not partially duplicate a
   multi-statement operation. Invalid SQL, malformed output, and other permanent failures
   remain first-attempt failures.
-- A single-test run of a `describe.serial` spec generally fails: the fixture is created in
-  the file's first test. Run the whole file.
 - If a polling page is followed by `ProxyController emitErrorEvent`, `Error inside
-  ProxyWorker`, or `Network connection lost` and the dev server exits, check the workspace
+ProxyWorker`, or `Network connection lost` and the dev server exits, check the workspace
   version with `pnpm --filter @tines/web exec wrangler --version`. This is the
   [Wrangler proxy bug](https://github.com/cloudflare/workers-sdk/issues/14926) fixed by
   [workers-sdk#15252](https://github.com/cloudflare/workers-sdk/pull/15252) and released in
@@ -59,6 +67,21 @@ already solved once is not re-solved per spec (Tines/170).
   `typeRoots` line is needed because pnpm does not link `@types/node` into
   `apps/web/node_modules`; without it every `Buffer`/`node:*` reference errors.
 
+## Shared fixtures and accounts
+
+Import `test` and `expect` from `./fixtures`. Declare the browser identity explicitly with
+`test.use({ signedIn: ALICE })` (or the dedicated account the journey owns); public and
+magic-link cases leave the default `null`. Use `apiFor(account)` for ordinary bearer API
+access and `workerRequest` for raw worker-scoped requests. Keep the built-in `request` for
+cookie, unauthenticated, or transport behavior under test.
+
+`signedIn` wraps the normal Playwright context lazily, so API-only tests do not launch a
+browser. It does not sign in contexts created manually with `browser.newContext()`; call
+`signIn` explicitly for deliberate multi-context and account-switch cases. It also does not
+reset preferences: preserve explicit `resetFocus` calls and the dedicated DANA, SPEND,
+PAGINATION, AGENTS_FIRST_RUN, API_ISOLATION, EXPLAINER_REMEDIES, STOPPED_FIRST_RUN,
+MANAGED_SETTINGS, CAROL, and TRANSFER_RUNTIME account contracts.
+
 To stress D1 CLI contention on fresh isolated stacks, run the affected files sequentially
 with a new port for each invocation. Do not use `--repeat-each` or run these invocations in
 parallel because the specs within one invocation intentionally share D1 fixtures:
@@ -82,7 +105,7 @@ transition, and `app.css` does the same for view transitions and the AlertDialog
 transition that a locator can trip over is 0 ms under the default. CI's contended runner is
 exactly where the untamed windows widen.
 
-**Opting out** is file-level and only for a spec whose subject *is* the animation — today
+**Opting out** is file-level and only for a spec whose subject _is_ the animation — today
 `dialog-animation.spec.ts` and `dialog-pending.spec.ts`:
 
 ```ts
@@ -114,10 +137,10 @@ How much reduced motion alone buys, measured (Tines/170, the `?workflow=` filter
 `context.spec.ts`, CPU throttled 100x right before the swap, unscoped `page.locator('li')`,
 count read once with no auto-retry):
 
-| motion | result |
-| --- | --- |
+| motion          | result                                                     |
+| --------------- | ---------------------------------------------------------- |
 | `no-preference` | **10/10 failed** — `2 rows`, strict mode would have thrown |
-| `reduce` | **10/10 passed** |
+| `reduce`        | **10/10 passed**                                           |
 
 So at that site reduced motion is on its own sufficient: the 180 ms outro collapses to one
 frame and the sample never lands inside it. Read that as "not observable", not as "gone" —
@@ -128,14 +151,14 @@ locator sound rather than lucky, so keep it wherever a row is located and then a
 Components that put an outro on the `<li>` itself today — these are the lists that need
 scoping:
 
-| component | directive |
-| --- | --- |
-| `ContextItemList.svelte:45` | `transition:slide` |
-| `EffectiveContextView.svelte:47,71,100` | `transition:slide` |
-| `RunRow.svelte:46` | `transition:slide` |
-| `ArtifactsPanel.svelte:296` | `transition:slide` |
-| `EventList.svelte:83` | `in:slide out:fade` |
-| `RelationsCard.svelte:260` | `animate:flip transition:slide` |
+| component                               | directive                       |
+| --------------------------------------- | ------------------------------- |
+| `ContextItemList.svelte:45`             | `transition:slide`              |
+| `EffectiveContextView.svelte:47,71,100` | `transition:slide`              |
+| `RunRow.svelte:46`                      | `transition:slide`              |
+| `ArtifactsPanel.svelte:296`             | `transition:slide`              |
+| `EventList.svelte:83`                   | `in:slide out:fade`             |
+| `RelationsCard.svelte:260`              | `animate:flip transition:slide` |
 
 `IssueList.svelte:62` (`animate:flip in:fade`) and `ScheduleList.svelte:153` (`in:fade`) are
 `in:`-only and never go `inert`; `WorkflowEditor.svelte` animates `<p>`/`<div>`, not its
@@ -148,14 +171,14 @@ without anyone thinking about this file.
 
 Reviewed for Tines/170 and correct as they stand. Do not "fix" them:
 
-| site | why it is sound |
-| --- | --- |
-| `labels.spec.ts:138` | `/settings/labels` rows carry no directive |
-| `run-row.spec.ts:134` (`deadRuleRow`) | `RoutingRuleRow` carries no directive |
-| `schedules.spec.ts:394` | `ScheduleList` is `in:`-only |
-| `workflow-editor.spec.ts:62` | locates `<p>`, not a row |
-| `run-row.spec.ts:172` (`failedRow`) | a `RunRow`, but nothing in that path removes a row, so no outro runs (it is not `--repeat-each`-safe, for an unrelated reason — see below) |
-| `runner.spec.ts:314`, `:519` | `RunRow`s, saved by `.first()` — see the caveat below |
+| site                                  | why it is sound                                                                                                                            |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `labels.spec.ts:138`                  | `/settings/labels` rows carry no directive                                                                                                 |
+| `run-row.spec.ts:134` (`deadRuleRow`) | `RoutingRuleRow` carries no directive                                                                                                      |
+| `schedules.spec.ts:394`               | `ScheduleList` is `in:`-only                                                                                                               |
+| `workflow-editor.spec.ts:62`          | locates `<p>`, not a row                                                                                                                   |
+| `run-row.spec.ts:172` (`failedRow`)   | a `RunRow`, but nothing in that path removes a row, so no outro runs (it is not `--repeat-each`-safe, for an unrelated reason — see below) |
+| `runner.spec.ts:314`, `:519`          | `RunRow`s, saved by `.first()` — see the caveat below                                                                                      |
 
 The `.first()` caveat is worth stating, because it is half a fix: it prevents the strict-mode
 violation, not the race. `.first()` can still resolve to a row that is on its way out and
@@ -166,7 +189,7 @@ removal, scope it; prefer `li:not([inert])` over `.first()` in new code.
 
 The second hazard, which reduced motion does **not** close: the pre-flush window after a
 client-side navigation or filter change — the URL has flipped but the DOM still holds the
-old rows, so the count is right and the *text* is stale. `toHaveCount(1)` followed by
+old rows, so the count is right and the _text_ is stale. `toHaveCount(1)` followed by
 `toContainText(...)` is sound only for a locator that can never match a transient element;
 otherwise fold the claim into one retrying assertion.
 

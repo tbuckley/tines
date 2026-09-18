@@ -6,7 +6,7 @@ Implementation status: v3 whole-library transfer and workflow packages are imple
 
 Public snapshots are immutable, text-only hosting records for exact v3 workflow-package bytes. New publication and restoration are guarded by `PUBLIC_WORKFLOW_PUBLISHING_ENABLED=true`; the variable is intentionally absent from committed deployment configuration. `PUBLIC_WORKFLOW_MAX_BYTES` defaults to 1 MiB and `PUBLIC_WORKFLOW_DAILY_QUOTA` defaults to 10 first publications per rolling 24 hours.
 
-In the browser, open an owned workflow, choose **Publish workflow**, review its package, and prepare the source-bound proof. Publishing requires a non-email public display name, MIT reuse notice, sharing-rights confirmation, and exact-content confirmation. **Workflows → Public snapshots** lists stable URLs and supports withdrawal or policy-permitted restoration.
+In the browser, open an owned workflow and choose **Publish workflow**. The guided flow is **Customize → Preview → Share**: enter a public display name, preview the frozen version and review included skills or repositories, then accept the single public-sharing and MIT statement. Variables, automation, and **Download a file** stay in optional controls. Hashes and proof identifiers are available only under **Technical details**. **Workflows → Shared workflows** lists public links and supports removing or restoring public access.
 
 The CLI exposes the same lifecycle:
 
@@ -39,11 +39,11 @@ loopback development URL. A saved foreign-source plan records only its canonical
 install re-downloads it and requires identical bytes before any destination write. Once downloaded or
 installed, that independent copy cannot be recalled by the source host.
 
-## Install a package in the browser
+## Install a workflow in the browser
 
 Open **Workflows → Install package** (also linked from **Settings → Export / import**) and choose
 the downloaded JSON file. Tines parses local bytes first, then sends workflow files to this Tines
-instance for server validation. Nothing is installed until you confirm a prepared plan. Legacy and whole-library files are
+instance for server validation. Choose **Preview installation**, review what will be installed, and then choose **Install workflow**. Nothing is installed until you confirm the prepared preview. Technical plan identifiers remain under **Technical details**. Legacy and whole-library files are
 directed to the existing best-effort library importer; workflow-profile files use the atomic flow.
 
 Resolve each declared destination value, edit the proposed names for the independent main and
@@ -130,6 +130,13 @@ shared validator and downloads the same canonical JSON bytes emitted by the CLI.
 neither repositories nor other external package dependencies, and download does not install or
 publish anything. If the candidate or a required review changes while validation is pending, the
 older result is discarded and no file is downloaded.
+
+**Preview** publishes the saved browser draft directly: declarations, defaults, registered
+occurrences, and supported text edits do not need to be copied into the private workflow first. The
+server verifies the clean owned baseline and freezes the exact edited document shown in Preview.
+Changing the draft, display name, or automation selection clears that proof and its reviews. If the
+owned source changes, the draft stays in the browser but cannot be shared until the user explicitly
+refreshes or rebuilds; refreshing never silently merges or writes draft text into the private source.
 
 ## Whole-library backups and transfer
 
@@ -303,3 +310,17 @@ automation and is inspected through ordinary workflow/context APIs from two proj
 copy selects the paused schedule and a supported local-runner tier for one project. The journey pins
 zero automatic issues, `run_count=0`, unchanged project defaults, exact substitutions and inherited
 order, then edits one dependency copy and proves the source and sibling copy remain unchanged.
+
+## Public snapshot CLI
+
+`tines workflows publish <workflow> --proof-out proof.json --display-name <name>` accepts the same
+`--project`, repeated `--schedule`, repeated `--tier`, `--project-routing`, and `--inputs` selectors
+as `workflows export`. Commit the saved proof with both independent confirmations:
+`--proof proof.json --confirm <review-digest> --sharing-rights`; a TTY prompts separately for any
+missing confirmation, while non-interactive use requires both.
+
+Cross-host install accepts `/p/<id>`, the legacy `/p/<id>/download`, or the canonical
+`/api/v1/publications/public/<id>/download`, and always requests the canonical API endpoint without
+sending destination credentials. A matching completed destination receipt is recoverable even when
+that source URL or local file is no longer available. Use `tines workflows publications --all-pages`
+for a complete owner listing, or `--limit` and `--cursor` for manual paging.

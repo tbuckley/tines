@@ -125,7 +125,29 @@ export async function errorBody(res: APIResponse): Promise<ErrorBody> {
 	return (await res.json()) as ErrorBody;
 }
 
-/** Unique per-process suffix so re-runs against a reused server don't collide. */
+/**
+ * Runs owned-resource teardown in order without letting one failed deletion
+ * strand everything after it. The combined error keeps every failed cleanup
+ * operation visible at the fixture boundary.
+ */
+export async function runCleanupSteps(
+	steps: ReadonlyArray<{ name: string; run: () => Promise<void> }>
+): Promise<void> {
+	const failures: string[] = [];
+	for (const step of steps) {
+		try {
+			await step.run();
+		} catch (error) {
+			failures.push(`${step.name}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	if (failures.length > 0) throw new Error(`Fixture cleanup failed:\n${failures.join('\n')}`);
+}
+
+/**
+ * @deprecated Use the runtime `uniqueName` fixture. Retained temporarily for the four
+ * route-contract specs owned by Tines/87 and literal-content compatibility cases.
+ */
 export const runId = Date.now().toString(36);
 
 /**
@@ -200,5 +222,23 @@ export async function resetFocus(request: APIRequestContext): Promise<void> {
 		focused_project_id: null,
 		last_project_id: null
 	});
+	expect(res.ok(), await describeFailure(res)).toBe(true);
+}
+
+/** Canonical issue path; only the project path segment requires encoding. */
+export function issuePath(projectName: string, issueNumber: number): string {
+	return `/issues/${encodeURIComponent(projectName)}/${issueNumber}`;
+}
+
+/** The workflow state card identified by its stable heading. */
+export function stateCard(page: Page): Locator {
+	return page
+		.locator('section')
+		.filter({ has: page.getByRole('heading', { name: 'State', exact: true }) });
+}
+
+/** Fire the local scheduled endpoint and retain useful diagnostics on failure. */
+export async function fireSweep(request: APIRequestContext): Promise<void> {
+	const res = await request.get('/__scheduled?cron=*+*+*+*+*');
 	expect(res.ok(), await describeFailure(res)).toBe(true);
 }

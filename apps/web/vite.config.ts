@@ -54,7 +54,8 @@ export default defineConfig({
 			// but that only allowlists origins — a request with no Origin
 			// header at all is still rejected — so it cannot express "skip the
 			// check"; the deprecation notice stays until Kit offers a way.
-			csrf: { checkOrigin: false }
+			csrf: { checkOrigin: false },
+			csp: { mode: 'nonce', directives: { 'script-src': ['self'] } }
 		})
 	]
 });

@@ -11,13 +11,30 @@ export interface PublicationMetadata {
 	license_year: number;
 }
 
-export type PublicationSource =
+export type PublicationSourceOptions = Omit<ExportWorkflowPackageOptions, 'authoring'>;
+
+export interface OwnedWorkflowPublicationDraft {
+	version: 1;
+	baseline: { document_digest: string; exported_at: number };
+	document_json: string;
+}
+
+export type OwnedWorkflowPublicationSource =
 	| {
 			kind: 'owned_workflow';
 			workflow_id: string;
 			options: ExportWorkflowPackageOptions;
+			draft?: never;
 	  }
-	| { kind: 'file'; document_json: string };
+	| {
+			kind: 'owned_workflow';
+			workflow_id: string;
+			options: PublicationSourceOptions;
+			draft: OwnedWorkflowPublicationDraft;
+	  };
+
+export type PublicationSource =
+	OwnedWorkflowPublicationSource | { kind: 'file'; document_json: string };
 
 export interface PublicationDiagnostic {
 	path: string;
@@ -95,6 +112,8 @@ export interface PublicationOwnerItem extends PublicationHashes {
 	owner_state: 'published' | 'withdrawn';
 	host_state: 'active' | 'removed';
 	status_version: number;
+	host_removal: { reason: string; reference: string } | null;
+	suspension: { reason: string; reference: string } | null;
 }
 
 export interface HostedPublicationBinding {
@@ -171,19 +190,43 @@ export async function publicationReviewDigest(input: {
 
 const SNAPSHOT_ID = /^[A-Za-z0-9_-]{20,100}$/;
 
-export function parsePublicSnapshotReference(value: string, configuredOrigin?: string): string {
-	if (SNAPSHOT_ID.test(value)) return value;
+export interface ParsedPublicSnapshotUrl {
+	snapshotId: string;
+	publicUrl: string;
+	downloadUrl: string;
+}
+
+/** Parse every accepted public URL spelling and return one canonical identity. */
+export function parsePublicSnapshotUrl(value: string): ParsedPublicSnapshotUrl {
 	let url: URL;
 	try {
 		url = new URL(value);
 	} catch {
-		throw new Error('Expected a publication ID or canonical public URL');
+		throw new Error('Expected a canonical public URL');
 	}
-	if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash)
-		throw new Error('Invalid public publication URL');
-	if (configuredOrigin && url.origin !== new URL(configuredOrigin).origin)
+	if (!['http:', 'https:'].includes(url.protocol))
+		throw new Error('Invalid public publication URL: must use HTTP or HTTPS');
+	if (url.username || url.password)
+		throw new Error('Invalid public publication URL: must not contain credentials');
+	if (url.hash) throw new Error('Invalid public publication URL: must not contain a fragment');
+	if (url.search)
+		throw new Error('Invalid public publication URL: must not contain query parameters');
+	const match =
+		/^\/p\/([A-Za-z0-9_-]{20,100})(?:\/download)?$/.exec(url.pathname) ??
+		/^\/api\/v1\/publications\/public\/([A-Za-z0-9_-]{20,100})\/download$/.exec(url.pathname);
+	if (!match) throw new Error('Invalid public publication URL: expected a canonical path');
+	const origin = url.origin;
+	return {
+		snapshotId: match[1],
+		publicUrl: `${origin}/p/${match[1]}`,
+		downloadUrl: `${origin}/api/v1/publications/public/${match[1]}/download`
+	};
+}
+
+export function parsePublicSnapshotReference(value: string, configuredOrigin?: string): string {
+	if (SNAPSHOT_ID.test(value)) return value;
+	const parsed = parsePublicSnapshotUrl(value);
+	if (configuredOrigin && new URL(parsed.publicUrl).origin !== new URL(configuredOrigin).origin)
 		throw new Error('external_source_requires_download');
-	const match = /^\/p\/([A-Za-z0-9_-]{20,100})(?:\/download)?$/.exec(url.pathname);
-	if (!match || url.search) throw new Error('Invalid public publication URL');
-	return match[1];
+	return parsed.snapshotId;
 }

@@ -11,9 +11,9 @@ import type {
 	Project,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, errorBody, runId } from './helpers';
+import { body, errorBody } from './helpers';
 import {
 	expectedPlanningProcedure,
 	planningProcedure,
@@ -69,19 +69,21 @@ type Receipt = {
 };
 
 test('four scoped extractions execute destination-first and retain sources on every stop', async ({
-	request
+	apiFor,
+	uniqueName
 }, testInfo) => {
 	test.setTimeout(120_000);
-	const api = apiClient(request, ALICE.apiKey);
+	const api = apiFor(ALICE);
 	const receipts: Receipt[] = [];
 	let sequence = 0;
 	const record = (caseId: string, operation: string, status: Receipt['status'], detail = {}) =>
 		receipts.push({ case: caseId, sequence: ++sequence, operation, status, detail });
 
 	for (const caseId of ['global', 'project', 'state', 'combined'] as const) {
+		const caseName = uniqueName(`extract-${caseId}`);
 		const workflow = await body<WorkflowResponse>(
 			await api.post('/api/v1/workflows', {
-				name: `extract-${caseId}-${runId}`,
+				name: caseName,
 				initial_state: 'Child',
 				states: [
 					{ name: 'Root', category: 'active' },
@@ -93,7 +95,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		);
 		const project = await body<Project>(
 			await api.post('/api/v1/projects', {
-				name: `extract-${caseId}-${runId}`,
+				name: caseName,
 				default_workflow_id: workflow.id
 			})
 		);
@@ -102,7 +104,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		);
 		const otherProject = await body<Project>(
 			await api.post('/api/v1/projects', {
-				name: `extract-${caseId}-other-${runId}`,
+				name: uniqueName(`extract-${caseId}-other`),
 				default_workflow_id: workflow.id
 			})
 		);
@@ -131,7 +133,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 			const reviewSource = await body<ContextItem>(
 				await api.post('/api/v1/context', {
 					kind: 'prompt',
-					name: `review-${decision}-${caseId}-${runId}`,
+					name: uniqueName(`review-${decision}-${caseId}`),
 					body: before,
 					...scope
 				})
@@ -149,7 +151,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		const source = await body<ContextItem>(
 			await api.post('/api/v1/context', {
 				kind: 'prompt',
-				name: caseId === 'combined' ? 'journal' : `procedure-source-${caseId}-${runId}`,
+				name: caseId === 'combined' ? 'journal' : uniqueName(`procedure-source-${caseId}`),
 				body: before,
 				...scope
 			})
@@ -196,7 +198,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		}
 		const invalid = await api.post('/api/v1/context', {
 			kind: 'skill',
-			name: `invalid-${caseId}-${runId}`,
+			name: uniqueName(`invalid-${caseId}`),
 			files: [{ path: '../escape', content: skillBody }],
 			...scope
 		});
@@ -251,7 +253,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		const unavailableDestination = await body<ContextItem>(
 			await api.post('/api/v1/context', {
 				kind: 'skill',
-				name: `unavailable-${caseId}-${runId}`,
+				name: uniqueName(`unavailable-${caseId}`),
 				files: [{ path: 'SKILL.md', content: skillBody }],
 				...scope
 			})
@@ -445,7 +447,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 			const conflictSource = await body<ContextItem>(
 				await api.post('/api/v1/context', {
 					kind: 'prompt',
-					name: `source-conflict-${caseId}-${runId}`,
+					name: uniqueName(`source-conflict-${caseId}`),
 					body: before,
 					...scope
 				})
@@ -599,12 +601,13 @@ test('four scoped extractions execute destination-first and retain sources on ev
 });
 
 test('same-name resolution follows exact scope rank and inherited-state provenance', async ({
-	request
+	apiFor,
+	uniqueName
 }) => {
-	const api = apiClient(request, ALICE.apiKey);
+	const api = apiFor(ALICE);
 	const workflow = await body<WorkflowResponse>(
 		await api.post('/api/v1/workflows', {
-			name: `extract-matrix-${runId}`,
+			name: uniqueName('extract-matrix'),
 			initial_state: 'Child',
 			states: [
 				{ name: 'Root', category: 'active' },
@@ -618,13 +621,13 @@ test('same-name resolution follows exact scope rank and inherited-state provenan
 	const child = workflow.states.find((state) => state.name === 'Child')!;
 	const projectP = await body<Project>(
 		await api.post('/api/v1/projects', {
-			name: `extract-matrix-p-${runId}`,
+			name: uniqueName('extract-matrix-p'),
 			default_workflow_id: workflow.id
 		})
 	);
 	const projectQ = await body<Project>(
 		await api.post('/api/v1/projects', {
-			name: `extract-matrix-q-${runId}`,
+			name: uniqueName('extract-matrix-q'),
 			default_workflow_id: workflow.id
 		})
 	);

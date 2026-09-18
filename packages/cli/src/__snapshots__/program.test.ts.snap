@@ -1066,7 +1066,7 @@ Options:
   --harness <harness>            claude-code | codex | custom (default:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},
-                                 {workspace}, {model})
+                                 {workspace}, {model}, {effort})
   --max-concurrent <n>           local maximum simultaneous runs
                                  (remote-adjustment ceiling when enabled)
                                  (default: 1)
@@ -1104,7 +1104,7 @@ Options:
   --harness <harness>            claude-code | codex | custom (default:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},
-                                 {workspace}, {model})
+                                 {workspace}, {model}, {effort})
   --max-concurrent <n>           local maximum simultaneous runs
                                  (remote-adjustment ceiling when enabled)
                                  (default: 1)
@@ -1857,12 +1857,18 @@ Options:
 List your public workflow snapshots
 
 Options:
-  --workflow <id>  filter by owned source workflow ID
-  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default https://tines.tbuckley.dev)
-  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
-  --json           output the raw JSON response
-  -h, --help       display help for command
+  --workflow <id>    filter by owned source workflow ID
+  --limit <n>        maximum items to return (page size under --all-pages)
+  --cursor <cursor>  resume from the next_cursor of a previous page
+  --all-pages        fetch every page, not just the first (default safety
+                     ceiling: 10000 items)
+  --max-items <n>    safety ceiling for --all-pages (default 10000; exceeding it
+                     errors)
+  -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
+                     \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json             output the raw JSON response
+  -h, --help         display help for command
 ",
   "tines workflows publish": "Usage: tines workflows publish [options] [workflow]
 
@@ -1882,6 +1888,15 @@ Options:
   --recover                  reconcile this same candidate after a lost response
   --repo <local-id>          confirm one bundled repository ID (repeatable)
                              (default: [])
+  --project <id-or-name>     source project for selected project-bound
+                             configuration
+  --schedule <id>            include this source schedule ID (repeatable)
+                             (default: [])
+  --tier <state-ref=tier>    include a state tier preference (repeatable)
+                             (default: [])
+  --project-routing          make every --tier selector project scoped
+  --inputs <file>            JSON object containing input declarations and text
+                             uses
   -u, --url <url>            base URL of the Tines API (or set TINES_API_URL, or
                              run \`tines login\`; default
                              https://tines.tbuckley.dev)

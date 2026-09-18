@@ -1,8 +1,12 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import type { EffortCapabilitiesV1, RunnerAssignment } from '@tines/shared';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
 	assignmentEffortRejection,
 	claudeEffortVersionSupported,
+	discoverEffortCapabilities,
 	EFFORT_CAPABILITIES_TTL_MS,
 	EffortCapabilityRefresher
 } from './effort-capabilities.js';
@@ -80,5 +84,61 @@ describe('capability refresh', () => {
 		now += EFFORT_CAPABILITIES_TTL_MS + 1;
 		await refresher.get();
 		expect(calls).toBe(3);
+	});
+});
+
+describe('Codex discovery against a broken app-server', () => {
+	let dir: string | null = null;
+	const originalPath = process.env.PATH;
+
+	/** A `codex` on PATH whose `--version` answers but whose `app-server` runs `body`. */
+	function fakeCodex(body: string): void {
+		dir = mkdtempSync(join(tmpdir(), 'tines-codex-probe-'));
+		const bin = join(dir, 'bin');
+		mkdirSync(bin);
+		writeFileSync(
+			join(bin, 'codex'),
+			`#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex-cli 0.153.4"; exit 0; fi\n${body}\n`,
+			{ mode: 0o755 }
+		);
+		process.env.PATH = `${bin}${delimiter}${originalPath ?? ''}`;
+	}
+
+	afterEach(() => {
+		process.env.PATH = originalPath;
+		if (dir) rmSync(dir, { recursive: true, force: true });
+		dir = null;
+	});
+
+	it('survives an app-server that closes stdin before the handshake is written', async () => {
+		// The fake closes its stdin, then answers the initialize request, then
+		// lingers: the daemon's follow-up writes (initialized, model/list) land
+		// on a closed pipe and EPIPE deterministically. That is the shape of a
+		// Codex that stops reading before the handshake completes — on a loaded
+		// machine the daemon used to lose that race by crashing on the
+		// unhandled stream error, taking every in-flight run with it.
+		fakeCodex('exec 0<&-\necho \'{"id":1,"result":{}}\'\nsleep 3');
+		const started = Date.now();
+		const report = await discoverEffortCapabilities('codex', 'test');
+		expect(Date.now() - started).toBeLessThan(2500);
+		expect(report).toMatchObject({ harness: 'codex', models: [] });
+		expect(report && 'discovery_error' in report ? report.discovery_error : '').toContain(
+			'Codex app-server stdin: write EPIPE'
+		);
+	});
+
+	it('reports an app-server that exits without answering, without waiting out the deadline', async () => {
+		fakeCodex('exit 3');
+		const started = Date.now();
+		const report = await discoverEffortCapabilities('codex', 'test');
+		expect(Date.now() - started).toBeLessThan(4000);
+		// Which failure lands first is a race the fake cannot fix: if the
+		// process is gone before our initialize write reaches the pipe, the
+		// write's EPIPE arrives before the close event does. Both are the same
+		// fast, non-fatal discovery failure — that, not the wording, is the
+		// contract. (Deploy hit the EPIPE ordering on its first run.)
+		expect(report && 'discovery_error' in report ? report.discovery_error : '').toMatch(
+			/^Codex app-server (exited \(code 3\) before listing models|stdin: write EPIPE)$/
+		);
 	});
 });

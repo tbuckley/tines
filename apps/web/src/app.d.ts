@@ -31,6 +31,8 @@ declare global {
 		USAGE_SCALE_SQL_TRACE?: string;
 		/** Local stats profiler only: reproduces the pre-optimization marker loop. */
 		STATS_SCALE_REPEAT_PREPARATION?: string;
+		/** Isolated Worker-entry response probes; set only by e2e/server.sh. */
+		E2E_PUBLICATION_BOUNDARY_TEST?: string;
 		/**
 		 * Self-referencing service binding (wrangler.jsonc `services`): lets
 		 * the supervisor call its own API in-process — a worker on a custom
@@ -54,6 +56,12 @@ declare global {
 		PUBLIC_WORKFLOW_PUBLISHING_ENABLED?: string;
 		PUBLIC_WORKFLOW_MAX_BYTES?: string;
 		PUBLIC_WORKFLOW_DAILY_QUOTA?: string;
+		PUBLIC_WORKFLOW_MODERATOR_USER_IDS?: string;
+		PUBLIC_WORKFLOW_REPORT_HOURLY_QUOTA?: string;
+		PUBLIC_WORKFLOW_REPORT_HMAC_SECRET?: string;
+		PUBLIC_WORKFLOW_APPEAL_CONTACT?: string;
+		PUBLIC_WORKFLOW_MODERATION_QUEUE_READY?: string;
+		PUBLIC_WORKFLOW_MODERATION_JOURNEY_VERIFIED?: string;
 	}
 
 	namespace App {

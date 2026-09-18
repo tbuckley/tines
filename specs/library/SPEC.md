@@ -124,6 +124,21 @@ Whole-library imports carry the API request's dispatch effect through workflow o
 
 Workflow-package authoring and prepared installation proofs describe selected schedule recurrences in human-readable text. Presets use the shared recurrence description, cron expressions remain complete and wrap within the proof, and timezone plus the installs-paused explanation remain separate.
 
+## Decision update — 2026-09-14 browser review wording (Tines/553)
+
+Publishing uses one aggregate included-content acknowledgment over the frozen preview. File download
+and installation retain per-item review. Browser installation calls its prepared result “What will be
+installed” and hides plan fingerprints under Technical details; signed plan confirmation is unchanged.
+
+## Decision update — 2026-09-15 optional authoring and recovery wording (Tines/576)
+
+Optional workflow-package authoring names copies, instructions, variables, previews, and the actions a
+person can take; installation recovery tells the person to check the result, choose the original file,
+or retry. Normal views do not expose internal candidate, token-registration, signed-plan, or digest
+matching language. Exact-content validation, document-digest retry identity, signed confirmation,
+receipt recovery, and every publication and installation contract remain unchanged. Recovery IDs and
+error codes remain available only in closed, allowlisted Technical details disclosures.
+
 ## Decision update — Tines/485 declared-input selection feedback
 
 Workflow-package authoring keeps its existing candidate-local declared-input selection semantics. The active declaration remains visibly marked after focus moves to the candidate editor, every declaration exposes its pressed state, and the replacement action repeats the selected key. Adding a declaration and navigating from a rendered token continue to select it; rebuilding retains a surviving input ID and clears a stale one. This feedback does not change candidate data, package tokens, exact text uses, or downloaded bytes.
@@ -136,3 +151,8 @@ quota-limited, and default-off. One central availability predicate controls anon
 download, hosted preview, and transaction-time install receipt creation. Withdrawal cannot change a
 file already downloaded or an independent installation. The lifecycle and transport contract are in
 [PUBLICATIONS.md](PUBLICATIONS.md).
+
+Owned-workflow browser publishing may derive frozen snapshot bytes from a verified in-memory
+publication draft. The additive trust boundary and immutable-field allowlist are recorded in
+[PUBLICATIONS.md](PUBLICATIONS.md#decision-update--2026-09-15-owned-publication-drafts-tines552)
+and [FORMAT_V3.md](FORMAT_V3.md#decision-update--2026-09-15-tines552-publication-draft-boundary).

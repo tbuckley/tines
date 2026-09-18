@@ -233,6 +233,7 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	// is fenced, so a run cannot re-home itself into different guidance.
 	{ pattern: /^\/api\/v1\/issues\/[^/]+\/transfer$/, readable: true },
 	{ pattern: /^\/api\/v1\/api-keys(\/|$)/ },
+	{ pattern: /^\/api\/v1\/host\/workflow-moderation(\/|$)/ },
 	// The label library is vocabulary, not classification: run keys may read it
 	// (`tines labels list` — the launch prompt points at it) and may apply and
 	// remove existing labels (/issues/:id/labels stays open to them), but

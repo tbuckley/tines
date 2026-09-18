@@ -236,13 +236,18 @@ export function printList<T>(
  * parseable, and agents read run logs. Passing --cursor is deliberate paging,
  * so it is not warned about.
  */
-export async function fetchList<T extends { id: string }>(
+export async function fetchList<T>(
 	opts: ListOpts,
-	fetchPage: (page: PageParams) => Promise<ListResponse<T>>
+	fetchPage: (page: PageParams) => Promise<ListResponse<T>>,
+	identify?: (item: T) => string
 ): Promise<ListResponse<T>> {
 	if (opts.allPages) {
 		return {
-			items: await listAll(fetchPage, { pageSize: opts.limit, maxItems: opts.maxItems }),
+			items: await listAll(fetchPage, {
+				pageSize: opts.limit,
+				maxItems: opts.maxItems,
+				identify: identify ?? ((item) => (item as { id: string }).id)
+			}),
 			next_cursor: null
 		};
 	}

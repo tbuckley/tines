@@ -1,9 +1,17 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
+	import type { TextUseField } from '@tines/shared';
 	import { page } from '$app/state';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import MarketingSignIn from '$lib/components/marketing/MarketingSignIn.svelte';
 	import PublicTextSnippet from '$lib/components/publications/PublicTextSnippet.svelte';
+	import PublicationReportDialog from '$lib/components/publications/PublicationReportDialog.svelte';
+	import TechnicalDetails from '$lib/components/publications/TechnicalDetails.svelte';
+	import {
+		inspectorTargetId,
+		publicInstructionLayers,
+		type InspectorTarget
+	} from '$lib/publications/inspector';
 
 	let { data } = $props();
 	const snapshot = $derived(data.snapshot);
@@ -15,9 +23,15 @@
 	let available = $state(true);
 	let checking = $state(false);
 	let signIn = $state<MarketingSignIn>();
-	const installReturn = $derived(`/p/${snapshot.snapshot_id}?install=1`);
+	let reportDialog = $state<PublicationReportDialog>();
+	let expandedFields = $state<Record<string, boolean>>({});
+	let navigation = $state<Array<{ triggerId: string; fallbackId: string; x: number; y: number }>>(
+		[]
+	);
+	const installReturn = $derived(`/p/${snapshot.snapshot_id}/install`);
+	const signInErrorReturn = $derived(`/p/${snapshot.snapshot_id}?install=1&error=signin`);
 	const linkError = $derived(
-		page.url.searchParams.get('error') === 'signin'
+		page.url.searchParams.has('error')
 			? 'That sign-in link is invalid or has expired. Enter your email to get a new one.'
 			: null
 	);
@@ -38,23 +52,84 @@
 	function inputUses(id: string) {
 		return snapshot.document.text_uses.filter((use) => use.input_id === id);
 	}
+	function fieldUses(recordId: string, field: TextUseField) {
+		return snapshot.document.text_uses
+			.filter((use) => use.target.record_id === recordId && use.target.field === field)
+			.map(({ id, input_id, token }) => ({ id, input_id, token }));
+	}
+	function targetId(target: InspectorTarget) {
+		return inspectorTargetId(target);
+	}
+	function fieldId(recordId: string, field: TextUseField) {
+		return targetId({ kind: 'field', recordId, field });
+	}
+	function fieldFormat(recordId: string): 'markdown' | 'text' {
+		const file = snapshot.document.context
+			.flatMap((item) => (item.kind === 'skill' ? item.files : []))
+			.find((item) => item.id === recordId);
+		return file?.path.toLowerCase().endsWith('.txt') ? 'text' : 'markdown';
+	}
+
+	async function navigateTo(target: InspectorTarget, trigger: HTMLElement, fallbackId?: string) {
+		if (!trigger.id) trigger.id = `public-trigger-${crypto.randomUUID()}`;
+		const id = targetId(target);
+		if (target.kind === 'field') expandedFields[id] = true;
+		navigation.push({
+			triggerId: trigger.id,
+			fallbackId: fallbackId ?? trigger.closest('[id]')?.id ?? trigger.id,
+			x: scrollX,
+			y: scrollY
+		});
+		await tick();
+		const element = document.getElementById(id);
+		element?.focus({ preventScroll: true });
+		element?.scrollIntoView({
+			block: 'center',
+			behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+		});
+	}
+
+	async function backToSource() {
+		const previous = navigation.pop();
+		if (!previous) return;
+		await tick();
+		const element =
+			document.getElementById(previous.triggerId) ?? document.getElementById(previous.fallbackId);
+		if (element) {
+			element.focus({ preventScroll: true });
+			element.scrollIntoView({ block: 'center' });
+		} else scrollTo(previous.x, previous.y);
+	}
+
+	function clearReaderState() {
+		navigation = [];
+		expandedFields = {};
+		available = false;
+	}
 
 	async function recheck() {
 		if (checking || !available) return available;
+		const active = document.activeElement;
+		const restoreFocusId =
+			active instanceof HTMLElement && active.closest('[data-public-reader]') ? active.id : '';
 		checking = true;
 		try {
 			const response = await fetch(`/api/v1/publications/public/${snapshot.snapshot_id}/status`, {
 				cache: 'no-store'
 			});
-			if (!response.ok) available = false;
+			if (!response.ok) clearReaderState();
 			else {
 				const status = await response.json();
-				if (status.status_version !== snapshot.status_version) available = false;
+				if (status.status_version !== snapshot.status_version) clearReaderState();
 			}
 		} catch {
-			available = false;
+			clearReaderState();
 		} finally {
 			checking = false;
+			if (available && restoreFocusId) {
+				await tick();
+				document.getElementById(restoreFocusId)?.focus({ preventScroll: true });
+			}
 		}
 		return available;
 	}
@@ -66,15 +141,21 @@
 
 	onMount(() => {
 		const resumed = () => void recheck();
+		const escape = (event: KeyboardEvent) => {
+			if (event.key === 'Escape' && navigation.length && !document.querySelector('[role="dialog"]'))
+				void backToSource();
+		};
 		const timer = setInterval(() => {
 			if (!document.hidden) void recheck();
 		}, 15_000);
 		addEventListener('focus', resumed);
 		addEventListener('pageshow', resumed);
+		addEventListener('keydown', escape);
 		return () => {
 			clearInterval(timer);
 			removeEventListener('focus', resumed);
 			removeEventListener('pageshow', resumed);
+			removeEventListener('keydown', escape);
 		};
 	});
 </script>
@@ -87,24 +168,41 @@
 >
 
 {#if visible}
-	<main class="mx-auto min-h-screen max-w-5xl min-w-0 overflow-x-hidden px-4 py-8 sm:px-6">
+	<main
+		class="mx-auto min-h-screen max-w-5xl min-w-0 overflow-x-hidden px-4 py-8 sm:px-6"
+		data-public-reader
+	>
 		<header class="border-b pb-6">
-			<p class="text-muted-foreground text-sm">Public workflow snapshot</p>
+			<button
+				type="button"
+				class="text-primary mb-3 min-h-10 underline"
+				hidden={!navigation.length}
+				disabled={!navigation.length}
+				onclick={backToSource}>Back to source</button
+			>
+			<p class="text-muted-foreground text-sm">Shared workflow</p>
 			<h1 class="mt-1 text-3xl font-semibold wrap-break-word">{main.name}</h1>
 			<p class="text-muted-foreground mt-2 min-w-0 text-sm break-words">
-				Published by {snapshot.metadata.display_name} · {snapshot.metadata.license} · immutable snapshot
+				Published by {snapshot.metadata.display_name} · {snapshot.metadata.license} · this shared version
+				will not change
 			</p>
 			<div class="mt-5 flex flex-wrap gap-3">
+				<button
+					class="focus-visible:ring-ring/50 rounded-md border px-4 py-2 font-medium outline-none focus-visible:ring-[3px]"
+					type="button"
+					onclick={(event) => reportDialog?.show(event.currentTarget)}>Report</button
+				>
 				{#if data.user}<a
 						class="bg-primary text-primary-foreground rounded-md px-4 py-2 font-medium"
 						href="/workflows/import?publication={snapshot.snapshot_id}"
 						data-sveltekit-preload-data="off">Install a copy</a
-					>{:else}<button
+					>{/if}
+				{#if !data.user}<button
 						class="bg-primary text-primary-foreground rounded-md px-4 py-2 font-medium"
 						onclick={(event) => signIn?.open(event.currentTarget)}>Sign in to install</button
 					>{/if}
 				<button class="rounded-md border px-4 py-2 font-medium" type="button" onclick={download}
-					>Download package</button
+					>Download file</button
 				>
 				<a
 					class="rounded-md border px-4 py-2 font-medium"
@@ -118,7 +216,14 @@
 		<section class="py-6" aria-labelledby="summary">
 			<h2 id="summary" class="text-xl font-semibold">What this workflow does</h2>
 			<div class="mt-3">
-				<PublicTextSnippet source={main.description || 'No description provided.'} />
+				<PublicTextSnippet
+					source={main.description || 'No description provided.'}
+					uses={fieldUses(main.id, 'description')}
+					fieldId={fieldId(main.id, 'description')}
+					bind:expanded={expandedFields[fieldId(main.id, 'description')]}
+					onToken={(inputId, _useId, trigger) =>
+						navigateTo({ kind: 'input', inputId }, trigger, fieldId(main.id, 'description'))}
+				/>
 			</div>
 		</section>
 		<section class="py-6" aria-labelledby="graph">
@@ -126,16 +231,21 @@
 			<nav class="mt-3" aria-label="Bundled workflow dependencies">
 				<ul class="flex min-w-0 flex-wrap gap-2 text-sm">
 					{#each snapshot.document.workflows as workflow}<li class="min-w-0">
-							<a
-								class="text-primary block max-w-full break-words underline"
-								href="#workflow-{workflow.id}">{workflow.name}</a
+							<button
+								type="button"
+								id="workflow-link-{workflow.id}"
+								class="text-primary block max-w-full text-left break-words underline"
+								onclick={(event) =>
+									navigateTo({ kind: 'workflow', workflowId: workflow.id }, event.currentTarget)}
+								>{workflow.name}</button
 							>
 						</li>{/each}
 				</ul>
 			</nav>
 			{#each snapshot.document.workflows as workflow}<article
 					class="mt-4 min-w-0 rounded-lg border p-4"
-					id="workflow-{workflow.id}"
+					id={targetId({ kind: 'workflow', workflowId: workflow.id })}
+					tabindex="-1"
 				>
 					<h3 class="min-w-0 font-semibold break-words">
 						{workflow.name}
@@ -143,22 +253,121 @@
 							>· {workflow.id === main.id ? 'main' : 'required dependency'}</span
 						>
 					</h3>
-					<div class="mt-3 overflow-x-auto"><WorkflowGraph {workflow} /></div>
-					<ul class="mt-3 flex min-w-0 flex-wrap gap-2 text-xs" aria-label="States">
-						{#each workflow.states as state}<li
-								class="bg-muted min-w-0 rounded px-2 py-1 break-words"
-								id="state-{state.id}"
+					{#if workflow.id !== main.id}<div class="mt-3">
+							<PublicTextSnippet
+								source={workflow.description || 'No description provided.'}
+								uses={fieldUses(workflow.id, 'description')}
+								fieldId={fieldId(workflow.id, 'description')}
+								bind:expanded={expandedFields[fieldId(workflow.id, 'description')]}
+								onToken={(inputId, _useId, trigger) =>
+									navigateTo(
+										{ kind: 'input', inputId },
+										trigger,
+										fieldId(workflow.id, 'description')
+									)}
+							/>
+						</div>{/if}
+					<!-- A named horizontal scroll region is intentionally keyboard-focusable. -->
+					<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+					<div
+						class="focus-visible:ring-ring mt-3 max-w-full min-w-0 overflow-x-auto focus-visible:ring-2"
+						tabindex="0"
+						role="region"
+						aria-label={`${workflow.name} graph; scroll horizontally to inspect all states`}
+					>
+						<WorkflowGraph {workflow} fit={false} intrinsicScale={1.3} />
+					</div>
+					<div class="mt-3 grid min-w-0 gap-3" aria-label="States and applied instructions">
+						{#each workflow.states as state}<article
+								class="bg-muted/50 min-w-0 rounded p-3 break-words"
+								id={targetId({ kind: 'state', stateId: state.id })}
+								tabindex="-1"
 							>
-								{state.name} · {state.category}{state.inherits_from
-									? ` · inherits ${stateName(state.inherits_from.state_id)}`
-									: ''}
-							</li>{/each}
-					</ul>
+								<h4 class="text-sm font-semibold">
+									{state.name} · {state.category}{#if state.inherits_from}
+										· inherits
+										<button
+											type="button"
+											class="text-primary underline"
+											onclick={(event) =>
+												navigateTo(
+													{ kind: 'state', stateId: state.inherits_from!.state_id },
+													event.currentTarget
+												)}>{stateName(state.inherits_from.state_id)}</button
+										>
+									{/if}
+								</h4>
+								<p class="mt-2 text-xs font-medium">Applied instructions</p>
+								<ol class="mt-1 space-y-1 text-xs">
+									{#each publicInstructionLayers(snapshot.document, state.id) as layer}<li>
+											<span class="font-medium"
+												>{layer.local ? 'Local to' : 'Inherited from'}
+												{layer.workflowName} › {layer.stateName}</span
+											>
+											{#if layer.items.length}<ul class="ml-4 list-disc">
+													{#each layer.items as entry}<li>
+															<button
+																type="button"
+																class="text-primary underline"
+																onclick={(event) =>
+																	navigateTo(
+																		{
+																			kind: 'field',
+																			recordId: entry.item.id,
+																			field: entry.item.description
+																				? 'description'
+																				: entry.item.kind === 'prompt'
+																					? 'body'
+																					: 'description'
+																		},
+																		event.currentTarget
+																	)}>{entry.item.name}</button
+															>{#if entry.overriddenBy}
+																— overridden by
+																<button
+																	type="button"
+																	class="text-primary underline"
+																	onclick={(event) =>
+																		navigateTo(
+																			{
+																				kind: 'field',
+																				recordId: entry.overriddenBy!,
+																				field: 'description'
+																			},
+																			event.currentTarget
+																		)}>{entry.overriddenBy}</button
+																>
+															{/if}
+														</li>{/each}
+												</ul>{:else}<span class="text-muted-foreground">
+													· no bundled items</span
+												>{/if}
+										</li>{/each}
+								</ol>
+							</article>{/each}
+					</div>
 					<ul class="mt-4 min-w-0 space-y-2 text-sm">
 						{#each workflow.transitions as transition}<li class="min-w-0 break-words">
-								<b class="break-words">{transition.name}</b>{#if transition.requires.length}<ul
-										class="min-w-0 list-disc pl-5"
-									>
+								<b class="break-words">{transition.name}</b> ·
+								<button
+									type="button"
+									class="text-primary underline"
+									onclick={(event) =>
+										navigateTo(
+											{ kind: 'state', stateId: transition.from_state_id },
+											event.currentTarget
+										)}>{stateName(transition.from_state_id)}</button
+								>
+								→
+								<button
+									type="button"
+									class="text-primary underline"
+									onclick={(event) =>
+										navigateTo(
+											{ kind: 'state', stateId: transition.to_state_id },
+											event.currentTarget
+										)}>{stateName(transition.to_state_id)}</button
+								>{#if transition.requires.length}<ul class="min-w-0 list-disc pl-5">
 										{#each transition.requires as gate}<li class="min-w-0 break-words">
 												{gate.artifact} · {gate.type}{gate.content_type
 													? ` · ${gate.content_type}`
@@ -176,7 +385,6 @@
 			<div class="mt-4 space-y-4">
 				{#each snapshot.document.context as item, contextIndex}<article
 						class="min-w-0 overflow-hidden rounded-lg border p-4 break-words"
-						id="context-{item.id}"
 					>
 						<h3 class="min-w-0 font-semibold break-words">
 							{item.name} <span class="text-muted-foreground text-xs">· {item.kind}</span>
@@ -186,18 +394,42 @@
 								item.state_id
 							)}
 						</p>
-						{#if item.description}<div class="mt-2">
-								<PublicTextSnippet source={item.description} />
-							</div>{/if}{#if item.kind === 'prompt'}<div class="mt-3">
-								<PublicTextSnippet source={item.body} />
+						<div class="mt-2">
+							<PublicTextSnippet
+								source={item.description || 'No description provided.'}
+								uses={fieldUses(item.id, 'description')}
+								fieldId={fieldId(item.id, 'description')}
+								bind:expanded={expandedFields[fieldId(item.id, 'description')]}
+								onToken={(inputId, _useId, trigger) =>
+									navigateTo({ kind: 'input', inputId }, trigger, fieldId(item.id, 'description'))}
+							/>
+						</div>
+						{#if item.kind === 'prompt'}<div class="mt-3">
+								<PublicTextSnippet
+									source={item.body}
+									uses={fieldUses(item.id, 'body')}
+									fieldId={fieldId(item.id, 'body')}
+									bind:expanded={expandedFields[fieldId(item.id, 'body')]}
+									onToken={(inputId, _useId, trigger) =>
+										navigateTo({ kind: 'input', inputId }, trigger, fieldId(item.id, 'body'))}
+								/>
 							</div>{:else if item.kind === 'skill'}{#each item.files as file}<section class="mt-3">
 									<h4 class="font-mono text-sm">{file.path}</h4>
-									{#if file.path.toLowerCase().endsWith('.txt')}<pre
-											class="bg-muted mt-2 max-w-full overflow-x-auto rounded p-3 text-xs whitespace-pre-wrap">{file.content}</pre>{:else}<div
-											class="mt-2"
-										>
-											<PublicTextSnippet source={file.content} />
-										</div>{/if}
+									<div class="mt-2">
+										<PublicTextSnippet
+											source={file.content}
+											format={fieldFormat(file.id)}
+											uses={fieldUses(file.id, 'content')}
+											fieldId={fieldId(file.id, 'content')}
+											bind:expanded={expandedFields[fieldId(file.id, 'content')]}
+											onToken={(inputId, _useId, trigger) =>
+												navigateTo(
+													{ kind: 'input', inputId },
+													trigger,
+													fieldId(file.id, 'content')
+												)}
+										/>
+									</div>
 								</section>{/each}{:else}<dl
 								class="mt-3 grid grid-cols-[5rem_minmax(0,1fr)] gap-1 text-sm"
 							>
@@ -220,7 +452,8 @@
 				<ul class="mt-2 space-y-2 text-sm">
 					{#each snapshot.document.inputs as input}<li
 							class="min-w-0 break-words"
-							id="input-{input.id}"
+							id={targetId({ kind: 'input', inputId: input.id })}
+							tabindex="-1"
 						>
 							<code class="break-all">{input.key}</code> · {input.type} · {input.required
 								? 'required'
@@ -235,9 +468,20 @@
 								</div>{/if}
 							{#if inputUses(input.id).length}<ul class="mt-1 list-disc pl-5">
 									{#each inputUses(input.id) as use}<li>
-											<a
-												class="text-primary break-all underline"
-												href="#context-{use.target.record_id}">{use.token}</a
+											<button
+												type="button"
+												id="reverse-{use.id}"
+												class="text-primary text-left break-all underline"
+												onclick={(event) =>
+													navigateTo(
+														{
+															kind: 'field',
+															recordId: use.target.record_id,
+															field: use.target.field
+														},
+														event.currentTarget,
+														targetId({ kind: 'input', inputId: input.id })
+													)}>{use.token}</button
 											>
 											in {use.target.field}
 										</li>{/each}
@@ -254,11 +498,47 @@
 								? schedule.recurrence.preset
 								: schedule.recurrence.cron} · {schedule.timezone}<br />
 							Workflow:
-							<a class="text-primary underline" href="#workflow-{schedule.workflow.workflow_id}"
-								>{workflowName(schedule.workflow.workflow_id)}</a
-							><br />
-							Title: <span class="break-all">{schedule.title_template}</span><br />Description:
-							<span class="break-all">{schedule.description_template}</span>
+							<button
+								type="button"
+								class="text-primary underline"
+								onclick={(event) =>
+									navigateTo(
+										{ kind: 'workflow', workflowId: schedule.workflow.workflow_id },
+										event.currentTarget
+									)}>{workflowName(schedule.workflow.workflow_id)}</button
+							>
+							<div class="mt-2">
+								<span class="text-xs font-medium">Title template</span>
+								<PublicTextSnippet
+									source={schedule.title_template}
+									format="text"
+									uses={fieldUses(schedule.id, 'title_template')}
+									fieldId={fieldId(schedule.id, 'title_template')}
+									bind:expanded={expandedFields[fieldId(schedule.id, 'title_template')]}
+									onToken={(inputId, _useId, trigger) =>
+										navigateTo(
+											{ kind: 'input', inputId },
+											trigger,
+											fieldId(schedule.id, 'title_template')
+										)}
+								/>
+							</div>
+							<div class="mt-2">
+								<span class="text-xs font-medium">Description template</span>
+								<PublicTextSnippet
+									source={schedule.description_template}
+									format="text"
+									uses={fieldUses(schedule.id, 'description_template')}
+									fieldId={fieldId(schedule.id, 'description_template')}
+									bind:expanded={expandedFields[fieldId(schedule.id, 'description_template')]}
+									onToken={(inputId, _useId, trigger) =>
+										navigateTo(
+											{ kind: 'input', inputId },
+											trigger,
+											fieldId(schedule.id, 'description_template')
+										)}
+								/>
+							</div>
 						</li>{/each}
 					{#if !snapshot.document.schedules.length}<li class="text-muted-foreground">
 							No schedules selected.
@@ -267,8 +547,12 @@
 				<h3 class="mt-4 text-sm font-semibold">Routing preferences</h3>
 				<ul class="mt-1 space-y-1 text-sm">
 					{#each snapshot.document.routing as route}<li class="break-words">
-							<a class="text-primary underline" href="#state-{route.scope.state_id}"
-								>{stateName(route.scope.state_id)}</a
+							<button
+								type="button"
+								class="text-primary underline"
+								onclick={(event) =>
+									navigateTo({ kind: 'state', stateId: route.scope.state_id }, event.currentTarget)}
+								>{stateName(route.scope.state_id)}</button
 							>
 							· {route.tier}{route.scope.project ? ' · project-scoped' : ''}
 						</li>{/each}
@@ -278,11 +562,31 @@
 				</ul>
 			</article>
 		</section>
-		<footer class="text-muted-foreground border-t py-6 text-xs break-all">
-			Document {snapshot.document_digest} · bytes {snapshot.bytes_sha256}
+		<footer
+			class="text-muted-foreground flex flex-wrap items-center justify-between gap-3 border-t py-6 text-xs break-all"
+		>
+			<div class="min-w-0">
+				<a class="underline" href="/public-workflow-policy" rel="noreferrer">Content rules</a
+				><TechnicalDetails
+					items={[
+						{ label: 'Document fingerprint', value: snapshot.document_digest },
+						{ label: 'File fingerprint', value: snapshot.bytes_sha256 }
+					]}
+				/>
+			</div>
+			<button
+				class="focus-visible:ring-ring/50 min-h-10 rounded-md border px-3 text-sm outline-none focus-visible:ring-[3px]"
+				type="button"
+				onclick={(event) => reportDialog?.show(event.currentTarget)}>Report this workflow</button
+			>
 		</footer>
 	</main>
-	{#if !data.user}<MarketingSignIn bind:this={signIn} returnTo={installReturn} {linkError} />{/if}
+	{#if !data.user}<MarketingSignIn
+			bind:this={signIn}
+			returnTo={installReturn}
+			errorReturnTo={signInErrorReturn}
+			{linkError}
+		/>{/if}
 {:else}
 	<main class="mx-auto flex min-h-screen max-w-xl items-center px-6">
 		<div>
@@ -291,3 +595,7 @@
 		</div>
 	</main>
 {/if}
+{#if visible}<PublicationReportDialog
+		bind:this={reportDialog}
+		snapshotId={snapshot.snapshot_id}
+	/>{/if}

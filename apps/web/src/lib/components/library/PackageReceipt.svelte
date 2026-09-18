@@ -13,16 +13,18 @@
 			data-package-receipt-title
 		>
 			<IconCircleCheck class="shrink-0" size={20} stroke={1.5} aria-hidden="true" />
-			Package installed
+			Installed
 		</h2>
 		<p class="text-muted-foreground mt-1 text-sm">
 			Created as an independent copy. Selected schedules are paused with no runs or issues created.
 			No project default changed, and installation did not launch work.
 		</p>
 	</div>
-	<p class="text-xs">
-		<b>Receipt</b> <code>{receipt.id}</code> · {new Date(receipt.committed_at).toLocaleString()}
-	</p>
+	<p class="text-xs">Installed {new Date(receipt.committed_at).toLocaleString()}</p>
+	<details class="text-muted-foreground rounded-md border p-3 text-xs">
+		<summary class="min-h-10 cursor-pointer font-medium">Technical details</summary>
+		<p class="pt-2"><b>Receipt</b> <code>{receipt.id}</code></p>
+	</details>
 	<ul class="divide-y rounded-lg border text-sm">
 		{#each receipt.objects as object (object.kind + object.id)}
 			<li class="flex min-h-10 flex-wrap items-center justify-between gap-2 p-3">

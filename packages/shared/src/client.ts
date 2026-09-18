@@ -663,9 +663,9 @@ export function createApiClient(options: ApiClientOptions) {
 			get<import('./publications.js').PublicationOwnerResult>(
 				`/api/v1/publications/${encodeURIComponent(candidateId)}/result`
 			),
-		listPublications: (workflow?: string) =>
+		listPublications: (workflow?: string, page?: PageParams) =>
 			get<ListResponse<import('./publications.js').PublicationOwnerItem>>(
-				`/api/v1/publications${query({ workflow })}`
+				`/api/v1/publications${query({ workflow, ...page })}`
 			),
 		withdrawPublication: (snapshotId: string) =>
 			request<import('./publications.js').PublicationOwnerResult>(

@@ -1,32 +1,22 @@
 import type { Runner, RunnerTokenResponse } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, RUNROW } from './constants.mjs';
-import {
-	apiClient,
-	body,
-	clickToOpen,
-	DESKTOP,
-	gotoHydrated,
-	PHONE,
-	readSettled,
-	runId,
-	signIn
-} from './helpers';
+import { apiClient, body, clickToOpen, DESKTOP, gotoHydrated, PHONE, readSettled } from './helpers';
 
 const PHONE_NARROW = { width: 320, height: 844 };
 const TABLET_EDGE = { width: 640, height: 900 };
-const runnerName = `runner-edit-layout-${runId}`;
-const customRunnerName = `runner-edit-fixed-${runId}`;
+// These names are layout fixtures: keeping their exact compact width is the
+// behavior under test, and teardown releases them before another run.
+const runnerName = 'runner-edit-layout';
+const customRunnerName = 'runner-edit-fixed';
 
 let runner: Runner;
 let customRunner: Runner;
 
 test.describe.serial('runner edit responsive layout', () => {
-	test.beforeAll(async ({ playwright }) => {
-		const request = await playwright.request.newContext({
-			baseURL: test.info().project.use.baseURL
-		});
-		const api = apiClient(request, ALICE.apiKey);
+	test.beforeAll(async ({ apiFor, workerRequest }) => {
+		const api = apiFor(ALICE);
 		const registered = await body<RunnerTokenResponse>(
 			await api.post('/api/v1/runners/register', { name: runnerName, harness: 'codex' })
 		);
@@ -35,17 +25,17 @@ test.describe.serial('runner edit responsive layout', () => {
 			model,
 			efforts: ['low', 'high', 'ultra']
 		}));
-		const poll = await request.post(`/api/v1/runners/${runner.id}/poll`, {
+		const poll = await workerRequest.post(`/api/v1/runners/${runner.id}/poll`, {
 			headers: { authorization: `Bearer ${registered.runner_token}` },
 			data: {
-				instance_id: `runner-edit-layout-${runId}`,
+				instance_id: `runner-edit-layout-${runner.id}`,
 				owned_runs: [],
 				effort_capabilities: {
 					version: 1,
 					daemon_version: 'e2e',
 					harness: 'codex',
 					harness_version: 'e2e',
-					catalog_digest: `runner-edit-layout-${runId}`,
+					catalog_digest: `runner-edit-layout-${runner.id}`,
 					models
 				}
 			}
@@ -73,23 +63,16 @@ test.describe.serial('runner edit responsive layout', () => {
 				})
 			)
 		).runner;
-		await request.dispose();
 	});
 
-	test.afterAll(async ({ playwright }) => {
-		const request = await playwright.request.newContext({
-			baseURL: test.info().project.use.baseURL
-		});
-		const api = apiClient(request, ALICE.apiKey);
+	test.afterAll(async ({ apiFor }) => {
+		const api = apiFor(ALICE);
 		for (const created of [runner, customRunner]) {
 			if (created) await api.delete(`/api/v1/runners/${created.id}`);
 		}
-		await request.dispose();
 	});
 
-	test.beforeEach(async ({ context }) => {
-		await signIn(context, ALICE.sessionToken);
-	});
+	test.use({ signedIn: ALICE });
 
 	test('uses a clear tier hierarchy while retaining responsive control rows', async ({
 		page

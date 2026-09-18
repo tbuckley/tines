@@ -4,9 +4,10 @@
  * interrupted failure warns instead of failing, while an unknown outcome
  * stays muted instead of being broadened into a warning or success.
  */
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ACTIVITY_RUN_EVENTS, ALICE } from './constants.mjs';
-import { resetFocus, signIn } from './helpers';
+import { resetFocus } from './helpers';
 
 type ExpectedPresentation = {
 	runner: string;
@@ -43,8 +44,8 @@ async function expectPresentations(page: Page): Promise<void> {
 }
 
 test.describe('activity run-event presentation', () => {
-	test.beforeEach(async ({ context, request }) => {
-		await signIn(context, ALICE.sessionToken);
+	test.use({ signedIn: ALICE });
+	test.beforeEach(async ({ request }) => {
 		await resetFocus(request);
 	});
 

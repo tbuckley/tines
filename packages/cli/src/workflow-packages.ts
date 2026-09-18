@@ -457,7 +457,7 @@ export async function recoverOrInstall(
 			confirmation: { plan_digest: string };
 		}): Promise<WorkflowPackageReceipt>;
 	},
-	raw: string,
+	rawOrLoader: string | (() => Promise<string>),
 	plan: PrepareWorkflowPackageResponse
 ): Promise<WorkflowPackageReceipt> {
 	const checked = (receipt: WorkflowPackageReceipt) => {
@@ -474,6 +474,7 @@ export async function recoverOrInstall(
 	} catch (error) {
 		if (!(error instanceof ApiError) || error.status !== 404) throw error;
 	}
+	const raw = typeof rawOrLoader === 'function' ? await rawOrLoader() : rawOrLoader;
 	const request = {
 		document_json: raw,
 		plan_token: plan.plan_token,

@@ -208,11 +208,11 @@
 	</div>
 	<div class="flex gap-2">
 		{#if !data.workflow.is_system}
-			<Button variant="outline" href="/workflows/{data.workflow.id}/export#publish">
+			<Button variant="outline" href="/workflows/{data.workflow.id}/export">
 				<IconWorldUpload size={16} /> Publish workflow
 			</Button>
 		{/if}
-		<Button variant="outline" href="/workflows/{data.workflow.id}/export">
+		<Button variant="outline" href="/workflows/{data.workflow.id}/export?download=1">
 			<IconDownload size={16} /> Export package
 		</Button>
 		{#if data.workflow.is_system}

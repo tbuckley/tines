@@ -1,13 +1,14 @@
 import type { IssueDetail, ListResponse, Project, WorkflowResponse } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, runId, signIn } from './helpers';
+import { apiClient, body, clickToOpen, gotoHydrated, resetFocus } from './helpers';
 
 test.describe.serial('issue workflow filter', () => {
-	const projectName = `workflow-filter-${runId}`;
-	const workflowName = `Engineering filter ${runId}`;
-	const otherWorkflowName = `Support filter ${runId}`;
-	const emptyWorkflowName = `Empty filter ${runId}`;
+	let projectName: string;
+	let workflowName: string;
+	let otherWorkflowName: string;
+	let emptyWorkflowName: string;
 	let project: Project;
 	let workflow: WorkflowResponse;
 	let otherWorkflow: WorkflowResponse;
@@ -16,11 +17,12 @@ test.describe.serial('issue workflow filter', () => {
 	let reviewIssue: IssueDetail;
 	let otherIssue: IssueDetail;
 
-	test.beforeAll(async ({ playwright }) => {
-		const request = await playwright.request.newContext({
-			baseURL: test.info().project.use.baseURL
-		});
-		const api = apiClient(request, ALICE.apiKey);
+	test.beforeAll(async ({ apiFor, uniqueName }) => {
+		projectName = uniqueName('workflow-filter', { maxLength: 32 });
+		workflowName = uniqueName('Engineering filter', { maxLength: 32 });
+		otherWorkflowName = uniqueName('Support filter', { maxLength: 32 });
+		emptyWorkflowName = uniqueName('Empty filter', { maxLength: 32 });
+		const api = apiFor(ALICE);
 		project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 		workflow = await body<WorkflowResponse>(
 			await api.post('/api/v1/workflows', {
@@ -64,15 +66,14 @@ test.describe.serial('issue workflow filter', () => {
 					workflow_id: workflowId
 				})
 			);
-		openIssue = await create(`Workflow build ${runId}`, workflow.id);
-		reviewIssue = await create(`Workflow review ${runId}`, workflow.id);
+		openIssue = await create(uniqueName('Workflow build', { maxLength: 32 }), workflow.id);
+		reviewIssue = await create(uniqueName('Workflow review', { maxLength: 32 }), workflow.id);
 		await body(await api.post(`/api/v1/issues/${reviewIssue.id}/transition`, { action: 'review' }));
-		otherIssue = await create(`Workflow triage ${runId}`, otherWorkflow.id);
-		await request.dispose();
+		otherIssue = await create(uniqueName('Workflow triage', { maxLength: 32 }), otherWorkflow.id);
 	});
 
-	test.beforeEach(async ({ context, request }) => {
-		await signIn(context, ALICE.sessionToken);
+	test.use({ signedIn: ALICE });
+	test.beforeEach(async ({ request }) => {
 		await resetFocus(request);
 	});
 
@@ -183,12 +184,15 @@ test.describe.serial('issue workflow filter', () => {
 		await page.setViewportSize({ width: 320, height: 640 });
 		await gotoHydrated(page, `/projects/${project.id}?workflow=${workflow.id}`);
 		await openFilters(page);
-		await expect(page.getByLabel('Filter by workflow')).toBeInViewport();
-		await expect(page.getByLabel('Filter by state')).toBeInViewport();
-		expect(
-			await page.evaluate(
-				() => document.documentElement.scrollWidth <= document.documentElement.clientWidth
-			)
-		).toBe(true);
+		for (const control of [
+			page.getByLabel('Filter by workflow'),
+			page.getByLabel('Filter by state')
+		]) {
+			await expect(control).toBeInViewport({ ratio: 1 });
+			const box = await control.boundingBox();
+			expect(box).not.toBeNull();
+			expect(box!.x).toBeGreaterThanOrEqual(0);
+			expect(box!.x + box!.width).toBeLessThanOrEqual(320);
+		}
 	});
 });

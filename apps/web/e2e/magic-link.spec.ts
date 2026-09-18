@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { gotoHydrated, runId } from './helpers';
 
 // The landing-page magic-link form, end to end through the better-auth
