@@ -95,6 +95,23 @@ function seedSteeredIssue(t: TestDb): string {
 		at: NOW + 2 * HOUR + 1,
 		id: 'cmt_human'
 	});
+	const activeRun = addRun(t, {
+		id: 'arun_active_updates',
+		issueId,
+		runnerId,
+		status: 'running',
+		createdAt: NOW + 3 * HOUR
+	});
+	const activeKey = addRunKey(t, activeRun);
+	for (let i = 0; i < 4; i++) {
+		addComment(t, {
+			issueId,
+			body: i === 0 ? 'OMITTED ROUTE SENTINEL' : `active update ${i}`,
+			apiKeyId: activeKey,
+			at: NOW + 3 * HOUR + i,
+			id: `cmt_active_${i}`
+		});
+	}
 	return issueId;
 }
 
@@ -145,20 +162,26 @@ describe('the issue read routes', () => {
 		expect(body.since_last_run?.transition?.from_state.name).toBe('Human Review');
 	});
 
-	it('opens the launch prompt with the human steer (AC 2)', async () => {
-		const t = createTestDb();
-		const issueId = seedSteeredIssue(t);
-		const res = await getPrompt(
-			routeEvent(t, `/api/v1/issues/${issueId}/prompt`, {
-				id: issueId
-			}) as Parameters<typeof getPrompt>[0]
-		);
-		const body = (await res.json()) as LaunchPromptResponse;
-		expect(body.text).toContain('### Since the last run');
-		expect(body.text).toContain('Moved from **Human Review** → Implementation');
-		expect(body.text).toContain('CI is red on the e2e job.');
-		expect(body.text.indexOf('### Since the last run')).toBeLessThan(
-			body.text.indexOf('### Comments')
-		);
-	});
+	it.each(['', '?resume=1'])(
+		'opens the %s launch prompt with steer and selected comments',
+		async (query) => {
+			const t = createTestDb();
+			const issueId = seedSteeredIssue(t);
+			const res = await getPrompt(
+				routeEvent(t, `/api/v1/issues/${issueId}/prompt${query}`, {
+					id: issueId
+				}) as Parameters<typeof getPrompt>[0]
+			);
+			const body = (await res.json()) as LaunchPromptResponse;
+			expect(body.text).toContain('### Since the last run');
+			expect(body.text).toContain('Moved from **Human Review** → Implementation');
+			expect(body.text).toContain('CI is red on the e2e job.');
+			expect(body.text.indexOf('### Since the last run')).toBeLessThan(
+				body.text.indexOf('### Comments')
+			);
+			expect(body.text).toContain('Implementation — landed it.');
+			expect(body.text).toContain('Older agent comments: cmt_active_0.');
+			expect(body.text).not.toContain('OMITTED ROUTE SENTINEL');
+		}
+	);
 });

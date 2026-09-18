@@ -39,6 +39,16 @@ function event(
 const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'issue.created': { title: 'A title' },
 	'issue.updated': { changed: ['title', 'description'] },
+	'issue.transferred': {
+		source_project_id: 'prj_a',
+		source_project_name: 'Alpha',
+		destination_project_id: 'prj_b',
+		destination_project_name: 'Beta',
+		old_number: 4,
+		new_number: 9,
+		old_ref: 'Alpha/4',
+		new_ref: 'Beta/9'
+	},
 	'issue.transitioned': {
 		action: 'Start work',
 		from_state_name: 'Backlog',
@@ -93,6 +103,7 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 		context_id: 'ctx_1',
 		kind: 'prompt',
 		name: 'house-style',
+		version: 2,
 		scope: { label: 'project Tines' }
 	},
 	'context.updated': {
@@ -109,6 +120,7 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	},
 	'runner.registered': { name: 'macbook-claude' },
 	'runner.updated': { name: 'macbook-claude' },
+	'runner.daemon_replaced': { runner_id: 'rnr_1', name: 'macbook-claude' },
 	'runner.removed': { name: 'macbook-claude' },
 	'runner.errored': {
 		runner_name: 'macbook-claude',

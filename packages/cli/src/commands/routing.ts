@@ -22,6 +22,31 @@ interface RoutingScopeOpts {
 	label?: string;
 }
 
+interface RoutingSetOpts extends RoutingScopeOpts {
+	effort?: string[];
+}
+
+export function applyTargetEfforts<T extends { effort?: string }>(
+	targets: T[],
+	specs: string[]
+): T[] {
+	const seen = new Set<number>();
+	for (const spec of specs) {
+		const match = /^(\d+)=(.+)$/.exec(spec);
+		if (!match) die(`invalid --effort ${JSON.stringify(spec)}; expected <target-number=value>`);
+		const index = Number(match[1]);
+		const value = match[2]!;
+		if (!Number.isSafeInteger(index) || index < 1 || index > targets.length)
+			die(`--effort target ${index} is out of range (1-${targets.length})`);
+		if (seen.has(index)) die(`--effort target ${index} is specified more than once`);
+		if (!/^[a-z][a-z0-9_-]{0,31}$/.test(value))
+			die(`invalid effort ${JSON.stringify(value)}; use a lowercase token of 1-32 characters`);
+		seen.add(index);
+		targets[index - 1] = { ...targets[index - 1]!, effort: value };
+	}
+	return targets;
+}
+
 /**
  * Resolves --project/--state/--label to rule scope ids (absent = global
  * dimension). A label outranks both of the others: `label security` beats
@@ -76,8 +101,15 @@ export function register(program: Command): void {
 			.option('-p, --project <name>', 'scope: project name or id')
 			.option('-s, --state <workflow/state>', 'scope: workflow-qualified state')
 			.option('-l, --label <name>', 'scope: issue label name or id')
-	).action(async (targetSpecs: string[], opts: CommonOpts & RoutingScopeOpts) => {
-		const parsed = targetSpecs.map(parseTargetSpec);
+			.option(
+				'--effort <target-number=value>',
+				'set routed effort for a 1-based target (repeatable)',
+				(value, values: string[]) => [...values, value],
+				[]
+			)
+	).action(async (targetSpecs: string[], opts: CommonOpts & RoutingSetOpts) => {
+		const parsed: Array<ReturnType<typeof parseTargetSpec> & { effort?: string }> =
+			targetSpecs.map(parseTargetSpec);
 		const wildcard = parsed.filter((target) => target.name === INHERIT_RUNNER_ID);
 		if (wildcard.length > 0) {
 			if (parsed.length !== 1) die("'*:tier' cannot be mixed with runner targets");
@@ -87,15 +119,24 @@ export function register(program: Command): void {
 				die('a tier-only rule requires --project, --state, or --label');
 			}
 		}
+		applyTargetEfforts(parsed, opts.effort ?? []);
 		const api = client(opts);
 		const scope = await resolveRoutingScope(api, opts);
-		const targets = [];
-		for (const { name, tier } of parsed) {
+		const targets: Array<{
+			runner_id: string;
+			tier?: 'smartest' | 'balanced' | 'cheapest';
+			effort?: string;
+		}> = [];
+		for (const { name, tier, effort } of parsed) {
 			if (name === INHERIT_RUNNER_ID) {
-				targets.push({ runner_id: INHERIT_RUNNER_ID, tier: tier! });
+				targets.push({ runner_id: INHERIT_RUNNER_ID, tier: tier!, ...(effort ? { effort } : {}) });
 			} else {
 				const runner = await resolveRunner(api, name);
-				targets.push(tier ? { runner_id: runner.id, tier } : { runner_id: runner.id });
+				targets.push({
+					runner_id: runner.id,
+					...(tier ? { tier } : {}),
+					...(effort ? { effort } : {})
+				});
 			}
 		}
 		// One rule per exact scope: replace the existing rule's targets, else create.

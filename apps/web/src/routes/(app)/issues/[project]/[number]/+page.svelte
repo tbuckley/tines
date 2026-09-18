@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type {
+		IssueTransferResult,
 		AllowedTransition,
 		Comment,
 		ContextItem,
@@ -20,7 +21,8 @@
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
 	import { tick, untrack } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
-	import { invalidate } from '$app/navigation';
+	import { afterNavigate, goto, invalidate, invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
 	import FirstRunChecklist from '$lib/components/FirstRunChecklist.svelte';
@@ -36,6 +38,8 @@
 	import LaunchPromptDialog from '$lib/components/LaunchPromptDialog.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import IssueTransferModal from '$lib/components/IssueTransferModal.svelte';
+	import IssueUsage from '$lib/components/IssueUsage.svelte';
 	import MoveDirectlyForm from '$lib/components/MoveDirectlyForm.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
 	import PhoneFold from '$lib/components/PhoneFold.svelte';
@@ -53,10 +57,38 @@
 	import { addRunnerToGlobalRule } from '$lib/routing';
 	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
-	import { navMemory } from '$lib/nav-memory.svelte';
+	import { issueBackTarget, navMemory } from '$lib/nav-memory.svelte';
+	import { focusHint } from '$lib/focus.svelte';
+	import { resolveClientFocus } from '$lib/focus';
 	import { planTransitions } from '$lib/transitions';
 
 	let { data } = $props();
+
+	// Data requests cannot server-redirect without losing a fragment that only
+	// the browser knows. Replace the stale alias in place while retaining
+	// meaningful query/hash targets and keyboard focus.
+	$effect(() => {
+		if (page.url.pathname === data.canonicalPath) return;
+		void goto(`${data.canonicalPath}${page.url.search}${page.url.hash}`, {
+			replaceState: true,
+			keepFocus: true,
+			noScroll: true
+		});
+	});
+
+	// The project move lives on the page, not in the dialog: closing the dialog
+	// must never be able to swallow a move the server already committed.
+	let transferOpen = $state(false);
+	let transferNotice = $state<string | null>(null);
+	async function transferCompleted(result: IssueTransferResult) {
+		if (result.status === 'transferred') {
+			transferNotice = `Moved ${result.old_ref.ref} to ${result.new_ref.ref}`;
+			// Stay on the issue at its new canonical address; lists and counts on
+			// both projects moved too, so the whole tree is invalidated once.
+			await goto(`${result.issue_path}${page.url.hash}`, { replaceState: true, keepFocus: true });
+			await invalidateAll();
+		}
+	}
 
 	/** An archived project's issues read normally and write nowhere. */
 	const archived = $derived(data.issue.project_archived_at !== null);
@@ -65,7 +97,30 @@
 	// Back to the list you came from, as you left it — the issues list with its
 	// filters, or the project page. A deep link or a fresh tab has no memory and
 	// falls back to the plain issues list.
-	const backList = $derived(navMemory.lastList ?? { href: '/issues', label: 'Issues' });
+	const effectiveFocus = $derived(resolveClientFocus(focusHint.project, data.focus, data.projects));
+	const backList = $derived(
+		issueBackTarget(navMemory.lastList, effectiveFocus?.id ?? null, navMemory.issuesHref)
+	);
+	const issueProject = $derived(
+		data.projects.find((project) => project.id === data.issue.project_id)
+	);
+	const canOfferFocus = $derived(!archived && effectiveFocus?.id !== data.issue.project_id);
+	let focusing = $state(false);
+	let focusError = $state<string | null>(null);
+	async function focusIssueProject() {
+		if (!issueProject || focusing) return;
+		focusing = true;
+		focusError = null;
+		try {
+			await api.updatePreferences({ focused_project_id: issueProject.id });
+			focusHint.clear();
+			await invalidate('app:preferences');
+		} catch (err) {
+			focusError = err instanceof ApiError ? err.message : 'Failed to focus this project.';
+		} finally {
+			focusing = false;
+		}
+	}
 
 	// Mutations and the live poll refresh THIS page's load only (it declares
 	// depends('app:issue')), not the whole load graph: a full invalidate would
@@ -132,6 +187,7 @@
 			]),
 		issueKey
 	);
+	const usagePanel = streamed(() => data.deferred.usage, issueKey);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -214,7 +270,10 @@
 		const panel = agentActivityPanel.current;
 		if (panel.status !== 'loaded') return;
 		const [, , runners, , rules] = panel.value;
-		await addRunnerToGlobalRule(rules, runners[0]);
+		const updated = await addRunnerToGlobalRule(rules, runners[0]);
+		// Routing can dispatch immediately now. Capture the completed rule before
+		// refresh observes the first run and freezes the landing snapshot.
+		checklistRules = [...rules.filter((rule) => rule.id !== updated.id), updated];
 		await refresh();
 	}
 
@@ -247,6 +306,12 @@
 	// until asked for, unrendered — a long thread costs nothing to open.
 	const SHOWN_COMMENTS = 2;
 	let showAllComments = $state(false);
+	afterNavigate(async ({ to }) => {
+		if (!to?.url.hash.startsWith('#comment-')) return;
+		showAllComments = true;
+		await tick();
+		document.getElementById(to.url.hash.slice(1))?.scrollIntoView({ block: 'center' });
+	});
 	const earlierCount = $derived(
 		showAllComments ? 0 : Math.max(0, comments.length - SHOWN_COMMENTS)
 	);
@@ -694,16 +759,45 @@
 		<IconChevronLeft size={16} class="shrink-0" />
 		<span class="truncate">{backList.label}</span>
 	</a>
+	{#if transferNotice}
+		<p class="text-sm" role="status" data-testid="transfer-notice">
+			{transferNotice}
+			<button
+				class="text-muted-foreground hover:text-foreground ml-2 underline underline-offset-2"
+				onclick={() => (transferNotice = null)}>Dismiss</button
+			>
+		</p>
+	{/if}
 	<div class="flex flex-wrap items-start justify-between gap-4">
 		<div class="min-w-0">
 			<p class="text-muted-foreground text-sm">
 				<a href="/projects/{data.issue.project_id}" class="hover:underline"
 					>{data.issue.project_name}</a
 				>
+				{#if canOfferFocus}
+					<button
+						class="hover:text-foreground ml-2 underline underline-offset-2"
+						onclick={focusIssueProject}
+						disabled={focusing}
+						title="Focus {data.issue.project_name}"
+					>
+						{focusing ? 'Focusing…' : `Focus ${data.issue.project_name}`}
+					</button>
+				{/if}
+				<button
+					class="hover:text-foreground ml-2 underline underline-offset-2"
+					onclick={() => (transferOpen = true)}
+					disabled={archived}
+					title={archived ? PROJECT_ARCHIVED_TOOLTIP : 'Move this issue to another project'}
+					data-testid="move-to-project"
+				>
+					Move to project…
+				</button>
 				<span class="font-mono">#{data.issue.number}</span>
 				{#if data.issue.scheduled_task_id}
 					<a
-						href="/projects/{data.issue.project_id}?schedule={data.issue.scheduled_task_id}"
+						href="/projects/{data.issue.scheduled_task_project_id}?schedule={data.issue
+							.scheduled_task_id}"
 						class="bg-muted text-muted-foreground hover:text-foreground ml-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-middle text-xs"
 						title="Created by schedule “{data.issue.scheduled_task_name}”"
 					>
@@ -712,6 +806,7 @@
 					</a>
 				{/if}
 			</p>
+			{#if focusError}<p class="text-destructive mt-1 text-xs" role="alert">{focusError}</p>{/if}
 			{#if editingTitle}
 				<form onsubmit={saveTitle} class="mt-1 flex items-center gap-2">
 					<Input bind:value={titleDraft} class="w-96 max-w-full text-lg font-semibold" autofocus />
@@ -889,7 +984,6 @@
 			disabledReason={reason}
 			onroute={routeToSoleRunner}
 			onenable={enableAutomation}
-			onadddescription={startDescription}
 			onerror={showError}
 		/>
 	{/if}
@@ -1006,6 +1100,7 @@
 				{/if}
 				{#each shownComments as comment (comment.id)}
 					<article
+						id={`comment-${comment.id}`}
 						class="rounded-lg border {comment.pending ? 'opacity-60' : ''}"
 						transition:slide={{ duration: dur() }}
 					>
@@ -1190,6 +1285,13 @@
 					onerror={showError}
 					checklist={checklistInputs ? firstRunChecklist : undefined}
 				/>
+				{#if usagePanel.current.status === 'pending'}
+					<Skeleton class="mt-4 h-24 w-full" />
+				{:else if usagePanel.current.status === 'loaded'}
+					<IssueUsage initial={usagePanel.current.value} />
+				{:else}
+					<p class="text-destructive mt-3 text-sm">Lifetime usage unavailable.</p>
+				{/if}
 			{:else}
 				{@render loadFailed('agent activity')}
 			{/if}
@@ -1283,6 +1385,14 @@
 	onmove={requestMove}
 	onopen={() => (stateSheetOpen = true)}
 />
+<IssueTransferModal
+	bind:open={transferOpen}
+	issueId={data.issue.id}
+	currentProjectId={data.issue.project_id}
+	projects={data.projects}
+	oncompleted={transferCompleted}
+/>
+
 <Modal bind:open={stateSheetOpen} title="State">
 	{@render statePanel()}
 </Modal>

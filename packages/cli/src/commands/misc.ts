@@ -9,6 +9,7 @@ import {
 	printJson,
 	printList,
 	resolveIssue,
+	resolveStateFlag,
 	table,
 	withCommon,
 	withList,
@@ -39,23 +40,41 @@ export function registerEvents(program: Command): void {
 			.option('-i, --issue <ref>', 'filter to one issue (<project>/<number>)')
 			.option('-p, --project <name>', 'filter by project name or id')
 			.option('-t, --type <type>', 'filter by event type (e.g. issue.transitioned)')
-	).action(async (opts: ListOpts & { issue?: string; project?: string; type?: string }) => {
-		const api = client(opts);
-		const issueId = opts.issue ? (await resolveIssue(api, opts.issue)).id : undefined;
-		const res = await fetchList(opts, (page) =>
-			api.listEvents({
-				issue: issueId,
-				project: opts.project,
-				type: opts.type,
-				...page
-			})
-		);
-		printList(res, opts, (items) => {
-			if (items.length === 0) return console.log('no events');
-			table([
-				['WHEN', 'ACTOR', 'EVENT'],
-				...items.map((ev) => [timestamp(ev.created_at), displayActor(ev), eventSummary(ev)])
-			]);
-		});
-	});
+			.option('--since <time>', 'inclusive lower bound (ISO 8601 or epoch ms)')
+			.option('--until <time>', 'exclusive upper bound (ISO 8601 or epoch ms)')
+			.option('--state <workflow/state>', 'events referencing a workflow state')
+	).action(
+		async (
+			opts: ListOpts & {
+				issue?: string;
+				project?: string;
+				type?: string;
+				since?: string;
+				until?: string;
+				state?: string;
+			}
+		) => {
+			const api = client(opts);
+			const issueId = opts.issue ? (await resolveIssue(api, opts.issue)).id : undefined;
+			const stateId = opts.state ? (await resolveStateFlag(api, opts.state)).state.id : undefined;
+			const res = await fetchList(opts, (page) =>
+				api.listEvents({
+					issue: issueId,
+					project: opts.project,
+					type: opts.type,
+					since: opts.since,
+					until: opts.until,
+					state: stateId,
+					...page
+				})
+			);
+			printList(res, opts, (items) => {
+				if (items.length === 0) return console.log('no events');
+				table([
+					['WHEN', 'ACTOR', 'EVENT'],
+					...items.map((ev) => [timestamp(ev.created_at), displayActor(ev), eventSummary(ev)])
+				]);
+			});
+		}
+	);
 }

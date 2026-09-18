@@ -9,13 +9,20 @@ import type { LayoutServerLoad } from './$types';
  * The app chrome's own data: the project list and the user's project focus
  * (Tines/259), loaded once here so the pages below do not each re-list
  * projects. Pages read `data.projects` / `data.archivedProjects` / `data.focus`
- * straight out of the merged `data` — deliberately *not* through `parent()`,
- * which would serialise their own queries behind this load.
+ * straight out of the merged `data`. Most avoid `parent()` so their own
+ * queries stay parallel; children that need the layout result inherit its
+ * preference dependency through that call.
  */
-export const load: LayoutServerLoad = async ({ locals, platform, depends }) => {
-	if (!locals.user) redirect(302, '/');
-	// The switcher's PATCH invalidates just this, so choosing a project does not
-	// have to refetch every page's data.
+export const load: LayoutServerLoad = async ({ locals, platform, depends, url }) => {
+	if (!locals.user) {
+		const publication =
+			url.pathname === '/workflows/import' ? url.searchParams.get('publication') : null;
+		if (publication && url.searchParams.size === 1 && /^[A-Za-z0-9_-]{20,100}$/.test(publication))
+			redirect(302, `/p/${encodeURIComponent(publication)}/install`);
+		redirect(302, '/');
+	}
+	// Focus-aware loads share this key, so one targeted invalidation refreshes
+	// the chrome, direct dependants, and children that consume parent().
 	depends('app:preferences');
 
 	const db = getDb(platform!.env);

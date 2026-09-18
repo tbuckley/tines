@@ -2,7 +2,7 @@
  * Before its first run, an account's issue card shows the first-run checklist
  * rather than the dispatch verdict and its checks (Tines/253) — so the remedy
  * that used to hang off a failing check is now the checklist item's own
- * control. Runs as BOB, whose account is armed with nothing: no runner, no
+ * control. Runs as a dedicated account with nothing: no runner, no
  * routing rule, automation never enabled, and no run ever.
  *
  * The steady-state case — an account past its first run, whose card is the
@@ -10,30 +10,28 @@
  * `first-run-checklist.spec.ts`, which is the one file that gives an account a
  * run.
  *
- * This file must sort AFTER `api.spec.ts`: it creates an issue for BOB, and
- * there is no DELETE for issues, so it cannot leave the account as empty as it
- * found it — `api.spec.ts`'s cross-user isolation case asserts BOB's standard
- * workflow still has `issue_count === 0`. The empty-state cases that need BOB
- * projectless live in `agents-first-run.spec.ts`, which sorts before it.
+ * Its fixture is not shared, so the spec remains valid in isolation and in any
+ * file order even though issues cannot be deleted.
  */
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import type { IssueDetail, Project } from '@tines/shared';
-import { BOB } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { EXPLAINER_REMEDIES as USER } from './constants.mjs';
+import { apiClient, body, gotoHydrated, signIn } from './helpers';
 
 test("an unarmed account's issue card offers the first-run checklist's controls", async ({
 	context,
 	page,
-	request
+	request,
+	uniqueName
 }) => {
-	const api = apiClient(request, BOB.apiKey);
-	const projectName = `remedies-${runId}`;
+	const api = apiClient(request, USER.apiKey);
+	const projectName = uniqueName('remedies');
 	const project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 	const issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Why is nothing running?' })
 	);
 
-	await signIn(context, BOB.sessionToken);
+	await signIn(context, USER.sessionToken);
 	await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${issue.number}`);
 
 	const checklist = page.getByRole('region', { name: 'First run checklist' });

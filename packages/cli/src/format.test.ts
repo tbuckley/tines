@@ -88,7 +88,26 @@ describe('runRow', () => {
 	});
 
 	it('renders dollars when the cost is known', () => {
-		expect(runRow({ ...base, usage: { cost_usd: 1.5 } } as never)).toContain('$1.50');
+		expect(runRow({ ...base, usage: { cost_usd: 1.5 } } as never)).toContain('$1.50 Recorded');
+		expect(runRow({ ...base, usage: { cost_usd: 0, cost_source: 'provider' } } as never)).toContain(
+			'$0 Reported'
+		);
+		expect(
+			runRow({ ...base, usage: { cost_usd: 0.001, cost_source: 'priced' } } as never)
+		).toContain('<$0.01 Estimated');
+	});
+
+	it('keeps unknown and explicit-zero token states honest', () => {
+		expect(runRow({ ...base, usage: { cost_source: 'none' } } as never)).toContain('Unreported');
+		expect(runRow({ ...base, usage: { input_tokens: 0, output_tokens: 0 } } as never)).toContain(
+			'Unpriced'
+		);
+	});
+
+	it('shows confirmed resume lineage in the status cell', () => {
+		expect(runRow({ ...base, resumed_from_run_id: 'arun_old' } as never)).toContain(
+			'completed · resumed run arun_old'
+		);
 	});
 });
 
@@ -234,13 +253,19 @@ describe('ruleTargetsLabel', () => {
 
 	it.each([
 		[[], '(no targets)'],
-		[[target('mac')], 'mac'],
-		[[target('mac', 'opus')], 'mac:opus'],
-		[[target('mac', null, 'paused')], 'mac (paused)'],
-		[[target('mac', 'opus', 'paused')], 'mac:opus (paused)'],
-		[[target('mac', 'opus'), target('linux')], 'mac:opus → linux']
+		[[target('mac')], '1. mac'],
+		[[target('mac', 'opus')], '1. mac:opus'],
+		[[target('mac', null, 'paused')], '1. mac (paused)'],
+		[[target('mac', 'opus', 'paused')], '1. mac:opus (paused)'],
+		[[target('mac', 'opus'), target('linux')], '1. mac:opus → 2. linux']
 	])('renders %#', (targets, expected) => {
 		expect(ruleTargetsLabel({ targets } as never)).toBe(expected);
+	});
+
+	it('renders routed effort without confusing it with the tier', () => {
+		expect(
+			ruleTargetsLabel({ targets: [{ ...target('mac', 'balanced'), effort: 'xhigh' }] } as never)
+		).toBe('1. mac:balanced effort=xhigh');
 	});
 });
 

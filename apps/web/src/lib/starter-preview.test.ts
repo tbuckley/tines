@@ -13,7 +13,8 @@ import {
 	missingRequired,
 	previewVars,
 	renderStarter,
-	serverVars
+	serverVars,
+	suggestProjectName
 } from './starter-preview';
 
 const STARTERS = listStarters();
@@ -25,6 +26,61 @@ const byId = (id: string): StarterSummary => {
 const blank = byId('blank');
 const code = byId('code');
 const plan = byId('plan');
+
+describe('suggestProjectName', () => {
+	it.each([
+		['https://github.com/example/customer-portal.git', 'customer-portal'],
+		[' https://git.example/team/customer-portal.git/?x=1#readme ', 'customer-portal'],
+		['http://git.example/team/customer-portal.git', 'customer-portal'],
+		['ssh://git@git.example:2222/team/customer-portal.git', 'customer-portal'],
+		['git://git.example/team/customer-portal.git', 'customer-portal'],
+		['ftp://git.example/team/customer-portal.git', 'customer-portal'],
+		['ftps://git.example/team/customer-portal.git', 'customer-portal'],
+		['git@git.example:team/customer-portal.git', 'customer-portal'],
+		['git.example:customer-portal.git', 'customer-portal'],
+		['https://git.example/team/repo.git', 'repo'],
+		['https://git.example/team/Customer_Portal.GIT', 'Customer_Portal.GIT'],
+		['https://git.example/team/customer%20portal.git', 'customer%20portal'],
+		[`https://git.example/team/${'x'.repeat(200)}.git`, 'x'.repeat(200)],
+		[`https://git.example/team/${'x'.repeat(201)}.git`, 'x'.repeat(200)],
+		[`https://git.example/team/${'x'.repeat(198)}😀.git`, `${'x'.repeat(198)}😀`],
+		[`https://git.example/team/${'x'.repeat(199)}😀.git`, 'x'.repeat(199)],
+		[`https://git.example/team/${'😀'.repeat(100)}x.git`, '😀'.repeat(100)]
+	])('suggests the repository basename from %s', (remote, expected) => {
+		expect(suggestProjectName(code, { repo_url: remote })).toBe(expected);
+	});
+
+	it.each([
+		'',
+		'   ',
+		'not-a-url',
+		'../customer-portal.git',
+		'/tmp/customer-portal.git',
+		'C:\\repos\\customer-portal.git',
+		'file:///tmp/customer-portal.git',
+		'https://git.example',
+		'https://git.example/',
+		'https://',
+		'git@host:',
+		'https://host/x/.',
+		'https://host/x/..',
+		'https://host/.git',
+		'https://host/x/repo\\name.git',
+		'https://host/x/repo=name.git',
+		'https://host/x/repo name.git',
+		'https://host/x/repo\nname.git',
+		'smtp://host/x/repo.git'
+	])('does not suggest from %j', (remote) => {
+		expect(suggestProjectName(code, { repo_url: remote })).toBeNull();
+	});
+
+	it('only suggests for a starter that declares a repository URL', () => {
+		const inputs = { repo_url: 'https://github.com/example/customer-portal.git' };
+		expect(suggestProjectName(blank, inputs)).toBeNull();
+		expect(suggestProjectName(plan, inputs)).toBeNull();
+		expect(suggestProjectName(undefined, inputs)).toBeNull();
+	});
+});
 
 describe('serverVars', () => {
 	it('derives repo_name from the URL, exactly as the server does', () => {
@@ -61,6 +117,12 @@ describe('previewVars', () => {
 });
 
 describe('renderStarter', () => {
+	it('caps a long first-issue title at the server limit and preserves newlines', () => {
+		const brief = `first line\n${'x'.repeat(1000)}`;
+		const preview = renderStarter(plan, { brief }, 'Plan');
+		expect(preview.creates.firstIssue?.title).toHaveLength(500);
+		expect(preview.creates.firstIssue?.title).toContain('\n');
+	});
 	it('prefills the conventions template with what the user typed', () => {
 		const preview = renderStarter(plan, { brief: 'Q1 hiring' }, 'Plan');
 		expect(preview.conventions).toContain('Q1 hiring');

@@ -37,7 +37,7 @@ function inputs(over: Partial<FirstRunInputs> = {}): FirstRunInputs {
 		hasAnyProject: false,
 		runners: [],
 		rules: [],
-		enabled: false,
+		enabled: true,
 		issue: null,
 		firstRun: null,
 		...over
@@ -51,43 +51,52 @@ function done(i: FirstRunInputs): FirstRunItemId[] {
 }
 
 describe('checklistItems', () => {
-	it('ticks nothing on an empty account and always renders seven items', () => {
+	it('defaults an empty account to ready and always renders six items', () => {
 		const items = checklistItems(inputs());
-		expect(items).toHaveLength(7);
-		expect(items.filter((i) => i.done)).toEqual([]);
+		expect(items).toHaveLength(6);
+		expect(items.filter((i) => i.done).map((i) => i.id)).toEqual(['enabled']);
 	});
 
 	it('ticks each item independently of the others (the list is order-agnostic)', () => {
-		expect(done(inputs({ hasAnyIssue: true }))).toEqual(['issue']);
+		expect(done(inputs({ hasAnyIssue: true }))).toEqual(['issue', 'enabled']);
 		expect(done(inputs({ enabled: true }))).toEqual(['enabled']);
 		// A runner alone ticks both the CLI item and the runner item.
-		expect(done(inputs({ runners: [runner()] }))).toEqual(['cli', 'runner']);
+		expect(done(inputs({ runners: [runner()] }))).toEqual(['cli', 'runner', 'enabled']);
 		// A rule ticks even though nothing before it is done, as long as its
 		// target exists.
 		expect(done(inputs({ runners: [runner()], rules: [rule(['rnr_1'])] }))).toEqual([
 			'cli',
 			'runner',
-			'rule'
+			'rule',
+			'enabled'
 		]);
 	});
 
 	it('treats the issue item as done on the issue surface whatever the account flag says', () => {
-		expect(done(inputs({ surface: 'issue', hasAnyIssue: false }))).toEqual(['issue']);
+		expect(done(inputs({ surface: 'issue', hasAnyIssue: false }))).toEqual(['issue', 'enabled']);
 	});
 
 	it('ticks the CLI item for a managed-only account, which never installs it', () => {
 		const managed = runner({ id: 'rnr_m', type: 'claude_managed', name: 'cloud' });
-		expect(done(inputs({ runners: [managed] }))).toEqual(['cli', 'runner']);
+		expect(done(inputs({ runners: [managed] }))).toEqual(['cli', 'runner', 'enabled']);
 	});
 
 	it('ticks both setup items for any registered runner, regardless of its current status', () => {
-		expect(done(inputs({ runners: [runner({ status: 'paused' })] }))).toEqual(['cli', 'runner']);
-		expect(done(inputs({ runners: [runner({ online: false })] }))).toEqual(['cli', 'runner']);
+		expect(done(inputs({ runners: [runner({ status: 'paused' })] }))).toEqual([
+			'cli',
+			'runner',
+			'enabled'
+		]);
+		expect(done(inputs({ runners: [runner({ online: false })] }))).toEqual([
+			'cli',
+			'runner',
+			'enabled'
+		]);
 	});
 
 	it('does not tick the rule item when the rule targets a runner that is gone', () => {
 		const i = inputs({ runners: [runner()], rules: [rule(['rnr_deleted'])] });
-		expect(done(i)).toEqual(['cli', 'runner']);
+		expect(done(i)).toEqual(['cli', 'runner', 'enabled']);
 	});
 
 	it('ticks the rule item for a scoped rule, not just the global one', () => {
@@ -98,7 +107,7 @@ describe('checklistItems', () => {
 		expect(done(inputs({ runners: [runner()], rules: [scoped] }))).toContain('rule');
 	});
 
-	it('ticks the content item on a described issue and blocks it when there is none', () => {
+	it('does not count optional issue content', () => {
 		const issue = {
 			project_name: 'demo',
 			number: 1,
@@ -106,12 +115,13 @@ describe('checklistItems', () => {
 			has_description: true,
 			has_repo: false
 		};
-		expect(done(inputs({ surface: 'issue', issue }))).toEqual(['issue', 'content']);
+		expect(done(inputs({ surface: 'issue', issue }))).toEqual(['issue', 'enabled']);
 		expect(done(inputs({ surface: 'issue', issue: { ...issue, has_description: false } }))).toEqual(
-			['issue']
+			['issue', 'enabled']
 		);
-		const blank = checklistItems(inputs({ issue: null })).find((i) => i.id === 'content')!;
-		expect(blank.blocked).toBe(true);
+		expect(checklistItems(inputs({ issue: null })).some((i) => i.id === ('content' as never))).toBe(
+			false
+		);
 	});
 
 	it('leaves the run item blocked until everything it needs is done', () => {
@@ -131,8 +141,8 @@ describe('checklistItems', () => {
 
 	it('ticks the run item for a run on this issue or elsewhere on the account', () => {
 		const run = { id: 'run_1', runner_name: 'laptop', status: 'running' } as AgentRun;
-		expect(done(inputs({ firstRun: run }))).toEqual(['run']);
-		expect(done(inputs({ runElsewhere: true }))).toEqual(['run']);
+		expect(done(inputs({ firstRun: run }))).toEqual(['enabled', 'run']);
+		expect(done(inputs({ runElsewhere: true }))).toEqual(['enabled', 'run']);
 	});
 
 	it('unblocks the rule item as soon as a runner exists, even an offline one', () => {
@@ -153,7 +163,7 @@ describe('checklistCurrentAction', () => {
 		).toBe('rule');
 	});
 
-	it('skips steps already completed out of order', () => {
+	it('returns no action when setup is complete even if optional content is absent', () => {
 		const i = inputs({
 			hasAnyIssue: true,
 			runners: [runner()],
@@ -167,14 +177,15 @@ describe('checklistCurrentAction', () => {
 				has_repo: false
 			}
 		});
-		expect(checklistCurrentAction(checklistItems(i))).toBe('content');
+		expect(checklistCurrentAction(checklistItems(i))).toBeNull();
 	});
 
-	it('offers issue content before the switch that can dispatch it', () => {
+	it('offers resume before every setup action when explicitly stopped', () => {
 		const i = inputs({
 			hasAnyIssue: true,
 			runners: [runner()],
 			rules: [rule(['rnr_1'])],
+			enabled: false,
 			issue: {
 				project_name: 'demo',
 				number: 1,
@@ -183,7 +194,8 @@ describe('checklistCurrentAction', () => {
 				has_repo: false
 			}
 		});
-		expect(checklistCurrentAction(checklistItems(i))).toBe('content');
+		expect(checklistCurrentAction(checklistItems(i))).toBe('enabled');
+		expect(checklistCurrentAction(checklistItems(inputs({ enabled: false })))).toBe('enabled');
 	});
 
 	it('returns no action once only the run is outstanding', () => {
@@ -205,11 +217,11 @@ describe('checklistCurrentAction', () => {
 });
 
 describe('checklistProgress', () => {
-	it('counts the ticked items out of seven', () => {
-		expect(checklistProgress(checklistItems(inputs()))).toEqual({ done: 0, total: 7 });
+	it('counts the ticked items out of six', () => {
+		expect(checklistProgress(checklistItems(inputs()))).toEqual({ done: 1, total: 6 });
 		expect(
 			checklistProgress(checklistItems(inputs({ hasAnyIssue: true, runners: [runner()] })))
-		).toEqual({ done: 3, total: 7 });
+		).toEqual({ done: 4, total: 6 });
 	});
 });
 

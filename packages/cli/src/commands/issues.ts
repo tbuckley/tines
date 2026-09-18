@@ -1,7 +1,15 @@
 /** `tines issues` — issues, their artifacts, and their links. */
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { BODY_VALUE_HELP, readBodyValue } from '../body-value.js';
+import {
+	confirmTransfer,
+	formatTransferItem,
+	formatTransferPreview,
+	formatTransferResult,
+	type TransferTerminal
+} from '../issue-transfer.js';
 import {
 	client,
 	collect,
@@ -494,6 +502,116 @@ export function register(program: Command): void {
 			`${moved.project_name}/#${moved.number}: ${issue.state.name} → ${moved.state.name} ("${action}")`
 		);
 	});
+
+	withCommon(
+		issues
+			.command('transfer <ref>')
+			.description(
+				'Move an issue to another project, keeping its ID, record and old refs (this is not the workflow "move")'
+			)
+			.requiredOption('-p, --project <name-or-id>', 'destination project')
+			.option('--dry-run', 'print the review and exit without moving anything')
+			.option('--inspect <n>', 'print the full content of reviewed guidance item [n]')
+			.option('-y, --yes', 'skip the confirmation prompt')
+	).action(
+		async (
+			ref: string,
+			opts: CommonOpts & { project: string; dryRun?: boolean; inspect?: string; yes?: boolean }
+		) => {
+			const api = client(opts);
+			const issue = await resolveIssue(api, ref);
+			const destination = await resolveProject(api, opts.project);
+			// Everything below reviews one fetched preview: the token binds this
+			// exact review, so a later read can never be what gets confirmed.
+			let preview = await api.previewIssueTransfer(issue.id, destination.id);
+
+			if (opts.inspect !== undefined) {
+				const text = formatTransferItem(preview, Number(opts.inspect));
+				if (opts.json) return printJson({ ...preview, inspected: text });
+				return console.log(text);
+			}
+			if (opts.dryRun) {
+				if (opts.json) return printJson(preview);
+				return console.log(formatTransferPreview(preview));
+			}
+			const blocked = () => {
+				const blocker = preview.blockers[0];
+				if (opts.json) {
+					printJson({
+						error: {
+							code: blocker?.code ?? 'transfer_blocked',
+							message: blocker?.message ?? 'this move is blocked',
+							details: blocker ?? null
+						}
+					});
+					process.exitCode = 1;
+					return;
+				}
+				// Under --json stdout carries exactly one object, so the human review
+				// and every prompt go to stderr.
+				console.error(formatTransferPreview(preview));
+				return die(blocker ? `${blocker.code}: ${blocker.message}` : 'this move is blocked');
+			};
+			if (!preview.can_commit || !preview.preview_token) return blocked();
+
+			const interactive = !opts.yes && process.stdin.isTTY;
+			if (!opts.yes && !interactive) {
+				die(
+					`refusing to move without a confirmation: rerun with --yes, or review it first with --dry-run --json`
+				);
+			}
+			const rl = interactive
+				? createInterface({ input: process.stdin, output: process.stderr })
+				: null;
+			const terminal: TransferTerminal = {
+				write: (text) => process.stderr.write(text),
+				ask: (question) => rl!.question(question).catch(() => null)
+			};
+			try {
+				// A stale preview is answered once more, never reposted silently: the
+				// operator confirms the guidance that is actually true now.
+				for (let attempt = 0; ; attempt++) {
+					if (interactive) {
+						const decision = await confirmTransfer(
+							preview,
+							terminal,
+							attempt === 0
+								? undefined
+								: 'The configuration this review described has changed. Here is the current one:'
+						);
+						if (decision.action === 'abort') return die(decision.reason);
+					}
+					try {
+						const result = await api.transferIssue(issue.id, {
+							project_id: destination.id,
+							preview_token: preview.preview_token!
+						});
+						if (opts.json) return printJson(result);
+						return console.log(formatTransferResult(result));
+					} catch (e) {
+						const fail = e as { code?: string; message?: string; details?: unknown };
+						// Only a stale preview is worth re-reviewing, and only for someone
+						// who can answer: --yes and a competing move both stop here.
+						if (fail.code === 'transfer_preview_stale' && interactive && attempt === 0) {
+							preview = await api.previewIssueTransfer(issue.id, destination.id);
+							if (!preview.can_commit || !preview.preview_token) return blocked();
+							continue;
+						}
+						if (opts.json && fail.code) {
+							printJson({
+								error: { code: fail.code, message: fail.message, details: fail.details ?? null }
+							});
+							process.exitCode = 1;
+							return;
+						}
+						throw e;
+					}
+				}
+			} finally {
+				rl?.close();
+			}
+		}
+	);
 
 	withCommon(
 		issues
@@ -1044,7 +1162,7 @@ export function register(program: Command): void {
 			)
 			.option(
 				'--out <path>',
-				'write to this file, or into this directory (keeps the stored filename)'
+				'write to this file, or into this directory (keeps the stored filename); folder artifacts require a new or empty directory'
 			)
 	).action(
 		async (ref: string, name: string, opts: CommonOpts & { version?: number; out?: string }) => {
@@ -1075,6 +1193,11 @@ export function register(program: Command): void {
 				}
 				if (existsSync(opts.out) && !statSync(opts.out).isDirectory()) {
 					die(`--out for a folder must be a directory, and "${opts.out}" is a file`);
+				}
+				if (existsSync(opts.out) && readdirSync(opts.out).length > 0) {
+					die(
+						`refusing to write folder artifact into non-empty directory "${opts.out}"; choose a new or empty directory`
+					);
 				}
 				const files = version.files ?? [];
 				let total = 0;

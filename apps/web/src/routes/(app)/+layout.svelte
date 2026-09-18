@@ -8,12 +8,13 @@
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconSettings from '@tabler/icons-svelte/icons/settings';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
-	import { goto, invalidateAll, onNavigate } from '$app/navigation';
+	import { goto, invalidate, invalidateAll, onNavigate } from '$app/navigation';
 	import { navigating, page } from '$app/state';
 	import { api } from '$lib/api';
 	import { authClient } from '$lib/auth-client';
 	import ProjectSwitcher from '$lib/components/ProjectSwitcher.svelte';
 	import { focusHint } from '$lib/focus.svelte';
+	import { resolveClientFocus } from '$lib/focus';
 	import { prefersReducedMotion } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
 	import { fade } from 'svelte/transition';
@@ -24,10 +25,17 @@
 	// where it goes — the Issues tab carries the filters you last used, so the
 	// list comes back as you left it. Derived so it tracks the store: the
 	// layout outlives every navigation.
+	const focus = $derived(resolveClientFocus(focusHint.project, data.focus, data.projects));
+
 	const tabs = $derived([
 		{ path: '/issues', href: navMemory.issuesHref, label: 'Issues', icon: IconListDetails },
 		{ path: '/workflows', href: '/workflows', label: 'Workflows', icon: IconSitemap },
-		{ path: '/projects', href: navMemory.projectsHref, label: 'Projects', icon: IconFolder },
+		{
+			path: '/projects',
+			href: focus ? `/projects/${focus.id}` : navMemory.projectsHref,
+			label: 'Projects',
+			icon: IconFolder
+		},
 		{ path: '/context', href: '/context', label: 'Context', icon: IconBooks },
 		{ path: '/agents', href: '/agents', label: 'Agents', icon: IconRobot },
 		{ path: '/activity', href: '/activity', label: 'Activity', icon: IconActivity }
@@ -40,13 +48,28 @@
 	// The chrome's answer to "what am I looking at": the layout's own data,
 	// unless the client has set the focus since (opening a project page does),
 	// which it records as a hint rather than paying for a load rerun.
-	const focus = $derived(focusHint.project !== undefined ? focusHint.project : data.focus);
-
 	async function chooseFocus(projectId: string | null) {
-		await api.updatePreferences({ focused_project_id: projectId });
-		focusHint.clear();
-		// Every list that reads the focus has to refetch, not just the layout.
-		await invalidateAll();
+		const predecessor = focusHint.predecessor();
+		const write = predecessor.then(async () => {
+			await api.updatePreferences({ focused_project_id: projectId });
+			// A navigation that began while this write was pending can reuse the
+			// resident layout node. Keep its chrome aligned with the freshly loaded
+			// child data until a later layout refresh replaces the hint.
+			if (navigating.to) {
+				focusHint.set(
+					data.projects.find((project: { id: string }) => project.id === projectId) ?? null
+				);
+			} else {
+				focusHint.clear();
+			}
+		});
+		focusHint.track(write);
+		await write;
+		// Every focus-aware load shares this dependency, including children that
+		// read the app layout through parent(). A navigation already waiting on
+		// this write will load that dependency itself; invalidating the resident
+		// page at the same time can supersede the navigation.
+		if (!navigating.to) await invalidate('app:preferences');
 	}
 
 	let menuOpen = $state(false);
@@ -125,8 +148,8 @@
 			{#if showSwitcher}
 				<ProjectSwitcher projects={data.projects} {focus} onchoose={chooseFocus} />
 			{/if}
-			<!-- On phones the tabs live in the bottom bar instead. -->
-			<nav class="hidden h-full items-center gap-1 sm:flex">
+			<!-- Below md the tabs live in the bottom bar instead. -->
+			<nav class="hidden h-full items-center gap-1 md:flex">
 				{#each tabs as tab (tab.path)}
 					{@const active = page.url.pathname.startsWith(tab.path)}
 					<a
@@ -210,15 +233,15 @@
 
 	<!-- Named group so tab slides move the page content but not the chrome. -->
 	<main
-		class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pb-24 sm:pb-8"
+		class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 pb-[calc(6rem+env(safe-area-inset-bottom,0px))] md:pb-8"
 		style:view-transition-name="page"
 	>
 		{@render children()}
 	</main>
 
-	<!-- mobile bottom tab bar -->
+	<!-- Compact chrome bottom tab bar below md. -->
 	<nav
-		class="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur sm:hidden"
+		class="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur md:hidden"
 		style="padding-bottom: env(safe-area-inset-bottom)"
 		aria-label="Primary"
 	>

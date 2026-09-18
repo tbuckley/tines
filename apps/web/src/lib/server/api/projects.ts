@@ -9,7 +9,7 @@ import type {
 	UnarchiveProjectResponse,
 	UpdateProjectRequest
 } from '@tines/shared';
-import { ACTIVE_RUN_STATUSES, PROJECT_PROMPT_NAME } from '@tines/shared';
+import { ACTIVE_RUN_STATUSES, PROJECT_NAME_MAX, PROJECT_PROMPT_NAME } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
@@ -24,6 +24,7 @@ import {
 import { assertWritable } from './archive';
 import { eventInsert } from './events';
 import { projectScheduleDeletions, rearmScheduleQueries } from './schedules';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { resolveStarter, starterQueries, type StarterRegistry } from './starters';
 
 function projectQuery(db: Kysely<Database>, userId: string) {
@@ -81,6 +82,14 @@ export async function getProject(
 	return serializeProject(row);
 }
 
+/** Pure field validation shared by ordinary create and library preview. */
+export function validateProjectFields(body: Pick<CreateProjectRequest, 'name' | 'description'>) {
+	return {
+		name: requireString(body.name, 'name', { max: PROJECT_NAME_MAX }).trim(),
+		description: optionalString(body.description, 'description', { max: 10_000 }) ?? ''
+	};
+}
+
 /** The referenced workflow must be the user's own or the system workflow. */
 async function assertWorkflowAccessible(db: Kysely<Database>, userId: string, workflowId: unknown) {
 	const id = requireString(workflowId, 'default_workflow_id', { max: 100 });
@@ -135,8 +144,7 @@ export async function createProject(
 	// Starter validation is pure and comes first, so an unknown id or a
 	// missing input 422s before any read, let alone any write.
 	const resolvedStarter = resolveStarter(body.starter, opts.starters);
-	const name = requireString(body.name, 'name', { max: 200 }).trim();
-	const description = optionalString(body.description, 'description', { max: 10_000 }) ?? '';
+	const { name, description } = validateProjectFields(body);
 	await assertNameAvailable(db, actor.userId, name);
 	if (resolvedStarter?.starter.default_workflow && body.default_workflow_id != null) {
 		throw new ApiFail(
@@ -216,7 +224,9 @@ export async function updateProject(
 	const current = await getProject(db, actor.userId, id);
 	await assertWritable(db, actor, current);
 	const name =
-		body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
+		body.name !== undefined
+			? requireString(body.name, 'name', { max: PROJECT_NAME_MAX }).trim()
+			: current.name;
 	const description =
 		body.description !== undefined
 			? (optionalString(body.description, 'description', { max: 10_000 }) ?? '')
@@ -271,6 +281,23 @@ export async function deleteProject(
 			{ issue_count: project.issue_count }
 		);
 	}
+	const aliasCount = Number(
+		(
+			await db
+				.selectFrom('issue_address')
+				.select((eb) => eb.fn.countAll().as('count'))
+				.where('project_id', '=', id)
+				.executeTakeFirstOrThrow()
+		).count
+	);
+	const aliasError = (count: number) =>
+		new ApiFail(
+			422,
+			'project_has_issue_aliases',
+			`Cannot delete project "${project.name}": it retains ${count} historical issue address${count === 1 ? '' : 'es'}. Archive it instead.`,
+			{ alias_count: count, remedy: `tines projects archive "${project.name}"` }
+		);
+	if (aliasCount > 0) throw aliasError(aliasCount);
 	// Context scoped to the project rejects deletion unless forced. The
 	// project is issue-less by now, so no issue-scoped items can reference it.
 	const attached = await findAttachedContext(db, actor.userId, { projectId: id });
@@ -281,20 +308,39 @@ export async function deleteProject(
 		forceDeleteContext,
 		`delete project "${project.name}"`
 	);
-	await runAtomic(env, [
-		// Context events insert while the project row still exists; its
-		// deletion then nulls their project reference (ON DELETE SET NULL).
-		...sweep.queries,
-		// The project is issue-less by now, but its schedules go with it.
-		...(await projectScheduleDeletions(db, actor, id)),
-		db.deleteFrom('project').where('id', '=', id).compile(),
-		// project_id stays null-able on the event so the feed keeps history
-		// for deleted projects; record the name in the payload.
-		eventInsert(db, actor, {
-			type: 'project.deleted',
-			payload: { project_id: id, name: project.name }
-		})
-	]);
+	try {
+		await runAtomic(env, [
+			// Context events insert while the project row still exists; its
+			// deletion then nulls their project reference (ON DELETE SET NULL).
+			...sweep.queries,
+			// The project is issue-less by now, but its schedules go with it.
+			...(await projectScheduleDeletions(db, actor, id)),
+			db.deleteFrom('project').where('id', '=', id).compile(),
+			// project_id stays null-able on the event so the feed keeps history
+			// for deleted projects; record the name in the payload.
+			eventInsert(db, actor, {
+				type: 'project.deleted',
+				payload: { project_id: id, name: project.name }
+			})
+		]);
+	} catch (e) {
+		// The precheck can race a transfer that creates a durable address.
+		// Map only that concrete FK failure; unrelated deletion errors retain
+		// their original diagnostics.
+		if (e instanceof Error && e.message.includes('FOREIGN KEY constraint failed')) {
+			const racedAliasCount = Number(
+				(
+					await db
+						.selectFrom('issue_address')
+						.select((eb) => eb.fn.countAll().as('count'))
+						.where('project_id', '=', id)
+						.executeTakeFirstOrThrow()
+				).count
+			);
+			if (racedAliasCount > 0) throw aliasError(racedAliasCount);
+		}
+		throw e;
+	}
 	return sweep.deleted;
 }
 
@@ -379,11 +425,15 @@ export async function unarchiveProject(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	now = Date.now()
 ): Promise<UnarchiveProjectResponse> {
 	const project = await getProject(db, actor.userId, id);
-	if (project.archived_at === null) return { project, schedules_resumed: 0 };
+	if (project.archived_at === null) {
+		effects.signalDispatch();
+		return { project, schedules_resumed: 0 };
+	}
 	// Enabled schedules resume from their next future occurrence: a project
 	// archived for a month must not fire a month of catch-up issues.
 	const schedules = await db
@@ -406,6 +456,7 @@ export async function unarchiveProject(
 			payload: { name: project.name, schedules_resumed: rearm.queries.length }
 		})
 	]);
+	effects.signalDispatch();
 	return {
 		project: await getProject(db, actor.userId, id),
 		schedules_resumed: rearm.queries.length

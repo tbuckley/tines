@@ -3,8 +3,8 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
-	import { findProject } from '$lib/archived';
 	import EventList from '$lib/components/EventList.svelte';
+	import ProjectFocusNotice from '$lib/components/ProjectFocusNotice.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
@@ -13,7 +13,7 @@
 
 	// The project halves live on the app layout; a ?project= that names an
 	// archived one still has to show its name rather than "All projects".
-	const archivedProject = $derived(findProject(data.archivedProjects, data.filters.project));
+	const scopeLabel = $derived(data.focus ? `“${data.focus.name}”` : 'All projects');
 
 	const EVENT_TYPES = [
 		'issue.created',
@@ -36,29 +36,43 @@
 	let extra = $state<TinesEvent[]>([]);
 	let nextCursor = $state<string | null>(null);
 	let loadingMore = $state(false);
+	let loadError = $state<string | null>(null);
+	let generation = 0;
 	$effect(() => {
 		// New server data (filter change) resets the continuation.
 		void data.events;
 		extra = [];
 		nextCursor = data.nextCursor;
+		generation += 1;
+		loadingMore = false;
+		loadError = null;
 	});
 
 	const events = $derived([...data.events, ...extra]);
 
 	async function loadMore() {
 		if (!nextCursor || loadingMore) return;
+		const requestGeneration = generation;
 		loadingMore = true;
+		loadError = null;
 		try {
 			const res = await api.listEvents({
-				project: data.filters.project || undefined,
+				project: data.focusId || undefined,
 				type: data.filters.type || undefined,
 				cursor: nextCursor,
+				since: data.filters.since,
+				until: data.filters.until,
+				state: data.filters.state,
 				limit: 50
 			});
-			extra = [...extra, ...res.items];
-			nextCursor = res.next_cursor;
+			if (generation === requestGeneration) {
+				extra = [...extra, ...res.items];
+				nextCursor = res.next_cursor;
+			}
+		} catch {
+			if (generation === requestGeneration) loadError = 'Failed to load more activity. Try again.';
 		} finally {
-			loadingMore = false;
+			if (generation === requestGeneration) loadingMore = false;
 		}
 	}
 
@@ -72,22 +86,18 @@
 
 <svelte:head><title>Activity · Tines</title></svelte:head>
 
+{#if data.filters.since !== undefined || data.filters.until !== undefined || data.filters.state}<p
+		class="text-muted-foreground mb-3 text-sm"
+	>
+		Recorded events {data.filters.since !== undefined
+			? `from ${new Date(data.filters.since).toLocaleString()}`
+			: ''}
+		{data.filters.until !== undefined
+			? `until ${new Date(data.filters.until).toLocaleString()}`
+			: ''}{data.filters.state ? ` · state ${data.filters.state}` : ''}
+	</p>{/if}
 <div class="mb-6 flex flex-wrap items-center gap-3">
 	<h1 class="mr-auto text-2xl font-semibold tracking-tight">Activity</h1>
-	<Select
-		class="w-40 max-sm:min-w-36 max-sm:flex-1"
-		value={data.filters.project}
-		onchange={(e) => setFilter('project', e.currentTarget.value)}
-		aria-label="Filter by project"
-	>
-		<option value="">All projects</option>
-		{#each data.projects as project (project.id)}
-			<option value={project.name}>{project.name}</option>
-		{/each}
-		{#if archivedProject}
-			<option value={archivedProject.name}>{archivedProject.name} (archived)</option>
-		{/if}
-	</Select>
 	<Select
 		class="w-48 max-sm:min-w-36 max-sm:flex-1"
 		value={data.filters.type}
@@ -101,8 +111,11 @@
 	</Select>
 </div>
 
+<ProjectFocusNotice notice={data.notice} {scopeLabel} />
+
 <EventList
 	{events}
+	showProject={!data.focusId}
 	emptyMessage="No activity yet — it will show up here as you and your agents work."
 />
 
@@ -113,6 +126,10 @@
 		<Skeleton class="h-10 w-full" />
 	</div>
 {/if}
+
+{#if loadError}<p class="text-destructive mt-4 text-center text-sm" role="alert">
+		{loadError}
+	</p>{/if}
 
 {#if nextCursor}
 	<div class="mt-6 flex justify-center">

@@ -19,18 +19,20 @@ import type {
 	ListResponse,
 	Project,
 	Runner,
+	RunnerTokenResponse,
 	TinesEvent
 } from '@tines/shared';
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, fireSweep, gotoHydrated, signIn } from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
 const CLI_ENTRY = join(CLI_DIR, 'src', 'index.ts');
 
-const RUNNER_NAME = `e2e-runner-${runId}`;
-const PROJECT_NAME = `runner-${runId}`;
+let RUNNER_NAME: string;
+let PROJECT_NAME: string;
 
 // Shared across the serial suite.
 let e2eDir: string;
@@ -63,11 +65,6 @@ async function waitFor<T>(
 	}
 }
 
-const fireSweep = async (request: APIRequestContext) => {
-	const res = await request.get('/__scheduled?cron=*+*+*+*+*');
-	expect(res.ok()).toBe(true);
-};
-
 async function issueRuns(request: APIRequestContext, issueId: string): Promise<AgentRun[]> {
 	const api = apiClient(request, ALICE.apiKey);
 	return (await body<ListResponse<AgentRun>>(await api.get(`/api/v1/runs?issue=${issueId}`))).items;
@@ -99,7 +96,9 @@ async function openAddRunner(page: Page) {
 }
 
 test.describe.serial('local runner end to end', () => {
-	test.beforeAll(async ({ request }) => {
+	test.beforeAll(async ({ request, uniqueName }) => {
+		RUNNER_NAME = uniqueName('e2e-runner');
+		PROJECT_NAME = uniqueName('runner');
 		const api = apiClient(request, ALICE.apiKey);
 		e2eDir = mkdtempSync(join(tmpdir(), 'tines-runner-e2e-'));
 		configDir = join(e2eDir, 'config');
@@ -241,10 +240,18 @@ esac
 		expect(runner.config.harness).toBe('custom');
 		expect(runner.config.hostname).toBeTruthy();
 
-		// Registration is not arming: stdout says what is still missing, and
-		// where to do it.
-		expect(daemonOutput).toContain(`${BASE_URL}/agents`);
-		expect(daemonOutput).toContain('turn automation on');
+		// Registration readiness and guidance are separate stdout writes. Wait
+		// for the latter rather than racing it after the API row appears.
+		await waitFor(
+			async () =>
+				daemonOutput.includes(`next: route work to "${RUNNER_NAME}"`) &&
+				daemonOutput.includes(`${BASE_URL}/agents`) &&
+				daemonOutput.includes(
+					'Eligible work starts when this runner is available and routing matches.'
+				),
+			{ label: 'post-registration guidance' }
+		);
+		expect(daemonOutput).toContain('If automation is stopped, resume it');
 
 		// Route only this project to it (a global rule would grab other specs'
 		// issues), then arm automation.
@@ -345,10 +352,44 @@ esac
 		// bootstrap (the Claude managed path creates the runner server-side).
 		const dialog = await openAddRunner(page);
 		const name = dialog.getByLabel('Name');
+		const codexPermissions = dialog.getByRole('region', {
+			name: 'Configure Codex before starting the runner'
+		});
 
 		// The helper teaches the machine-plus-harness convention before
 		// anything is typed.
 		await expect(dialog).toContainText('macbook-claude');
+		await expect(codexPermissions).toBeHidden();
+
+		await dialog.getByLabel('Harness').selectOption('codex');
+		await expect(codexPermissions).toBeVisible();
+		await expect(codexPermissions).toContainText('~/.codex/config.toml');
+		await expect(codexPermissions.locator('pre code')).toHaveText(
+			'sandbox_mode = "workspace-write"\n\n[sandbox_workspace_write]\nnetwork_access = true'
+		);
+		for (const [name, href] of [
+			[
+				'Codex setup guide',
+				'https://github.com/tbuckley/tines/blob/main/docs/runner-daemon.md#codex-permissions'
+			],
+			['OpenAI configuration reference', 'https://developers.openai.com/codex/config-reference']
+		] as const) {
+			const link = codexPermissions.getByRole('link', { name });
+			await expect(link).toHaveAttribute('href', href);
+			await expect(link).toHaveAttribute('target', '_blank');
+			await expect(link).toHaveAttribute('rel', 'noreferrer');
+		}
+
+		await dialog.getByLabel('Harness').selectOption('custom');
+		await expect(codexPermissions).toBeHidden();
+		await dialog.getByLabel('Harness').selectOption('claude-code');
+		await expect(codexPermissions).toBeHidden();
+		await dialog.getByLabel('Harness').selectOption('codex');
+		await expect(codexPermissions).toBeVisible();
+		await dialog.getByRole('button', { name: 'Claude (managed)' }).click();
+		await expect(codexPermissions).toBeHidden();
+		await dialog.getByRole('button', { name: 'Local' }).click();
+		await expect(codexPermissions).toBeVisible();
 
 		// A name that is not a CLI address fails inline, before any submit.
 		await name.fill("Tom's Mac");
@@ -365,16 +406,19 @@ esac
 
 		await name.fill('laptop-e2e');
 		await expect(dialog).toContainText('npm install -g tines');
-		await expect(dialog).toContainText('tines runner daemon');
+		await expect(dialog).toContainText('tines runner install');
 		await expect(dialog).toContainText('--name laptop-e2e');
 		await expect(dialog).toContainText('registers');
 		await expect(dialog).toContainText('launchd/systemd');
-		await dialog.getByRole('button', { name: 'Done' }).click();
+		// An online named runner also renders an inline Done action; close with
+		// the dialog footer so the strict locator remains deterministic.
+		await dialog.getByRole('button', { name: 'Done' }).last().click();
 	});
 
 	test('the dialog creates a real key on demand, copies the whole block, and leaves nothing behind otherwise', async ({
 		context,
-		page
+		page,
+		uniqueName
 	}) => {
 		await signIn(context, ALICE.sessionToken);
 		// `/api/v1/api-keys` is session-only, so the check rides the browser
@@ -392,16 +436,17 @@ esac
 
 		// Abandoning the dialog without clicking Create key leaves no key.
 		let dialog = await openAddRunner(page);
-		await dialog.getByLabel('Name').fill(`abandoned-${runId}`);
+		await dialog.getByLabel('Name').fill(uniqueName('abandoned'));
 		await dialog.getByRole('button', { name: 'Done' }).click();
 		// Settled before reopening: openAddRunner would otherwise see the
 		// closing dialog and take it for the new one.
 		await expect(dialog).toBeHidden();
 		expect((await keyNames()).length).toBe(before.length);
 
-		const keyRunner = `key-e2e-${runId}`;
+		const keyRunner = uniqueName('key-e2e');
 		dialog = await openAddRunner(page);
 		await dialog.getByLabel('Name').fill(keyRunner);
+		await dialog.getByLabel('Harness').selectOption('codex');
 		await dialog.getByRole('button', { name: 'Create key' }).click();
 
 		// The command now carries a real secret, and the key is on the
@@ -414,9 +459,13 @@ esac
 		await dialog.getByRole('button', { name: 'Copy the bootstrap command' }).click();
 		const clip = await page.evaluate(() => navigator.clipboard.readText());
 		expect(clip).toContain('npm install -g tines');
-		expect(clip).toContain('tines runner daemon');
+		expect(clip).toContain('tines runner install');
 		expect(clip).toContain(`--name ${keyRunner}`);
+		expect(clip).toContain('--harness codex');
 		expect(clip).toMatch(/TINES_API_KEY=tines_[A-Za-z0-9._-]+/);
+		expect(clip).not.toContain('sandbox_mode');
+		expect(clip).not.toContain('[sandbox_workspace_write]');
+		expect(clip).not.toContain('network_access');
 
 		await dialog.getByRole('button', { name: 'Done' }).click();
 		await context.request.delete(`/api/v1/api-keys/${created!.id}`);
@@ -425,26 +474,37 @@ esac
 	test('a registration while the dialog is open ticks it live, and one click routes everything there', async ({
 		context,
 		page,
-		request
+		request,
+		uniqueName
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
 		await signIn(context, ALICE.sessionToken);
 		await gotoHydrated(page, '/agents');
 
-		const liveName = `e2e-live-${runId}`;
+		const liveName = uniqueName('e2e-live');
 		const dialog = await openAddRunner(page);
 		await dialog.getByLabel('Name').fill(liveName);
 		await expect(dialog).toContainText('Waiting for');
 
 		// A real registration from outside the browser: the page is polling,
 		// so the dialog flips without a reload.
-		const registered = await body<{ runner: Runner }>(
+		const registered = await body<RunnerTokenResponse>(
 			await api.post('/api/v1/runners/register', {
 				name: liveName,
 				harness: 'custom',
 				command: 'true'
 			})
 		);
+		const policy = await request.post(`/api/v1/runners/${registered.runner.id}/poll`, {
+			headers: { authorization: `Bearer ${registered.runner_token}` },
+			data: {
+				instance_id: `dialog_${registered.runner.id}`,
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: false, ceiling: 1 }
+			}
+		});
+		expect(policy.ok()).toBe(true);
 		await expect(dialog).toContainText(`${liveName} is online`, { timeout: 15_000 });
 
 		await dialog.getByRole('button', { name: `Route everything to ${liveName}` }).click();
@@ -508,7 +568,11 @@ esac
 	 * check, and the raw-stream upload/read pair. Both are driven with the
 	 * daemon's own runner token against a live run.
 	 */
-	test('a retried log chunk lands once, and the raw stream round-trips', async ({ request }) => {
+	test('a retried log chunk lands once, and the raw stream round-trips', async ({
+		request,
+		context,
+		page
+	}) => {
 		test.setTimeout(60_000);
 		const api = apiClient(request, ALICE.apiKey);
 		rmSync(sideFile('sleep-pid'), { force: true });
@@ -518,6 +582,38 @@ esac
 			async () => (await issueRuns(request, issue.id)).find((r) => r.status === 'running'),
 			{ label: 'the run to start' }
 		);
+
+		await signIn(context, ALICE.sessionToken);
+		await gotoHydrated(page, '/agents');
+		const activeRow = page
+			.locator('li:not([inert])')
+			.filter({ hasText: `${PROJECT_NAME}/#${issue.number}` })
+			.filter({ hasText: 'running' });
+		await expect(activeRow).toHaveCount(1);
+		const duration = activeRow.getByTestId('run-duration');
+		const firstDuration = await duration.textContent();
+		await expect.poll(() => duration.textContent(), { timeout: 4000 }).not.toBe(firstDuration);
+		const liveDot = activeRow.getByTestId('run-live-dot');
+		await expect(liveDot).toHaveCount(1);
+		await expect(liveDot).toHaveClass(/\banimate-pulse\b/);
+		expect(await liveDot.evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
+
+		await page.route(`**/api/v1/runs/${running.id}`, async (route) => {
+			const response = await route.fetch();
+			const detail = (await response.json()) as AgentRunDetail;
+			await route.fulfill({ response, json: { ...detail, log: '' } });
+		});
+		await activeRow.getByRole('button', { name: 'Logs' }).click();
+		const waiting = activeRow.getByTestId('run-log-waiting');
+		await expect(waiting).toHaveText('waiting for the harness…');
+		await expect(waiting.locator('[aria-hidden="true"]')).toHaveClass(/\banimate-pulse\b/);
+		expect(
+			await waiting
+				.locator('[aria-hidden="true"]')
+				.evaluate((el) => getComputedStyle(el).animationName)
+		).toBe('none');
+		await activeRow.getByRole('button', { name: 'Hide logs' }).click();
+		await page.getByLabel('Show ended runs').check();
 
 		const creds = JSON.parse(readFileSync(join(configDir, 'runners.json'), 'utf8')) as Record<
 			string,
@@ -565,6 +661,10 @@ esac
 		const noLength = await request.put(`/api/v1/runs/${running.id}/log/raw`, { headers: auth });
 		expect(noLength.status()).toBe(411);
 
+		// The sleeping process already captured its mode. Reset before cancel so
+		// an immediate successor for the same issue finishes instead of occupying
+		// the daemon and starving the next serial test.
+		setMode('work');
 		const canceled = await api.post(`/api/v1/runs/${running.id}/cancel`);
 		expect(canceled.ok()).toBe(true);
 		await waitFor(
@@ -573,7 +673,16 @@ esac
 				'canceled',
 			{ label: 'the probe run to cancel' }
 		);
-		setMode('work');
+		// Cancellation is deliberately outside the UI: only the active-run
+		// account-event watcher can settle this already-loaded Agents row. Key
+		// it by run id because cancellation can immediately dispatch a successor
+		// for the same issue, whose issue ref must not satisfy this assertion.
+		const originalRow = page.locator(`li[data-run-id="${running.id}"]:not([inert])`);
+		await expect(originalRow).toContainText('canceled', { timeout: 15_000 });
+		const frozenDuration = await originalRow.getByTestId('run-duration').textContent();
+		await expect
+			.poll(() => originalRow.getByTestId('run-duration').textContent(), { timeout: 1500 })
+			.toBe(frozenDuration);
 	});
 
 	test('a do-nothing harness strikes the issue three times and parks it', async ({ request }) => {

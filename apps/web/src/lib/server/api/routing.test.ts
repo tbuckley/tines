@@ -1,11 +1,17 @@
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { addLabel, addRunner, OPEN, PROJECT, seedBase, USER } from '../supervisor/test-fixtures';
 import { api, ApiFail, runAtomic, type ActorContext } from './core';
 import { createTestDb, type TestDb } from './test-db';
 import {
 	createRoutingRule,
+	deleteRoutingRule,
 	findScopeCollision,
 	listRoutingRules,
+	routingRulesForProject,
 	ruleScopesOverlap,
 	ruleSpecificity,
 	shadowWarnings,
@@ -240,6 +246,24 @@ describe('validateTargets', () => {
 		expect(targets).toEqual([{ runner_id: 'rnr_2', tier: 'cheapest' }, { runner_id: 'rnr_1' }]);
 	});
 
+	it('round-trips distinct effort tokens and includes effort in duplicate identity', () => {
+		expect(
+			validateTargets(
+				[
+					{ runner_id: 'rnr_2', tier: 'balanced', effort: 'low' },
+					{ runner_id: 'rnr_2', tier: 'balanced', effort: 'max' }
+				],
+				runners
+			)
+		).toEqual([
+			{ runner_id: 'rnr_2', tier: 'balanced', effort: 'low' },
+			{ runner_id: 'rnr_2', tier: 'balanced', effort: 'max' }
+		]);
+		expect(() => validateTargets([{ runner_id: 'rnr_1', effort: 'High' }], runners)).toThrowError(
+			ApiFail
+		);
+	});
+
 	it('rejects an empty list', () => {
 		expect(() => validateTargets([], runners)).toThrowError(ApiFail);
 	});
@@ -252,6 +276,12 @@ describe('validateTargets', () => {
 		expect(() =>
 			validateTargets([{ runner_id: '*', tier: 'balanced' }, { runner_id: 'rnr_1' }], runners)
 		).toThrowError(ApiFail);
+		expect(() =>
+			validateTargets([{ runner_id: '*', tier: 'balanced', effort: 'extreme' }], runners)
+		).toThrowError(ApiFail);
+		expect(
+			validateTargets([{ runner_id: '*', tier: 'balanced', effort: 'ultra' }], runners)
+		).toEqual([{ runner_id: '*', tier: 'balanced', effort: 'ultra' }]);
 	});
 
 	it("rejects a runner that isn't the user's", () => {
@@ -323,7 +353,7 @@ describe('rule scope state category', () => {
 		// (done), plus the backlog state added above.
 		for (const stateId of ['wfs_std_review', 'wfs_std_closed', 'wfs_std_icebox']) {
 			await expect(
-				createRoutingRule(t.db, t.env, actor, {
+				createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 					workflow_state_id: stateId,
 					targets: [{ runner_id: 'rnr_1' }]
 				})
@@ -334,22 +364,79 @@ describe('rule scope state category', () => {
 
 	it('accepts an active-category state', async () => {
 		const t = seed();
-		const rule = await createRoutingRule(t.db, t.env, actor, {
+		const rule = await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			workflow_state_id: 'wfs_std_open',
 			targets: [{ runner_id: 'rnr_1' }]
 		});
 		expect(rule.scope.workflow_state_id).toBe('wfs_std_open');
 		expect(rule.scope.label).toBe('state Open');
+		const event = t.all(`SELECT payload FROM event WHERE type='routing_rule.created'`)[0];
+		expect(JSON.parse(event.payload as string)).toMatchObject({
+			rule_id: rule.id,
+			workflow_state_id: 'wfs_std_open'
+		});
 	});
+
+	it('dispatch effects: routing owners signal successes and keep rejections silent', async () => {
+		const t = seed();
+		const effects = recordDispatchEffects();
+		const rule = await createRoutingRule(t.db, t.env, actor, effects, {
+			workflow_state_id: 'wfs_std_open',
+			targets: [{ runner_id: 'rnr_1' }]
+		});
+		expect(effects.count()).toBe(1);
+		await updateRoutingRule(t.db, t.env, actor, effects, rule.id, {
+			targets: [{ runner_id: 'rnr_1' }]
+		});
+		expect(effects.count()).toBe(2);
+		await expect(
+			deleteRoutingRule(t.db, t.env, actor, effects, 'rul_missing')
+		).rejects.toMatchObject({ status: 404 });
+		expect(effects.count()).toBe(2);
+		await deleteRoutingRule(t.db, t.env, actor, effects, rule.id);
+		expect(effects.count()).toBe(3);
+	});
+
+	it.each(['create', 'update', 'delete'] as const)(
+		'dispatch effects: %sRoutingRule stays silent when its batch rejects',
+		async (owner) => {
+			const t = seed();
+			const existing =
+				owner === 'create'
+					? null
+					: await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+							workflow_state_id: 'wfs_std_open',
+							targets: [{ runner_id: 'rnr_1' }]
+						});
+			const effects = recordDispatchEffects();
+			t.env.DB.batch = async () => {
+				throw new Error(`injected routing ${owner} batch failure`);
+			};
+			const call =
+				owner === 'create'
+					? createRoutingRule(t.db, t.env, actor, effects, {
+							workflow_state_id: 'wfs_std_open',
+							targets: [{ runner_id: 'rnr_1' }]
+						})
+					: owner === 'update'
+						? updateRoutingRule(t.db, t.env, actor, effects, existing!.id, {
+								targets: [{ runner_id: 'rnr_1', tier: 'smartest' }]
+							})
+						: deleteRoutingRule(t.db, t.env, actor, effects, existing!.id);
+			await expect(call).rejects.toThrow(`injected routing ${owner} batch failure`);
+			expect(effects.count()).toBe(0);
+			expect(await listRoutingRules(t.db, actor.userId)).toHaveLength(owner === 'create' ? 0 : 1);
+		}
+	);
 
 	it('accepts a scoped tier-only rule, serializes its sentinel, and rejects a global one', async () => {
 		const t = seed();
 		await expect(
-			createRoutingRule(t.db, t.env, actor, {
+			createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 				targets: [{ runner_id: '*', tier: 'smartest' }]
 			})
 		).rejects.toMatchObject({ status: 422, code: 'invalid_field' });
-		const rule = await createRoutingRule(t.db, t.env, actor, {
+		const rule = await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			workflow_state_id: 'wfs_std_open',
 			targets: [{ runner_id: '*', tier: 'smartest' }]
 		});
@@ -360,12 +447,14 @@ describe('rule scope state category', () => {
 
 	it('rejects an update that makes a tier-only rule global', async () => {
 		const t = seed();
-		const rule = await createRoutingRule(t.db, t.env, actor, {
+		const rule = await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 			workflow_state_id: 'wfs_std_open',
 			targets: [{ runner_id: '*', tier: 'smartest' }]
 		});
 		await expect(
-			updateRoutingRule(t.db, t.env, actor, rule.id, { workflow_state_id: null })
+			updateRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, rule.id, {
+				workflow_state_id: null
+			})
 		).rejects.toMatchObject({ status: 422, code: 'invalid_field' });
 		expect((await listRoutingRules(t.db, actor.userId))[0].scope.workflow_state_id).toBe(
 			'wfs_std_open'
@@ -433,16 +522,28 @@ describe('listRoutingRules', () => {
 		const docs = addLabel(t, 'docs');
 		const targets = [{ runner_id: 'rnr_1' }];
 		const ids: Record<string, string> = {};
-		ids.global = (await createRoutingRule(t.db, t.env, actor, { targets })).id;
+		ids.global = (
+			await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, { targets })
+		).id;
 		ids.combo = (
-			await createRoutingRule(t.db, t.env, actor, {
+			await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
 				project_id: PROJECT,
 				workflow_state_id: OPEN,
 				targets
 			})
 		).id;
-		ids.design = (await createRoutingRule(t.db, t.env, actor, { label_id: design, targets })).id;
-		ids.docs = (await createRoutingRule(t.db, t.env, actor, { label_id: docs, targets })).id;
+		ids.design = (
+			await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				label_id: design,
+				targets
+			})
+		).id;
+		ids.docs = (
+			await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				label_id: docs,
+				targets
+			})
+		).id;
 		return ids;
 	}
 
@@ -502,7 +603,37 @@ describe('listRoutingRules', () => {
 		const t = createTestDb();
 		seedBase(t);
 		addRunner(t, { id: 'rnr_1', name: 'laptop' });
-		await createRoutingRule(t.db, t.env, actor, { targets: [{ runner_id: 'rnr_1' }] });
+		await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			targets: [{ runner_id: 'rnr_1' }]
+		});
 		expect((await listRoutingRules(t.db, USER))[0].warnings).toEqual([]);
+	});
+
+	it('keeps global and matching-project rules while excluding another project', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+				VALUES ('prj_other', '${USER}', 'other', 1723000000000, 1723000000000);
+		`);
+		addRunner(t, { id: 'rnr_1', name: 'laptop' });
+		const targets = [{ runner_id: 'rnr_1' }];
+		const global = (
+			await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, { targets })
+		).id;
+		const matching = (
+			await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+				project_id: PROJECT,
+				targets
+			})
+		).id;
+		await createRoutingRule(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			project_id: 'prj_other',
+			targets
+		});
+
+		expect(
+			routingRulesForProject(await listRoutingRules(t.db, USER), PROJECT).map((rule) => rule.id)
+		).toEqual([matching, global]);
 	});
 });

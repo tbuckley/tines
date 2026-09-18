@@ -3,6 +3,10 @@
  * resume from *now* rather than replaying, and the list default that hides
  * archived projects from every picker.
  */
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it, beforeEach } from 'vitest';
 import {
 	NOW,
@@ -21,6 +25,7 @@ import {
 	archiveProject,
 	createProject,
 	deleteProject,
+	getProject,
 	listProjects,
 	unarchiveProject,
 	updateProject
@@ -54,7 +59,7 @@ const archivedAt = () =>
 
 /** A daily schedule in the project, created the way the API creates one. */
 async function seedSchedule(name = 'Daily triage') {
-	const res = await createIssue(t.db, t.env, actor, PROJECT, {
+	const res = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
 		title: name,
 		schedule: { preset: { kind: 'daily', time: '09:00' } }
 	});
@@ -70,6 +75,43 @@ async function failure(fn: () => Promise<unknown>): Promise<ApiFail> {
 	}
 	throw new Error('expected the call to throw');
 }
+
+describe('project name boundary', () => {
+	it('accepts exactly 200 code units and rejects 201 without creating a project', async () => {
+		const accepted = 'a'.repeat(200);
+		await expect(createProject(t.db, t.env, actor, { name: accepted })).resolves.toMatchObject({
+			name: accepted
+		});
+
+		const before = (await listProjects(t.db, USER, { archived: 'all' })).map((p) => p.name);
+		const e = await failure(() => createProject(t.db, t.env, actor, { name: 'b'.repeat(201) }));
+		expect(e).toMatchObject({
+			status: 422,
+			code: 'invalid_field',
+			message: '"name" must be at most 200 characters'
+		});
+		expect((await listProjects(t.db, USER, { archived: 'all' })).map((p) => p.name)).toEqual(
+			before
+		);
+	});
+
+	it('validates raw update length before trimming and preserves the stored name', async () => {
+		const accepted = 'c'.repeat(200);
+		await expect(
+			updateProject(t.db, t.env, actor, PROJECT, { name: accepted })
+		).resolves.toMatchObject({ name: accepted });
+
+		for (const rejected of ['d'.repeat(201), `${'e'.repeat(199)}  `]) {
+			const e = await failure(() => updateProject(t.db, t.env, actor, PROJECT, { name: rejected }));
+			expect(e).toMatchObject({
+				status: 422,
+				code: 'invalid_field',
+				message: '"name" must be at most 200 characters'
+			});
+			expect((await getProject(t.db, USER, PROJECT)).name).toBe(accepted);
+		}
+	});
+});
 
 describe('archiveProject', () => {
 	it('sets archived_at, emits one event, and reports what the archive froze', async () => {
@@ -141,7 +183,8 @@ describe('unarchiveProject', () => {
 		t.sqlite.exec(`UPDATE scheduled_task SET next_run_at = ${stale}`);
 
 		const later = Date.parse('2026-09-05T12:00:00Z');
-		const res = await unarchiveProject(t.db, t.env, actor, PROJECT, later);
+		const effects = recordDispatchEffects();
+		const res = await unarchiveProject(t.db, t.env, actor, effects, PROJECT, later);
 
 		expect(res.project.archived_at).toBeNull();
 		expect(res.schedules_resumed).toBe(1);
@@ -153,12 +196,28 @@ describe('unarchiveProject', () => {
 		expect(events().filter((e) => e.type === 'project.unarchived')).toEqual([
 			{ type: 'project.unarchived', payload: { name: 'demo', schedules_resumed: 1 } }
 		]);
+		expect(effects.count()).toBe(1);
 	});
 
 	it('is a no-op on a live project', async () => {
-		const res = await unarchiveProject(t.db, t.env, actor, PROJECT, NOW);
+		const effects = recordDispatchEffects();
+		const res = await unarchiveProject(t.db, t.env, actor, effects, PROJECT, NOW);
 		expect(res.schedules_resumed).toBe(0);
 		expect(events().filter((e) => e.type === 'project.unarchived')).toEqual([]);
+		expect(effects.count()).toBe(1);
+	});
+
+	it('stays silent when the unarchive batch rejects', async () => {
+		await archiveProject(t.db, t.env, actor, PROJECT, NOW);
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected unarchive batch failure');
+		};
+		await expect(unarchiveProject(t.db, t.env, actor, effects, PROJECT, NOW + 1)).rejects.toThrow(
+			'injected unarchive batch failure'
+		);
+		expect(effects.count()).toBe(0);
+		expect(archivedAt()).toBe(NOW);
 	});
 });
 
@@ -180,6 +239,63 @@ describe('an archived project is read-only', () => {
 	it('keeps its name reserved', async () => {
 		const e = await failure(() => createProject(t.db, t.env, actor, { name: 'demo' }));
 		expect(e.code).toBe('duplicate_project_name');
+	});
+});
+
+describe('project deletion racing a historical address', () => {
+	it('returns the archive remedy and rolls back forced context and schedule deletion', async () => {
+		const source = 'prj_delete_race';
+		const destination = 'prj_delete_destination';
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at) VALUES
+				('${source}', '${USER}', 'former', ${NOW}, ${NOW}),
+				('${destination}', '${USER}', 'live', ${NOW}, ${NOW});
+			INSERT INTO issue (
+				id, project_id, number, title, description, workflow_id, state_id,
+				attempt_count, needs_attention, created_at, updated_at, state_entered_at
+			) VALUES (
+				'iss_delete_race', '${destination}', 1, 'live issue', '', 'wf_standard', '${OPEN}',
+				0, 0, ${NOW}, ${NOW}, ${NOW}
+			);
+			INSERT INTO context_item (
+				id, user_id, kind, name, description, project_id, body, position, version,
+				created_at, updated_at
+			) VALUES (
+				'ctx_delete_race', '${USER}', 'prompt', 'keep on rollback', '', '${source}', '',
+				0, 1, ${NOW}, ${NOW}
+			);
+			INSERT INTO scheduled_task (
+				id, project_id, name, title_template, description_template, workflow_id, state_id,
+				cron, timezone, next_run_at, created_at, updated_at
+			) VALUES (
+				'sch_delete_race', '${source}', 'keep on rollback', 'x', '', 'wf_standard', '${OPEN}',
+				'0 9 * * *', 'UTC', ${NOW + 1000}, ${NOW}, ${NOW}
+			);
+		`);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let first = true;
+		t.env.DB.batch = async (statements) => {
+			if (first) {
+				first = false;
+				t.sqlite.exec(`
+					INSERT INTO issue_address (project_id, number, issue_id, created_at)
+					VALUES ('${source}', 9, 'iss_delete_race', ${NOW});
+				`);
+			}
+			return realBatch(statements);
+		};
+
+		const error = await failure(() =>
+			deleteProject(t.db, t.env, actor, source, { forceDeleteContext: true })
+		);
+		expect(error).toMatchObject({
+			status: 422,
+			code: 'project_has_issue_aliases',
+			details: { alias_count: 1, remedy: 'tines projects archive "former"' }
+		});
+		expect(t.all(`SELECT id FROM project WHERE id = ?`, source)).toHaveLength(1);
+		expect(t.all(`SELECT id FROM context_item WHERE id = 'ctx_delete_race'`)).toHaveLength(1);
+		expect(t.all(`SELECT id FROM scheduled_task WHERE id = 'sch_delete_race'`)).toHaveLength(1);
 	});
 });
 
@@ -213,11 +329,11 @@ describe('default lists exclude archived projects', () => {
 			INSERT INTO project (id, user_id, name, created_at, updated_at)
 				VALUES ('prj_2', '${USER}', 'live', ${NOW}, ${NOW});
 		`);
-		await createIssue(t.db, t.env, actor, PROJECT, {
+		await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
 			title: 'Archived-side issue',
 			schedule: { preset: { kind: 'daily', time: '09:00' } }
 		});
-		await createIssue(t.db, t.env, actor, 'prj_2', {
+		await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'prj_2', {
 			title: 'Live-side issue',
 			schedule: { preset: { kind: 'daily', time: '10:00' } }
 		});
@@ -276,7 +392,9 @@ describe('default lists exclude archived projects', () => {
 		// The issue page's Context panel and `tines context list --issue <ref>`
 		// pass only `issue`. Naming an issue names an anchor just as `project`
 		// does, and reads of an archived project are never gated.
-		const issue = await createIssue(t.db, t.env, actor, PROJECT, { title: 'Scoped' });
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Scoped'
+		});
 		await createContextItem(t.db, t.env, actor, {
 			kind: 'prompt',
 			name: 'issue-scoped-note',

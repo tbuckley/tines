@@ -8,11 +8,12 @@ cd "$(dirname "$0")/.."
 PORT="${E2E_PORT:-8788}"
 # The same secret helpers.ts signs session cookies with; one source of truth.
 AUTH_SECRET=$(node --input-type=module -e "import { AUTH_SECRET } from './e2e/constants.mjs'; console.log(AUTH_SECRET)")
+PUBLICATION_DAILY_QUOTA=$(node --input-type=module -e "import { PUBLICATION_DAILY_QUOTA } from './e2e/constants.mjs'; process.stdout.write(String(PUBLICATION_DAILY_QUOTA))")
 
 rm -rf .wrangler-e2e
 
 if [ "${E2E_SKIP_BUILD:-}" != "1" ]; then
-	pnpm build
+	VITE_TINES_E2E=1 pnpm build
 fi
 
 pnpm exec wrangler d1 migrations apply tines --local --persist-to .wrangler-e2e
@@ -32,4 +33,15 @@ exec pnpm exec wrangler dev \
 	--persist-to .wrangler-e2e \
 	--test-scheduled \
 	--var "BETTER_AUTH_SECRET:$AUTH_SECRET" \
-	--var "BETTER_AUTH_URL:http://127.0.0.1:$PORT"
+	--var "BETTER_AUTH_URL:http://127.0.0.1:$PORT" \
+	--var "PUBLIC_WORKFLOW_PUBLISHING_ENABLED:true" \
+	--var "PUBLIC_WORKFLOW_DAILY_QUOTA:$PUBLICATION_DAILY_QUOTA" \
+	--var "PUBLIC_WORKFLOW_MODERATOR_USER_IDS:usr_e2e_alice" \
+	--var "PUBLIC_WORKFLOW_REPORT_HMAC_SECRET:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" \
+	--var "PUBLIC_WORKFLOW_APPEAL_CONTACT:mailto:appeals@e2e.test" \
+	--var "PUBLIC_WORKFLOW_MODERATION_QUEUE_READY:true" \
+	--var "PUBLIC_WORKFLOW_MODERATION_JOURNEY_VERIFIED:true" \
+	--var "E2E_PUBLICATION_BOUNDARY_TEST:1" \
+	--var "SECRET_ENCRYPTION_KEY:e2e-only-secret-encryption-key" \
+	--var "USAGE_SCALE_SQL_TRACE:${USAGE_SCALE_SQL_TRACE:-}" \
+	--var "STATS_SCALE_REPEAT_PREPARATION:${STATS_SCALE_REPEAT_PREPARATION:-}"

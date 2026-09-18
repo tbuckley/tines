@@ -1,34 +1,49 @@
 import type { IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, clickUntil, gotoHydrated, resetFocus, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	clickToOpen,
+	clickUntil,
+	gotoHydrated,
+	readSettled,
+	resetFocus,
+	runId,
+	signIn
+} from './helpers';
 
 // Browser flows, signed in as the seeded user via a signed session cookie.
 // Names carry the per-run suffix so re-runs against a reused server stay
 // unambiguous.
 
-const projectName = `ui-${runId}`;
+let projectName: string;
 const issueTitle = `UI smoke ${runId}`;
 let project: Project;
+let longProject: Project;
 let issue: IssueDetail;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	projectName = uniqueName('ui');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
+	longProject = await body<Project>(
+		await api.post('/api/v1/projects', {
+			name: `A deliberately long focused project name for chrome ${runId}`
+		})
+	);
 	issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, {
 			title: issueTitle,
 			description: 'A **bold** claim.'
 		})
 	);
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context, request }) => {
-	await signIn(context, ALICE.sessionToken);
+test.use({ signedIn: ALICE });
+
+test.beforeEach(async ({ request }) => {
 	// Specs share one user: a focus left behind would scope this one's lists.
 	await resetFocus(request);
 });
@@ -104,6 +119,94 @@ test('the mobile layout swaps the header tabs for a bottom bar', async ({ page }
 	await expect(bottomNav.getByRole('link', { name: 'Workflows' })).toBeVisible();
 	// The desktop tab strip is hidden at this width.
 	await expect(page.locator('header').getByRole('link', { name: 'Workflows' })).toBeHidden();
+});
+
+test('the app chrome stays inside both responsive breakpoint boundaries', async ({ page }) => {
+	const api = apiClient(page.request, ALICE.apiKey);
+	await body(await api.patch('/api/v1/preferences', { focused_project_id: longProject.id }));
+	await page.setViewportSize({ width: 639, height: 844 });
+	await gotoHydrated(page, '/issues');
+
+	const header = page.locator('header');
+	const switcher = header.getByRole('button', { name: /^Project focus:/ });
+	const account = header.getByRole('button', { name: 'Account menu' });
+	const headerWorkflows = header.getByRole('link', { name: 'Workflows' });
+	const bottomNav = page.getByRole('navigation', { name: 'Primary' });
+	await expect(switcher).toBeVisible();
+
+	for (const width of [639, 640, 641, 767, 768, 769]) {
+		await page.setViewportSize({ width, height: 844 });
+		const geometry = await readSettled(() =>
+			page.evaluate(() => {
+				const switcher = document.querySelector<HTMLElement>(
+					'button[aria-label^="Project focus:"]'
+				)!;
+				const account = document.querySelector<HTMLElement>('button[aria-label="Account menu"]')!;
+				const headerNav = document.querySelector<HTMLElement>('header nav')!;
+				const box = (element: HTMLElement) => {
+					const bounds = element.getBoundingClientRect();
+					return { left: bounds.left, right: bounds.right };
+				};
+				return {
+					overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+					switcher: box(switcher),
+					switcherScrollWidth: switcher.scrollWidth,
+					switcherClientWidth: switcher.clientWidth,
+					account: box(account),
+					headerNav: getComputedStyle(headerNav).display === 'none' ? null : box(headerNav)
+				};
+			})
+		);
+
+		expect(geometry.overflow, `document overflow at ${width}px`).toBe(0);
+		expect(geometry.switcher.left, `switcher left edge at ${width}px`).toBeGreaterThanOrEqual(0);
+		expect(geometry.switcher.right, `switcher right edge at ${width}px`).toBeLessThanOrEqual(width);
+		expect(geometry.switcherScrollWidth, `switcher contents at ${width}px`).toBeLessThanOrEqual(
+			geometry.switcherClientWidth
+		);
+		expect(geometry.account.right, `account right edge at ${width}px`).toBeLessThanOrEqual(width);
+		expect(geometry.switcher.right, `switcher/account overlap at ${width}px`).toBeLessThanOrEqual(
+			geometry.account.left
+		);
+		if (width < 768) {
+			await expect(bottomNav).toBeVisible();
+			await expect(headerWorkflows).toBeHidden();
+			expect(geometry.headerNav).toBeNull();
+		} else {
+			await expect(bottomNav).toBeHidden();
+			await expect(headerWorkflows).toBeVisible();
+			expect(
+				geometry.headerNav!.left,
+				`switcher/navigation overlap at ${width}px`
+			).toBeGreaterThanOrEqual(geometry.switcher.right);
+			expect(
+				geometry.headerNav!.right,
+				`navigation/account overlap at ${width}px`
+			).toBeLessThanOrEqual(geometry.account.left);
+		}
+	}
+
+	for (const width of [640, 768]) {
+		await page.setViewportSize({ width, height: 844 });
+		const focusMenu = page.getByRole('menu', { name: 'Project focus' });
+		await clickToOpen(switcher, focusMenu);
+		await expect(focusMenu.getByRole('menuitemradio', { name: 'All projects' })).toBeVisible();
+		expect((await focusMenu.boundingBox())!.x).toBeGreaterThanOrEqual(0);
+		expect(
+			(await focusMenu.boundingBox())!.x + (await focusMenu.boundingBox())!.width
+		).toBeLessThanOrEqual(width);
+		await page.keyboard.press('Escape');
+
+		const accountMenu = page
+			.getByRole('menu')
+			.filter({ has: page.getByRole('menuitem', { name: 'Settings' }) });
+		await clickToOpen(account, accountMenu);
+		await expect(accountMenu.getByRole('menuitem', { name: 'Settings' })).toBeVisible();
+		const accountMenuBox = (await accountMenu.boundingBox())!;
+		expect(accountMenuBox.x).toBeGreaterThanOrEqual(0);
+		expect(accountMenuBox.x + accountMenuBox.width).toBeLessThanOrEqual(width);
+		await page.keyboard.press('Escape');
+	}
 });
 
 test('issue detail renders markdown, transitions, and comments', async ({ page }) => {

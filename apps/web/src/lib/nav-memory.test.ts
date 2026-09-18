@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	DEFAULT_NAV_MEMORY,
+	issueBackTarget,
 	isListHref,
 	parseNavMemory,
 	rememberedIssuesQuery
@@ -28,6 +29,45 @@ describe('isListHref', () => {
 		{ href: '/issues' }
 	])('rejects %o', (href) => {
 		expect(isListHref(href)).toBe(false);
+	});
+});
+
+describe('issueBackTarget', () => {
+	it('keeps issue filters while stripping a legacy project one-shot', () => {
+		expect(
+			issueBackTarget(
+				{
+					href: '/issues?project=Tines&workflow=wf_eng&state=s_review&q=mine',
+					label: 'Issues'
+				},
+				'prj_paris',
+				'/issues?ready=1'
+			)
+		).toEqual({ href: '/issues?workflow=wf_eng&state=s_review&q=mine', label: 'Issues' });
+	});
+
+	it('keeps only a project page matching the current focus', () => {
+		expect(issueBackTarget({ href: '/projects/prj_a', label: 'A' }, 'prj_a', '/issues')).toEqual({
+			href: '/projects/prj_a',
+			label: 'A'
+		});
+		expect(
+			issueBackTarget({ href: '/projects/prj_b', label: 'B' }, 'prj_a', '/issues?q=a')
+		).toEqual({
+			href: '/issues?q=a',
+			label: 'Issues'
+		});
+	});
+
+	it('retains project memory under All projects and falls back without memory', () => {
+		expect(issueBackTarget({ href: '/projects/prj_a', label: 'A' }, null, '/issues')).toEqual({
+			href: '/projects/prj_a',
+			label: 'A'
+		});
+		expect(issueBackTarget(null, 'prj_a', '/issues?ready=1')).toEqual({
+			href: '/issues?ready=1',
+			label: 'Issues'
+		});
 	});
 });
 
@@ -86,9 +126,9 @@ describe('parseNavMemory', () => {
 
 describe('rememberedIssuesQuery', () => {
 	it('drops the one-shot project param but keeps every other filter', () => {
-		expect(rememberedIssuesQuery('?project=Tines&category=done&q=nav')).toBe(
-			'?category=done&q=nav'
-		);
+		expect(
+			rememberedIssuesQuery('?project=Tines&workflow=wf_eng&state=s_review&category=done&q=nav')
+		).toBe('?workflow=wf_eng&state=s_review&category=done&q=nav');
 	});
 
 	it('remembers nothing when the project param was all there was', () => {

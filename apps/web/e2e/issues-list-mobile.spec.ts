@@ -1,7 +1,17 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, DESKTOP, PHONE, resetFocus, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	DESKTOP,
+	gotoHydrated,
+	PHONE,
+	resetFocus,
+	runId,
+	signIn
+} from './helpers';
 
 /**
  * An issue row at both widths. On a phone the title is the whole first line
@@ -24,7 +34,7 @@ const SHORT_STATE = 'Design';
 const LONG_TITLE = `USER_GUIDE.md refers to a --json flag that no command actually accepts`;
 const SHORT_STATE_TITLE = `Full-text search across issue descriptions and comment bodies`;
 
-const projectName = `issues-list-mobile-${runId}`;
+let projectName: string;
 let project: Project;
 /** Sits in `Needs Clarification` — the widest state cell. */
 let clarifying: IssueDetail;
@@ -33,16 +43,15 @@ let designing: IssueDetail;
 /** A duplicate of `clarifying`, so its row carries the `dup` signal. */
 let duplicate: IssueDetail;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	projectName = uniqueName('issues-list-mobile');
+	listUrl = `/issues?project=${encodeURIComponent(projectName)}`;
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 
 	const workflow = await body<WorkflowResponse>(
 		await api.post('/api/v1/workflows', {
-			name: `Mobile list ${runId}`,
+			name: uniqueName('Mobile list', { maxLength: 100 }),
 			initial_state: LONG_STATE,
 			states: [
 				{ name: LONG_STATE, category: 'active' },
@@ -68,12 +77,11 @@ test.beforeAll(async ({ playwright }) => {
 		kind: 'duplicate_of',
 		issue_id: clarifying.id
 	});
-
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context, request }) => {
-	await signIn(context, ALICE.sessionToken);
+test.use({ signedIn: ALICE });
+
+test.beforeEach(async ({ request }) => {
 	// Specs share one user: a focus left behind would scope this one's lists.
 	await resetFocus(request);
 });
@@ -83,7 +91,7 @@ test.beforeEach(async ({ context, request }) => {
  * parameter is the one-shot that sets the project focus and redirects to
  * `/issues` (Tines/259); `beforeEach` clears the focus again for the next test.
  */
-const listUrl = `/issues?project=${encodeURIComponent(projectName)}`;
+let listUrl: string;
 
 const row = (page: Page, issue: IssueDetail): Locator =>
 	page.getByRole('link', { name: new RegExp(`#${issue.number}\\b`) });
@@ -316,7 +324,8 @@ async function expectSelectedClear(page: Page, name: string) {
 test.describe('the category tab strip', () => {
 	test('the phone strip fades the edge that hides tabs', async ({ page }) => {
 		await page.setViewportSize(PHONE);
-		await page.goto(listUrl);
+		// Let the selected-tab reveal finish before scrolling the strip.
+		await gotoHydrated(page, listUrl);
 		await expect(tab(page, 'Open')).toBeVisible();
 
 		// It really does overflow — the fade is describing something.

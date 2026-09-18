@@ -6,7 +6,7 @@
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconSettings from '@tabler/icons-svelte/icons/settings';
 	import { slide } from 'svelte/transition';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { afterNavigate, goto, invalidateAll, replaceState } from '$app/navigation';
 	import { focusHint } from '$lib/focus.svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
@@ -30,8 +30,29 @@
 	import { groupContextByWorkflow } from '$lib/context-groups';
 	import { formatDate, prefersReducedMotion } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
+	import { eligibleStarterIssue, type StarterLandingMarker } from '$lib/starter-landing';
 
 	let { data } = $props();
+
+	let starterLanding = $state<StarterLandingMarker | undefined>();
+	afterNavigate(() => {
+		starterLanding = page.state.starterLanding;
+		if (page.state.starterLanding) {
+			const { starterLanding: _consumed, ...remaining } = page.state;
+			replaceState('', remaining);
+		}
+	});
+	const starterIssue = $derived(
+		eligibleStarterIssue(starterLanding, data.project, data.issues, {
+			hasQuery: page.url.search !== '',
+			bounded: data.pagination.bounded
+		})
+	);
+	let starterWasEligible = $state(false);
+	$effect(() => {
+		if (starterIssue) starterWasEligible = true;
+		else if (starterWasEligible) starterLanding = undefined;
+	});
 
 	// Remember this list (filters and all) so an issue opened from here gets a
 	// back link that returns to it.
@@ -41,27 +62,30 @@
 
 	// Opening a project focuses it (Tines/259). Client-side on purpose: doing it
 	// in the load would fire on hover, because the app preloads links on hover.
-	// The chrome is told optimistically rather than by an `invalidate`, whose
-	// load rerun swallowed a link click that landed in its window; the page's
-	// own data is already scoped, so nothing else here has to refetch.
+	// The chrome is told optimistically. The write is tracked so subsequent
+	// same-origin reads wait for the server to agree before they begin.
 	//
 	// Announced once per project, tracked in a plain `let` that no rerender
 	// resets. A guard reading `focusHint` instead would make the hint a
 	// dependency of this effect, so the switcher could never move the focus
-	// off this page: `chooseFocus` clears the hint and `invalidateAll`s, both
+	// off this page: `chooseFocus` clears the hint and invalidates, both
 	// of which re-run this effect, which would then PATCH this project
 	// straight back over the user's choice.
 	let announced: string | null = null;
+	let announcement = 0;
 	$effect(() => {
 		if (data.project.archived_at !== null) return;
 		if (announced === data.project.id) return;
-		announced = data.project.id;
-		focusHint.set(data.project);
-		api.updatePreferences({ focused_project_id: data.project.id }).catch(() => {
-			// The chrome must not claim a focus the server refused.
-			announced = null;
-			focusHint.clear();
+		const projectId = data.project.id;
+		const operation = ++announcement;
+		announced = projectId;
+		const hintOwner = focusHint.set(data.project);
+		const settlement = api.updatePreferences({ focused_project_id: projectId }).catch(() => {
+			// Roll back before tracked reads resume, but never erase a newer choice.
+			focusHint.clearIfCurrent(hintOwner);
+			if (announcement === operation) announced = null;
 		});
+		focusHint.track(settlement);
 	});
 
 	/** An archived project reads normally and writes nowhere. */
@@ -242,10 +266,10 @@
 <svelte:head><title>{data.project.name} · Tines</title></svelte:head>
 
 <a
-	href="/projects"
+	href={navMemory.projectsHref}
 	class="text-muted-foreground hover:text-foreground mb-3 inline-flex items-center gap-1 text-sm"
 >
-	<IconChevronLeft size={16} /> Projects
+	<IconChevronLeft size={16} /> Manage projects
 </a>
 
 <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
@@ -307,6 +331,23 @@
 
 <div class="mb-8">
 	<h2 class="mb-3 text-sm font-semibold">Issues</h2>
+	{#if starterIssue}
+		<div class="bg-muted/40 mb-3 min-w-0 rounded-md border p-3 text-sm">
+			<p class="text-muted-foreground mb-1 text-xs font-semibold">First issue</p>
+			<a
+				href="/issues/{encodeURIComponent(data.project.name)}/{starterIssue.number}"
+				class="hover:text-primary flex min-w-0 items-start gap-2 font-medium"
+			>
+				<StateBadge state={starterIssue.effective_state} />
+				<span class="line-clamp-2 min-w-0 break-words"
+					>{data.project.name}/#{starterIssue.number} — {starterIssue.title}</span
+				>
+			</a>
+			<a href="/agents" class="text-primary mt-2 inline-block underline-offset-4 hover:underline">
+				Next: get an agent running
+			</a>
+		</div>
+	{/if}
 	<!-- The same bar as the all-issues list, minus the project scope. -->
 	<IssueFilterBar
 		filters={data.filters}
@@ -315,6 +356,12 @@
 		workflows={data.workflows}
 	/>
 
+	<IssuePagination
+		pagination={data.pagination}
+		itemCount={data.issues.length}
+		label="Issue pagination above results"
+		class="mb-4"
+	/>
 	<IssueList
 		issues={data.issues}
 		showProject={false}
@@ -322,11 +369,20 @@
 			? 'No issues on this page. Results may have changed.'
 			: data.filters.ready
 				? 'No ready issues in this project.'
-				: data.filters.category || data.filters.q || data.filters.labels.length > 0
+				: data.filters.workflow ||
+					  data.filters.state ||
+					  data.filters.category ||
+					  data.filters.q ||
+					  data.filters.labels.length > 0
 					? 'No issues match these filters.'
 					: 'No issues in this project yet.'}
 	/>
-	<IssuePagination pagination={data.pagination} itemCount={data.issues.length} />
+	<IssuePagination
+		pagination={data.pagination}
+		itemCount={data.issues.length}
+		label="Issue pagination below results"
+		announceCount={false}
+	/>
 </div>
 
 {#if data.schedules.length > 0}
@@ -352,18 +408,23 @@
 <AgentRoutingCard
 	rules={data.routingRules}
 	{activeStateIds}
+	editable={!archived}
 	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
-	emptyAction={{ label: 'Set up routing', href: '/agents#routing' }}
+	emptyAction={{
+		label: 'Edit routing',
+		href: `/agents?new=rule&project=${encodeURIComponent(data.project.id)}#routing`
+	}}
+	editAction={{
+		label: 'Edit routing',
+		href: `/agents?new=rule&project=${encodeURIComponent(data.project.id)}#routing`
+	}}
 />
 
 <div class="mb-8">
 	<div class="mb-3 flex items-center justify-between">
 		<h2 class="text-sm font-semibold">Context</h2>
 		<div class="flex items-center gap-3">
-			<a
-				href="/context?project={data.project.id}"
-				class="text-muted-foreground hover:text-foreground text-xs"
-			>
+			<a href="/context" class="text-muted-foreground hover:text-foreground text-xs">
 				View all in Context
 			</a>
 			{#if !archived}

@@ -1,11 +1,17 @@
 import { repoDirFromUrl, type EffectiveContext, type IssueDetail } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
+import { getDb } from '$lib/server/db';
+import { USER, seedBase } from '../supervisor/test-fixtures';
 import {
 	buildLaunchPrompt,
+	buildResumePrompt,
+	countSharedContextItems,
 	isJournal,
 	issueBlock,
 	layerRank,
 	listContextItems,
+	loadFiles,
+	selectLaunchComments,
 	stitchPrompt,
 	validateWorkspacePath
 } from './context';
@@ -178,6 +184,8 @@ const issue: IssueDetail = {
 	links: { blocked_by: [], blocks: [], duplicate_of: null, duplicated_by: [] },
 	scheduled_task_id: null,
 	scheduled_task_name: null,
+	scheduled_task_project_id: null,
+	scheduled_task_project_name: null,
 	pinned_runner_id: null,
 	pinned_runner_name: null,
 	pinned_tier: null,
@@ -296,6 +304,7 @@ const richContext: EffectiveContext = {
 		{
 			item_id: 'ctx_s',
 			name: 'review-checklist',
+			description: 'Check the implementation before review.',
 			scope: {
 				...emptyScope,
 				workflow_state_id: 's_review',
@@ -330,12 +339,164 @@ const richContext: EffectiveContext = {
 };
 
 describe('issueBlock', () => {
+	const runComment = (id: string, created_at: number, body = `body ${id}`, issueNumber = 42) => ({
+		...issue.comments[0],
+		id,
+		body,
+		created_at,
+		actor: {
+			...issue.comments[0].actor,
+			run: {
+				run_id: `run_${id}`,
+				runner_name: 'runner',
+				issue_ref: { project_name: 'Tines', number: issueNumber }
+			}
+		}
+	});
+
+	it('keeps humans, a protected handoff, and three other latest agent comments', () => {
+		const run = {
+			run_id: 'run',
+			runner_name: 'runner',
+			issue_ref: { project_name: 'Tines', number: 42 }
+		};
+		const comments = [
+			{ ...issue.comments[0], id: 'cmt_h', body: 'human body' },
+			...['a', 'b', 'c', 'd', 'e'].map((suffix, index) => ({
+				...issue.comments[0],
+				id: `cmt_${suffix}`,
+				body: `agent body ${suffix}`,
+				created_at: 1700000001000 + index,
+				actor: { ...issue.comments[0].actor, run: { ...run, run_id: `run_${suffix}` } }
+			})),
+			{ ...issue.comments[0], id: 'cmt_h', body: 'human body' }
+		];
+		const launchIssue = {
+			...issue,
+			comments,
+			launch_comments: { latest_completed_run_comment_id: 'cmt_a' }
+		};
+		const before = structuredClone(launchIssue.comments);
+		const selected = selectLaunchComments(launchIssue);
+		expect(selected.retained.map((comment) => comment.id)).toEqual([
+			'cmt_h',
+			'cmt_a',
+			'cmt_c',
+			'cmt_d',
+			'cmt_e'
+		]);
+		expect(selected.omittedAgentIds).toEqual(['cmt_b']);
+		expect(launchIssue.comments).toEqual(before);
+		const block = issueBlock(launchIssue, emptyContext);
+		expect(block).toContain('Older agent comments: cmt_b. Load one');
+		expect(block).not.toContain('agent body b');
+		expect(block).toContain('agent body a');
+	});
+
+	it('keeps the full thread when launch metadata is absent', () => {
+		const run = {
+			run_id: 'run',
+			runner_name: 'runner',
+			issue_ref: { project_name: 'Tines', number: 42 }
+		};
+		const comments = Array.from({ length: 5 }, (_, index) => ({
+			...issue.comments[0],
+			id: `cmt_${index}`,
+			body: `body ${index}`,
+			actor: { ...issue.comments[0].actor, run }
+		}));
+		expect(selectLaunchComments({ ...issue, comments }).retained).toHaveLength(5);
+	});
+
+	it.each([
+		[0, []],
+		[1, ['cmt_0']],
+		[2, ['cmt_0', 'cmt_1']],
+		[3, ['cmt_0', 'cmt_1', 'cmt_2']]
+	] as const)('keeps all of %i agent comments', (count, ids) => {
+		const comments = Array.from({ length: count }, (_, i) => runComment(`cmt_${i}`, 100 + i));
+		const selected = selectLaunchComments({
+			...issue,
+			comments,
+			launch_comments: { latest_completed_run_comment_id: null }
+		});
+		expect(selected.retained.map((comment) => comment.id)).toEqual(ids);
+		expect(selected.omittedAgentIds).toEqual([]);
+	});
+
+	it('uses stable timestamp/id order, keeps unknown provenance as human, and protects an older handoff', () => {
+		const unknown = {
+			...issue.comments[0],
+			id: 'cmt_unknown',
+			created_at: 5,
+			body: 'unknown body'
+		};
+		const comments = [
+			runComment('cmt_z', 10),
+			runComment('cmt_a', 10),
+			runComment('cmt_handoff', 1, 'required old detail'),
+			unknown,
+			runComment('cmt_cross_1', 20, 'cross one', 99),
+			runComment('cmt_cross_2', 21, 'cross two', 99),
+			runComment('cmt_cross_3', 22, 'cross three', 99),
+			runComment('cmt_a', 10, 'duplicate must not render')
+		];
+		const launchIssue = {
+			...issue,
+			comments,
+			launch_comments: { latest_completed_run_comment_id: 'cmt_handoff' }
+		};
+		const selected = selectLaunchComments(launchIssue);
+		expect(selected.retained.map((comment) => comment.id)).toEqual([
+			'cmt_handoff',
+			'cmt_unknown',
+			'cmt_cross_1',
+			'cmt_cross_2',
+			'cmt_cross_3'
+		]);
+		expect(selected.omittedAgentIds).toEqual(['cmt_a', 'cmt_z']);
+		const block = issueBlock(
+			{
+				...launchIssue,
+				round: { summary_comment: { body: 'OMITTED SENTINEL' } } as unknown as IssueDetail['round']
+			},
+			emptyContext
+		);
+		expect(block).toContain('required old detail');
+		expect(block).toContain('unknown body');
+		expect(block).not.toContain('body cmt_a');
+		expect(block).not.toContain('duplicate must not render');
+		expect(block).not.toContain('OMITTED SENTINEL');
+		expect(block.match(/Older agent comments:/g)).toHaveLength(1);
+	});
+
+	it('renders skill descriptions once, collapses whitespace, and falls back for empty text', () => {
+		const context = structuredClone(richContext);
+		context.skills[0].description = ' Check the\n implementation   before review. ';
+		context.skills.push({
+			...context.skills[0],
+			item_id: 'ctx_empty',
+			name: 'empty-skill',
+			description: '   ',
+			files: [{ path: 'SKILL.md', content: 'EMPTY SKILL BODY' }]
+		});
+		const block = issueBlock(issue, context);
+		expect(block.match(/Check the implementation before review\./g)).toHaveLength(1);
+		expect(block).toContain(
+			'Skill "empty-skill" (state Review): read `skills/empty-skill/SKILL.md` when the "empty-skill" procedure is relevant.'
+		);
+		expect(block).toContain('tines issues context Tines/42 --json');
+		expect(block).not.toContain('EMPTY SKILL BODY');
+	});
+
 	it('renders the factual block with runnable CLI commands', () => {
 		const block = issueBlock(issue, emptyContext);
 		expect(block).toContain('## Issue: Tines/42 — Ship the thing');
 		expect(block).toContain('Do it *well*.');
 		expect(block).toContain('Review (awaiting_human), in workflow "Two-step".');
-		expect(block).toContain('**Alice via laptop** (2023-11-14T22:13:20.000Z):\nLooks close.');
+		expect(block).toContain(
+			'**Alice via laptop** (2023-11-14T22:13:20.000Z, ID: cmt_1):\nLooks close.'
+		);
 		// The comment affordance is a quoted heredoc, so an agent's prose survives
 		// the shell verbatim (Tines/9) — with the fallback spelled out, because a
 		// CLI predating that change posts a bare `-` and exits 0. Asserted as one
@@ -435,7 +596,7 @@ describe('issueBlock', () => {
 		);
 		expect(steered).toContain('Now stale: `impl-pr`.');
 		expect(steered).toContain(
-			'**Tom Buckley** (2023-11-14T21:56:39.000Z):\nCI is red on the e2e job.'
+			'**Tom Buckley** (2023-11-14T21:56:39.000Z, ID: cmt_h):\nCI is red on the e2e job.'
 		);
 		// The steer is what this run is for, so it precedes everything the agent
 		// would otherwise read first — including the full thread.
@@ -490,7 +651,10 @@ describe('issueBlock', () => {
 	it('lists artifacts with the fetch command and shared prompts names-only', () => {
 		const block = issueBlock(issue, richContext);
 		expect(block).toContain(
-			'Attached to this issue: skill "review-checklist" (1 file), repo "src" (branch experiment). Fetch them: `tines issues context Tines/42 --out <dir>`'
+			'Skill "review-checklist" (state Review): read `skills/review-checklist/SKILL.md`'
+		);
+		expect(block).toContain(
+			'Attached to this issue: repo "src" (branch experiment). Fetch them: `tines issues context Tines/42 --out <dir>`'
 		);
 		// Shared footnote: global + non-journal, non-issue-anchored prompts —
 		// the issue-scoped "constraints" prompt is the issue's own, not listed.
@@ -501,6 +665,35 @@ describe('issueBlock', () => {
 });
 
 describe('buildLaunchPrompt', () => {
+	it('applies launch selection to both cold and resumed prompts', () => {
+		const comments = Array.from({ length: 5 }, (_, i) => ({
+			...issue.comments[0],
+			id: `cmt_${i}`,
+			body: i === 0 ? 'OMITTED COLD RESUME SENTINEL' : `kept ${i}`,
+			created_at: i,
+			actor: {
+				...issue.comments[0].actor,
+				run: {
+					run_id: `run_${i}`,
+					runner_name: 'runner',
+					issue_ref: { project_name: 'Tines', number: 42 }
+				}
+			}
+		}));
+		const launchIssue = {
+			...issue,
+			comments,
+			launch_comments: { latest_completed_run_comment_id: null }
+		};
+		for (const text of [
+			buildLaunchPrompt(richContext, launchIssue),
+			buildResumePrompt(richContext, launchIssue)
+		]) {
+			expect(text).toContain('Older agent comments: cmt_0, cmt_1.');
+			expect(text).not.toContain('OMITTED COLD RESUME SENTINEL');
+			expect(text).toContain('Skill "review-checklist"');
+		}
+	});
 	it('puts the context first and the issue block last', () => {
 		const text = buildLaunchPrompt(richContext, issue);
 		expect(text.startsWith('## Context: global')).toBe(true);
@@ -533,6 +726,27 @@ describe('buildLaunchPrompt', () => {
 		const text = buildLaunchPrompt(emptyContext, issue, [], []);
 		expect(text).not.toContain('Labels:');
 		expect(text).toContain('no labels exist yet');
+	});
+});
+
+describe('buildResumePrompt', () => {
+	it('keeps the stage context and the issue block, and drops what the session already holds', () => {
+		const text = buildResumePrompt(richContext, issue);
+		// The stage's own instructions and journal stay: a send-back usually
+		// crosses stages, so the contract the agent is now working under is
+		// exactly what its previous prompt did NOT contain.
+		expect(text).toContain('## Journal (project Tines · state Review)');
+		expect(text.indexOf('## Issue:')).toBeGreaterThan(text.indexOf('## Journal'));
+		// Global and project parts are dropped — the continued conversation is
+		// still holding them, and repeating them only lengthens every later turn.
+		expect(text).not.toContain('## Context: global');
+		expect(text).not.toContain('## Context: project Tines');
+		// Which makes it strictly shorter than the cold launch prompt.
+		expect(text.length).toBeLessThan(buildLaunchPrompt(richContext, issue).length);
+	});
+
+	it('is just the issue block when the stage contributes nothing', () => {
+		expect(buildResumePrompt(emptyContext, issue).startsWith('## Issue:')).toBe(true);
 	});
 });
 
@@ -602,5 +816,146 @@ describe('listContextItems workflow filter', () => {
 			'ctx_global'
 		);
 		expect(names(await listContextItems(t.db, 'u2', { workflow: 'wf_eng' }, page))).toEqual([]);
+	});
+});
+
+describe('listContextItems search', () => {
+	const page = { cursor: null, limit: 50 };
+
+	function seed(): TestDb {
+		const t = createTestDb();
+		const long = 'a'.repeat(49) + 'needle' + 'b'.repeat(145);
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES
+				('u1', 'alice', 'a@example.com', 1, 0, 0),
+				('u2', 'bob', 'b@example.com', 1, 0, 0);
+			INSERT INTO project (id, user_id, name, created_at, updated_at) VALUES
+				('p1', 'u1', 'one', 0, 0), ('p2', 'u1', 'two', 0, 0), ('p3', 'u2', 'private', 0, 0);
+		`);
+		const insert = t.sqlite.prepare(`INSERT INTO context_item
+			(id, user_id, kind, name, description, project_id, workflow_state_id, issue_id, body,
+			 position, version, created_at, updated_at) VALUES (?, ?, 'prompt', ?, ?, ?, NULL, NULL, '', 0, 1, 0, ?)`);
+		insert.run('by-name', 'u1', `prefix ${'a'.repeat(49)}needle`, '', 'p1', 8);
+		insert.run('by-description', 'u1', 'description', long, 'p1', 7);
+		insert.run('truncation-decoy', 'u1', `${long.slice(0, 48)}x`, '', 'p1', 6);
+		insert.run('literal', 'u1', `literal % _ \\ [x] O'Reilly`, '', 'p1', 5);
+		insert.run('other-project', 'u1', `prefix ${'a'.repeat(49)}needle`, '', 'p2', 4);
+		insert.run('other-user', 'u2', `prefix ${'a'.repeat(49)}needle`, '', 'p3', 3);
+		insert.run('unicode-upper', 'u1', 'Ärger', '', 'p1', 2);
+		insert.run('unicode-lower', 'u1', 'ärger', '', 'p1', 1);
+		return t;
+	}
+
+	it('matches complete long terms across both columns and composes before pagination', async () => {
+		const t = seed();
+		const q = 'a'.repeat(49) + 'needle';
+		const result = await listContextItems(t.db, 'u1', { q, project: 'p1' }, { ...page, limit: 1 });
+		expect(result.items.map((item) => item.id)).toEqual(['by-name']);
+		expect(result.hasMore).toBe(true);
+		expect(
+			(await listContextItems(t.db, 'u1', { q, project: 'p1' }, page)).items.map((item) => item.id)
+		).toEqual(['by-name', 'by-description']);
+	});
+
+	it('treats pattern and SQL characters literally and remains tenant-isolated', async () => {
+		const t = seed();
+		for (const q of ['%', '_', '\\', '[x]', "O'Reilly"]) {
+			expect(
+				(await listContextItems(t.db, 'u1', { q }, page)).items.map((item) => item.id),
+				q
+			).toEqual(['literal']);
+		}
+		expect(
+			(await listContextItems(t.db, 'u2', { q: 'needle' }, page)).items.map((i) => i.id)
+		).toEqual(['other-user']);
+	});
+
+	it('is ASCII-case-insensitive but does not promise Unicode folding', async () => {
+		const t = seed();
+		expect((await listContextItems(t.db, 'u1', { q: 'NEEDLE' }, page)).items).toHaveLength(3);
+		expect(
+			(await listContextItems(t.db, 'u1', { q: 'ÄRGER' }, page)).items.map((i) => i.id)
+		).toEqual(['unicode-upper']);
+		expect(
+			(await listContextItems(t.db, 'u1', { q: 'ärger' }, page)).items.map((i) => i.id)
+		).toEqual(['unicode-lower']);
+	});
+});
+
+describe('focused Context presentation', () => {
+	it('includes direct and issue anchors once, and counts only global/state shared items', async () => {
+		const t = createTestDb();
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+				VALUES ('u1', 'alice', 'a@example.com', 1, 0, 0);
+			INSERT INTO project (id, user_id, name, created_at, updated_at) VALUES
+				('p1', 'u1', 'one', 0, 0), ('p2', 'u1', 'two', 0, 0);
+			INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, attempt_count, needs_attention, created_at, updated_at, state_entered_at)
+				VALUES ('i1', 'p1', 1, 'one', '', 'wf_standard', 'wfs_std_open', 0, 0, 0, 0, 0);
+			INSERT INTO context_item (id, user_id, kind, name, description, project_id, workflow_state_id, issue_id, body, position, version, created_at, updated_at) VALUES
+				('direct', 'u1', 'prompt', 'direct', '', 'p1', NULL, NULL, '', 0, 1, 0, 4),
+				('issue', 'u1', 'prompt', 'issue', '', NULL, NULL, 'i1', '', 0, 1, 0, 3),
+				('both', 'u1', 'prompt', 'both', '', 'p1', NULL, 'i1', '', 0, 1, 0, 2),
+				('other', 'u1', 'prompt', 'other', '', 'p2', NULL, NULL, '', 0, 1, 0, 1),
+				('global', 'u1', 'prompt', 'global', '', NULL, NULL, NULL, '', 0, 1, 0, 0),
+				('state', 'u1', 'prompt', 'state', '', NULL, 'wfs_std_open', NULL, '', 0, 1, 0, 0);
+		`);
+		const result = await listContextItems(
+			t.db,
+			'u1',
+			{ touchesProjectId: 'p1' },
+			{ cursor: null, limit: 50 }
+		);
+		expect(result.items.map((item) => item.id)).toEqual(['direct', 'issue', 'both']);
+		expect(await countSharedContextItems(t.db, 'u1')).toBe(2);
+	});
+});
+
+describe('loadFiles D1 parameter budget', () => {
+	it('hydrates three chunks in path order and deduplicates repeated item ids', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const insertItem = t.sqlite.prepare(
+			`INSERT INTO context_item
+				(id, user_id, kind, name, description, position, version, created_at, updated_at)
+			 VALUES (?, ?, 'skill', ?, '', ?, 1, ?, ?)`
+		);
+		const insertFile = t.sqlite.prepare(
+			`INSERT INTO context_item_file
+				(id, context_item_id, path, content, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, 0, 0)`
+		);
+		const ids = Array.from({ length: 181 }, (_, index) => `ctx_bulk_${index}`);
+		for (const [index, id] of ids.entries()) {
+			insertItem.run(id, USER, `skill-${index}`, index, index, index);
+			insertFile.run(`ctf_${index}_z`, id, 'z.txt', `last-${index}`);
+			insertFile.run(`ctf_${index}_a`, id, 'a.txt', `first-${index}`);
+		}
+
+		const files = await loadFiles(getDb(t.env), [...ids, ids[0], ids[100]]);
+		expect([...files.keys()]).toHaveLength(181);
+		for (const index of [0, 89, 90, 180]) {
+			expect(files.get(ids[index])).toEqual([
+				{ path: 'a.txt', content: `first-${index}` },
+				{ path: 'z.txt', content: `last-${index}` }
+			]);
+		}
+	});
+
+	it('skips SQL for empty input and omits unknown or fileless items', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const queries = t.spyOnQueries();
+		expect(await loadFiles(getDb(t.env), [])).toEqual(new Map());
+		expect(queries()).toEqual([]);
+
+		t.sqlite
+			.prepare(
+				`INSERT INTO context_item
+					(id, user_id, kind, name, description, position, version, created_at, updated_at)
+				 VALUES (?, ?, 'skill', ?, '', 0, 1, 0, 0)`
+			)
+			.run('ctx_fileless', USER, 'fileless');
+		expect(await loadFiles(getDb(t.env), ['ctx_fileless', 'ctx_unknown'])).toEqual(new Map());
 	});
 });

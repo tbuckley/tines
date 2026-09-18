@@ -10,7 +10,8 @@ import type { RequestHandler } from './$types';
  * `runner_token` is shown exactly once — only its hash is stored.
  */
 export const POST: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<RegisterRunnerRequest>(event);
-	return json(await registerRunner(db, env, actor, body), { status: 201 });
+	const runner = await registerRunner(db, env, actor, effects, body);
+	return json(runner, { status: 201 });
 });

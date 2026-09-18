@@ -16,8 +16,12 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test": "vitest run",
-		"perf:nav": "rm -f /tmp/navperf.txt && NAVPERF=1 vitest run src/lib/server/api/nav-perf.test.ts && cat /tmp/navperf.txt",
-		"test:e2e": "playwright test"
+		"perf:nav": "f=\"${NAVPERF_OUT:-/tmp/navperf.txt}\"; rm -f \"$f\"; NAVPERF=1 vitest run src/lib/server/api/nav-perf.test.ts; s=$?; [ -f \"$f\" ] && cat \"$f\"; exit $s",
+		"perf:stats": "node scripts/stats-scale.mjs",
+		"perf:stats:cpu": "STATSPERF=1 vitest run src/lib/server/supervisor/stats-perf.test.ts",
+		"perf:usage": "node scripts/usage-scale.mjs",
+		"test:e2e": "playwright test",
+		"test:usage-mixed": "node scripts/usage-mixed.mjs"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^5.20260822.1",
@@ -27,6 +31,7 @@
 		"@sveltejs/kit": "^2.63.0",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
 		"@tailwindcss/vite": "^4.3.3",
+		"@types/three": "0.160.0",
 		"bits-ui": "^2.19.0",
 		"svelte": "^5.56.1",
 		"svelte-check": "^4.6.0",
@@ -35,7 +40,7 @@
 		"typescript": "^6.0.3",
 		"vite": "^8.0.16",
 		"vitest": "^4.1.11",
-		"wrangler": "^4.125.0"
+		"wrangler": "^4.129.1"
 	},
 	"dependencies": {
 		"@anthropic-ai/sdk": "0.121.0",
@@ -48,6 +53,7 @@
 		"micromark": "^4.0.2",
 		"micromark-extension-gfm": "^3.0.0",
 		"tailwind-merge": "^3.6.0",
-		"tailwind-variants": "^3.3.1"
+		"tailwind-variants": "^3.3.1",
+		"three": "0.160.0"
 	}
 }

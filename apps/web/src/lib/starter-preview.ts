@@ -5,13 +5,15 @@
  * The dialog prefills the conventions textarea and previews what the project
  * will contain, so both have to be rendered with *the server's* variable set
  * — `starterQueries` in `$lib/server/api/starters.ts` builds
- * `{ ...inputs, project, repo_name }` and renders every template with it.
+ * `{ ...inputs, project, repo_name }` for chooser-visible templates. Placement
+ * variables exist only after creation and occur only in non-previewed bodies.
  * This module is pure (no Svelte, no `$lib/server`) so it can be unit-tested
  * against the real `listStarters()` summaries and stays content-agnostic:
  * every label, hint and line comes from the summary, never from a hardcoded
  * starter id.
  */
 import {
+	PROJECT_NAME_MAX,
 	renderTemplate,
 	repoDirFromUrl,
 	type ContextKind,
@@ -24,10 +26,62 @@ const BLANK = '…';
 
 /** Mirrors `MAX_CONTEXT_NAME` in `$lib/server/api/starters.ts`. */
 const MAX_CONTEXT_NAME = 100;
+const MAX_ISSUE_TITLE = 500;
+const REMOTE_PROTOCOLS = new Set(['http:', 'https:', 'ssh:', 'git:', 'ftp:', 'ftps:']);
 
 /** The value the user typed for a declared input, trimmed; `''` when absent. */
 function typed(inputs: Record<string, string>, key: string): string {
 	return (inputs[key] ?? '').trim();
+}
+
+/**
+ * A project-name suggestion for repository starters. This is deliberately
+ * stricter than `repoDirFromUrl`: checkout accepts loose remotes and owns its
+ * own fallback, while the chooser should only fill Name when the repository
+ * basename is unambiguous and safe to show as a bounded prefix.
+ */
+export function suggestProjectName(
+	starter: StarterSummary | undefined,
+	inputs: Record<string, string>
+): string | null {
+	if (!starter?.inputs.some((spec) => spec.key === 'repo_url')) return null;
+
+	const remote = (inputs.repo_url ?? '').trim();
+	if (!remote || /[\s\\\u0000-\u001f\u007f]/.test(remote)) return null;
+
+	const withoutSuffix = remote.replace(/[?#].*$/, '');
+	let repositoryPath: string;
+	const hierarchical = remote.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+	if (hierarchical) {
+		try {
+			const parsed = new URL(remote);
+			if (!REMOTE_PROTOCOLS.has(parsed.protocol) || !parsed.hostname) return null;
+		} catch {
+			return null;
+		}
+		const pathStart = withoutSuffix.indexOf('/', hierarchical[0].length);
+		if (pathStart === -1) return null;
+		repositoryPath = withoutSuffix.slice(pathStart);
+	} else {
+		if (remote.includes('://') || /^[a-zA-Z]:/.test(remote)) return null;
+		const scp = withoutSuffix.match(/^(?:[^@/:]+@)?[^@/:]+:(.+)$/);
+		if (!scp) return null;
+		repositoryPath = scp[1];
+	}
+
+	const stripped = repositoryPath.replace(/\/+$/, '');
+	const candidate = stripped.slice(stripped.lastIndexOf('/') + 1).replace(/\.git$/, '');
+	if (
+		!candidate ||
+		candidate === '.' ||
+		candidate === '..' ||
+		/[\\=\s\u0000-\u001f\u007f]/.test(candidate)
+	)
+		return null;
+
+	return repoDirFromUrl(remote)
+		.slice(0, PROJECT_NAME_MAX)
+		.replace(/[\uD800-\uDBFF]$/, '');
 }
 
 /**
@@ -96,7 +150,7 @@ export function renderStarter(
 			})),
 			firstIssue: issue
 				? {
-						title: renderTemplate(issue.title, forPreview),
+						title: renderTemplate(issue.title, forPreview).slice(0, MAX_ISSUE_TITLE),
 						workflow: issue.workflow,
 						state: issue.state
 					}

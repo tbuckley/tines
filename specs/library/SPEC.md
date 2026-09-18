@@ -104,3 +104,55 @@ proceeds, so re-running a partial import converges.
 
 Starters (`specs/starters/SPEC.md`) are library documents with typed inputs
 bolted on; they apply through their own single-batch path, not through import.
+
+## Decision update — Tines/435 whole-library v3
+
+Whole-library export now defaults to the ID-addressed v3 `profile: library` contract in [FORMAT_V3.md](FORMAT_V3.md). `GET /api/v1/export?version=2` remains an explicit compatibility export, and v1/v2 imports retain their best-effort behavior. The older name-based design above remains the historical v1/v2 record.
+
+V3 import maps document-local workflow IDs independently. With no destination collision, duplicate source names remain distinct workflows. Unique-name collisions retain skip/compatible-inheritance-overwrite behavior. Ambiguous collisions require `workflow_targets[local_id] = {kind:"target",workflow_id}` or `{kind:"create",name}`. Settings proposes independently renamed creates and displays each source ID and its states; target choices display destination IDs and states. Multiple source workflows cannot target one destination. All state pointers, prompts and project defaults follow the chosen IDs. Structure mismatches refuse replacement while preserving existing target states for scoped context. Label records preserve colors on creation; existing labels and project defaults stay unchanged.
+
+Preview and apply share one planner and ordinary validators. Edits invalidate the browser preview. Whole-library transfer remains best effort, with per-entry failures; it does not offer the separately specified workflow-package atomic install guarantee. Raw JSON envelope decoding rejects duplicate keys and invalid UTF-8 before conversion to objects. The request is bounded to 32 MiB, and its document independently to 5 MiB.
+
+## Decision update — Tines/440 workflow-package commit
+
+Workflow-profile v3 files use a signed prepare → install protocol. `POST /api/v1/library/install` confirms the exact plan digest and commits one guarded D1 batch whose first row is an immutable owner receipt; every child write and event is gated by that attempt's fresh execution nonce. Identical retries recover the committed receipt before expiry/compiler checks, while actor, file, confirmation and request mismatches never replay it. `GET /api/v1/library/installs/:planId` is owner-scoped and remains usable after API-key rotation. Run keys retain export, validation, preparation and receipt reads but are denied installation at both the route fence and service boundary. Schedules install paused, and the commit creates no initial issue, dispatch, or project-default mutation. Native-D1 capacity and concurrency boundary evidence remains the responsibility of Tines/441.
+
+## Decision update — Tines/101 request dispatch effects
+
+Whole-library imports carry the API request's dispatch effect through workflow overwrites, so changing an existing state category to `active` schedules one coalesced pass even when other import entries fail. Legacy imports carry the same capability through their workflow update helpers, while preserving their existing category behavior. Signed workflow-package installation is intentionally unchanged: it creates new objects, no initial issue, and no dispatch signal.
+## Decision update — Tines/509 schedule proof readability
+
+Workflow-package authoring and prepared installation proofs describe selected schedule recurrences in human-readable text. Presets use the shared recurrence description, cron expressions remain complete and wrap within the proof, and timezone plus the installs-paused explanation remain separate.
+
+## Decision update — 2026-09-14 browser review wording (Tines/553)
+
+Publishing uses one aggregate included-content acknowledgment over the frozen preview. File download
+and installation retain per-item review. Browser installation calls its prepared result “What will be
+installed” and hides plan fingerprints under Technical details; signed plan confirmation is unchanged.
+
+## Decision update — 2026-09-15 optional authoring and recovery wording (Tines/576)
+
+Optional workflow-package authoring names copies, instructions, variables, previews, and the actions a
+person can take; installation recovery tells the person to check the result, choose the original file,
+or retry. Normal views do not expose internal candidate, token-registration, signed-plan, or digest
+matching language. Exact-content validation, document-digest retry identity, signed confirmation,
+receipt recovery, and every publication and installation contract remain unchanged. Recovery IDs and
+error codes remain available only in closed, allowlisted Technical details disclosures.
+
+## Decision update — Tines/485 declared-input selection feedback
+
+Workflow-package authoring keeps its existing candidate-local declared-input selection semantics. The active declaration remains visibly marked after focus moves to the candidate editor, every declaration exposes its pressed state, and the replacement action repeats the selected key. Adding a declaration and navigating from a rendered token continue to select it; rebuilding retains a surviving input ID and clears a stale one. This feedback does not change candidate data, package tokens, exact text uses, or downloaded bytes.
+
+# Immutable public snapshots (Tines/436)
+
+The public workflow surface hosts exact immutable version 3 workflow-package bytes; it is not a
+gallery, mutable source link, or second package format. Publication is actor-bound, text-only,
+quota-limited, and default-off. One central availability predicate controls anonymous inspection,
+download, hosted preview, and transaction-time install receipt creation. Withdrawal cannot change a
+file already downloaded or an independent installation. The lifecycle and transport contract are in
+[PUBLICATIONS.md](PUBLICATIONS.md).
+
+Owned-workflow browser publishing may derive frozen snapshot bytes from a verified in-memory
+publication draft. The additive trust boundary and immutable-field allowlist are recorded in
+[PUBLICATIONS.md](PUBLICATIONS.md#decision-update--2026-09-15-owned-publication-drafts-tines552)
+and [FORMAT_V3.md](FORMAT_V3.md#decision-update--2026-09-15-tines552-publication-draft-boundary).

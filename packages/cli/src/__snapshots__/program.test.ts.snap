@@ -32,6 +32,7 @@ Commands:
   routing           Scoped routing rules: which runner takes which issues (most
                     specific scope wins)
   supervisor        The automation kill switch, quota policy, and attempt limit
+  usage [options]   Compare finalized run spend for a period
   events            Read the activity log
   help [command]    display help for command
 ",
@@ -167,8 +168,10 @@ Options:
   --limit <n>                   maximum items to return (page size under
                                 --all-pages)
   --cursor <cursor>             resume from the next_cursor of a previous page
-  --all-pages                   fetch every page, not just the first (slower on
-                                large lists)
+  --all-pages                   fetch every page, not just the first (default
+                                safety ceiling: 10000 items)
+  --max-items <n>               safety ceiling for --all-pages (default 10000;
+                                exceeding it errors)
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)
@@ -204,18 +207,25 @@ Commands:
 List activity events, newest first
 
 Options:
-  -i, --issue <ref>     filter to one issue (<project>/<number>)
-  -p, --project <name>  filter by project name or id
-  -t, --type <type>     filter by event type (e.g. issue.transitioned)
-  --limit <n>           maximum items to return (page size under --all-pages)
-  --cursor <cursor>     resume from the next_cursor of a previous page
-  --all-pages           fetch every page, not just the first (slower on large
-                        lists)
-  -u, --url <url>       base URL of the Tines API (or set TINES_API_URL, or run
-                        \`tines login\`; default https://tines.tbuckley.dev)
-  --api-key <key>       API key (or set TINES_API_KEY, or run \`tines login\`)
-  --json                output the raw JSON response
-  -h, --help            display help for command
+  -i, --issue <ref>         filter to one issue (<project>/<number>)
+  -p, --project <name>      filter by project name or id
+  -t, --type <type>         filter by event type (e.g. issue.transitioned)
+  --since <time>            inclusive lower bound (ISO 8601 or epoch ms)
+  --until <time>            exclusive upper bound (ISO 8601 or epoch ms)
+  --state <workflow/state>  events referencing a workflow state
+  --limit <n>               maximum items to return (page size under
+                            --all-pages)
+  --cursor <cursor>         resume from the next_cursor of a previous page
+  --all-pages               fetch every page, not just the first (default safety
+                            ceiling: 10000 items)
+  --max-items <n>           safety ceiling for --all-pages (default 10000;
+                            exceeding it errors)
+  -u, --url <url>           base URL of the Tines API (or set TINES_API_URL, or
+                            run \`tines login\`; default
+                            https://tines.tbuckley.dev)
+  --api-key <key>           API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                    output the raw JSON response
+  -h, --help                display help for command
 ",
   "tines issues": "Usage: tines issues [options] [command]
 
@@ -230,6 +240,7 @@ Commands:
   show [options] <ref>                                  Show an issue (<project>/<number>), including allowed transitions
   edit [options] <ref>                                  Edit an issue: title, description, workflow, or force-set state
   move [options] <ref> <action>                         Take a transition on an issue by its action name (e.g. "approve")
+  transfer [options] <ref>                              Move an issue to another project, keeping its ID, record and old refs (this is not the workflow "move")
   comment [options] <ref> <markdown>                    Comment on an issue — Markdown body: inline text, @file, or "-" to read stdin; escape a literal leading @ as @@
   comment-edit [options] <ref> <comment-id> <markdown>  Replace the body of your own comment — Markdown body: inline text, @file, or "-" to read stdin; escape a literal leading @ as @@
   comment-delete [options] <ref> <comment-id>           Delete your own comment (the event keeps the record of the deletion)
@@ -312,7 +323,7 @@ Fetch content (current version by default); a link/pr prints its URL
 Options:
   --version <n>    fetch a specific version from the history
   --out <path>     write to this file, or into this directory (keeps the stored
-                   filename)
+                   filename); folder artifacts require a new or empty directory
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -550,8 +561,10 @@ Options:
   --limit <n>                  maximum items to return (page size under
                                --all-pages)
   --cursor <cursor>            resume from the next_cursor of a previous page
-  --all-pages                  fetch every page, not just the first (slower on
-                               large lists)
+  --all-pages                  fetch every page, not just the first (default
+                               safety ceiling: 10000 items)
+  --max-items <n>              safety ceiling for --all-pages (default 10000;
+                               exceeding it errors)
   -u, --url <url>              base URL of the Tines API (or set TINES_API_URL,
                                or run \`tines login\`; default
                                https://tines.tbuckley.dev)
@@ -603,6 +616,25 @@ Options:
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
   --json           output the raw JSON response
   -h, --help       display help for command
+",
+  "tines issues transfer": "Usage: tines issues transfer [options] <ref>
+
+Move an issue to another project, keeping its ID, record and old refs (this is
+not the workflow "move")
+
+Options:
+  -p, --project <name-or-id>  destination project
+  --dry-run                   print the review and exit without moving anything
+  --inspect <n>               print the full content of reviewed guidance item
+                              [n]
+  -y, --yes                   skip the confirmation prompt
+  -u, --url <url>             base URL of the Tines API (or set TINES_API_URL,
+                              or run \`tines login\`; default
+                              https://tines.tbuckley.dev)
+  --api-key <key>             API key (or set TINES_API_KEY, or run \`tines
+                              login\`)
+  --json                      output the raw JSON response
+  -h, --help                  display help for command
 ",
   "tines issues unblock": "Usage: tines issues unblock [options] <blocker> <blocked>
 
@@ -802,9 +834,12 @@ Options:
   -h, --help                        display help for command
 
 Commands:
+  starters [options]                List built-in project starters and their
+                                    inputs
   list [options]                    List projects
-  create [options] <name>           Create a project (with its initial context
-                                    prompt)
+  create [options] <name>           Create a project; nonblank starters supply a
+                                    conventions template unless --prompt or
+                                    --no-prompt overrides it
   show [options] <id-or-name>       Show a project
   edit [options] <id-or-name>       Edit a project
   archive [options] <id-or-name>    Archive a project: pause its schedules, stop
@@ -828,15 +863,22 @@ Options:
 ",
   "tines projects create": "Usage: tines projects create [options] <name>
 
-Create a project (with its initial context prompt)
+Create a project; nonblank starters supply a conventions template unless
+--prompt or --no-prompt overrides it
 
 Options:
   -d, --description <text>             project description
   -w, --default-workflow <id-or-name>  default workflow for new issues
-  --prompt <md>                        initial conventions prompt, stitched into
-                                       every issue's agent prompt: inline
-                                       Markdown or @file
-  --no-prompt                          create without an initial prompt
+                                       (conflicts with a starter that sets one)
+  --starter <id>                       built-in starter (discover with \`tines
+                                       projects starters\`)
+  --repo <url>                         repository URL for the code starter
+  --branch <branch>                    repository branch for the code starter
+  --brief <text>                       planning brief for the plan starter
+  --prompt <md>                        override the starter's conventions
+                                       template: inline Markdown or @file
+  --no-prompt                          omit the starter's conventions template
+                                       (other starter context remains)
   -u, --url <url>                      base URL of the Tines API (or set
                                        TINES_API_URL, or run \`tines login\`;
                                        default https://tines.tbuckley.dev)
@@ -882,8 +924,10 @@ Options:
   --archived         include archived projects (hidden by default)
   --limit <n>        maximum items to return (page size under --all-pages)
   --cursor <cursor>  resume from the next_cursor of a previous page
-  --all-pages        fetch every page, not just the first (slower on large
-                     lists)
+  --all-pages        fetch every page, not just the first (default safety
+                     ceiling: 10000 items)
+  --max-items <n>    safety ceiling for --all-pages (default 10000; exceeding it
+                     errors)
   -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
                      \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -893,6 +937,17 @@ Options:
   "tines projects show": "Usage: tines projects show [options] <id-or-name>
 
 Show a project
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines projects starters": "Usage: tines projects starters [options]
+
+List built-in project starters and their inputs
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
@@ -960,35 +1015,49 @@ Create or replace a rule with <runner>[:tier] targets, or scoped '*:smartest'
 tier inheritance
 
 Options:
-  -p, --project <name>          scope: project name or id
-  -s, --state <workflow/state>  scope: workflow-qualified state
-  -l, --label <name>            scope: issue label name or id
-  -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
-                                or run \`tines login\`; default
-                                https://tines.tbuckley.dev)
-  --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
-                                login\`)
-  --json                        output the raw JSON response
-  -h, --help                    display help for command
+  -p, --project <name>            scope: project name or id
+  -s, --state <workflow/state>    scope: workflow-qualified state
+  -l, --label <name>              scope: issue label name or id
+  --effort <target-number=value>  set routed effort for a 1-based target
+                                  (repeatable) (default: [])
+  -u, --url <url>                 base URL of the Tines API (or set
+                                  TINES_API_URL, or run \`tines login\`; default
+                                  https://tines.tbuckley.dev)
+  --api-key <key>                 API key (or set TINES_API_KEY, or run \`tines
+                                  login\`)
+  --json                          output the raw JSON response
+  -h, --help                      display help for command
 ",
   "tines runner": "Usage: tines runner [options] [command]
 
 The local runner daemon
 
 Options:
-  -h, --help            display help for command
+  -h, --help                  display help for command
 
 Commands:
-  daemon [options]      Run the local runner daemon: register/reconnect, poll
-                        for assigned runs, execute them
-  workspaces [options]  List run workspaces the daemon kept for debugging
-                        (--keep-workspaces)
-  help [command]        display help for command
+  daemon [options]            Run the local runner daemon in the foreground:
+                              register/reconnect, poll for assigned runs,
+                              execute them (\`tines runner install\` runs it as a
+                              service instead)
+  install [options]           Register this machine as a runner and install the
+                              daemon as a launchd/systemd service that keeps
+                              itself updated
+  restart [options] [name]    Relaunch an installed runner service (interrupts
+                              runs in flight: pause the runner and wait for 0
+                              active runs first if that matters)
+  uninstall [options] [name]  Stop and remove a runner's service unit (the
+                              stored runner token is kept, so a later install
+                              reconnects)
+  workspaces [options]        List run workspaces the daemon kept for debugging
+                              (--keep-workspaces)
+  help [command]              display help for command
 ",
   "tines runner daemon": "Usage: tines runner daemon [options]
 
-Run the local runner daemon: register/reconnect, poll for assigned runs, execute
-them
+Run the local runner daemon in the foreground: register/reconnect, poll for
+assigned runs, execute them (\`tines runner install\` runs it as a service
+instead)
 
 Options:
   --name <name>                  runner name, unique per user; name it
@@ -997,20 +1066,24 @@ Options:
   --harness <harness>            claude-code | codex | custom (default:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},
-                                 {workspace}, {model})
-  --max-concurrent <n>           maximum simultaneous runs (default: 1)
+                                 {workspace}, {model}, {effort})
+  --max-concurrent <n>           local maximum simultaneous runs
+                                 (remote-adjustment ceiling when enabled)
+                                 (default: 1)
+  --allow-remote-concurrency     allow signed-in operators to request
+                                 concurrency up to --max-concurrent
   --poll-interval <seconds>      seconds between polls (default: 15)
-  --no-cli-refresh               do not install/refresh the agent-facing tines
-                                 CLI from npm (harnesses use the ambient PATH)
-  --no-self-update               do not exit for the service manager to relaunch
-                                 a newer daemon (only applies when launched from
-                                 the daemon-managed prefix)
   --keep-workspaces <mode>       keep settled runs' workspaces for debugging:
                                  never | failed | always (default: "never")
   --keep-workspaces-for <hours>  delete kept workspaces older than this
                                  (default: 72)
   --keep-workspaces-max <n>      keep at most this many workspaces (oldest
                                  removed first) (default: 20)
+  --no-cli-refresh               do not install/refresh the agent-facing tines
+                                 CLI from npm (harnesses use the ambient PATH)
+  --no-self-update               do not exit for the service manager to relaunch
+                                 a newer daemon (only applies when launched from
+                                 the daemon-managed prefix)
   -u, --url <url>                base URL of the Tines API (or set
                                  TINES_API_URL, or run \`tines login\`; default
                                  https://tines.tbuckley.dev)
@@ -1018,6 +1091,61 @@ Options:
                                  login\`)
   --json                         output the raw JSON response
   -h, --help                     display help for command
+",
+  "tines runner install": "Usage: tines runner install [options]
+
+Register this machine as a runner and install the daemon as a launchd/systemd
+service that keeps itself updated
+
+Options:
+  --name <name>                  runner name, unique per user; name it
+                                 machine-plus-harness, e.g. macbook-claude
+                                 (default: this hostname)
+  --harness <harness>            claude-code | codex | custom (default:
+                                 "claude-code")
+  --command <template>           custom harness command template ({prompt_file},
+                                 {workspace}, {model}, {effort})
+  --max-concurrent <n>           local maximum simultaneous runs
+                                 (remote-adjustment ceiling when enabled)
+                                 (default: 1)
+  --allow-remote-concurrency     allow signed-in operators to request
+                                 concurrency up to --max-concurrent
+  --poll-interval <seconds>      seconds between polls (default: 15)
+  --keep-workspaces <mode>       keep settled runs' workspaces for debugging:
+                                 never | failed | always (default: "never")
+  --keep-workspaces-for <hours>  delete kept workspaces older than this
+                                 (default: 72)
+  --keep-workspaces-max <n>      keep at most this many workspaces (oldest
+                                 removed first) (default: 20)
+  --service-manager <kind>       launchd | systemd (default: the one this OS
+                                 ships)
+  -u, --url <url>                base URL of the Tines API (or set
+                                 TINES_API_URL, or run \`tines login\`; default
+                                 https://tines.tbuckley.dev)
+  --api-key <key>                API key (or set TINES_API_KEY, or run \`tines
+                                 login\`)
+  --json                         output the raw JSON response
+  -h, --help                     display help for command
+",
+  "tines runner restart": "Usage: tines runner restart [options] [name]
+
+Relaunch an installed runner service (interrupts runs in flight: pause the
+runner and wait for 0 active runs first if that matters)
+
+Options:
+  --service-manager <kind>  launchd | systemd (default: the one this OS ships)
+  --json                    print JSON instead of a message
+  -h, --help                display help for command
+",
+  "tines runner uninstall": "Usage: tines runner uninstall [options] [name]
+
+Stop and remove a runner's service unit (the stored runner token is kept, so a
+later install reconnects)
+
+Options:
+  --service-manager <kind>  launchd | systemd (default: the one this OS ships)
+  --json                    print JSON instead of a message
+  -h, --help                display help for command
 ",
   "tines runner workspaces": "Usage: tines runner workspaces [options] [command]
 
@@ -1050,6 +1178,8 @@ Options:
 Commands:
   list [options]                 List runners
   show [options] <name>          Show a runner
+  edit [options] <name>          Edit staged awaiting-session continuation
+                                 policy (runtime unavailable)
   tiers [options] <name>         Show or edit a runner's tier→model mapping
   budget [options] <name>        Set or clear a runner's money limits (per-run
                                  caps enforce now; daily limits arrive with the
@@ -1082,6 +1212,25 @@ Options:
   --api-key <key>       API key (or set TINES_API_KEY, or run \`tines login\`)
   --json                output the raw JSON response
   -h, --help            display help for command
+",
+  "tines runners edit": "Usage: tines runners edit [options] <name>
+
+Edit staged awaiting-session continuation policy (runtime unavailable)
+
+Options:
+  --resume-enabled <true|false>  stage opt-in policy (enabling is unavailable
+                                 until provider support ships)
+  --resume-window-hours <n>      continuation window (1-168)
+  --resume-max-turns <n>         local conversation turn limit (1-1000)
+  --resume-max-tokens <n>        managed conversation token limit (1-10000000)
+  --resume-max-cost-usd <n>      managed conversation cost limit (0-1000]
+  -u, --url <url>                base URL of the Tines API (or set
+                                 TINES_API_URL, or run \`tines login\`; default
+                                 https://tines.tbuckley.dev)
+  --api-key <key>                API key (or set TINES_API_KEY, or run \`tines
+                                 login\`)
+  --json                         output the raw JSON response
+  -h, --help                     display help for command
 ",
   "tines runners list": "Usage: tines runners list [options]
 
@@ -1199,18 +1348,38 @@ Options:
 List runs, newest first
 
 Options:
-  -i, --issue <ref>    filter to one issue (<project>/<number>)
-  -r, --runner <name>  filter by runner name
-  --active             only runs holding a claim (assigned/launching/running)
-  --limit <n>          maximum items to return (page size under --all-pages)
-  --cursor <cursor>    resume from the next_cursor of a previous page
-  --all-pages          fetch every page, not just the first (slower on large
-                       lists)
-  -u, --url <url>      base URL of the Tines API (or set TINES_API_URL, or run
-                       \`tines login\`; default https://tines.tbuckley.dev)
-  --api-key <key>      API key (or set TINES_API_KEY, or run \`tines login\`)
-  --json               output the raw JSON response
-  -h, --help           display help for command
+  -i, --issue <ref>             filter to one issue (<project>/<number>)
+  -r, --runner <name>           filter by runner name
+  --active                      only runs holding a claim
+                                (assigned/launching/running)
+  --population <mode>           period evidence population (choices:
+                                "finalized", "pending")
+  --from <timestamp>            inclusive period start
+  --to <timestamp>              exclusive period cutoff
+  --timezone <iana>             period display timezone (with --timezone-source)
+  --timezone-source <source>    supervisor_budget or utc_fallback
+  --project <name-or-id>        project, including archived
+  --workflow <name-or-id>       workflow
+  --state <id>                  starting state id
+  --tier <tier>                 model tier
+  --outcome <outcome>           recorded outcome (choices: "advanced",
+                                "stalled", "interrupted", "unknown")
+  --accounting-status <status>  usage accounting status (choices: "priced",
+                                "unpriced", "unreported")
+  --limit <n>                   maximum items to return (page size under
+                                --all-pages)
+  --cursor <cursor>             resume from the next_cursor of a previous page
+  --all-pages                   fetch every page, not just the first (default
+                                safety ceiling: 10000 items)
+  --max-items <n>               safety ceiling for --all-pages (default 10000;
+                                exceeding it errors)
+  -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
+                                or run \`tines login\`; default
+                                https://tines.tbuckley.dev)
+  --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
+                                login\`)
+  --json                        output the raw JSON response
+  -h, --help                    display help for command
 ",
   "tines runs show": "Usage: tines runs show [options] <id>
 
@@ -1306,8 +1475,10 @@ Options:
   -a, --all             include paused schedules
   --limit <n>           maximum items to return (page size under --all-pages)
   --cursor <cursor>     resume from the next_cursor of a previous page
-  --all-pages           fetch every page, not just the first (slower on large
-                        lists)
+  --all-pages           fetch every page, not just the first (default safety
+                        ceiling: 10000 items)
+  --max-items <n>       safety ceiling for --all-pages (default 10000; exceeding
+                        it errors)
   -u, --url <url>       base URL of the Tines API (or set TINES_API_URL, or run
                         \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>       API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1368,7 +1539,9 @@ Options:
 Commands:
   status [options]   One-screen overview: kill switch, quota, utilization,
                      runners
-  enable [options]   Arm automation (the kill switch on)
+  stats [options]    Per-stage flow this week: queue wait, work time, runs per
+                     visit, sent back
+  enable [options]   Resume automation (the kill switch on)
   disable [options]  Pause all automation at once (the kill switch off)
   quota              Pick and configure the quota policy
   help [command]     display help for command
@@ -1386,7 +1559,7 @@ Options:
 ",
   "tines supervisor enable": "Usage: tines supervisor enable [options]
 
-Arm automation (the kill switch on)
+Resume automation (the kill switch on)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
@@ -1435,16 +1608,33 @@ Options:
   --json                      output the raw JSON response
   -h, --help                  display help for command
 ",
+  "tines supervisor stats": "Usage: tines supervisor stats [options]
+
+Per-stage flow this week: queue wait, work time, runs per visit, sent back
+
+Options:
+  --window <window>             Rolling window, e.g. 24h or 7d (default: "7d")
+  --project <ref>               Narrow to one project (id or name)
+  --sent-back <workflow/state>  Show the issues behind one sent-back figure
+  -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
+                                or run \`tines login\`; default
+                                https://tines.tbuckley.dev)
+  --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
+                                login\`)
+  --json                        output the raw JSON response
+  -h, --help                    display help for command
+",
   "tines supervisor status": "Usage: tines supervisor status [options]
 
 One-screen overview: kill switch, quota, utilization, runners
 
 Options:
-  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default https://tines.tbuckley.dev)
-  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
-  --json           output the raw JSON response
-  -h, --help       display help for command
+  --project <name-or-id>  filter waiting work to one project
+  -u, --url <url>         base URL of the Tines API (or set TINES_API_URL, or
+                          run \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>         API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                  output the raw JSON response
+  -h, --help              display help for command
 ",
   "tines time": "Usage: tines time [options]
 
@@ -1457,27 +1647,76 @@ Options:
   --json           output the raw JSON response
   -h, --help       display help for command
 ",
+  "tines usage": "Usage: tines usage [options]
+
+Compare finalized run spend for a period
+
+Options:
+  --window <window>             today, 7d, or 30d (choices: "today", "7d",
+                                "30d")
+  --from <bound>                custom inclusive start (date or offset
+                                timestamp)
+  --to <bound>                  custom exclusive end (date or offset timestamp)
+  --issue <ref>                 direct issue lifetime through now
+  --cohort                      report issues completed in the selected workflow
+                                and window
+  --done-state <id>             terminal state id (repeatable; defaults to all
+                                done states)
+  --scope <token>               replay a frozen usage scope
+  --evidence <kind>             list evidence (choices: "issues", "runs",
+                                "entries")
+  --member <issue-id>           narrow run evidence to one contributing issue
+  --population <population>     all, finalized, or pending (choices: "all",
+                                "finalized", "pending")
+  --sort <sort>                 evidence sort (choices: "cost", "time")
+  --direction <direction>       sort direction (choices: "asc", "desc")
+  --cursor <token>              evidence page cursor
+  --limit <count>               evidence page size (1-100)
+  --all-pages                   fetch every evidence page
+  --project <name-or-id>        project scope (including archived), or unknown
+  --workflow <name-or-id>       workflow filter, or unknown
+  --state <id>                  starting state id (requires --workflow)
+  --runner <name-or-id>         runner filter, or unknown
+  --tier <tier>                 tier filter
+  --outcome <outcome>           recorded outcome (choices: "advanced",
+                                "stalled", "interrupted", "unknown")
+  --accounting-status <status>  price coverage (choices: "priced", "unpriced",
+                                "unreported")
+  --by <dimension>              group dimension (choices: "project", "workflow",
+                                "state", "outcome", "runner", "tier", default:
+                                "workflow")
+  -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
+                                or run \`tines login\`; default
+                                https://tines.tbuckley.dev)
+  --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
+                                login\`)
+  --json                        output the raw JSON response
+  -h, --help                    display help for command
+",
   "tines workflows": "Usage: tines workflows [options] [command]
 
 Manage the workflow library
 
 Options:
-  -h, --help                          display help for command
+  -h, --help                                          display help for command
 
 Commands:
-  list [options]                      List the workflow library
-  show [options] <id-or-name>         Show a workflow with states and
-                                      transitions
-  bases [options]                     List the states other states inherit
-                                      context from, with their children
-  create [options] [json]             Create a workflow from a JSON definition
-                                      (states carry initial "prompt"
-                                      instructions)
-  edit [options] <id-or-name> [json]  Update a workflow from a JSON definition
-                                      and/or flags
-  delete [options] <id-or-name>       Delete a workflow (refused while issues
-                                      still reference it)
-  help [command]                      display help for command
+  publication-validate [options] <file>               Validate a workflow package for text-only public hosting
+  publish [options] [workflow]                        Prepare or commit one exact immutable public workflow snapshot
+  publications [options]                              List your public workflow snapshots
+  unpublish [options] <public-url-or-id>              Withdraw a hosted public snapshot
+  restore-publication [options] <public-url-or-id>    Restore an owner-withdrawn public snapshot when host policy permits
+  export [options] <workflow-id-or-unambiguous-name>  Export a canonical workflow package JSON document
+  validate [options] <file>                           Validate a workflow package file (use - for stdin)
+  preview [options] <file-or-public-url>              Prepare and fully review a destination workflow package plan
+  install [options] <file-or-public-url>              Install one exactly reviewed workflow package plan
+  list [options]                                      List the workflow library
+  show [options] <id-or-name>                         Show a workflow with states and transitions
+  bases [options]                                     List the states other states inherit context from, with their children
+  create [options] [json]                             Create a workflow from a JSON definition (states carry initial "prompt" instructions)
+  edit [options] <id-or-name> [json]                  Update a workflow from a JSON definition and/or flags
+  delete [options] <id-or-name>                       Delete a workflow (refused while issues still reference it)
+  help [command]                                      display help for command
 ",
   "tines workflows bases": "Usage: tines workflows bases [options]
 
@@ -1535,6 +1774,43 @@ Options:
   --json                        output the raw JSON response
   -h, --help                    display help for command
 ",
+  "tines workflows export": "Usage: tines workflows export [options] <workflow-id-or-unambiguous-name>
+
+Export a canonical workflow package JSON document
+
+Options:
+  --project <id-or-name>   source project for selected project-bound
+                           configuration
+  --schedule <id>          include this source schedule ID (repeatable)
+                           (default: [])
+  --tier <state-ref=tier>  include a state tier preference (repeatable)
+                           (default: [])
+  --project-routing        make every --tier selector project scoped
+  --inputs <file>          JSON object containing input declarations and text
+                           uses
+  -u, --url <url>          base URL of the Tines API (or set TINES_API_URL, or
+                           run \`tines login\`; default
+                           https://tines.tbuckley.dev)
+  --api-key <key>          API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                   output the raw JSON response
+  -h, --help               display help for command
+",
+  "tines workflows install": "Usage: tines workflows install [options] <file-or-public-url>
+
+Install one exactly reviewed workflow package plan
+
+Options:
+  --choices <file>         destination choices JSON file (interactive
+                           preparation only)
+  --plan <file>            signed plan saved by workflows preview
+  --confirm <plan-digest>  exact reviewed plan digest (required outside a TTY)
+  -u, --url <url>          base URL of the Tines API (or set TINES_API_URL, or
+                           run \`tines login\`; default
+                           https://tines.tbuckley.dev)
+  --api-key <key>          API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                   output the raw JSON response
+  -h, --help               display help for command
+",
   "tines workflows list": "Usage: tines workflows list [options]
 
 List the workflow library
@@ -1542,19 +1818,134 @@ List the workflow library
 Options:
   --limit <n>        maximum items to return (page size under --all-pages)
   --cursor <cursor>  resume from the next_cursor of a previous page
-  --all-pages        fetch every page, not just the first (slower on large
-                     lists)
+  --all-pages        fetch every page, not just the first (default safety
+                     ceiling: 10000 items)
+  --max-items <n>    safety ceiling for --all-pages (default 10000; exceeding it
+                     errors)
   -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
                      \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
   --json             output the raw JSON response
   -h, --help         display help for command
 ",
+  "tines workflows preview": "Usage: tines workflows preview [options] <file-or-public-url>
+
+Prepare and fully review a destination workflow package plan
+
+Options:
+  --choices <file>   destination choices JSON file
+  --plan-out <file>  atomically save the signed plan for a later install
+  -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
+                     \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json             output the raw JSON response
+  -h, --help         display help for command
+",
+  "tines workflows publication-validate": "Usage: tines workflows publication-validate [options] <file>
+
+Validate a workflow package for text-only public hosting
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines workflows publications": "Usage: tines workflows publications [options]
+
+List your public workflow snapshots
+
+Options:
+  --workflow <id>    filter by owned source workflow ID
+  --limit <n>        maximum items to return (page size under --all-pages)
+  --cursor <cursor>  resume from the next_cursor of a previous page
+  --all-pages        fetch every page, not just the first (default safety
+                     ceiling: 10000 items)
+  --max-items <n>    safety ceiling for --all-pages (default 10000; exceeding it
+                     errors)
+  -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
+                     \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json             output the raw JSON response
+  -h, --help         display help for command
+",
+  "tines workflows publish": "Usage: tines workflows publish [options] [workflow]
+
+Prepare or commit one exact immutable public workflow snapshot
+
+Options:
+  --from <file>              prepare from an existing workflow package instead
+                             of an owned workflow
+  --proof-out <file>         save the complete prepared proof with mode 0600
+  --proof <file>             commit a previously saved exact proof
+  --display-name <name>      public attribution name (never an email)
+  --license <license>        reuse license (currently MIT) (default: "MIT")
+  --license-year <year>      MIT copyright year (default: "2026")
+  --confirm <review-digest>  exact digest of the reviewed proof
+  --sharing-rights           confirm rights to every bundled declaration and
+                             file
+  --recover                  reconcile this same candidate after a lost response
+  --repo <local-id>          confirm one bundled repository ID (repeatable)
+                             (default: [])
+  --project <id-or-name>     source project for selected project-bound
+                             configuration
+  --schedule <id>            include this source schedule ID (repeatable)
+                             (default: [])
+  --tier <state-ref=tier>    include a state tier preference (repeatable)
+                             (default: [])
+  --project-routing          make every --tier selector project scoped
+  --inputs <file>            JSON object containing input declarations and text
+                             uses
+  -u, --url <url>            base URL of the Tines API (or set TINES_API_URL, or
+                             run \`tines login\`; default
+                             https://tines.tbuckley.dev)
+  --api-key <key>            API key (or set TINES_API_KEY, or run \`tines
+                             login\`)
+  --json                     output the raw JSON response
+  -h, --help                 display help for command
+",
+  "tines workflows restore-publication": "Usage: tines workflows restore-publication [options] <public-url-or-id>
+
+Restore an owner-withdrawn public snapshot when host policy permits
+
+Options:
+  -y, --yes        skip the explicit restoration prompt
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
   "tines workflows show": "Usage: tines workflows show [options] <id-or-name>
 
 Show a workflow with states and transitions
 
 Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines workflows unpublish": "Usage: tines workflows unpublish [options] <public-url-or-id>
+
+Withdraw a hosted public snapshot
+
+Options:
+  -y, --yes        skip the explicit withdrawal prompt
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines workflows validate": "Usage: tines workflows validate [options] <file>
+
+Validate a workflow package file (use - for stdin)
+
+Options:
+  --public         apply the stricter text-only public-hosting policy
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)

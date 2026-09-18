@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { StarterInputSpec, StarterSummary } from '@tines/shared';
-	import { ApiError } from '@tines/shared';
+	import { ApiError, PROJECT_NAME_MAX } from '@tines/shared';
 	import IconBulb from '@tabler/icons-svelte/icons/bulb';
 	import IconFile from '@tabler/icons-svelte/icons/file';
 	import IconGitBranch from '@tabler/icons-svelte/icons/git-branch';
@@ -17,7 +17,8 @@
 		createsLines,
 		declaredInputs,
 		missingRequired,
-		renderStarter
+		renderStarter,
+		suggestProjectName
 	} from '$lib/starter-preview';
 
 	let {
@@ -46,6 +47,8 @@
 	/** Raw text per declared input key; kept across switches, filtered on submit. */
 	let inputs = $state<Record<string, string>>({});
 	let name = $state('');
+	/** Once the user types in Name, repository suggestions stop following. */
+	let nameDirty = $state(false);
 	let description = $state('');
 	let conventions = $state('');
 	/** Once the user types in the textarea, the prefill stops following. */
@@ -65,6 +68,14 @@
 		if (!conventionsDirty) conventions = preview?.conventions ?? '';
 	});
 
+	// A pristine Name follows the selected repository starter's URL. Reads the
+	// starter and raw inputs directly (not `preview`, which itself reads Name),
+	// and writes Name only, so it cannot loop.
+	$effect(() => {
+		const suggestion = suggestProjectName(selected, inputs);
+		if (!nameDirty) name = suggestion ?? '';
+	});
+
 	// Reset whenever the dialog closes (also seeds the first open), so Cancel,
 	// Escape, the backdrop, a success and a deep-linked reopen all start clean.
 	$effect(() => {
@@ -72,6 +83,7 @@
 			starterId = firstId;
 			inputs = emptyInputs();
 			name = '';
+			nameDirty = false;
 			description = '';
 			conventions = '';
 			conventionsDirty = false;
@@ -150,7 +162,18 @@
 			});
 			open = false;
 			await invalidateAll();
-			await goto(`/projects/${project.id}`);
+			await goto(`/projects/${project.id}`, {
+				...(project.starter?.first_issue
+					? {
+							state: {
+								starterLanding: {
+									projectId: project.id,
+									firstIssueId: project.starter.first_issue.id
+								}
+							}
+						}
+					: {})
+			});
 		} catch (err) {
 			createError = err instanceof ApiError ? err.message : 'Failed to create project.';
 		} finally {
@@ -213,7 +236,18 @@
 
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="project-name">Name</label>
-			<Input id="project-name" bind:value={name} placeholder="e.g. website" required />
+			<Input
+				id="project-name"
+				bind:value={name}
+				oninput={() => (nameDirty = true)}
+				maxlength={PROJECT_NAME_MAX}
+				aria-describedby="project-name-hint"
+				placeholder="e.g. website"
+				required
+			/>
+			<p id="project-name-hint" class="text-muted-foreground text-xs">
+				Maximum {PROJECT_NAME_MAX} characters.
+			</p>
 		</div>
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="project-description">Description</label>
@@ -248,8 +282,8 @@
 				</p>
 			{:else}
 				<ul aria-label="This creates" class="text-muted-foreground mt-1 space-y-0.5">
-					{#each lines as line (line)}
-						<li>{line}</li>
+					{#each lines as line, index (index)}
+						<li class="line-clamp-3 break-words whitespace-pre-wrap" title={line}>{line}</li>
 					{/each}
 				</ul>
 			{/if}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	builtinTierModels,
 	rateLimitHoldUntil,
 	RATE_LIMIT_HOLD_DEFAULT_MS,
 	RATE_LIMIT_HOLD_GRACE_MS,
@@ -8,6 +9,7 @@ import {
 	matchRule,
 	resolveRule,
 	resolveRoute,
+	resolveEffort,
 	isRoutedCandidate,
 	queueVerdict,
 	speakingTarget,
@@ -62,7 +64,11 @@ describe('resolveRoute', () => {
 	const issue = { project_id: 'p1', state_id: 's1', label_ids: ['l1', 'l2'] };
 	const rule = (
 		id: string,
-		targets: { runner_id: string; tier?: 'smartest' | 'balanced' | 'cheapest' | null }[],
+		targets: {
+			runner_id: string;
+			tier?: 'smartest' | 'balanced' | 'cheapest' | null;
+			effort?: string;
+		}[],
 		scope: Partial<{ project_id: string; workflow_state_id: string; label_id: string }> = {}
 	) => ({
 		id,
@@ -70,6 +76,24 @@ describe('resolveRoute', () => {
 		workflow_state_id: scope.workflow_state_id ?? null,
 		label_id: scope.label_id ?? null,
 		targets
+	});
+
+	it('resolves effort independently and preserves inherited target effort when a tier-only rule omits it', () => {
+		const global = rule('global', [{ runner_id: 'codex', tier: 'balanced', effort: 'low' }]);
+		const project = rule('project', [{ runner_id: '*', tier: 'smartest' }], {
+			project_id: 'p1'
+		});
+		expect(resolveRoute(issue, [global, project]).targets).toEqual([
+			{ runner_id: 'codex', tier: 'smartest', effort: 'low' }
+		]);
+
+		const state = rule('state', [{ runner_id: '*', tier: 'balanced', effort: 'high' }], {
+			workflow_state_id: 's1'
+		});
+		const resolved = resolveRoute(issue, [global, project, state]);
+		expect(resolved.effortOverride).toBe('high');
+		expect(resolved.effortRule).toBe(state);
+		expect(resolved.targets[0]).toEqual({ runner_id: 'codex', tier: 'smartest', effort: 'high' });
 	});
 
 	it('inherits the first lower-priority concrete list list and overrides every tier', () => {
@@ -185,12 +209,39 @@ describe('resolveTier', () => {
 		...extras
 	});
 
-	it('falls back to the runner default tier, itself defaulting to balanced', () => {
-		const runner = local({ harness: 'claude_code' }, { default_tier: 'cheapest' });
-		expect(resolveTier(runner, null).tier).toBe('cheapest');
-		expect(resolveTier(local({ harness: 'claude_code' }, { default_tier: '' }), null).tier).toBe(
-			'balanced'
-		);
+	it('exposes and resolves the exact Codex built-in table', () => {
+		const runner = local({ harness: 'codex' });
+		const models = {
+			smartest: 'gpt-6-astra',
+			balanced: 'gpt-5.6-sol',
+			cheapest: 'gpt-5.6-luna'
+		} as const;
+		expect(builtinTierModels(runner)).toEqual(models);
+		for (const [tier, model] of Object.entries(models)) {
+			expect(resolveTier(runner, tier as keyof typeof models)).toEqual({
+				tier,
+				model,
+				effort: null
+			});
+		}
+	});
+
+	it('falls back to the runner default tier, itself defaulting to balanced Codex', () => {
+		expect(resolveTier(local({ harness: 'codex' }), null)).toEqual({
+			tier: 'balanced',
+			model: 'gpt-5.6-sol',
+			effort: null
+		});
+		expect(resolveTier(local({ harness: 'codex' }, { default_tier: 'cheapest' }), null)).toEqual({
+			tier: 'cheapest',
+			model: 'gpt-5.6-luna',
+			effort: null
+		});
+		expect(resolveTier(local({ harness: 'codex' }, { default_tier: '' }), null)).toEqual({
+			tier: 'balanced',
+			model: 'gpt-5.6-sol',
+			effort: null
+		});
 	});
 
 	it('an explicit tier wins over the default', () => {
@@ -213,7 +264,34 @@ describe('resolveTier', () => {
 			local({ harness: 'custom', command: 'run {prompt_file}' }),
 			'smartest'
 		);
-		expect(resolved).toEqual({ tier: 'smartest', model: null });
+		expect(resolved).toEqual({ tier: 'smartest', model: null, effort: null });
+	});
+
+	it('keeps Codex object and legacy string overrides exact while unlisted tiers improve', () => {
+		const runner = local(
+			{ harness: 'codex' },
+			{
+				tiers: JSON.stringify({
+					balanced: { model: 'gpt-5-codex', effort: 'ultra' },
+					cheapest: 'legacy-exact-model'
+				})
+			}
+		);
+		expect(resolveTier(runner, 'balanced')).toEqual({
+			tier: 'balanced',
+			model: 'gpt-5-codex',
+			effort: 'ultra'
+		});
+		expect(resolveTier(runner, 'cheapest')).toEqual({
+			tier: 'cheapest',
+			model: 'legacy-exact-model',
+			effort: null
+		});
+		expect(resolveTier(runner, 'smartest')).toEqual({
+			tier: 'smartest',
+			model: 'gpt-6-astra',
+			effort: null
+		});
 	});
 
 	it('per-runner overrides freeze a tier to an exact model; unlisted tiers keep the built-ins', () => {
@@ -231,6 +309,48 @@ describe('resolveTier', () => {
 		const runner = { type: 'local', default_tier: 'balanced', tiers: '{oops', config: '{broken' };
 		// Broken config falls back to the claude_code harness's table.
 		expect(resolveTier(runner, 'balanced').model).toMatch(/^claude-/);
+	});
+});
+
+describe('resolveEffort', () => {
+	const tier = { tier: 'balanced' as const, model: 'gpt-5.6', effort: 'medium' };
+	const local = (effort_capabilities: string | null) => ({
+		type: 'local',
+		default_tier: 'balanced',
+		tiers: null,
+		config: JSON.stringify({ harness: 'codex' }),
+		effort_capabilities
+	});
+	const capabilities = JSON.stringify({
+		version: 1,
+		models: [{ model: 'gpt-5.6', efforts: ['low', 'medium', 'ultra'] }]
+	});
+
+	it('prefers routed effort and checks the exact final model', () => {
+		expect(resolveEffort(local(capabilities), tier, 'ultra')).toMatchObject({
+			requested: 'ultra',
+			resolved: 'ultra',
+			deliveryMode: 'enforce',
+			compatible: true
+		});
+		expect(
+			resolveEffort(local(capabilities), { ...tier, model: 'gpt-other' }, 'ultra')
+		).toMatchObject({
+			compatible: false,
+			deliveryMode: 'none'
+		});
+	});
+
+	it('permits only tier fallback through the legacy-daemon grace', () => {
+		expect(resolveEffort(local(null), tier, null)).toMatchObject({
+			resolved: 'medium',
+			deliveryMode: 'legacy_tier',
+			compatible: true
+		});
+		expect(resolveEffort(local(null), tier, 'low')).toMatchObject({
+			compatible: false,
+			reason: expect.stringContaining('daemon_upgrade_required')
+		});
 	});
 });
 

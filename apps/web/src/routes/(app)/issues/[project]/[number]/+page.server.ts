@@ -1,4 +1,4 @@
-import { error } from '@sveltejs/kit';
+import { error, redirect } from '@sveltejs/kit';
 import { truncate } from '$lib/format';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
@@ -7,6 +7,8 @@ import { listLabels } from '$lib/server/api/labels';
 import { listRunners } from '$lib/server/api/runners';
 import { listRoutingRules } from '$lib/server/api/routing';
 import { hasAnyRun, listRuns } from '$lib/server/api/runs';
+import { getIssueUsage } from '$lib/server/api/usage';
+import { mintUsageScope, usageKeyMaterial } from '$lib/server/usage-scope';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { explainDispatch } from '$lib/server/supervisor/explain';
 import { getDb } from '$lib/server/db';
@@ -25,7 +27,15 @@ import type { PageServerLoad } from './$types';
  * paint. Keep the awaited set small: anything moved out of `deferred` puts
  * itself back on the navigation critical path.
  */
-export const load: PageServerLoad = async ({ locals, platform, params, depends, parent }) => {
+export const load: PageServerLoad = async ({
+	locals,
+	platform,
+	params,
+	depends,
+	parent,
+	url,
+	isDataRequest
+}) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
 
@@ -60,6 +70,12 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends, 
 			);
 		}
 	);
+	const canonicalPath = `/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`;
+	if (!isDataRequest && url.pathname !== canonicalPath) {
+		// A native document redirect retains the browser fragment. Client data
+		// navigations are canonicalized in +page.svelte where the hash is visible.
+		redirect(307, `${canonicalPath}${url.search}`);
+	}
 
 	// Wave 2: everything else, in parallel.
 	const detailPromise = getIssueDetail(db, userId, issue, {
@@ -88,9 +104,31 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends, 
 	// Awaited by two deferred entries; created once so the check is not made twice.
 	const hasAnyRunPromise = hasAnyRun(db, userId);
 	hasAnyRunPromise.catch(() => {});
+	const usagePromise = (async () => {
+		const cutoff = Date.now();
+		const report = await getIssueUsage(db, userId, issue.id, cutoff, cutoff);
+		if (!report) throw new Error('Issue usage unavailable');
+		const material = usageKeyMaterial(platform!.env);
+		if (!material) throw new Error('Usage evidence signing is not configured');
+		report.scope = await mintUsageScope(
+			{
+				v: 1,
+				owner: userId,
+				mode: 'issue',
+				issue: issue.id,
+				cutoff,
+				timezone: report.timezone,
+				timezone_source: report.timezone_source
+			},
+			material
+		);
+		return report;
+	})();
+	usagePromise.catch(() => {});
 
 	return {
 		issue: issueDetail,
+		canonicalPath,
 		events,
 		workflows: await workflowsPromise,
 		// `projects` comes from the app layout.
@@ -115,6 +153,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, depends, 
 			issueRuns: listRuns(db, userId, { issue: issue.id }, { cursor: null, limit: 20 }).then(
 				(page) => page.items
 			),
+			usage: usagePromise,
 			runners: listRunners(db, userId),
 			// The first-run checklist: shown only while the account has never had
 			// a run, so the rules it needs are fetched only for that population —

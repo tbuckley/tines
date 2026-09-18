@@ -2,7 +2,6 @@ import { json } from '@sveltejs/kit';
 import type { DeleteRunnerRequest, UpdateRunnerRequest } from '@tines/shared';
 import { api, apiContext, readJson, readOptionalJson } from '$lib/server/api/core';
 import { deleteRunner, getRunner, updateRunner } from '$lib/server/api/runners';
-import { queueDispatchPass } from '$lib/server/supervisor/engine';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
@@ -11,20 +10,15 @@ export const GET: RequestHandler = api(async (event) => {
 });
 
 export const PATCH: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<UpdateRunnerRequest>(event);
-	const runner = await updateRunner(db, env, actor, event.params.id, body);
-	// Unpausing or raising max_concurrent brings capacity online.
-	queueDispatchPass(event.platform, actor.userId);
+	const runner = await updateRunner(db, env, actor, effects, event.params.id, body);
 	return json(runner);
 });
 
 export const DELETE: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readOptionalJson<DeleteRunnerRequest>(event);
-	await deleteRunner(db, env, actor, event.params.id, body.force === true);
-	// A forced removal clears pins, so those issues fall back to routing
-	// rules and may dispatch elsewhere.
-	queueDispatchPass(event.platform, actor.userId);
+	await deleteRunner(db, env, actor, effects, event.params.id, body.force === true);
 	return new Response(null, { status: 204 });
 });

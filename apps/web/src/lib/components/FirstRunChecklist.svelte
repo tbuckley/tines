@@ -31,7 +31,6 @@
 		onaddrunner,
 		onroute,
 		onenable,
-		onadddescription,
 		onerror
 	}: {
 		inputs: FirstRunInputs;
@@ -44,8 +43,6 @@
 		/** One-click "route everything here"; absent → the item links to the routing editor. */
 		onroute?: () => Promise<void>;
 		onenable: () => Promise<void>;
-		/** Issue page only. */
-		onadddescription?: () => void;
 		onerror: (e: unknown) => void;
 	} = $props();
 
@@ -238,7 +235,7 @@
 			{/if}
 		</li>
 
-		<!-- 5. the kill switch, on -->
+		<!-- 5. automation is ready by default; a saved stop exposes Resume -->
 		<li
 			class="flex flex-wrap items-start gap-x-3 gap-y-1"
 			data-item="enabled"
@@ -247,12 +244,12 @@
 		>
 			{@render mark('enabled')}
 			<div class="min-w-0 flex-1">
-				<p class:text-muted-foreground={byId.enabled.done}>Turn automation on</p>
-				{#if !byId.enabled.done}
-					<p class="text-muted-foreground text-xs">
-						Nothing dispatches while it is off. You can turn it back off any time.
-					</p>
-				{/if}
+				<p class:text-muted-foreground={byId.enabled.done}>Automation ready</p>
+				<p class="text-muted-foreground text-xs">
+					{byId.enabled.done
+						? 'Automation is on. Eligible work can start when a runner is available and routing matches.'
+						: 'Automation is off. Resume when you want eligible work to run.'}
+				</p>
 			</div>
 			{#if currentAction === 'enabled'}
 				<PendingButton
@@ -260,61 +257,12 @@
 					pending={enabling}
 					disabled={readOnly}
 					title={disabledReason}
-					onclick={enable}>Turn automation on</PendingButton
+					onclick={enable}>Resume automation</PendingButton
 				>
 			{/if}
 		</li>
 
-		<!-- 6. something for the agent to read -->
-		<li
-			class="flex flex-wrap items-start gap-x-3 gap-y-1"
-			data-item="content"
-			data-done={byId.content.done}
-			data-current={currentAction === 'content'}
-		>
-			{@render mark('content')}
-			<div class="min-w-0 flex-1">
-				<p class:text-muted-foreground={byId.content.done || byId.content.blocked}>
-					Give the issue something to work with
-				</p>
-				{#if byId.content.blocked}
-					<p class="text-muted-foreground text-xs">Create an issue first.</p>
-				{:else if inputs.issue && !byId.content.done}
-					<p class="text-muted-foreground text-xs">
-						{#if inputs.surface === 'agents'}
-							A description is what the agent is briefed with — add one to
-							{#if currentAction === 'content'}
-								<a
-									href="/issues/{encodeURIComponent(inputs.issue.project_name)}/{inputs.issue
-										.number}"
-									class="underline underline-offset-2">{inputs.issue.title}</a
-								>
-							{:else}
-								{inputs.issue.title}
-							{/if}.
-						{:else}
-							A description is what the agent is briefed with.
-						{/if}
-					</p>
-				{/if}
-				{#if showRepoHint(inputs)}
-					<p class="text-muted-foreground mt-1 text-xs">
-						Optional: give the project a repo so the agent has code to work in.
-					</p>
-				{/if}
-			</div>
-			{#if currentAction === 'content' && onadddescription}
-				<Button
-					size="sm"
-					variant="outline"
-					disabled={readOnly}
-					title={disabledReason}
-					onclick={onadddescription}>Add a description</Button
-				>
-			{/if}
-		</li>
-
-		<!-- 7. the landing moment -->
+		<!-- 6. the landing moment -->
 		<li
 			class="flex flex-wrap items-start gap-x-3 gap-y-1"
 			data-item="run"
@@ -338,13 +286,20 @@
 					</p>
 				{:else}
 					<p class="text-muted-foreground">Your first run</p>
-					<p class="text-muted-foreground text-xs">
-						{byId.run.blocked
-							? 'Appears here once the items above are done.'
-							: 'Appears here as soon as one starts.'}
-					</p>
+					<p class="text-muted-foreground text-xs">Appears here when eligible work starts.</p>
 				{/if}
 			</div>
 		</li>
 	</ol>
+
+	{#if inputs.issue && !inputs.issue.has_description}
+		<p class="text-muted-foreground mt-3 text-xs">
+			Optional: add a description to give the agent more context.
+		</p>
+	{/if}
+	{#if showRepoHint(inputs)}
+		<p class="text-muted-foreground mt-1 text-xs">
+			Optional: give the project a repo so the agent has code to work in.
+		</p>
+	{/if}
 </section>
