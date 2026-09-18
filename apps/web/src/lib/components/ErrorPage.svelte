@@ -19,7 +19,13 @@
 	// Kit's own default messages ("Not Found", "Internal Error") only repeat the
 	// heading, so they are dropped in favour of the fallback copy below; a
 	// message a load wrote itself ("Issue #9999 does not exist in …") is shown.
-	const BOILERPLATE = new Set(['not found', 'internal error', 'error', 'forbidden', 'unauthorized']);
+	const BOILERPLATE = new Set([
+		'not found',
+		'internal error',
+		'error',
+		'forbidden',
+		'unauthorized'
+	]);
 
 	const detail = $derived(
 		message && !BOILERPLATE.has(message.trim().toLowerCase()) ? message.trim() : null

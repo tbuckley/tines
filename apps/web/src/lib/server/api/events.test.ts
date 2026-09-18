@@ -19,7 +19,8 @@ const baseRow = {
 	actor_run_issue_number: null,
 	issue_number: 7,
 	issue_title: 'Fix it',
-	project_name: 'api'
+	project_name: 'api',
+	issue_project_name: 'api'
 };
 
 describe('serializeEvent', () => {
@@ -41,8 +42,24 @@ describe('serializeEvent', () => {
 	});
 
 	it('drops the issue ref when the issue is gone', () => {
-		const ev = serializeEvent({ ...baseRow, issue_id: null, issue_number: null, issue_title: null });
+		const ev = serializeEvent({
+			...baseRow,
+			issue_id: null,
+			issue_number: null,
+			issue_title: null
+		});
 		expect(ev.issue_ref).toBeNull();
+	});
+
+	it('keeps historical project attribution while linking the current canonical ref', () => {
+		const ev = serializeEvent({
+			...baseRow,
+			project_name: 'source',
+			issue_project_name: 'destination',
+			issue_number: 12
+		});
+		expect(ev.project_name).toBe('source');
+		expect(ev.issue_ref).toEqual({ project_name: 'destination', number: 12, title: 'Fix it' });
 	});
 });
 

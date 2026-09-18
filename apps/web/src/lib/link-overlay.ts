@@ -22,11 +22,7 @@ export const isTempLink = (linkId: string) => linkId.startsWith(TEMP_LINK_PREFIX
  * own reload has landed) and to pending removals (the row was removed
  * again before its add finished reconciling).
  */
-export function mergeLinks(
-	server: IssueLinks,
-	adds: PendingAdd[],
-	removals: string[]
-): IssueLinks {
+export function mergeLinks(server: IssueLinks, adds: PendingAdd[], removals: string[]): IssueLinks {
 	const removed = new Set(removals);
 	const present = (l: LinkedIssue) => !removed.has(l.link_id);
 	const merged: IssueLinks = {

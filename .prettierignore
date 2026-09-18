@@ -1,0 +1,17 @@
+# Generated, vendored, or historical — never formatted.
+node_modules/
+dist/
+build/
+.svelte-kit/
+.wrangler/
+.wrangler-e2e/
+.wrangler-usage-scale/
+pnpm-lock.yaml
+apps/web/test-results/
+apps/web/playwright-report/
+# shadcn-svelte output: regenerate with the CLI, don't reformat (see CLAUDE.md).
+apps/web/src/lib/components/ui/
+# Design records are historical and off-limits to edits of any kind.
+specs/
+# Prose is not formatted: table and list realignment would churn the docs.
+*.md

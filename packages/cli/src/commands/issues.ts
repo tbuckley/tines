@@ -1,9 +1,18 @@
 /** `tines issues` — issues, their artifacts, and their links. */
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { BODY_VALUE_HELP, readBodyValue } from '../body-value.js';
 import {
+	confirmTransfer,
+	formatTransferItem,
+	formatTransferPreview,
+	formatTransferResult,
+	type TransferTerminal
+} from '../issue-transfer.js';
+import {
 	client,
+	collect,
 	die,
 	fetchList,
 	printJson,
@@ -19,26 +28,48 @@ import {
 	type ListOpts
 } from '../common.js';
 import {
+	ageLabel,
+	arrivedViaLabel,
 	artifactSummary,
+	artifactTypeLabel,
 	commentLines,
 	issueRef,
 	linkRows,
 	prRefLabel,
 	recurrenceLabel,
+	requirementLines,
+	roundLines,
+	roundSummaryLabel,
+	sinceLastRunLines,
 	sniffContentType,
 	timestamp
 } from '../format.js';
+import {
+	assertOneSource,
+	ATTACH_SOURCE_HELP,
+	fsProbe,
+	gateLabel,
+	gatesFor,
+	planAttach,
+	satisfiedBy,
+	type AttachFlags,
+	type AttachSource
+} from '../attach-source.js';
 import { helpGuard } from '../help-guard.js';
 import { buildRecurrence, type RecurrenceOpts } from '../recurrence-flags.js';
 import { parseTargetSpec } from '../refs.js';
 import {
 	actorLabel,
-	parsePrSpec,
+	ApiError,
+	ARTIFACT_SITE_INDEX,
+	lintHtmlArtifact,
+	siteEntry,
 	type Artifact,
 	type CreateScheduleInput,
 	type DispatchExplainer,
 	type IssueDetail,
 	type IssueLinks,
+	type PrRef,
 	type StateCategory,
 	type UpdateIssueRequest
 } from '@tines/shared';
@@ -51,7 +82,9 @@ function printIssueLinks(links: IssueLinks): void {
 	if (links.blocked_by.length > 0) {
 		console.log('\nblocked by:');
 		// Open blockers are exactly why the issue isn't ready, so call them out.
-		table(linkRows(links.blocked_by, (e) => (e.effective_state.category === 'done' ? '' : '(open)')));
+		table(
+			linkRows(links.blocked_by, (e) => (e.effective_state.category === 'done' ? '' : '(open)'))
+		);
 	}
 	if (links.blocks.length > 0) {
 		console.log('\nblocks:');
@@ -76,7 +109,18 @@ function printIssueDetail(issue: IssueDetail): void {
 		`state: ${issue.effective_state.name} (${issue.effective_state.category})${dup ? ` (via ${issueRef(dup)} — duplicate)` : ''}  workflow: ${issue.workflow.name}  updated: ${timestamp(issue.updated_at)}`
 	);
 	if (dup) {
-		console.log(`own state: ${issue.state.name} (${issue.state.category}) — dormant while this is a duplicate`);
+		console.log(
+			`own state: ${issue.state.name} (${issue.state.category}) — dormant while this is a duplicate`
+		);
+	}
+	// An archived project is read-only, so say so before the reader tries to write.
+	if (issue.project_archived_at !== null) {
+		console.log(
+			`project archived: ${timestamp(issue.project_archived_at)} — this issue is read-only`
+		);
+	}
+	if (issue.labels.length > 0) {
+		console.log(`labels: ${issue.labels.map((l) => l.name).join(', ')}`);
 	}
 	console.log(`id: ${issue.id}`);
 	printIssueLinks(issue.links);
@@ -84,7 +128,31 @@ function printIssueDetail(issue: IssueDetail): void {
 		console.log(`\n${issue.description}`);
 	}
 	const allowed = issue.allowed_transitions.map((t) => `"${t.name}" → ${t.to_state.name}`);
-	console.log(`\nallowed actions: ${allowed.length ? allowed.join(', ') : 'none (terminal state)'}`);
+	console.log(
+		`\nallowed actions: ${allowed.length ? allowed.join(', ') : 'none (terminal state)'}`
+	);
+	// A gated transition is not takeable until its slots are filled, so the
+	// reader sees what each one wants and the command that fills it before
+	// spending a `move` on the 422.
+	for (const t of issue.allowed_transitions) {
+		for (const check of t.requires ?? []) {
+			const [head, ...rest] = requirementLines(check);
+			console.log(`  "${t.name}" ${head}`);
+			for (const line of rest) console.log(`  ${line}`);
+		}
+	}
+	// The handoff, two halves that never both apply: an awaiting-human issue is
+	// asking the reader to judge what came back (round); an active one is
+	// telling the agent what the human said last (since the last run). Both are
+	// omitted entirely when empty — no header, no "none".
+	if (issue.since_last_run && issue.effective_state.category === 'active') {
+		console.log('');
+		for (const line of sinceLastRunLines(issue.since_last_run)) console.log(line);
+	}
+	if (issue.round && issue.effective_state.category === 'awaiting_human') {
+		console.log('');
+		for (const line of roundLines(issue.round)) console.log(line);
+	}
 	if (issue.comments.length > 0) {
 		console.log(`\ncomments (${issue.comments.length}):`);
 		// Rendered by commentLines so the id and the (edited) marker — the two
@@ -93,6 +161,20 @@ function printIssueDetail(issue: IssueDetail): void {
 			for (const line of commentLines(c)) console.log(line);
 		}
 	}
+}
+
+/** The document behind a planned text source (inline, @file, or stdin). */
+function readTextSource(source: AttachSource): string {
+	if (source.kind === 'text-inline') return source.value;
+	if (source.kind === 'text-stdin') return readBodyValue('-');
+	if (source.kind === 'text-path') {
+		try {
+			return readFileSync(source.path, 'utf8');
+		} catch (err) {
+			die(`cannot read ${source.path}: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+	throw new Error(`not a text source: ${source.kind}`);
 }
 
 /** All regular files under a directory, workspace-relative with `/` separators. */
@@ -104,7 +186,11 @@ function walkFolder(dir: string): { path: string; contentType: string; bytes: Bu
 			const nextRel = rel ? `${rel}/${entry.name}` : entry.name;
 			if (entry.isDirectory()) walk(nextAbs, nextRel);
 			else if (entry.isFile()) {
-				files.push({ path: nextRel, contentType: sniffContentType(entry.name), bytes: readFileSync(nextAbs) });
+				files.push({
+					path: nextRel,
+					contentType: sniffContentType(entry.name),
+					bytes: readFileSync(nextAbs)
+				});
 			}
 			// Symlinks and specials are skipped: a snapshot carries plain files.
 		}
@@ -116,13 +202,24 @@ function walkFolder(dir: string): { path: string; contentType: string; bytes: Bu
 function printExplainer(issue: IssueDetail, ex: DispatchExplainer): void {
 	console.log(`${issue.project_name}/#${issue.number}  ${issue.title}`);
 	console.log(`\n${ex.verdict}\n`);
-	table(ex.checks.map((c) => [`  ${c.ok ? 'ok' : 'FAIL'}`, c.name.replaceAll('_', ' '), c.detail]));
+	table(
+		ex.checks.map((c) => [
+			`  ${c.ok ? 'ok' : 'FAIL'}`,
+			c.name.replaceAll('_', ' '),
+			c.detail,
+			// The remedy, when the check has one and it is something to run
+			// here: a link is useless without an origin.
+			c.action?.cli ? `fix: ${c.action.cli}` : ''
+		])
+	);
 	if (ex.pin) {
 		console.log(
 			`\npinned to ${ex.pin.runner_name ?? ex.pin.runner_id}${ex.pin.tier ? `:${ex.pin.tier}` : ''} (replaces rule matching)`
 		);
 	} else if (ex.matched_rule) {
 		console.log(`\nmatched rule: ${ex.matched_rule.scope_label}`);
+		if (ex.tier_override) console.log(`tier override: ${ex.tier_override}`);
+		if (ex.runner_rule) console.log(`runner source: ${ex.runner_rule.scope_label}`);
 	}
 	if (ex.targets.length > 0) {
 		console.log('targets (preference order):');
@@ -136,7 +233,9 @@ function printExplainer(issue: IssueDetail, ex: DispatchExplainer): void {
 		);
 	}
 	if (ex.queue_position !== null && ex.queue_position > 0) {
-		console.log(`queue: ${ex.queue_position} eligible issue${ex.queue_position === 1 ? '' : 's'} ahead of this one`);
+		console.log(
+			`queue: ${ex.queue_position} eligible issue${ex.queue_position === 1 ? '' : 's'} ahead of this one`
+		);
 	}
 	if (ex.active_run) {
 		console.log(
@@ -162,8 +261,13 @@ export function register(program: Command): void {
 			.option('-c, --category <cat>', 'filter by state category')
 			.option('-w, --workflow <id-or-name>', 'filter by workflow')
 			.option('-a, --all', 'include issues in done states')
-			.option('--ready', 'only issues that are actionable now (not done, not a duplicate, no open blockers)')
+			.option(
+				'--ready',
+				'only issues that are actionable now (not done, not a duplicate, no open blockers)'
+			)
 			.option('-q, --search <text>', 'search titles and descriptions')
+			.option('-l, --label <name>', 'filter by label; repeat to require all of them', collect, [])
+			.option('--brief', 'omit description bodies (saves tokens when scanning)')
 	).action(
 		async (
 			opts: ListOpts & {
@@ -174,6 +278,8 @@ export function register(program: Command): void {
 				all?: boolean;
 				ready?: boolean;
 				search?: string;
+				label?: string[];
+				brief?: boolean;
 			}
 		) => {
 			const api = client(opts);
@@ -186,11 +292,40 @@ export function register(program: Command): void {
 					hide_done: !opts.all,
 					ready: opts.ready,
 					q: opts.search,
+					label: opts.label,
+					// The table below never prints descriptions, so --brief only
+					// ever changes --json; it is off by default so existing
+					// consumers of the JSON keep the field.
+					brief: opts.brief,
 					...page
 				})
 			);
 			printList(res, opts, (items) => {
 				if (items.length === 0) return console.log(opts.ready ? 'no ready issues' : 'no issues');
+				// The awaiting-human table answers a different question — how long
+				// has this been waiting, how did it get here, what came back — so
+				// it swaps three columns. Every other invocation is unchanged.
+				if (opts.category === 'awaiting_human') {
+					table([
+						['REF', 'TITLE', 'STATE', 'WAITING', 'VIA', 'ROUND', ''],
+						...items.map((i) => [
+							`${i.project_name}/${i.number}`,
+							i.title,
+							i.effective_state.name,
+							ageLabel(new Date(i.state_entered_at).toISOString()),
+							arrivedViaLabel(i.arrived_via),
+							roundSummaryLabel(i.round_summary ?? null),
+							[
+								i.open_blockers.length > 0 ? 'blocked' : '',
+								i.duplicate_of ? 'dup' : '',
+								...i.labels.map((l) => `[${l.name}]`)
+							]
+								.filter(Boolean)
+								.join(' ')
+						])
+					]);
+					return;
+				}
 				table([
 					['REF', 'TITLE', 'STATE', 'CATEGORY', 'LAST ACTIVITY', ''],
 					...items.map((i) => [
@@ -201,7 +336,11 @@ export function register(program: Command): void {
 						i.effective_state.name,
 						i.effective_state.category,
 						timestamp(i.last_activity_at),
-						[i.open_blockers.length > 0 ? 'blocked' : '', i.duplicate_of ? 'dup' : '']
+						[
+							i.open_blockers.length > 0 ? 'blocked' : '',
+							i.duplicate_of ? 'dup' : '',
+							...i.labels.map((l) => `[${l.name}]`)
+						]
 							.filter(Boolean)
 							.join(' ')
 					])
@@ -214,17 +353,35 @@ export function register(program: Command): void {
 		issues
 			.command('create <project>')
 			.description('Create an issue in a project, optionally with a recurrence (a scheduled task)')
-			.requiredOption('-t, --title <title>', 'issue title (doubles as the title template with a recurrence)')
+			.requiredOption(
+				'-t, --title <title>',
+				'issue title (doubles as the title template with a recurrence)'
+			)
 			.option('-d, --description <markdown>', `issue description (Markdown) — ${BODY_VALUE_HELP}`)
-			.option('-w, --workflow <id-or-name>', 'workflow (defaults to project default, else standard)')
+			.option(
+				'-w, --workflow <id-or-name>',
+				'workflow (defaults to project default, else standard)'
+			)
 			.option('-s, --state <name>', "starting state (defaults to the workflow's initial state)")
-			.option('--every <preset>', 'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly')
-			.option('--at <when>', 'preset time of day HH:MM (default 09:00); for hourly, the minute past the hour :MM (default :00)')
+			.option(
+				'--every <preset>',
+				'repeat hourly (or every N hours: "6h"), daily, weekly, or monthly'
+			)
+			.option(
+				'--at <when>',
+				'preset time of day HH:MM (default 09:00); for hourly, the minute past the hour :MM (default :00)'
+			)
 			.option('--on <when>', 'weekday (weekly) or day of month (monthly)')
 			.option('--cron <expr>', '5-field cron expression (alternative to --every/--at/--on)')
 			.option('--tz <iana>', 'schedule timezone (defaults to the system timezone)')
 			.option('--if-closed', 'only create a new instance when all previous instances are closed')
 			.option('--schedule-name <name>', 'schedule name, unique per project (defaults to the title)')
+			.option(
+				'-l, --label <name>',
+				'attach a label; repeat for several (created if new)',
+				collect,
+				[]
+			)
 	).action(
 		async (
 			projectRef: string,
@@ -236,6 +393,7 @@ export function register(program: Command): void {
 					state?: string;
 					ifClosed?: boolean;
 					scheduleName?: string;
+					label?: string[];
 				}
 		) => {
 			// Resolved before any lookup, like the <markdown> positionals: an
@@ -263,11 +421,13 @@ export function register(program: Command): void {
 				description,
 				workflow_id: workflowId,
 				state: opts.state,
-				schedule
+				schedule,
+				labels: opts.label
 			});
 			if (opts.json) return printJson(issue);
 			console.log(
-				`created ${issue.project_name}/#${issue.number} "${issue.title}" in state "${issue.state.name}"`
+				`created ${issue.project_name}/#${issue.number} "${issue.title}" in state "${issue.state.name}"` +
+					(issue.labels.length > 0 ? ` labeled ${issue.labels.map((l) => l.name).join(', ')}` : '')
 			);
 			if (issue.schedule) {
 				console.log(
@@ -311,7 +471,8 @@ export function register(program: Command): void {
 			if (opts.title !== undefined) body.title = opts.title;
 			if (description !== undefined) body.description = description;
 			if (opts.state !== undefined) body.state = opts.state;
-			if (opts.workflow !== undefined) body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
+			if (opts.workflow !== undefined)
+				body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
 			if (Object.keys(body).length === 0) {
 				die('nothing to update: pass --title, --description, --state, and/or --workflow');
 			}
@@ -344,6 +505,116 @@ export function register(program: Command): void {
 
 	withCommon(
 		issues
+			.command('transfer <ref>')
+			.description(
+				'Move an issue to another project, keeping its ID, record and old refs (this is not the workflow "move")'
+			)
+			.requiredOption('-p, --project <name-or-id>', 'destination project')
+			.option('--dry-run', 'print the review and exit without moving anything')
+			.option('--inspect <n>', 'print the full content of reviewed guidance item [n]')
+			.option('-y, --yes', 'skip the confirmation prompt')
+	).action(
+		async (
+			ref: string,
+			opts: CommonOpts & { project: string; dryRun?: boolean; inspect?: string; yes?: boolean }
+		) => {
+			const api = client(opts);
+			const issue = await resolveIssue(api, ref);
+			const destination = await resolveProject(api, opts.project);
+			// Everything below reviews one fetched preview: the token binds this
+			// exact review, so a later read can never be what gets confirmed.
+			let preview = await api.previewIssueTransfer(issue.id, destination.id);
+
+			if (opts.inspect !== undefined) {
+				const text = formatTransferItem(preview, Number(opts.inspect));
+				if (opts.json) return printJson({ ...preview, inspected: text });
+				return console.log(text);
+			}
+			if (opts.dryRun) {
+				if (opts.json) return printJson(preview);
+				return console.log(formatTransferPreview(preview));
+			}
+			const blocked = () => {
+				const blocker = preview.blockers[0];
+				if (opts.json) {
+					printJson({
+						error: {
+							code: blocker?.code ?? 'transfer_blocked',
+							message: blocker?.message ?? 'this move is blocked',
+							details: blocker ?? null
+						}
+					});
+					process.exitCode = 1;
+					return;
+				}
+				// Under --json stdout carries exactly one object, so the human review
+				// and every prompt go to stderr.
+				console.error(formatTransferPreview(preview));
+				return die(blocker ? `${blocker.code}: ${blocker.message}` : 'this move is blocked');
+			};
+			if (!preview.can_commit || !preview.preview_token) return blocked();
+
+			const interactive = !opts.yes && process.stdin.isTTY;
+			if (!opts.yes && !interactive) {
+				die(
+					`refusing to move without a confirmation: rerun with --yes, or review it first with --dry-run --json`
+				);
+			}
+			const rl = interactive
+				? createInterface({ input: process.stdin, output: process.stderr })
+				: null;
+			const terminal: TransferTerminal = {
+				write: (text) => process.stderr.write(text),
+				ask: (question) => rl!.question(question).catch(() => null)
+			};
+			try {
+				// A stale preview is answered once more, never reposted silently: the
+				// operator confirms the guidance that is actually true now.
+				for (let attempt = 0; ; attempt++) {
+					if (interactive) {
+						const decision = await confirmTransfer(
+							preview,
+							terminal,
+							attempt === 0
+								? undefined
+								: 'The configuration this review described has changed. Here is the current one:'
+						);
+						if (decision.action === 'abort') return die(decision.reason);
+					}
+					try {
+						const result = await api.transferIssue(issue.id, {
+							project_id: destination.id,
+							preview_token: preview.preview_token!
+						});
+						if (opts.json) return printJson(result);
+						return console.log(formatTransferResult(result));
+					} catch (e) {
+						const fail = e as { code?: string; message?: string; details?: unknown };
+						// Only a stale preview is worth re-reviewing, and only for someone
+						// who can answer: --yes and a competing move both stop here.
+						if (fail.code === 'transfer_preview_stale' && interactive && attempt === 0) {
+							preview = await api.previewIssueTransfer(issue.id, destination.id);
+							if (!preview.can_commit || !preview.preview_token) return blocked();
+							continue;
+						}
+						if (opts.json && fail.code) {
+							printJson({
+								error: { code: fail.code, message: fail.message, details: fail.details ?? null }
+							});
+							process.exitCode = 1;
+							return;
+						}
+						throw e;
+					}
+				}
+			} finally {
+				rl?.close();
+			}
+		}
+	);
+
+	withCommon(
+		issues
 			.command('comment <ref> <markdown>')
 			.description(`Comment on an issue — Markdown body: ${BODY_VALUE_HELP}`)
 			// A body may start with "-"; options go before the arguments.
@@ -367,15 +638,23 @@ export function register(program: Command): void {
 			.description(`Replace the body of your own comment — Markdown body: ${BODY_VALUE_HELP}`)
 			// A body may start with "-"; options go before the arguments.
 			.passThroughOptions()
-	).action(async (ref: string, commentId: string, markdown: string, opts: CommonOpts, command: Command) => {
-		if (helpGuard(command, markdown)) return;
-		const body = readBodyValue(markdown);
-		const api = client(opts);
-		const issue = await resolveIssue(api, ref);
-		const comment = await api.updateComment(issue.id, commentId, { body });
-		if (opts.json) return printJson(comment);
-		console.log(`edited comment ${comment.id} on ${issue.project_name}/#${issue.number}`);
-	});
+	).action(
+		async (
+			ref: string,
+			commentId: string,
+			markdown: string,
+			opts: CommonOpts,
+			command: Command
+		) => {
+			if (helpGuard(command, markdown)) return;
+			const body = readBodyValue(markdown);
+			const api = client(opts);
+			const issue = await resolveIssue(api, ref);
+			const comment = await api.updateComment(issue.id, commentId, { body });
+			if (opts.json) return printJson(comment);
+			console.log(`edited comment ${comment.id} on ${issue.project_name}/#${issue.number}`);
+		}
+	);
 
 	withCommon(
 		issues
@@ -387,6 +666,56 @@ export function register(program: Command): void {
 		await api.deleteComment(issue.id, commentId);
 		if (opts.json) return printJson({ id: commentId, deleted: true });
 		console.log(`deleted comment ${commentId} from ${issue.project_name}/#${issue.number}`);
+	});
+
+	// Labels read as sentences too, and label ids never surface: every command
+	// takes names.
+
+	withCommon(
+		issues
+			.command('label <ref> <name...>')
+			.description('Add labels to an issue (a label that does not exist yet is created)')
+	).action(async (ref: string, names: string[], opts: CommonOpts) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const res = await api.addIssueLabels(issue.id, names);
+		if (opts.json) return printJson(res);
+		const target = `${issue.project_name}/#${issue.number}`;
+		if (res.added.length === 0) {
+			console.log(`${target} already had ${names.join(', ')} — nothing to do`);
+		} else {
+			console.log(`labeled ${target}: ${res.added.map((l) => l.name).join(', ')}`);
+		}
+		if (res.created.length > 0) {
+			console.log(
+				`created new label${res.created.length > 1 ? 's' : ''} ${res.created.map((l) => l.name).join(', ')}`
+			);
+		}
+	});
+
+	withCommon(
+		issues.command('unlabel <ref> <name...>').description('Remove labels from an issue')
+	).action(async (ref: string, names: string[], opts: CommonOpts) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const removed: string[] = [];
+		const missing: string[] = [];
+		// One DELETE per name: a name that was not attached is reported, not
+		// fatal, so `unlabel A x y` still removes y when x was never there.
+		for (const name of names) {
+			try {
+				await api.removeIssueLabel(issue.id, name);
+				removed.push(name);
+			} catch (err) {
+				if (err instanceof ApiError && err.status === 404) missing.push(name);
+				else throw err;
+			}
+		}
+		if (opts.json) return printJson({ removed, missing });
+		const target = `${issue.project_name}/#${issue.number}`;
+		if (removed.length > 0) console.log(`unlabeled ${target}: ${removed.join(', ')}`);
+		if (missing.length > 0) console.log(`not on ${target}: ${missing.join(', ')}`);
+		if (removed.length === 0 && missing.length === 0) console.log('nothing to do');
 	});
 
 	// Links read as sentences: `block A B` means "A blocks B", `duplicate A B`
@@ -409,7 +738,9 @@ export function register(program: Command): void {
 	});
 
 	withCommon(
-		issues.command('unblock <blocker> <blocked>').description('Remove the link making <blocker> block <blocked>')
+		issues
+			.command('unblock <blocker> <blocked>')
+			.description('Remove the link making <blocker> block <blocked>')
 	).action(async (blockerRef: string, blockedRef: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const blocker = await resolveIssue(api, blockerRef);
@@ -447,8 +778,13 @@ export function register(program: Command): void {
 	withCommon(
 		issues
 			.command('context <ref>')
-			.description("Print an issue's effective context (the assembled bundle for its current state)")
-			.option('--out <dir>', 'write the bundle to a directory: prompt.md, skills/<name>/…, repos.json')
+			.description(
+				"Print an issue's effective context (the assembled bundle for its current state)"
+			)
+			.option(
+				'--out <dir>',
+				'write the bundle to a directory: prompt.md, skills/<name>/…, repos.json'
+			)
 			.option('--force', 'allow --out into a non-empty directory')
 	).action(async (ref: string, opts: CommonOpts & { out?: string; force?: boolean }) => {
 		const api = client(opts);
@@ -461,13 +797,19 @@ export function register(program: Command): void {
 				console.log(`\nskills: ${context.skills.map((s) => s.name).join(', ')}`);
 			}
 			for (const repo of context.repos) {
-				console.log(`repo: ${repo.name} ${repo.url}${repo.branch ? `#${repo.branch}` : ''} → ${repo.dir}/`);
+				console.log(
+					`repo: ${repo.name} ${repo.url}${repo.branch ? `#${repo.branch}` : ''} → ${repo.dir}/`
+				);
 			}
 			for (const o of context.overridden) {
-				console.log(`overridden: ${o.kind} "${o.name}" [${o.scope.label}] (overridden by ${o.overridden_by})`);
+				console.log(
+					`overridden: ${o.kind} "${o.name}" [${o.scope.label}] (overridden by ${o.overridden_by})`
+				);
 			}
 			for (const c of context.conflicts) {
-				console.log(`conflict: repos ${c.item_ids.join(', ')} all resolve to checkout dir "${c.dir}"`);
+				console.log(
+					`conflict: repos ${c.item_ids.join(', ')} all resolve to checkout dir "${c.dir}"`
+				);
 			}
 			return;
 		}
@@ -484,7 +826,10 @@ export function register(program: Command): void {
 			die(`refusing to write into non-empty directory ${opts.out} (pass --force to override)`);
 		}
 		mkdirSync(opts.out, { recursive: true });
-		writeFileSync(join(opts.out, 'prompt.md'), context.prompt.text ? `${context.prompt.text}\n` : '');
+		writeFileSync(
+			join(opts.out, 'prompt.md'),
+			context.prompt.text ? `${context.prompt.text}\n` : ''
+		);
 		for (const skill of context.skills) {
 			for (const file of skill.files) {
 				const target = join(opts.out, 'skills', skill.name, file.path);
@@ -534,42 +879,65 @@ export function register(program: Command): void {
 
 	const artifactsCmd = issues
 		.command('artifacts')
-		.description('Typed, versioned attachments on an issue — the work products transition requirements gate on');
-
-	withCommon(artifactsCmd.command('list <ref>').description('List the artifacts attached to an issue')).action(
-		async (ref: string, opts: CommonOpts) => {
-			const api = client(opts);
-			const issue = await resolveIssue(api, ref);
-			const res = await api.listArtifacts(issue.id);
-			if (opts.json) return printJson(res);
-			if (res.items.length === 0) return console.log('no artifacts attached');
-			table([
-				['NAME', 'TYPE', 'VERSION', 'FRESH', 'SUMMARY', 'ATTACHED'],
-				...res.items.map((a) => [
-					a.name,
-					a.artifact_type,
-					`v${a.current_version.version}`,
-					a.fresh ? 'yes' : 'no',
-					artifactSummary(a),
-					timestamp(a.current_version.created_at)
-				])
-			]);
-		}
-	);
+		.description(
+			'Typed, versioned attachments on an issue — the work products transition requirements gate on'
+		);
 
 	withCommon(
-		artifactsCmd.command('show <ref> <name>').description('Show an artifact with its full version history')
+		artifactsCmd.command('list <ref>').description('List the artifacts attached to an issue')
+	).action(async (ref: string, opts: CommonOpts) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const res = await api.listArtifacts(issue.id);
+		if (opts.json) return printJson(res);
+		if (res.items.length === 0) return console.log('no artifacts attached');
+		// A row a gate on this issue rejects carries what that gate wanted
+		// instead; the column only appears when something is actually rejected.
+		const gates = gatesFor(issue);
+		const labels = res.items.map((a) => gateLabel(a, gates));
+		const gated = labels.some((l) => l !== '');
+		table([
+			['NAME', 'TYPE', 'VERSION', 'FRESH', ...(gated ? ['GATE'] : []), 'SUMMARY', 'ATTACHED'],
+			...res.items.map((a, i) => [
+				a.name,
+				a.artifact_type,
+				`v${a.current_version.version}`,
+				a.fresh ? 'yes' : 'no',
+				...(gated ? [labels[i] || 'ok'] : []),
+				artifactSummary(a),
+				timestamp(a.current_version.created_at)
+			])
+		]);
+	});
+
+	withCommon(
+		artifactsCmd
+			.command('show <ref> <name>')
+			.description('Show an artifact with its full version history')
 	).action(async (ref: string, name: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
 		const artifact = await api.getArtifact(issue.id, name);
 		if (opts.json) return printJson(artifact);
-		console.log(`${artifact.artifact_type} artifact "${artifact.name}" on ${issue.project_name}/${issue.number}`);
+		console.log(
+			`${artifact.artifact_type} artifact "${artifact.name}" on ${issue.project_name}/${issue.number}`
+		);
 		if (artifact.description) console.log(artifact.description);
 		console.log(
 			`current: v${artifact.current_version.version} (${artifact.fresh ? 'fresh' : 'attached before the current state — reaffirm or attach a new version to satisfy gates'})`
 		);
 		console.log(`summary: ${artifactSummary(artifact)}`);
+		// Sites are the one thing a summary line can't convey: it renders live.
+		const entry = siteEntry(
+			artifact.artifact_type,
+			artifact.current_version.content_type,
+			artifact.current_version.files ?? []
+		);
+		if (entry !== null) {
+			console.log(
+				`site: renders live from /${entry} — "tines issues artifacts site-link ${issue.project_name}/${issue.number} ${artifact.name}" for a viewable URL`
+			);
+		}
 		console.log('\nversions:');
 		table(
 			artifact.versions.map((v) => [
@@ -592,111 +960,159 @@ export function register(program: Command): void {
 
 	withCommon(
 		artifactsCmd
-			.command('attach <ref> <name>')
-			.description('Attach content to a named artifact slot (creates it, or appends the next version)')
+			.command('attach <ref> <name> [source]')
+			.description(
+				'Attach content to a named artifact slot — <source> is typed by the gate, flags override (creates it, or appends a version)'
+			)
 			.option('-f, --file <path>', 'upload a file (MIME sniffed from the extension)')
 			.option(
 				'--folder <dir>',
 				'snapshot a directory tree as one version (collect locally, attach once; MIME per file sniffed)'
 			)
 			.option('-t, --text <md|@file>', 'inline text document: inline Markdown or @file')
-			.option('--url <url>', 'link: the URL to attach')
+			.option('--link <url>', 'link: the URL to attach')
 			.option('--pr <spec>', 'PR reference: owner/repo#N or a GitHub PR URL')
 			.option('--content-type <mime>', 'declared MIME type (with --file or --text)')
 			.option('--filename <name>', 'display filename (with --text; defaults to <name>.md)')
-			.option('--title <title>', 'display title (with --url)')
-			.option('-d, --description <text>', 'artifact description, shown in lists and launch prompts'),
-		// --url is the link payload here; the API base comes from TINES_API_URL.
-		{ baseUrlFlag: false }
+			.option('--title <title>', 'display title (with --link)')
+			.option('-d, --description <text>', 'artifact description, shown in lists and launch prompts')
+			.option(
+				'--ignore-gates',
+				'attach this type even when a transition requirement rejects it (skips inference and the pre-flight checks)'
+			)
+			.addHelpText('after', ATTACH_SOURCE_HELP)
 	).action(
 		async (
 			ref: string,
 			name: string,
-			opts: CommonOpts & {
-				file?: string;
-				folder?: string;
-				text?: string;
-				url?: string;
-				pr?: string;
-				contentType?: string;
-				filename?: string;
-				title?: string;
-				description?: string;
-			}
+			source: string | undefined,
+			opts: CommonOpts &
+				AttachFlags & {
+					description?: string;
+				}
 		) => {
-			const api = client({ apiKey: opts.apiKey, json: opts.json });
-			const sources = [opts.file, opts.folder, opts.text, opts.url, opts.pr].filter((v) => v !== undefined);
-			if (sources.length !== 1) {
-				die(
-					'pass exactly one content source: --file <path>, --folder <dir>, --text <md|@file>, --url <url>, or --pr <spec>'
-				);
+			const api = client(opts);
+			// Arity first, before any request: a mistyped invocation must die
+			// offline (Tines/92 — `--url <link>` is the API base URL, not a
+			// source). die() rather than letting the CliError unwind, so that
+			// guarantee stays assertable in-process (program.test.ts).
+			try {
+				assertOneSource(opts, source);
+			} catch (err) {
+				die(err instanceof Error ? err.message : String(err));
 			}
 			const issue = await resolveIssue(api, ref);
+			const gates = gatesFor(issue, name);
+			// Everything the invocation implies, decided offline: a refusal here
+			// has written nothing.
+			const plan = planAttach(
+				{
+					ref: `${issue.project_name}/${issue.number}`,
+					name,
+					positional: source,
+					flags: opts,
+					gates,
+					probe: fsProbe
+				},
+				sniffContentType
+			);
+			const withDescription =
+				opts.description !== undefined ? { description: opts.description } : {};
 			let artifact: Artifact;
-			if (opts.folder !== undefined) {
-				if (!existsSync(opts.folder) || !statSync(opts.folder).isDirectory()) {
-					die(`--folder needs a directory, got "${opts.folder}"`);
-				}
-				const files = walkFolder(opts.folder);
-				if (files.length === 0) die(`${opts.folder} contains no files to snapshot`);
+			// The entry HTML of whatever we are about to attach, so the lint can
+			// warn about the two things that make a site look broken (§7).
+			let siteHtml: string | null = null;
+			if (plan.type === 'folder') {
+				const dir = (plan.source as { dir: string }).dir;
+				const files = walkFolder(dir);
+				if (files.length === 0) die(`${dir} contains no files to snapshot`);
+				const index = files.find((f) => f.path === ARTIFACT_SITE_INDEX);
+				if (index) siteHtml = index.bytes.toString('utf8');
 				artifact = await api.uploadArtifactFolder(issue.id, name, files);
 				// The folder endpoint has no description slot; set it alongside.
 				if (opts.description !== undefined) {
 					artifact = await api.putArtifact(issue.id, name, { description: opts.description });
 				}
-			} else if (opts.file !== undefined) {
+			} else if (plan.type === 'file') {
+				const fromPath = plan.source.kind === 'file-path' ? plan.source.path : null;
 				let bytes: Buffer;
-				try {
-					bytes = readFileSync(opts.file);
-				} catch (err) {
-					die(`cannot read ${opts.file}: ${err instanceof Error ? err.message : String(err)}`);
+				if (fromPath === null) {
+					if (process.stdin.isTTY) die('"-" reads the file from stdin, but stdin is a terminal');
+					bytes = readFileSync(0);
+				} else {
+					try {
+						bytes = readFileSync(fromPath);
+					} catch (err) {
+						die(`cannot read ${fromPath}: ${err instanceof Error ? err.message : String(err)}`);
+					}
 				}
+				const contentType =
+					plan.contentType ??
+					(fromPath === null ? 'application/octet-stream' : sniffContentType(fromPath));
+				if (siteEntry('file', contentType) !== null) siteHtml = bytes.toString('utf8');
 				artifact = await api.uploadArtifactFile(issue.id, name, bytes, {
-					filename: opts.filename ?? basename(opts.file),
-					contentType: opts.contentType ?? sniffContentType(opts.file)
+					filename: plan.filename ?? (fromPath === null ? name : basename(fromPath)),
+					contentType
 				});
 				// The file endpoint has no description slot; set it alongside.
 				if (opts.description !== undefined) {
 					artifact = await api.putArtifact(issue.id, name, { description: opts.description });
 				}
-			} else if (opts.text !== undefined) {
+			} else if (plan.type === 'text') {
+				const content = readTextSource(plan.source);
+				if (siteEntry('text', plan.contentType ?? null) !== null) siteHtml = content;
 				artifact = await api.putArtifact(issue.id, name, {
 					type: 'text',
-					content: readBodyValue(opts.text),
-					...(opts.filename !== undefined ? { filename: opts.filename } : {}),
-					...(opts.contentType !== undefined ? { content_type: opts.contentType } : {}),
-					...(opts.description !== undefined ? { description: opts.description } : {})
+					content,
+					...(plan.filename !== undefined ? { filename: plan.filename } : {}),
+					...(plan.contentType !== undefined ? { content_type: plan.contentType } : {}),
+					...withDescription
 				});
-			} else if (opts.url !== undefined) {
+			} else if (plan.type === 'link') {
+				const link = plan.source as { url: string; title?: string };
 				artifact = await api.putArtifact(issue.id, name, {
 					type: 'link',
-					url: opts.url,
-					...(opts.title !== undefined ? { title: opts.title } : {}),
-					...(opts.description !== undefined ? { description: opts.description } : {})
+					url: link.url,
+					...(link.title !== undefined ? { title: link.title } : {}),
+					...withDescription
 				});
 			} else {
-				const parsed = parsePrSpec(opts.pr!);
-				if (!parsed) {
-					die(`--pr takes owner/repo#N or a GitHub PR URL, got "${opts.pr}"`);
-				}
+				const { pr } = plan.source as { pr: PrRef };
 				artifact = await api.putArtifact(issue.id, name, {
 					type: 'pr',
-					pr_repo_url: parsed.repo_url,
-					pr_number: parsed.number,
-					...(opts.description !== undefined ? { description: opts.description } : {})
+					pr_repo_url: pr.repo_url,
+					pr_number: pr.number,
+					...withDescription
 				});
 			}
 			if (opts.json) return printJson(artifact);
+			// The version just landed, so it is fresh by construction; what the
+			// reader still needs to know is which gate it cleared.
+			const { satisfies, rejects } = satisfiedBy(artifact, gates);
+			const gateNote =
+				satisfies.length > 0
+					? `; satisfies ${satisfies.map((t) => `"${t}"`).join(', ')}`
+					: rejects.length > 0
+						? `, but does not satisfy ${rejects.map((r) => `"${r.transition}" (${r.wants})`).join(', ')}`
+						: '';
 			console.log(
-				`attached "${artifact.name}" v${artifact.current_version.version} (${artifactSummary(artifact)}) to ${issue.project_name}/${issue.number} — fresh`
+				`attached "${artifact.name}" v${artifact.current_version.version} (${artifactTypeLabel(artifact)}) to ${issue.project_name}/${issue.number} — fresh${gateNote}`
 			);
+			if (siteHtml !== null) {
+				console.log(
+					`site: renders live — "tines issues artifacts site-link ${issue.project_name}/${issue.number} ${artifact.name}" for a viewable URL`
+				);
+				for (const warning of lintHtmlArtifact(siteHtml)) console.log(`warning: ${warning}`);
+			}
 		}
 	);
 
 	withCommon(
 		artifactsCmd
 			.command('reaffirm <ref> <name>')
-			.description('Bless the current content as fresh (appends a version reusing the same payload)')
+			.description(
+				'Bless the current content as fresh (appends a version reusing the same payload)'
+			)
 	).action(async (ref: string, name: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
@@ -709,10 +1125,45 @@ export function register(program: Command): void {
 
 	withCommon(
 		artifactsCmd
+			.command('site-link <ref> <name>')
+			.description(
+				'Mint a short-lived URL that renders an HTML artifact live (scripts running) — for screenshotting your own prototype'
+			)
+			.option('--version <n>', 'pin the link to a specific version (defaults to current)', (v) =>
+				Number.parseInt(v, 10)
+			)
+	).action(async (ref: string, name: string, opts: CommonOpts & { version?: number }) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const link = await api.createArtifactSiteLink(
+			issue.id,
+			name,
+			opts.version === undefined ? {} : { version: opts.version }
+		);
+		if (opts.json) return printJson(link);
+		console.log(link.url);
+		const minutes = Math.max(1, Math.round((link.expires_at - Date.now()) / 60_000));
+		console.log(`v${link.version}, expires in ~${minutes} minute${minutes === 1 ? '' : 's'}`);
+		// Which mode you got decides whether storage APIs work inside the page,
+		// so say it rather than letting a prototype fail mysteriously.
+		if (link.mode === 'same-origin') {
+			console.log(
+				'mode: same-origin sandbox (opaque origin) — localStorage and cookies throw inside the page'
+			);
+		}
+	});
+
+	withCommon(
+		artifactsCmd
 			.command('get <ref> <name>')
 			.description('Fetch content (current version by default); a link/pr prints its URL')
-			.option('--version <n>', 'fetch a specific version from the history', (v) => Number.parseInt(v, 10))
-			.option('--out <path>', 'write to this file, or into this directory (keeps the stored filename)')
+			.option('--version <n>', 'fetch a specific version from the history', (v) =>
+				Number.parseInt(v, 10)
+			)
+			.option(
+				'--out <path>',
+				'write to this file, or into this directory (keeps the stored filename); folder artifacts require a new or empty directory'
+			)
 	).action(
 		async (ref: string, name: string, opts: CommonOpts & { version?: number; out?: string }) => {
 			const api = client(opts);
@@ -729,7 +1180,9 @@ export function register(program: Command): void {
 			}
 			if (artifact.artifact_type === 'link' || artifact.artifact_type === 'pr') {
 				const url =
-					artifact.artifact_type === 'link' ? version.url : `${version.pr_repo_url}/pull/${version.pr_number}`;
+					artifact.artifact_type === 'link'
+						? version.url
+						: `${version.pr_repo_url}/pull/${version.pr_number}`;
 				if (opts.json) return printJson({ url });
 				return console.log(url);
 			}
@@ -740,6 +1193,11 @@ export function register(program: Command): void {
 				}
 				if (existsSync(opts.out) && !statSync(opts.out).isDirectory()) {
 					die(`--out for a folder must be a directory, and "${opts.out}" is a file`);
+				}
+				if (existsSync(opts.out) && readdirSync(opts.out).length > 0) {
+					die(
+						`refusing to write folder artifact into non-empty directory "${opts.out}"; choose a new or empty directory`
+					);
 				}
 				const files = version.files ?? [];
 				let total = 0;
@@ -780,7 +1238,9 @@ export function register(program: Command): void {
 	withCommon(
 		artifactsCmd
 			.command('delete <ref> <name>')
-			.description('Delete an artifact — every version and its stored files (history is not recoverable)')
+			.description(
+				'Delete an artifact — every version and its stored files (history is not recoverable)'
+			)
 	).action(async (ref: string, name: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
@@ -796,34 +1256,42 @@ export function register(program: Command): void {
 	withCommon(
 		issues
 			.command('assign <ref> [runner]')
-			.description('Pin an issue to a runner (<runner>[:tier]) — replaces routing rules for it; --clear unpins')
+			.description(
+				'Pin an issue to a runner (<runner>[:tier]) — replaces routing rules for it; --clear unpins'
+			)
 			.option('--clear', 'remove the pin')
-	).action(async (ref: string, runnerSpec: string | undefined, opts: CommonOpts & { clear?: boolean }) => {
-		const api = client(opts);
-		const issue = await resolveIssue(api, ref);
-		if (opts.clear) {
-			if (runnerSpec !== undefined) die('--clear does not take a runner');
-			const updated = await api.updateIssue(issue.id, { pinned_runner_id: null });
+	).action(
+		async (ref: string, runnerSpec: string | undefined, opts: CommonOpts & { clear?: boolean }) => {
+			const api = client(opts);
+			const issue = await resolveIssue(api, ref);
+			if (opts.clear) {
+				if (runnerSpec !== undefined) die('--clear does not take a runner');
+				const updated = await api.updateIssue(issue.id, { pinned_runner_id: null });
+				if (opts.json) return printJson(updated);
+				return console.log(
+					`unpinned ${updated.project_name}/#${updated.number} — routing rules apply again`
+				);
+			}
+			if (runnerSpec === undefined) die('pass <runner>[:tier] to pin, or --clear to unpin');
+			const { name, tier } = parseTargetSpec(runnerSpec);
+			const runner = await resolveRunner(api, name);
+			const updated = await api.updateIssue(issue.id, {
+				pinned_runner_id: runner.id,
+				pinned_tier: tier ?? null
+			});
 			if (opts.json) return printJson(updated);
-			return console.log(`unpinned ${updated.project_name}/#${updated.number} — routing rules apply again`);
+			console.log(
+				`pinned ${updated.project_name}/#${updated.number} to ${runner.name}${tier ? ` (tier ${tier})` : ''} — only this runner will take it`
+			);
 		}
-		if (runnerSpec === undefined) die('pass <runner>[:tier] to pin, or --clear to unpin');
-		const { name, tier } = parseTargetSpec(runnerSpec);
-		const runner = await resolveRunner(api, name);
-		const updated = await api.updateIssue(issue.id, {
-			pinned_runner_id: runner.id,
-			pinned_tier: tier ?? null
-		});
-		if (opts.json) return printJson(updated);
-		console.log(
-			`pinned ${updated.project_name}/#${updated.number} to ${runner.name}${tier ? ` (tier ${tier})` : ''} — only this runner will take it`
-		);
-	});
+	);
 
 	withCommon(
 		issues
 			.command('dispatch <ref>')
-			.description('Explain why an issue is (not) dispatching: eligibility, routing, per-runner verdicts')
+			.description(
+				'Explain why an issue is (not) dispatching: eligibility, routing, per-runner verdicts'
+			)
 	).action(async (ref: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);

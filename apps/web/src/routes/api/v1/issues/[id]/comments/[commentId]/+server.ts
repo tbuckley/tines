@@ -7,7 +7,14 @@ import type { RequestHandler } from './$types';
 export const PATCH: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
 	const body = await readJson<UpdateCommentRequest>(event);
-	const comment = await updateComment(db, env, actor, event.params.id, event.params.commentId, body);
+	const comment = await updateComment(
+		db,
+		env,
+		actor,
+		event.params.id,
+		event.params.commentId,
+		body
+	);
 	return json(comment);
 });
 

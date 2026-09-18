@@ -1,7 +1,8 @@
 <script lang="ts">
-	import type { RoutingRule } from '@tines/shared';
+	import type { RoutingRuleWithWarnings } from '@tines/shared';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import RoutingRuleRow from '$lib/components/RoutingRuleRow.svelte';
+	import { buttonVariants } from '$lib/components/ui/button';
 
 	/**
 	 * The inline "agent routing" rows on project and workflow-state detail
@@ -11,12 +12,20 @@
 	let {
 		rules,
 		activeStateIds,
-		emptyMessage = 'No routing rule applies here — issues will not dispatch to agents.'
+		emptyMessage = 'No routing rule applies here — issues will not dispatch to agents.',
+		emptyAction,
+		editAction = { label: 'Edit on the Agents tab', href: '/agents' },
+		editable = true
 	}: {
-		rules: RoutingRule[];
+		rules: RoutingRuleWithWarnings[];
 		/** Ids of active-category states, for the "never dispatches" warning on dead rules. */
 		activeStateIds: Set<string>;
 		emptyMessage?: string;
+		/** The next step, when there is one — rendered as a link under the message. */
+		emptyAction?: { label: string; href: string };
+		editAction?: { label: string; href: string };
+		/** Archived/read-only parents can show routing without offering mutations. */
+		editable?: boolean;
 	} = $props();
 </script>
 
@@ -25,14 +34,25 @@
 		<h2 class="flex items-center gap-1.5 text-sm font-semibold">
 			<IconRobot size={16} stroke={1.75} /> Agent routing
 		</h2>
-		<a href="/agents" class="text-muted-foreground hover:text-foreground text-xs">Edit on the Agents tab</a>
+		{#if editable}
+			<a href={editAction.href} class="text-muted-foreground hover:text-foreground text-xs"
+				>{editAction.label}</a
+			>
+		{/if}
 	</div>
 	{#if rules.length === 0}
 		<div class="text-muted-foreground rounded-lg border border-dashed p-4 text-center text-sm">
 			{emptyMessage}
+			{#if editable && emptyAction}
+				<div class="mt-3">
+					<a href={emptyAction.href} class={buttonVariants({ variant: 'outline', size: 'sm' })}>
+						{emptyAction.label}
+					</a>
+				</div>
+			{/if}
 		</div>
 	{:else}
-		<ul class="divide-y rounded-lg border">
+		<ul class="divide-y rounded-lg border" aria-label="Agent routing rules">
 			{#each rules as rule (rule.id)}
 				<RoutingRuleRow {rule} {activeStateIds} />
 			{/each}

@@ -5,8 +5,13 @@ vi.mock('$lib/server/auth', () => ({
 	getAuth: () => ({ api: { getSession } })
 }));
 vi.mock('better-auth/svelte-kit', () => ({
-	svelteKitHandler: async ({ event, resolve }: { event: unknown; resolve: (e: unknown) => Response }) =>
-		resolve(event)
+	svelteKitHandler: async ({
+		event,
+		resolve
+	}: {
+		event: unknown;
+		resolve: (e: unknown) => Response;
+	}) => resolve(event)
 }));
 
 const { handle } = await import('./hooks.server');
@@ -98,5 +103,58 @@ describe('handle', () => {
 	it('reports server timing', async () => {
 		const response = await run(request('/issues'));
 		expect(response.headers.get('Server-Timing')).toMatch(/auth;dur=[\d.]+, app;dur=[\d.]+/);
+	});
+});
+
+describe('artifact sandbox hostname boundary', () => {
+	const origin = 'https://proto.example.workers.dev';
+	function sandboxRequest(path: string, configured = origin) {
+		const event = request(path, { cookie: 'better-auth.session_token=app-cookie' });
+		event.url = new URL(path, origin);
+		event.request = new Request(event.url, { headers: event.request.headers });
+		event.platform.env.ARTIFACT_SANDBOX_ORIGIN = configured;
+		return event;
+	}
+
+	it.each(['/issues', '/api/v1/projects', '/api/auth/get-session', '/_app/entry.js', '/s'])(
+		'rejects %s before routing or session lookup',
+		async (path) => {
+			const response = await run(sandboxRequest(path));
+			expect(response.status).toBe(404);
+			expect(await response.text()).toBe('Not found');
+			expect(getSession).not.toHaveBeenCalled();
+		}
+	);
+
+	it.each([origin, `${origin}/`, 'https://PROTO.example.workers.dev:443/'])(
+		'routes only site bytes without an app session with config %s',
+		async (configured) => {
+			const event = sandboxRequest('/s/token/index.html', configured);
+			const resolved = new Response('artifact bytes');
+			expect(await run(event, resolved)).toBe(resolved);
+			expect(getSession).not.toHaveBeenCalled();
+			expect(event.locals.user).toBeNull();
+			expect(event.locals.session).toBeNull();
+			expect((await run(sandboxRequest('/issues', configured))).status).toBe(404);
+		}
+	);
+
+	it.each([
+		'not a URL',
+		'javascript:alert(1)',
+		`${origin}/path`,
+		`${origin}?q=1`,
+		`${origin}#x`,
+		'https://user:pass@proto.example.workers.dev'
+	])('ignores invalid origin config %s', async (configured) => {
+		expect((await run(sandboxRequest('/issues', configured))).status).toBe(200);
+		expect(getSession).toHaveBeenCalledOnce();
+	});
+
+	it('keeps the app host on the normal authenticated path', async () => {
+		const event = request('/issues');
+		event.platform.env.ARTIFACT_SANDBOX_ORIGIN = origin;
+		expect((await run(event)).status).toBe(200);
+		expect(getSession).toHaveBeenCalledOnce();
 	});
 });

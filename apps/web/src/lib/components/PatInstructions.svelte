@@ -29,8 +29,8 @@
 			</a>
 		</li>
 		<li>
-			<span class="font-medium">Resource owner:</span> the account or organization that owns your
-			repos (an org may require token approval per its policy).
+			<span class="font-medium">Resource owner:</span> the account or organization that owns your repos
+			(an org may require token approval per its policy).
 		</li>
 		<li>
 			<span class="font-medium">Repository access:</span> “Only select repositories” — pick exactly
@@ -44,8 +44,8 @@
 		</li>
 		<li>
 			<span class="font-medium">Permissions → Repository permissions:</span> set
-			<span class="font-medium">Contents</span> to “Read and write” so agents can clone and push
-			(Metadata: read-only is added automatically). Nothing else is needed.
+			<span class="font-medium">Contents</span> to “Read and write” so agents can clone and push (Metadata:
+			read-only is added automatically). Nothing else is needed.
 		</li>
 		<li>
 			Set an expiration you'll actually rotate on, generate, and copy the

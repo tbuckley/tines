@@ -1,6 +1,10 @@
 /**
  * NAVIGATION COST PROBE (Tines/32) — a measurement tool, not a behavioural
- * test. Excluded from `pnpm test`; run it with `pnpm --filter web perf:nav`.
+ * test. Excluded from `pnpm test`; run it with `pnpm --filter web perf:nav`,
+ * which CI also runs (Tines/416). What that gate covers is that every page's
+ * `load` still *executes* against a real event and that the issue-detail page
+ * issues no duplicated statement — never a wave count or a millisecond, which
+ * are machine-dependent.
  *
  * Runs the real route `load` functions against the migration-backed in-memory
  * DB, with every D1 statement wrapped in an artificial fixed latency. Because
@@ -10,9 +14,20 @@
  */
 import { appendFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import type { Project } from '@tines/shared';
 import { ConcurrentD1Dialect } from '$lib/server/db';
 import { createTestDb, instrumentLatency, type TestDb } from './test-db';
-import { addIssue, addRunner, seedBase, setSettings, USER, PROJECT, OPEN } from '../supervisor/test-fixtures';
+import type { LayoutServerData } from '../../../routes/(app)/$types';
+import {
+	addIssue,
+	addRunner,
+	seedBase,
+	setSettings,
+	NOW,
+	USER,
+	PROJECT,
+	OPEN
+} from '../supervisor/test-fixtures';
 
 const LATENCY_MS = 20;
 // Reproduce the pre-Tines/32 baseline: force Kysely's connection mutex back on
@@ -28,14 +43,17 @@ const depends = () => {};
 
 const instrument = (t: TestDb) => instrumentLatency(t, LATENCY_MS);
 
+const AMBIENT_ISSUES = 20;
+
 function seed(t: TestDb) {
+	t.env.BETTER_AUTH_SECRET = 'navigation-probe-secret';
 	seedBase(t);
 	setSettings(t);
 	addRunner(t);
 	const id = addIssue(t, { id: 'iss_probe', state: OPEN, title: 'Probe issue' });
 	const number = (t.all('SELECT number FROM issue WHERE id = ?', id)[0] as any).number as number;
 	// A little ambient volume so list queries aren't degenerate.
-	for (let i = 0; i < 20; i++) addIssue(t);
+	for (let i = 0; i < AMBIENT_ISSUES; i++) addIssue(t);
 	for (let i = 0; i < 30; i++) {
 		t.sqlite
 			.prepare(
@@ -52,6 +70,71 @@ function seed(t: TestDb) {
 	return { number };
 }
 
+/** The seeded user, shaped as `locals.user` (better-auth's `User`). */
+const user = {
+	id: USER,
+	name: 'alice',
+	email: 'a@example.com',
+	emailVerified: true,
+	createdAt: new Date(NOW),
+	updatedAt: new Date(NOW)
+};
+
+/** The one project `seedBase` inserts, as `listProjects` would return it. */
+const SEEDED_PROJECT: Project = {
+	id: PROJECT,
+	name: 'demo',
+	description: '',
+	default_workflow_id: null,
+	created_at: NOW,
+	updated_at: NOW,
+	// The probe issue plus the ambient ones. Counted from the seed constants
+	// rather than queried, so the stub costs no statement in any measurement.
+	issue_count: 1 + AMBIENT_ISSUES,
+	archived_at: null
+};
+
+/**
+ * What `parent()` resolves to for a child of `(app)/+layout.server.ts`, typed
+ * against that layout's actual output so a chrome contract change fails here
+ * rather than at runtime inside a loader. Static on purpose: the layout's own
+ * queries are not part of a page's number (see docs/PERFORMANCE.md), and
+ * `focus: null` keeps /agents on its single runs query, which is what the
+ * pre-`parent()` measurements recorded.
+ */
+const layoutData: LayoutServerData = {
+	user,
+	projects: [SEEDED_PROJECT],
+	archivedProjects: [],
+	focus: null,
+	lastProjectId: null
+};
+
+type ProbeEvent = {
+	locals: { user: typeof user };
+	platform: { env: Env };
+	params: Record<string, string>;
+	url: URL;
+	depends: typeof depends;
+	parent: () => Promise<LayoutServerData>;
+};
+
+/**
+ * One event shape for every page, so the next `load` signature change breaks
+ * one place instead of six (Tines/416).
+ */
+const event = (env: Env, path: string, params: Record<string, string> = {}): ProbeEvent => ({
+	locals: { user },
+	platform: { env },
+	params,
+	url: new URL(`http://x${path}`),
+	depends,
+	parent: async () => layoutData
+});
+
+const callLoad = (load: unknown, input: ProbeEvent) =>
+	(load as (event: ProbeEvent) => Promise<unknown>)(input);
+
 async function measure(name: string, run: (env: Env) => Promise<unknown>) {
 	const t = createTestDb();
 	const { number } = seed(t);
@@ -65,8 +148,6 @@ async function measure(name: string, run: (env: Env) => Promise<unknown>) {
 	);
 	return { queries: sqls.length, waves, number, sqls };
 }
-
-const user = { id: USER, name: 'alice', email: 'a@example.com' };
 
 if (SERIALIZE) {
 	// Patch the adapter ConcurrentD1Dialect actually hands Kysely, so the run
@@ -83,9 +164,7 @@ if (SERIALIZE) {
 describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipped'})`, () => {
 	it('issues list', async () => {
 		const { load } = await import('../../../routes/(app)/issues/+page.server');
-		const r = await measure('/issues', (env) =>
-			(load as any)({ locals: { user }, platform: { env }, depends, url: new URL('http://x/issues') })
-		);
+		const r = await measure('/issues', (env) => callLoad(load, event(env, '/issues')));
 		expect(r.queries).toBeGreaterThan(0);
 	});
 
@@ -95,13 +174,10 @@ describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipp
 		const { env, sqls, conc } = instrument(t);
 		const { load } = await import('../../../routes/(app)/issues/[project]/[number]/+page.server');
 		const started = performance.now();
-		const result = await (load as any)({
-			locals: { user },
-			platform: { env },
-			depends,
-			params: { project: 'demo', number: String(number) },
-			url: new URL(`http://x/issues/demo/${number}`)
-		});
+		const result = await callLoad(
+			load,
+			event(env, `/issues/demo/${number}`, { project: 'demo', number: String(number) })
+		);
 		// What blocks first paint: `load` has resolved, so SvelteKit can render
 		// and the View Transition can commit. The streamed panels are still in
 		// flight at this point.
@@ -116,34 +192,35 @@ describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipp
 		const counts = new Map<string, number>();
 		for (const s of sqls) counts.set(s, (counts.get(s) ?? 0) + 1);
 		const dupes = [...counts.entries()].filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1]);
-		report(`  duplicated statements: ${dupes.length} distinct, ${dupes.reduce((a, [, n]) => a + n - 1, 0)} redundant executions`);
-		for (const [sql, n] of dupes.slice(0, 8)) report(`    ${n}x  ${sql.slice(0, 110).replace(/\s+/g, ' ')}`);
+		report(
+			`  duplicated statements: ${dupes.length} distinct, ${dupes.reduce((a, [, n]) => a + n - 1, 0)} redundant executions`
+		);
+		for (const [sql, n] of dupes.slice(0, 8))
+			report(`    ${n}x  ${sql.slice(0, 110).replace(/\s+/g, ' ')}`);
 		expect(sqls.length).toBeGreaterThan(0);
+		// The rule docs/PERFORMANCE.md states: the same statement twice in one
+		// navigation is a missing shared promise. Reported above, so a failure
+		// names the offenders.
+		expect(dupes).toEqual([]);
 	});
 
 	it('projects', async () => {
 		const { load } = await import('../../../routes/(app)/projects/+page.server');
-		await measure('/projects', (env) => (load as any)({ locals: { user }, platform: { env }, depends }));
+		await measure('/projects', (env) => callLoad(load, event(env, '/projects')));
 	});
 
 	it('activity', async () => {
 		const { load } = await import('../../../routes/(app)/activity/+page.server');
-		await measure('/activity', (env) =>
-			(load as any)({ locals: { user }, platform: { env }, depends, url: new URL('http://x/activity') })
-		);
+		await measure('/activity', (env) => callLoad(load, event(env, '/activity')));
 	});
 
 	it('agents', async () => {
 		const { load } = await import('../../../routes/(app)/agents/+page.server');
-		await measure('/agents', (env) =>
-			(load as any)({ locals: { user }, platform: { env }, depends, url: new URL('http://x/agents') })
-		);
+		await measure('/agents', (env) => callLoad(load, event(env, '/agents')));
 	});
 
 	it('context', async () => {
 		const { load } = await import('../../../routes/(app)/context/+page.server');
-		await measure('/context', (env) =>
-			(load as any)({ locals: { user }, platform: { env }, depends, url: new URL('http://x/context') })
-		);
+		await measure('/context', (env) => callLoad(load, event(env, '/context')));
 	});
 });

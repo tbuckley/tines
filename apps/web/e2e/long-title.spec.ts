@@ -1,7 +1,8 @@
 import type { IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, resetFocus, runId, signIn, issuePath } from './helpers';
 
 /**
  * A title with a long unbroken run of characters — a pasted URL is enough
@@ -20,17 +21,15 @@ const URL_TITLE = `Investigate https://github.com/tbuckley/tines/actions/runs/12
 /** Repro B: a 400-character unbroken token, the worst case. */
 const BLOB_TITLE = `Paste ${'a1b2c3d4e5'.repeat(40)} ${runId}`;
 
-const projectName = `longtitle-${runId}`;
+// Deliberately short: project-name width is part of the linked-title geometry under test.
+const projectName = `lt-${runId}`;
 let project: Project;
 let urlIssue: IssueDetail;
 let blobIssue: IssueDetail;
 let dupIssue: IssueDetail;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor }) => {
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 
 	const create = async (title: string) =>
@@ -45,16 +44,14 @@ test.beforeAll(async ({ playwright }) => {
 		kind: 'duplicate_of',
 		issue_id: blobIssue.id
 	});
-
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
-const issueUrl = (issue: IssueDetail) =>
-	`/issues/${encodeURIComponent(projectName)}/${issue.number}`;
+test.beforeEach(async ({ request }) => {
+	// Specs share one user: a focus left behind would scope this one's lists.
+	await resetFocus(request);
+});
 
 /** How far the document scrolls past the viewport, in px. 0 when it fits. */
 async function overflow(page: Page): Promise<number> {
@@ -70,7 +67,7 @@ for (const [label, viewport] of [
 ] as const) {
 	test(`a pasted-URL title does not widen the detail page on ${label}`, async ({ page }) => {
 		await page.setViewportSize(viewport);
-		await page.goto(issueUrl(urlIssue));
+		await page.goto(issuePath(projectName, urlIssue.number));
 		await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 
 		// Was +448px on the phone, +34px on the desktop.
@@ -81,7 +78,7 @@ for (const [label, viewport] of [
 		page
 	}) => {
 		await page.setViewportSize(viewport);
-		await page.goto(issueUrl(blobIssue));
+		await page.goto(issuePath(projectName, blobIssue.number));
 		await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 
 		// Was 4773px of document in 390px, 4917px in 1440px.
@@ -102,7 +99,7 @@ for (const [label, viewport] of [
 
 test('the duplicate-of banner wraps the title it echoes', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl(dupIssue));
+	await page.goto(issuePath(projectName, dupIssue.number));
 	await expect(page.getByRole('button', { name: 'Not a duplicate?' })).toBeVisible();
 
 	expect(await overflow(page)).toBe(0);
@@ -112,7 +109,13 @@ test('the linked-issue row truncates the title instead of widening the column', 
 	page
 }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl(dupIssue));
+	await gotoHydrated(page, issuePath(projectName, dupIssue.number));
+	// The Relations card folds to one row on a phone (Tines/165); open it.
+	const fold = page.getByRole('button', { name: /^Relations\b/ });
+	await expect(async () => {
+		if ((await fold.getAttribute('aria-expanded')) !== 'true') await fold.click();
+		expect(await fold.getAttribute('aria-expanded')).toBe('true');
+	}).toPass({ timeout: 15_000 });
 
 	// The sidebar is what carried the overflow: its "Duplicate of" row prints
 	// the linked title with `truncate`, whose nowrap set the grid column's
@@ -126,7 +129,7 @@ test('the linked-issue row truncates the title instead of widening the column', 
 
 test('the heading wraps rather than being clipped away', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issueUrl(blobIssue));
+	await page.goto(issuePath(projectName, blobIssue.number));
 
 	const heading = page.getByRole('heading', { level: 1 });
 	await expect(heading).toBeVisible();

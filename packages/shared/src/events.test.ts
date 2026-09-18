@@ -11,7 +11,11 @@ const ACTOR: Actor = {
 	run: null
 };
 
-function event(type: string, payload: Record<string, unknown> = {}, over: Partial<TinesEvent> = {}): TinesEvent {
+function event(
+	type: string,
+	payload: Record<string, unknown> = {},
+	over: Partial<TinesEvent> = {}
+): TinesEvent {
 	return {
 		id: 'evt_1',
 		type,
@@ -35,7 +39,21 @@ function event(type: string, payload: Record<string, unknown> = {}, over: Partia
 const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'issue.created': { title: 'A title' },
 	'issue.updated': { changed: ['title', 'description'] },
-	'issue.transitioned': { action: 'Start work', from_state_name: 'Backlog', to_state_name: 'Design' },
+	'issue.transferred': {
+		source_project_id: 'prj_a',
+		source_project_name: 'Alpha',
+		destination_project_id: 'prj_b',
+		destination_project_name: 'Beta',
+		old_number: 4,
+		new_number: 9,
+		old_ref: 'Alpha/4',
+		new_ref: 'Beta/9'
+	},
+	'issue.transitioned': {
+		action: 'Start work',
+		from_state_name: 'Backlog',
+		to_state_name: 'Design'
+	},
 	'issue.commented': { comment_id: 'cmt_1' },
 	'issue.comment_edited': { comment_id: 'cmt_1', changed: ['body'] },
 	'issue.comment_deleted': { comment_id: 'cmt_1', body_length: 42 },
@@ -57,9 +75,21 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 		other_number: 40,
 		other_title: 'The other one'
 	},
+	'issue.labeled': { label_id: 'lbl_1', name: 'bug' },
+	'issue.unlabeled': { label_id: 'lbl_1', name: 'bug' },
+	'label.created': { label_id: 'lbl_1', name: 'bug' },
+	'label.updated': { label_id: 'lbl_1', name: 'bug' },
+	'label.deleted': { label_id: 'lbl_1', name: 'bug' },
 	'project.created': { name: 'Tines' },
 	'project.updated': { name: 'Tines' },
 	'project.deleted': { name: 'Tines' },
+	'project.archived': {
+		name: 'Tines',
+		schedules_paused: 2,
+		draining_runs: 1,
+		issues_read_only: 91
+	},
+	'project.unarchived': { name: 'Tines', schedules_resumed: 2 },
 	'workflow.created': { name: 'Engineering' },
 	'workflow.updated': { name: 'Engineering' },
 	'workflow.deleted': { name: 'Engineering' },
@@ -69,19 +99,52 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'scheduled_task.updated': { name: 'Daily triage' },
 	'scheduled_task.deleted': { name: 'Daily triage' },
 	'scheduled_task.skipped': { name: 'Daily triage', blocking: ['iss_2', 'iss_3'] },
-	'context.created': { context_id: 'ctx_1', kind: 'prompt', name: 'house-style', scope: { label: 'project Tines' } },
-	'context.updated': { context_id: 'ctx_1', kind: 'prompt', name: 'house-style', scope: { label: 'project Tines' } },
-	'context.deleted': { context_id: 'ctx_1', kind: 'prompt', name: 'house-style', scope: { label: 'project Tines' } },
+	'context.created': {
+		context_id: 'ctx_1',
+		kind: 'prompt',
+		name: 'house-style',
+		version: 2,
+		scope: { label: 'project Tines' }
+	},
+	'context.updated': {
+		context_id: 'ctx_1',
+		kind: 'prompt',
+		name: 'house-style',
+		scope: { label: 'project Tines' }
+	},
+	'context.deleted': {
+		context_id: 'ctx_1',
+		kind: 'prompt',
+		name: 'house-style',
+		scope: { label: 'project Tines' }
+	},
 	'runner.registered': { name: 'macbook-claude' },
 	'runner.updated': { name: 'macbook-claude' },
+	'runner.daemon_replaced': { runner_id: 'rnr_1', name: 'macbook-claude' },
 	'runner.removed': { name: 'macbook-claude' },
-	'runner.errored': { runner_name: 'macbook-claude', consecutive_failures: 3, error: 'spawn failed' },
+	'runner.errored': {
+		runner_name: 'macbook-claude',
+		consecutive_failures: 3,
+		error: 'spawn failed'
+	},
+	'runner.rate_limited': {
+		runner_name: 'macbook-claude',
+		run_id: 'run_1',
+		error: 'rate limited: session limit · resets 3pm (America/New_York)',
+		resets_at: 1_788_739_260_000,
+		reported_reset_at: 1_788_739_200_000,
+		limit: 'five_hour'
+	},
 	'routing_rule.created': { scope_label: 'project Tines' },
 	'routing_rule.updated': { scope_label: 'project Tines' },
 	'routing_rule.deleted': { scope_label: 'project Tines' },
 	'settings.updated': { changed: ['max_concurrent_runs'] },
 	'agent_run.started': { runner_name: 'macbook-claude', tier: 'fast', model: 'opus' },
-	'agent_run.ended': { runner_name: 'macbook-claude', status: 'timed_out', outcome: 'no transition' },
+	'agent_run.ended': {
+		runner_name: 'macbook-claude',
+		status: 'timed_out',
+		outcome: 'no transition'
+	},
 	'issue.parked': { attempt_count: 3 },
 	'issue.resumed': {}
 };
@@ -177,7 +240,11 @@ describe('wording carried over from both surfaces', () => {
 	});
 
 	it('says "directly" for a forced transition', () => {
-		const ev = event('issue.transitioned', { forced: true, from_state_name: 'A', to_state_name: 'B' });
+		const ev = event('issue.transitioned', {
+			forced: true,
+			from_state_name: 'A',
+			to_state_name: 'B'
+		});
 		expect(eventSummary(ev)).toBe('moved Tines/#49 directly A → B');
 	});
 
@@ -203,7 +270,9 @@ describe('wording carried over from both surfaces', () => {
 
 	it('singularises the skipped-occurrence count', () => {
 		const ev = event('scheduled_task.skipped', { name: 'Daily triage', blocking: ['iss_2'] });
-		expect(eventSummary(ev)).toBe('skipped an occurrence of schedule "Daily triage" (1 open instance)');
+		expect(eventSummary(ev)).toBe(
+			'skipped an occurrence of schedule "Daily triage" (1 open instance)'
+		);
 	});
 
 	it('de-underscores a run status, the web behaviour', () => {
@@ -221,6 +290,19 @@ describe('wording carried over from both surfaces', () => {
 	it('omits the model clause when the run has none', () => {
 		const ev = event('agent_run.started', { runner_name: 'macbook-claude', tier: 'fast' });
 		expect(eventSummary(ev)).toBe('started a fast run via "macbook-claude" on Tines/#49');
+	});
+
+	it('renders a workflow event by name, whatever else the payload carries', () => {
+		// `inheritance_changed` (Tines/238) rides along on workflow.created /
+		// .updated / .deleted; the feed names the workflow and nothing else, so
+		// the key needs no renderer of its own.
+		const ev = event('workflow.updated', {
+			name: 'Engineering',
+			inheritance_changed: [
+				{ workflow: 'Engineering', state: 'Merging', from: null, to: 'Shared stages / Merging' }
+			]
+		});
+		expect(eventSummary(ev)).toBe(eventSummary(event('workflow.updated', { name: 'Engineering' })));
 	});
 
 	it('keeps the web workflow-change clause on issue.updated', () => {
@@ -274,7 +356,11 @@ describe('displayActor', () => {
 	});
 
 	it('falls back to actorLabel for every other event', () => {
-		const ev = event('issue.commented', {}, { actor: { ...ACTOR, api_key_id: 'key_1', api_key_name: 'laptop' } });
+		const ev = event(
+			'issue.commented',
+			{},
+			{ actor: { ...ACTOR, api_key_id: 'key_1', api_key_name: 'laptop' } }
+		);
 		expect(displayActor(ev)).toBe('Alice via laptop');
 	});
 });

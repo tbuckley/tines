@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Issue, IssueLinks, IssueRef, LinkedIssue } from '@tines/shared';
+	import type { IssueLinks, IssueListItem, IssueRef, LinkedIssue } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconX from '@tabler/icons-svelte/icons/x';
@@ -22,6 +22,7 @@
 		links,
 		adds = $bindable(),
 		removals = $bindable(),
+		disabledReason = null,
 		onerror
 	}: {
 		issueId: string;
@@ -30,9 +31,13 @@
 		/** Overlay of in-flight operations, bound to the page so every reload re-merges them. */
 		adds: PendingAdd[];
 		removals: string[];
+		/** When set, every mutating control renders disabled with this as its tooltip. */
+		disabledReason?: string | null;
 		/** Page-level error banner, for failures the inline form can't own. */
 		onerror: (e: unknown) => void;
 	} = $props();
+
+	const readOnly = $derived(disabledReason != null);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -82,7 +87,7 @@
 	// The picker's pool: fetched once, when the form first opens. Single-user
 	// volumes make client-side filtering fine; a server-side `q` is the
 	// upgrade path if this ever gets heavy.
-	let candidates = $state<Issue[] | null>(null);
+	let candidates = $state<IssueListItem[] | null>(null);
 	let loadingCandidates = $state(false);
 
 	async function toggleForm() {
@@ -185,7 +190,7 @@
 		return { message: e.message };
 	}
 
-	async function add(target: Issue) {
+	async function add(target: IssueListItem) {
 		formError = null;
 		// Optimistic, like pending comments: the row appears dimmed immediately
 		// (which also drops the issue from the suggestions, so a second tap
@@ -283,9 +288,9 @@
 						<button
 							type="button"
 							class="text-muted-foreground hover:text-foreground shrink-0 rounded p-1.5 transition-opacity focus-visible:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/row:opacity-100"
-							title="Remove link"
+							title={disabledReason ?? 'Remove link'}
 							aria-label="Remove link to {item.project_name}/#{item.number}"
-							disabled={isTempLink(item.link_id)}
+							disabled={isTempLink(item.link_id) || readOnly}
 							onclick={() => removeLink(item)}
 						>
 							<IconX size={14} stroke={1.75} />
@@ -300,7 +305,14 @@
 <section id="relations" class="rounded-lg border p-4">
 	<header class="mb-3 flex items-center justify-between">
 		<h2 class="text-sm font-semibold">Relations</h2>
-		<Button size="sm" variant="ghost" onclick={toggleForm} aria-expanded={adding}>
+		<Button
+			size="sm"
+			variant="ghost"
+			onclick={toggleForm}
+			aria-expanded={adding}
+			disabled={readOnly}
+			title={disabledReason}
+		>
 			<IconPlus size={14} /> Add
 		</Button>
 	</header>

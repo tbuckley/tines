@@ -1,6 +1,13 @@
+import type { AgentRun } from '@tines/shared';
+import { isActiveRun } from '@tines/shared';
+
 /** Absolute fallback for timestamps too far out to phrase as a duration. */
 function shortDate(ms: number): string {
-	return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+	return new Date(ms).toLocaleDateString(undefined, {
+		month: 'short',
+		day: 'numeric',
+		year: 'numeric'
+	});
 }
 
 export function relativeTime(ms: number, now = Date.now()): string {
@@ -13,6 +20,55 @@ export function relativeTime(ms: number, now = Date.now()): string {
 	const days = Math.floor(hours / 24);
 	if (days < 30) return `${days}d ago`;
 	return shortDate(ms);
+}
+
+/** Capacity elapsed since assignment, ticking only while a run is active. */
+export function runElapsedLabel(
+	run: Pick<AgentRun, 'status' | 'created_at' | 'ended_at'>,
+	now: number
+): string {
+	const end = run.ended_at ?? (isActiveRun(run.status) ? now : null);
+	if (end === null) return '—';
+	const seconds = Math.floor(Math.max(0, end - run.created_at) / 1000);
+	const hours = Math.floor(seconds / 3600);
+	const minutes = Math.floor((seconds % 3600) / 60);
+	const remainder = seconds % 60;
+	return hours > 0
+		? `${hours}:${minutes.toString().padStart(2, '0')}:${remainder.toString().padStart(2, '0')}`
+		: `${minutes}:${remainder.toString().padStart(2, '0')}`;
+}
+
+/**
+ * A queue wait, scannable in a row rather than phrased for prose: "41 min",
+ * "1.9 h", "21 h", "8.2 d". Shared by the Now row and its annotations
+ * (Tines/256), so a group and the roster row pointing at it never disagree.
+ */
+export function queueAge(enteredAt: number, now = Date.now()): string {
+	const minutes = Math.max(0, Math.round((now - enteredAt) / 60_000));
+	if (minutes < 60) return `${minutes} min`;
+	const hours = minutes / 60;
+	if (hours < 48) return `${hours < 10 ? hours.toFixed(1) : Math.round(hours)} h`;
+	return `${(hours / 24).toFixed(1)} d`;
+}
+
+/**
+ * relativeTime for a narrow column: "now", "5m", "3h", "2d". Past a month it
+ * is the day ("Sep 4"), and only once the year differs does the year replace
+ * the day ("Sep 2025") — the column has room for one or the other, not both.
+ */
+export function relativeTimeShort(ms: number, now = Date.now()): string {
+	const diff = now - ms;
+	if (diff < 60_000) return 'now';
+	const minutes = Math.floor(diff / 60_000);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h`;
+	const days = Math.floor(hours / 24);
+	if (days < 30) return `${days}d`;
+	const date = new Date(ms);
+	return date.getFullYear() === new Date(now).getFullYear()
+		? date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+		: date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 }
 
 /**
@@ -61,6 +117,15 @@ export function nextRunLabel(nextRunAt: number, now = Date.now()): string {
 	return nextRunAt >= now ? `next ${until}` : until;
 }
 
+/** Date only, in the user's locale — for banners that name a day, not a moment. */
+export function formatDate(ms: number): string {
+	return new Date(ms).toLocaleString(undefined, {
+		month: 'short',
+		day: 'numeric',
+		year: 'numeric'
+	});
+}
+
 export function formatDateTime(ms: number): string {
 	return new Date(ms).toLocaleString(undefined, {
 		month: 'short',
@@ -89,6 +154,11 @@ export function categoryVar(category: string): string {
 	return `var(--cat-${category}, var(--cat-backlog))`;
 }
 
+/** CSS custom-property reference for a label palette key. */
+export function labelColorVar(color: string): string {
+	return `var(--label-${color}, var(--label-slate))`;
+}
+
 export function prefersReducedMotion(): boolean {
 	return (
 		typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -97,7 +167,8 @@ export function prefersReducedMotion(): boolean {
 
 /** Text color for a run status, shared by every run row rendering. */
 export function runStatusClass(status: string): string {
-	if (status === 'running' || status === 'launching') return 'text-emerald-600 dark:text-emerald-400';
+	if (status === 'running' || status === 'launching')
+		return 'text-emerald-600 dark:text-emerald-400';
 	if (status === 'assigned') return 'text-sky-600 dark:text-sky-400';
 	if (status === 'completed') return 'text-muted-foreground';
 	return 'text-amber-700 dark:text-amber-400';

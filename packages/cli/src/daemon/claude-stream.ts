@@ -16,6 +16,14 @@
  * `claude` that ignores the flag — or any other process writing prose to
  * stdout — still produces a usable log instead of nothing.
  */
+import type { AgentRunUsage } from '@tines/shared';
+import {
+	copySummary,
+	validMetric,
+	validProviderSessionId,
+	type RunStreamRenderer,
+	type StreamSummary
+} from './stream-summary.js';
 
 /** Matches claude-events.ts: long values are clipped, not dropped. */
 export function clip(value: string, max: number): string {
@@ -31,15 +39,24 @@ interface ContentBlock {
 	is_error?: boolean;
 }
 
-interface StreamEvent {
+export interface StreamEvent {
 	type?: string;
 	subtype?: string;
 	model?: string;
 	message?: { content?: ContentBlock[] };
 	num_turns?: number;
 	total_cost_usd?: number;
+	session_id?: string;
+	duration_ms?: number;
+	usage?: {
+		input_tokens?: number;
+		output_tokens?: number;
+		cache_read_input_tokens?: number;
+		cache_creation_input_tokens?: number;
+	};
 	is_error?: boolean;
 	result?: string;
+	rate_limit_info?: { status?: string; resetsAt?: number; rateLimitType?: string };
 }
 
 /** Tool results arrive as a string or as content blocks; both flatten to text. */
@@ -57,9 +74,10 @@ function resultText(content: unknown): string {
 /**
  * One stream event → zero or more log lines.
  *
- * Thinking blocks, `system/thinking_tokens`, and `rate_limit_event` are
- * dropped: measured at ~18% of the stream's bytes, and nothing a human
- * reading a run's log is looking for. They survive in the raw upload.
+ * Thinking blocks, `system/thinking_tokens`, and *allowed* `rate_limit_event`s
+ * are dropped: measured at ~18% of the stream's bytes, and nothing a human
+ * reading a run's log is looking for. They survive in the raw upload. A
+ * *rejected* rate limit is the exception — it is why the run is about to end.
  */
 export function renderStreamEvent(event: StreamEvent): string[] {
 	switch (event.type) {
@@ -96,13 +114,23 @@ export function renderStreamEvent(event: StreamEvent): string[] {
 		case 'result': {
 			const parts: string[] = [];
 			if (typeof event.num_turns === 'number') parts.push(`${event.num_turns} turns`);
-			if (typeof event.total_cost_usd === 'number') parts.push(`$${event.total_cost_usd.toFixed(2)}`);
+			if (typeof event.total_cost_usd === 'number')
+				parts.push(`$${event.total_cost_usd.toFixed(2)}`);
 			const detail = parts.length > 0 ? ` (${parts.join(', ')})` : '';
 			const lines = [`[session] result: ${event.subtype ?? 'done'}${detail}`];
 			// An error result carries the reason in `result`; it is the single
 			// most useful line in a failed run's log.
 			if (event.is_error && event.result) lines.push(`[error] ${clip(event.result, 2000)}`);
 			return lines;
+		}
+		case 'rate_limit_event': {
+			const info = event.rate_limit_info;
+			if (info?.status !== 'rejected') return [];
+			const resets =
+				typeof info.resetsAt === 'number' && Number.isFinite(info.resetsAt)
+					? new Date(info.resetsAt < 1e12 ? info.resetsAt * 1000 : info.resetsAt).toISOString()
+					: 'unknown';
+			return [`[session] rate limit: ${info.rateLimitType ?? 'usage'} rejected — resets ${resets}`];
 		}
 		default:
 			return [];
@@ -116,10 +144,19 @@ export function renderStreamEvent(event: StreamEvent): string[] {
  * until their newline arrives; `finish()` flushes whatever is left when the
  * process exits without a trailing newline.
  */
-export class ClaudeStreamRenderer {
+export class ClaudeStreamRenderer implements RunStreamRenderer {
 	private pending = '';
+	private collected: StreamSummary = {};
+	private finished = false;
 
-	constructor(private readonly emit: (line: string) => void) {}
+	/**
+	 * @param onEvent every successfully parsed event, before rendering — so the
+	 * rate-limit detector can read the stream without parsing it a second time.
+	 */
+	constructor(
+		private readonly emit: (line: string) => void,
+		private readonly onEvent?: (event: StreamEvent) => void
+	) {}
 
 	write(chunk: string): void {
 		this.pending += chunk;
@@ -133,10 +170,16 @@ export class ClaudeStreamRenderer {
 
 	/** Renders any trailing partial line. Call once the harness has exited. */
 	finish(): void {
+		if (this.finished) return;
+		this.finished = true;
 		if (this.pending) {
 			this.line(this.pending);
 			this.pending = '';
 		}
+	}
+
+	summary(): StreamSummary {
+		return copySummary(this.collected);
 	}
 
 	private line(raw: string): void {
@@ -154,6 +197,38 @@ export class ClaudeStreamRenderer {
 			this.emit(`${raw}\n`);
 			return;
 		}
+		if (!event || typeof event !== 'object' || Array.isArray(event)) return;
+		if (event.type === 'result') this.collectResult(event);
+		this.onEvent?.(event);
 		for (const line of renderStreamEvent(event)) this.emit(`${line}\n`);
+	}
+
+	private collectResult(event: StreamEvent): void {
+		if (!this.collected.providerSessionId && validProviderSessionId(event.session_id)) {
+			this.collected.providerSessionId = event.session_id;
+		}
+		if (validMetric(event.num_turns)) this.collected.numTurns = event.num_turns;
+		if (validMetric(event.duration_ms)) this.collected.durationMs = event.duration_ms;
+		const usage: AgentRunUsage = { cost_source: 'provider' };
+		let measured = false;
+		if (validMetric(event.total_cost_usd)) {
+			usage.cost_usd = event.total_cost_usd;
+			measured = true;
+		}
+		const raw = event.usage;
+		if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+			for (const [source, destination] of [
+				['input_tokens', 'input_tokens'],
+				['output_tokens', 'output_tokens'],
+				['cache_read_input_tokens', 'cache_read_tokens'],
+				['cache_creation_input_tokens', 'cache_write_tokens']
+			] as const) {
+				if (validMetric(raw[source])) {
+					usage[destination] = raw[source];
+					measured = true;
+				}
+			}
+		}
+		if (measured) this.collected.usage = usage;
 	}
 }

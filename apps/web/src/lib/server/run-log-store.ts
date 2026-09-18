@@ -27,7 +27,11 @@ export interface RunLogObject {
 }
 
 export interface RunLogStore {
-	put(key: string, body: ArrayBuffer | Uint8Array | ReadableStream<Uint8Array>, size?: number): Promise<void>;
+	put(
+		key: string,
+		body: ArrayBuffer | Uint8Array | ReadableStream<Uint8Array>,
+		size?: number
+	): Promise<void>;
 	/** Null when the object is missing. */
 	get(key: string): Promise<Uint8Array | null>;
 	/**

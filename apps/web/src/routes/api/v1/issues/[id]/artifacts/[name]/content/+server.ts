@@ -10,7 +10,9 @@ export const GET: RequestHandler = api(async (event) => {
 	if (rawVersion !== null) {
 		version = Number.parseInt(rawVersion, 10);
 		if (!Number.isFinite(version) || version < 1) {
-			throw new ApiFail(422, 'invalid_field', '"version" must be a positive integer', { field: 'version' });
+			throw new ApiFail(422, 'invalid_field', '"version" must be a positive integer', {
+				field: 'version'
+			});
 		}
 	}
 	return artifactContentResponse(db, env, actor.userId, event.params.id, event.params.name, {

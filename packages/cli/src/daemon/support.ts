@@ -4,7 +4,8 @@
  * unit-testable without a daemon (see support.test.ts). The loop itself
  * lives in daemon.ts.
  */
-import { delimiter } from 'node:path';
+import { delimiter, sep } from 'node:path';
+import type { FinishRunRequest } from '@tines/shared';
 
 export type HarnessKind = 'claude_code' | 'codex' | 'custom';
 
@@ -39,15 +40,24 @@ export interface HarnessInput {
 	prompt: string;
 	/** Resolved model, or null when the harness cannot vary it. */
 	model: string | null;
+	/** Resolved effort from the assignment; never inferred locally. */
+	effort?: string | null;
+	/**
+	 * Set when this run continues a previous one: the harness reopens that
+	 * conversation instead of starting a new one, and the prompt file holds
+	 * only the continuation message.
+	 */
+	resumeSessionId?: string | null;
 }
 
 /**
- * Expands a custom command template: `{prompt_file}`, `{workspace}`, and
- * `{model}` are substituted shell-quoted (an absent model becomes `''`), so
- * paths with spaces survive the `sh -c` round trip.
+ * Expands a custom command template: `{prompt_file}`, `{workspace}`, `{model}`,
+ * and `{effort}` are substituted shell-quoted (an absent model or effort
+ * becomes `''`), so values with spaces survive the `sh -c` round trip.
  */
 export function expandCommandTemplate(template: string, input: HarnessInput): string {
 	return template
+		.replaceAll('{effort}', () => (input.effort ? shellQuote(input.effort) : "''"))
 		.replaceAll('{prompt_file}', shellQuote(input.promptFile))
 		.replaceAll('{workspace}', shellQuote(input.workspace))
 		.replaceAll('{model}', input.model ? shellQuote(input.model) : "''");
@@ -76,17 +86,28 @@ export function buildHarnessInvocation(
 			// final assistant message, so the log was the daemon's own setup
 			// lines, silence for the whole run, then one blob. The daemon
 			// renders the stream to readable lines (claude-stream.ts).
+			// `--resume <id>` continues the previous run's conversation in the
+			// same kept workspace; without it this is a cold launch exactly as
+			// before. Claude Code accepts it under `-p` from any cwd.
 			return {
 				file: 'sh',
 				args: [
 					'-c',
-					`claude -p --output-format stream-json --verbose${input.model ? ` --model ${shellQuote(input.model)}` : ''} < ${shellQuote(input.promptFile)}`
+					`claude -p${input.resumeSessionId ? ` --resume ${shellQuote(input.resumeSessionId)}` : ''} --output-format stream-json --verbose${input.model ? ` --model ${shellQuote(input.model)}` : ''}${input.effort ? ` --effort ${shellQuote(input.effort)}` : ''} < ${shellQuote(input.promptFile)}`
 				]
 			};
 		case 'codex':
+			// --skip-git-repo-check is required to treat the folder as trusted
 			return {
 				file: 'codex',
-				args: ['exec', ...(input.model ? ['--model', input.model] : []), input.prompt]
+				args: [
+					'exec',
+					'--json',
+					'--skip-git-repo-check',
+					...(input.model ? ['--model', input.model] : []),
+					...(input.effort ? ['-c', `model_reasoning_effort=${JSON.stringify(input.effort)}`] : []),
+					input.prompt
+				]
 			};
 		case 'custom': {
 			if (!spec.command) throw new Error('the custom harness needs a --command template');
@@ -136,6 +157,8 @@ export interface LaunchMeta {
 	timeoutMinutes: number;
 	/** The daemon's own version — the `tines` running the loop, not the agent's. */
 	cliVersion: string;
+	/** Set on a resumed launch: the run whose conversation this continues. */
+	resumedFromRunId?: string;
 }
 
 /**
@@ -152,9 +175,13 @@ export function formatLaunchBanner(
 	const fields = [
 		`harness=${meta.harness}`,
 		`model=${input.model ?? '(fixed)'}`,
+		`effort=${input.effort ?? '(provider-default)'}`,
 		`timeout=${meta.timeoutMinutes}m`,
 		`cli=${meta.cliVersion}`,
-		`workspace=${input.workspace}`
+		`workspace=${input.workspace}`,
+		// The one line that says a send-back reused a session rather than
+		// re-exploring the repository from zero.
+		...(input.resumeSessionId ? [`resumed=${meta.resumedFromRunId ?? input.resumeSessionId}`] : [])
 	];
 	return `$ ${formatLaunchCommand(invocation)}\n# tines runner: ${fields.join(' ')}\n`;
 }
@@ -239,9 +266,27 @@ export interface RunDisposition {
 	outcome: RunOutcome;
 }
 
+/**
+ * The supervisor's reading of an end this daemon caused itself, and — for a
+ * usage limit — when it can start asking again. Kept as one object so a new
+ * field is not a signature change at every call site.
+ */
+export type RunJudgment = Pick<FinishRunRequest, 'judgment' | 'resume_at'>;
+
 export interface RunTableEffects<T extends ManagedRun> {
-	/** Report the finish to the supervisor; rejections are the caller-side log. */
-	finish(run: T, status: 'completed' | 'failed', error?: string): Promise<void>;
+	/**
+	 * Report the finish to the supervisor; rejections are the caller-side log.
+	 * `judgment` is set only on the ends this daemon caused itself — its own
+	 * shutdown, an orphan killed after a restart, or a provider usage limit
+	 * that refused the work outright — so the supervisor knows not to charge
+	 * the issue for them.
+	 */
+	finish(
+		run: T,
+		status: 'completed' | 'failed',
+		error?: string,
+		judgment?: RunJudgment
+	): Promise<void>;
 	/**
 	 * Tear down the run's local traces: timers, and the workspace unless the
 	 * disposition says to keep it (idempotent).
@@ -261,11 +306,11 @@ export class RunTable<T extends ManagedRun> {
 	private readonly runs = new Map<string, T>();
 
 	/** The daemon's keep decision, as data: `keepWorkspace` bound to its mode. */
-	private readonly keep: (outcome: RunOutcome) => boolean;
+	private readonly keep: (outcome: RunOutcome, run: T) => boolean;
 
 	constructor(
 		private readonly effects: RunTableEffects<T>,
-		opts: { keep?: (outcome: RunOutcome) => boolean } = {}
+		opts: { keep?: (outcome: RunOutcome, run: T) => boolean } = {}
 	) {
 		// Default: today's behaviour, so a caller that passes no decision keeps
 		// nothing.
@@ -310,7 +355,7 @@ export class RunTable<T extends ManagedRun> {
 	cleanup(run: T, outcome: RunOutcome = 'failed'): void {
 		this.runs.delete(run.runId);
 		this.effects.persist();
-		this.effects.release(run, { keep: this.keep(outcome), outcome });
+		this.effects.release(run, { keep: this.keep(outcome, run), outcome });
 	}
 
 	/**
@@ -318,8 +363,21 @@ export class RunTable<T extends ManagedRun> {
 	 * already settled (a poll-cancel racing a clone failure or spawn error)
 	 * this still cleans up — the slot, workspace, and state entry must never
 	 * outlive the run — but reports nothing.
+	 *
+	 * Pass `{ judgment: 'interrupted' }` when the daemon itself ended the run
+	 * (shutdown, restart) rather than the work failing: the supervisor then
+	 * spares the issue a strike. Everything a run can do wrong to itself —
+	 * a non-zero harness exit, a workspace that would not set up — must not
+	 * set it. Exceptions are provider-side failures: usage exhaustion uses
+	 * `{ judgment: 'rate_limited' }` with its reset time, while transient 5xx
+	 * and transport outages use `interrupted` and the normal short backoff.
 	 */
-	async finishAndCleanup(run: T, status: 'completed' | 'failed', error?: string): Promise<void> {
+	async finishAndCleanup(
+		run: T,
+		status: 'completed' | 'failed',
+		error?: string,
+		judgment?: RunJudgment
+	): Promise<void> {
 		if (run.settled) return this.cleanup(run);
 		run.settled = true;
 		run.endNote ??= error;
@@ -327,11 +385,18 @@ export class RunTable<T extends ManagedRun> {
 		// the batcher until its timer fired, by which point the run is
 		// finish-reported and the append is rejected.
 		run.drain?.();
-		if (this.keep(status)) this.effects.noteKept?.(run);
+		if (this.keep(status, run)) this.effects.noteKept?.(run);
 		await run.flush?.();
+		const keptBeforeFinish = this.keep(status, run);
 		try {
-			await this.effects.finish(run, status, error);
+			await this.effects.finish(run, status, error, judgment);
 			this.effects.log(`run ${run.runId} finished: ${status}${error ? ` (${error})` : ''}`);
+			// Retention is only known once the finish response comes back, and
+			// by then the run's own log is closed — so the daemon log is where
+			// a workspace held for a resume gets announced.
+			if (!keptBeforeFinish && this.keep(status, run)) {
+				this.effects.log(`run ${run.runId} workspace kept for resume at ${run.workspace}`);
+			}
 		} catch (err) {
 			// A settled run (canceled/timed out/swept server-side) is fine; the
 			// supervisor's word stands.
@@ -502,6 +567,15 @@ export class CliRefresher {
 		private readonly opts: { ttlMs?: number; now?: () => number } = {}
 	) {}
 
+	/**
+	 * Resolves once no install is in flight, starting none. A daemon about to
+	 * exit for a self-update waits on this so it never restarts into a
+	 * half-extracted prefix.
+	 */
+	settled(): Promise<void> {
+		return this.inFlight ? this.inFlight.then(() => undefined) : Promise.resolve();
+	}
+
 	/** The current CLI, refreshing first when the TTL elapsed. Never rejects. */
 	ensure(): Promise<AgentCli> {
 		if (this.inFlight) return this.inFlight;
@@ -524,6 +598,55 @@ export class CliRefresher {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Self-update: the refresh above keeps a current `tines` on disk, and a daemon
+// launched from that same prefix is running an older copy of it. It cannot
+// replace itself in place; it drains and exits for the service manager to
+// relaunch (daemon.ts). These are the decisions, kept pure.
+
+/**
+ * Whether `candidate` is a strictly newer release than `current`: dotted
+ * numeric parts compared left to right, a missing part counting as 0.
+ * Anything that is not plain dotted digits — a prerelease tag, the
+ * `0.0.0-unknown` an unreadable manifest yields — is never newer, so an
+ * unreadable version can never trigger a restart.
+ */
+export function isNewerVersion(candidate: string, current: string): boolean {
+	const parse = (v: string): number[] | null =>
+		/^\d+(\.\d+)*$/.test(v) ? v.split('.').map(Number) : null;
+	const a = parse(candidate);
+	const b = parse(current);
+	if (!a || !b) return false;
+	for (let i = 0; i < Math.max(a.length, b.length); i++) {
+		const x = a[i] ?? 0;
+		const y = b[i] ?? 0;
+		if (x !== y) return x > y;
+	}
+	return false;
+}
+
+/**
+ * The version a self-update would restart into, or null when the resolved
+ * CLI is not a newer daemon: the ambient PATH (nothing was installed), an
+ * unreadable version, or one no newer than `running`. A last-good (`stale`)
+ * copy counts — an earlier refresh installed it and it is what a relaunch
+ * would run.
+ */
+export function pendingSelfUpdate(cli: AgentCli, running: string): string | null {
+	if (cli.source === 'ambient' || !cli.version) return null;
+	return isNewerVersion(cli.version, running) ? cli.version : null;
+}
+
+/**
+ * Whether `path` lies inside `dir` (both already resolved: no symlinks, no
+ * `..`). A prefix string match alone would let `/cfg/cli-old/x` pass for
+ * `/cfg/cli`, so the boundary must fall on a separator.
+ */
+export function pathWithin(path: string, dir: string): boolean {
+	const root = dir.endsWith(sep) ? dir : dir + sep;
+	return path.startsWith(root);
+}
+
 /**
  * The harness spawn environment: the daemon's own environment plus the run's
  * key and API base, with the managed CLI's bin dir prepended to PATH when
@@ -537,7 +660,10 @@ export function buildSpawnEnv(
 	const env: NodeJS.ProcessEnv = {
 		...base,
 		TINES_API_KEY: opts.apiKey,
-		TINES_API_URL: opts.apiUrl
+		// Own canonicalization at the final child-process boundary too. This
+		// keeps the spawned CLI safe even if a future daemon call site passes
+		// the original --url value instead of its normalized local variable.
+		TINES_API_URL: opts.apiUrl.replace(/\/+$/, '')
 	};
 	if (opts.binDir) env.PATH = base.PATH ? `${opts.binDir}${delimiter}${base.PATH}` : opts.binDir;
 	return env;

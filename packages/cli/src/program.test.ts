@@ -55,10 +55,14 @@ describe('command tree', () => {
 		const nouns = program.commands.map((c) => c.name()).sort();
 		expect(nouns).toEqual(
 			[
+				'config',
 				'context',
 				'events',
 				'issues',
 				'journal',
+				'labels',
+				'login',
+				'logout',
 				'projects',
 				'routing',
 				'runner',
@@ -67,6 +71,7 @@ describe('command tree', () => {
 				'schedules',
 				'supervisor',
 				'time',
+				'usage',
 				'workflows'
 			].sort()
 		);
@@ -156,5 +161,127 @@ describe('tines journal --state', () => {
 				from: 'user'
 			})
 		).rejects.toThrow("too many arguments for 'append'");
+	});
+});
+
+// Tines/92: `--url` used to mean the API base URL on 83 commands and a payload
+// on three (`issues artifacts attach`, `context create/edit`), which made the
+// documented idiom silently wrong on exactly the commands that took a URL.
+describe('the --url flag means the API base URL, everywhere', () => {
+	/** Leaf commands — the nodes that actually run an action. */
+	function leaves(program: Command): Command[] {
+		return walk(program).filter((c) => c.commands.length === 0);
+	}
+
+	/**
+	 * The commands that never talk to the API — pure filesystem, no common
+	 * flags at all. Anything else appearing here is a command that forgot
+	 * withCommon(), which is how the collision this test exists for got in.
+	 */
+	const OFFLINE_LEAVES = [
+		'tines logout',
+		'tines runner restart',
+		'tines runner uninstall',
+		'tines runner workspaces prune'
+	];
+
+	it('is offered by every leaf command that talks to the API', async () => {
+		const program = await freshProgram({});
+		const nodes = leaves(program);
+		expect(nodes.length).toBeGreaterThan(60);
+
+		const offline = nodes.filter((c) => !c.options.some((o) => o.long === '--api-key'));
+		expect(offline.map(path).sort()).toEqual([...OFFLINE_LEAVES].sort());
+
+		for (const node of nodes.filter((c) => !OFFLINE_LEAVES.includes(path(c)))) {
+			const opt = node.options.find((o) => o.long === '--url');
+			expect(opt, `"${path(node)}" has no --url option`).toBeDefined();
+			expect(opt!.short, path(node)).toBe('-u');
+			expect(opt!.description, path(node)).toContain('base URL of the Tines API');
+			// The published default: the deployment, not a dev server.
+			expect(opt!.description, path(node)).toContain('https://tines.tbuckley.dev');
+		}
+	});
+
+	it('leaves the renamed payload flags in place under their own names', async () => {
+		const program = await freshProgram({});
+		const longs = (ref: string) =>
+			walk(program)
+				.find((c) => path(c) === ref)!
+				.options.map((o) => o.long);
+		expect(longs('tines issues artifacts attach')).toContain('--link');
+		expect(longs('tines context create')).toContain('--repo-url');
+		expect(longs('tines context edit')).toContain('--repo-url');
+	});
+});
+
+/**
+ * Runs a command expected to `die()`, returning what it printed to stderr.
+ * Safe only for failures raised before the first network call.
+ */
+async function runExpectingDie(program: Command, argv: string[]): Promise<string> {
+	const errors: string[] = [];
+	const consoleError = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+		errors.push(args.join(' '));
+	});
+	const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+		throw new Error(`process.exit(${code})`);
+	}) as never);
+	try {
+		await expect(program.parseAsync(argv, { from: 'user' })).rejects.toThrow('process.exit(1)');
+		return errors.join('\n');
+	} finally {
+		consoleError.mockRestore();
+		exit.mockRestore();
+	}
+}
+
+// The old idiom has to fail loudly rather than doing something plausible: an
+// `attach --url <link>` used to attach a link artifact pointing at the API.
+describe('old --url payload callers are corrected offline', () => {
+	it('artifacts attach with only --url fails the arity check, naming --link', async () => {
+		const program = await freshProgram({});
+		const err = await runExpectingDie(program, [
+			'issues',
+			'artifacts',
+			'attach',
+			'Proj/1',
+			'notes',
+			'--url',
+			'https://example.test/doc'
+		]);
+		expect(err).toContain('pass exactly one content source');
+		expect(err).toContain('--link <url>');
+		expect(err).toContain('--url is the API base URL');
+	});
+
+	it('context create --kind repo without --repo-url dies before it dials the clone URL', async () => {
+		const program = await freshProgram({});
+		const err = await runExpectingDie(program, [
+			'context',
+			'create',
+			'--kind',
+			'repo',
+			'--name',
+			'repo-x',
+			'--url',
+			'https://github.com/tbuckley/tines.git'
+		]);
+		expect(err).toContain('--kind repo needs --repo-url <clone-url>');
+		expect(err).toContain('--url is the API base URL');
+	});
+});
+
+describe('runner continuation flags fail before network access', () => {
+	it.each([
+		['runners', 'edit', 'local', '--resume-enabled', 'yes'],
+		['runners', 'edit', 'local', '--resume-window-hours', '0'],
+		['runners', 'edit', 'local', '--resume-max-cost-usd', 'NaN']
+	])('%s', async (...argv) => {
+		const fetchSpy = vi.spyOn(globalThis, 'fetch');
+		const program = await freshProgram({});
+		await runExpectingDie(program, argv);
+		expect(fetchSpy).not.toHaveBeenCalled();
+		fetchSpy.mockRestore();
 	});
 });

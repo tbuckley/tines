@@ -6,6 +6,8 @@ import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	const body: ArtifactListResponse = { items: await listArtifacts(db, actor.userId, event.params.id) };
+	const body: ArtifactListResponse = {
+		items: await listArtifacts(db, actor.userId, event.params.id)
+	};
 	return json(body);
 });

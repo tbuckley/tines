@@ -1,6 +1,13 @@
 <script lang="ts">
 	import type { AllowedTransition, Artifact, ArtifactType } from '@tines/shared';
-	import { ApiError, ARTIFACT_NAME_PATTERN, parsePrSpec } from '@tines/shared';
+	import {
+		ApiError,
+		ARTIFACT_NAME_PATTERN,
+		ARTIFACT_SITE_INDEX,
+		lintHtmlArtifact,
+		parsePrSpec,
+		siteEntry
+	} from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconExternalLink from '@tabler/icons-svelte/icons/external-link';
 	import IconEye from '@tabler/icons-svelte/icons/eye';
@@ -14,9 +21,17 @@
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import { slide } from 'svelte/transition';
 	import { api } from '$lib/api';
+	import {
+		attachGateHint,
+		attachGateWarning,
+		effectiveContentType,
+		gatesForName
+	} from '$lib/artifact-gates';
+	import { artifactPreviewUrl, resolveArtifactPreview } from '$lib/artifact-preview';
 	import ArtifactViewerDialog from '$lib/components/ArtifactViewerDialog.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
@@ -26,6 +41,7 @@
 		issueId,
 		artifacts,
 		allowedTransitions,
+		disabledReason = null,
 		onchanged,
 		onerror
 	}: {
@@ -33,9 +49,13 @@
 		artifacts: Artifact[];
 		/** For the requirement-relevant stale badge (allowed moves' requires). */
 		allowedTransitions: AllowedTransition[];
+		/** When set, every mutating control renders disabled with this as its tooltip. */
+		disabledReason?: string | null;
 		onchanged: () => void | Promise<void>;
 		onerror: (e: unknown) => void;
 	} = $props();
+
+	const readOnly = $derived(disabledReason != null);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -53,13 +73,8 @@
 		new Set(allowedTransitions.flatMap((t) => (t.requires ?? []).map((r) => r.artifact)))
 	);
 
-	const contentUrl = (name: string, opts: { path?: string } = {}) => {
-		const params = new URLSearchParams({ inline: '1' });
-		if (opts.path !== undefined) params.set('path', opts.path);
-		return `/api/v1/issues/${issueId}/artifacts/${encodeURIComponent(name)}/content?${params.toString()}`;
-	};
-
-	const prUrl = (a: Artifact) => `${a.current_version.pr_repo_url}/pull/${a.current_version.pr_number}`;
+	const prUrl = (a: Artifact) =>
+		`${a.current_version.pr_repo_url}/pull/${a.current_version.pr_number}`;
 	const prRef = (a: Artifact) =>
 		`${(a.current_version.pr_repo_url ?? '').replace(/^https:\/\/github\.com\//, '')}#${a.current_version.pr_number}`;
 
@@ -156,6 +171,58 @@
 	let attachError = $state<string | null>(null);
 	let attaching = $state(false);
 	let dragOver = $state(false);
+	/**
+	 * The gate set the operator's last hand pick was made against. A pick wins
+	 * over the pre-selection while the name keeps matching the same gates; when
+	 * the typed name matches a *different* gate set the pre-selection re-arms,
+	 * which is what "not chosen one by hand since the name last matched" means.
+	 * Null until they pick.
+	 */
+	let pickedFor = $state<string | null>(null);
+
+	/**
+	 * The requirements on this slot, live as the name is typed — the same gates
+	 * the CLI reads, so the dialog pre-selects what `attach` would have inferred.
+	 * An existing artifact's name is the locked one.
+	 */
+	const attachGates = $derived(
+		gatesForName(allowedTransitions, attachTo?.name ?? attachName.trim())
+	);
+	/** Only a new artifact gets a pre-selection: an existing slot's type is immutable. */
+	const gateHint = $derived(attachTo ? null : attachGateHint(attachGates));
+	/** The concrete MIME the gate asks for, declared with the write. */
+	const gateContentType = $derived(
+		attachGateHint(attachGates.filter((g) => g.check.type === attachType))?.contentType
+	);
+	/** Exactly what the file branch of `submitAttach` will declare, or nothing yet. */
+	const attachFileType = $derived(
+		attachFile ? attachFile.type || 'application/octet-stream' : undefined
+	);
+	const gateWarning = $derived(
+		attachGateWarning(
+			attachGates,
+			attachType,
+			effectiveContentType(attachType, gateContentType, attachFileType)
+		)
+	);
+	/** Identity of the gates on the typed name — the pre-selection re-arms when it changes. */
+	const gateKey = $derived(
+		attachGates
+			.map((g) => `${g.transition}:${g.check.type ?? ''}:${g.check.content_type ?? ''}`)
+			.join('|')
+	);
+	const typePicked = $derived(pickedFor !== null && pickedFor === gateKey);
+
+	/**
+	 * Flip the selector to the gate's type as the name is typed. Reads
+	 * `attachType` so the effect settles after its own write; `typePicked`
+	 * stops it re-asserting over a type picked against these same gates
+	 * (which would silently revert the operator on the next keystroke).
+	 */
+	$effect(() => {
+		const wanted = gateHint?.type;
+		if (wanted !== undefined && !typePicked && attachType !== wanted) attachType = wanted;
+	});
 
 	function openAttach(existing: Artifact | null) {
 		attachTo = existing;
@@ -169,6 +236,7 @@
 		attachTitle = '';
 		attachPr = '';
 		attachError = null;
+		pickedFor = null;
 		attachOpen = true;
 	}
 
@@ -201,6 +269,41 @@
 		return cut > 0 ? rel.slice(cut + 1) : rel;
 	}
 
+	/**
+	 * Attach-time lint of the HTML that is about to become a site (Tines/272):
+	 * the two things that make a prototype look broken — no viewport meta (it
+	 * renders desktop-wide on a phone) and external scripts/styles (blocked by
+	 * the site CSP, so the page comes up blank). Warnings, never a block.
+	 */
+	let siteWarnings = $state<string[]>([]);
+
+	$effect(() => {
+		const entryFile =
+			attachType === 'file'
+				? attachFile !== null && siteEntry('file', attachFile.type) !== null
+					? attachFile
+					: null
+				: attachType === 'folder'
+					? (attachFolderFiles.find((f) => folderEntryPath(f) === ARTIFACT_SITE_INDEX) ?? null)
+					: null;
+		if (entryFile === null) {
+			siteWarnings = [];
+			return;
+		}
+		let live = true;
+		entryFile
+			.text()
+			.then((html) => {
+				if (live) siteWarnings = lintHtmlArtifact(html);
+			})
+			.catch(() => {
+				if (live) siteWarnings = [];
+			});
+		return () => {
+			live = false;
+		};
+	});
+
 	async function submitAttach(e: SubmitEvent) {
 		e.preventDefault();
 		if (attaching || !attachReady) return;
@@ -230,7 +333,12 @@
 					await api.putArtifact(issueId, attachName, { description });
 				}
 			} else if (attachType === 'text') {
-				await api.putArtifact(issueId, attachName, { type: 'text', content: attachText, description });
+				await api.putArtifact(issueId, attachName, {
+					type: 'text',
+					content: attachText,
+					description,
+					...(gateContentType !== undefined ? { content_type: gateContentType } : {})
+				});
 			} else if (attachType === 'link') {
 				await api.putArtifact(issueId, attachName, {
 					type: 'link',
@@ -257,7 +365,7 @@
 	}
 </script>
 
-<section class="rounded-lg border">
+<section id="artifacts" class="rounded-lg border">
 	<header class="flex items-center justify-between border-b px-4 py-2.5">
 		<h2 class="text-sm font-semibold">
 			Artifacts
@@ -265,7 +373,13 @@
 				<span class="text-muted-foreground font-normal">({artifacts.length})</span>
 			{/if}
 		</h2>
-		<Button size="sm" variant="ghost" onclick={() => openAttach(null)}>
+		<Button
+			size="sm"
+			variant="ghost"
+			onclick={() => openAttach(null)}
+			disabled={readOnly}
+			title={disabledReason}
+		>
 			<IconPlus size={14} /> Attach artifact
 		</Button>
 	</header>
@@ -281,6 +395,7 @@
 					{@const TypeIcon = typeIcons[artifact.artifact_type]}
 					{@const stale = !artifact.fresh && requiredSlots.has(artifact.name)}
 					{@const cv = artifact.current_version}
+					{@const resolved = resolveArtifactPreview(artifact, cv)}
 					{@const thumbs = thumbnails(artifact)}
 					<!-- Wraps rather than crushing the text column: the icon, thumbnails and
 					     actions cannot shrink, so on a phone the text was the only thing left to
@@ -303,7 +418,7 @@
 							>
 								{#each thumbs as thumb, i (thumb.path ?? '')}
 									<img
-										src={contentUrl(artifact.name, { path: thumb.path })}
+										src={artifactPreviewUrl(resolved, { path: thumb.path, inline: true })}
 										alt={thumb.path ?? artifact.name}
 										loading="lazy"
 										class="h-10 w-10 rounded border object-cover {i > 0 ? 'hidden sm:block' : ''}"
@@ -313,7 +428,11 @@
 						{/if}
 						<div class="min-w-0 grow basis-40">
 							<div class="flex flex-wrap items-center gap-2 text-sm">
-								<button type="button" class="font-medium hover:underline" onclick={() => openViewer(artifact)}>
+								<button
+									type="button"
+									class="font-medium hover:underline"
+									onclick={() => openViewer(artifact)}
+								>
 									{artifact.name}
 								</button>
 								{#if stale}
@@ -345,7 +464,9 @@
 										{prRef(artifact)}
 									</a>
 								{:else if summaryLabel(artifact)}
-									<span class="text-muted-foreground truncate text-xs">{summaryLabel(artifact)}</span>
+									<span class="text-muted-foreground truncate text-xs"
+										>{summaryLabel(artifact)}</span
+									>
 								{/if}
 							</div>
 							{#if artifact.description}
@@ -357,7 +478,9 @@
 									(reaffirmed v{cv.reaffirmed_from})
 								{/if}
 								· {actorLabel(cv.actor)} ·
-								<span title={new Date(cv.created_at).toLocaleString()}>{relativeTime(cv.created_at)}</span>
+								<span title={new Date(cv.created_at).toLocaleString()}
+									>{relativeTime(cv.created_at)}</span
+								>
 							</p>
 						</div>
 						<div class="ml-auto flex shrink-0 items-center gap-1">
@@ -365,9 +488,9 @@
 								<Button
 									size="sm"
 									variant="outline"
-									disabled={busy}
+									disabled={busy || readOnly}
 									onclick={() => reaffirm(artifact)}
-									title="This still stands — bless the current content as fresh"
+									title={disabledReason ?? 'This still stands — bless the current content as fresh'}
 								>
 									<IconCheck size={14} /> Reaffirm
 								</Button>
@@ -386,9 +509,10 @@
 								size="icon"
 								variant="ghost"
 								class="text-muted-foreground size-8"
+								disabled={readOnly}
 								onclick={() => openAttach(artifact)}
 								aria-label={`Attach a new version of ${artifact.name}`}
-								title="Attach a new version"
+								title={disabledReason ?? 'Attach a new version'}
 							>
 								<IconRefresh size={15} />
 							</Button>
@@ -396,10 +520,10 @@
 								size="icon"
 								variant="ghost"
 								class="text-muted-foreground hover:text-destructive size-8"
-								disabled={busy}
+								disabled={busy || readOnly}
 								onclick={() => remove(artifact)}
 								aria-label={`Delete ${artifact.name}`}
-								title="Delete (all versions)"
+								title={disabledReason ?? 'Delete (all versions)'}
 							>
 								<IconTrash size={15} />
 							</Button>
@@ -434,22 +558,57 @@
 					{#each ['file', 'folder', 'text', 'link', 'pr'] as const as t (t)}
 						{@const TypeIcon = typeIcons[t]}
 						<label
-							class="flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm {attachType === t
+							class="flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm {attachType ===
+							t
 								? 'border-primary bg-primary/5'
 								: 'hover:bg-muted/50'}"
 						>
-							<input type="radio" name="artifact-type" value={t} bind:group={attachType} class="sr-only" />
+							<input
+								type="radio"
+								name="artifact-type"
+								value={t}
+								checked={attachType === t}
+								onchange={() => {
+									attachType = t;
+									pickedFor = gateKey;
+								}}
+								class="sr-only"
+							/>
 							<TypeIcon size={14} stroke={1.75} />
 							{t}
 						</label>
 					{/each}
 				</div>
+				{#if gateHint}
+					<p class="text-muted-foreground text-xs">
+						Required by <span class="font-medium">{gateHint.transition}</span>
+						({gateHint.spec}){#each gateHint.others as other (other.transition)}, and by <span
+								class="font-medium">{other.transition}</span
+							>
+							({other.spec}){/each}.
+					</p>
+				{/if}
 			</div>
+		{/if}
+
+		{#if gateWarning}
+			<p
+				class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+			>
+				A {attachType} artifact cannot satisfy
+				<span class="font-medium">{gateWarning.transition}</span>
+				(needs {gateWarning.wants}){#each gateWarning.others as other (other)}, nor <span
+						class="font-medium">{other}</span
+					>{/each}{#if attachTo}{' '}— the type cannot change; delete and re-attach{/if}. Attaching
+				is still allowed.
+			</p>
 		{/if}
 
 		{#if attachType === 'file'}
 			<div
-				class="rounded-md border border-dashed p-4 text-center text-sm {dragOver ? 'bg-muted/50' : ''}"
+				class="rounded-md border border-dashed p-4 text-center text-sm {dragOver
+					? 'bg-muted/50'
+					: ''}"
 				role="group"
 				aria-label="File drop zone"
 				ondragover={(e) => {
@@ -482,7 +641,9 @@
 			</div>
 		{:else if attachType === 'folder'}
 			<div
-				class="rounded-md border border-dashed p-4 text-center text-sm {dragOver ? 'bg-muted/50' : ''}"
+				class="rounded-md border border-dashed p-4 text-center text-sm {dragOver
+					? 'bg-muted/50'
+					: ''}"
 				role="group"
 				aria-label="Folder drop zone"
 				ondragover={(e) => {
@@ -544,20 +705,52 @@
 
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="artifact-description">Description (optional)</label>
-			<Input id="artifact-description" bind:value={attachDescription} placeholder="One-liner shown in lists and prompts" />
+			<Input
+				id="artifact-description"
+				bind:value={attachDescription}
+				placeholder="One-liner shown in lists and prompts"
+			/>
 		</div>
 
+		{#if siteWarnings.length > 0}
+			<div
+				class="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm"
+				data-testid="site-lint"
+			>
+				<p class="font-medium">This will render live as a site. Two things to check:</p>
+				<ul class="mt-1 list-disc space-y-1 pl-4">
+					{#each siteWarnings as warning (warning)}
+						<li>{warning}</li>
+					{/each}
+				</ul>
+			</div>
+		{/if}
+
 		{#if attachError}
-			<p class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm">
+			<p
+				class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm"
+			>
 				{attachError}
 			</p>
 		{/if}
 
-		<div class="flex justify-end gap-2">
-			<Button type="button" variant="ghost" onclick={() => (attachOpen = false)}>Cancel</Button>
-			<Button type="submit" disabled={!attachReady || attaching}>
-				{attaching ? 'Attaching…' : attachTo ? `Attach v${attachTo.current_version.version + 1}` : 'Attach'}
+		<div class="flex flex-wrap justify-end gap-2">
+			<Button
+				type="button"
+				variant="ghost"
+				disabled={attaching}
+				onclick={() => (attachOpen = false)}
+			>
+				Cancel
 			</Button>
+			<PendingButton
+				type="submit"
+				pending={attaching}
+				pendingLabel="Attaching…"
+				disabled={!attachReady}
+			>
+				{attachTo ? `Attach v${attachTo.current_version.version + 1}` : 'Attach'}
+			</PendingButton>
 		</div>
 	</form>
 </Modal>

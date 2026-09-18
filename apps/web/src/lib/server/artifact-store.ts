@@ -67,7 +67,10 @@ class R2ArtifactStore implements ArtifactStore {
 class MemoryArtifactStore implements ArtifactStore {
 	private objects = new Map<string, Uint8Array>();
 	async put(key: string, bytes: ArrayBuffer | Uint8Array): Promise<void> {
-		this.objects.set(key, bytes instanceof Uint8Array ? new Uint8Array(bytes) : new Uint8Array(bytes));
+		this.objects.set(
+			key,
+			bytes instanceof Uint8Array ? new Uint8Array(bytes) : new Uint8Array(bytes)
+		);
 	}
 	async get(key: string): Promise<Uint8Array | null> {
 		return this.objects.get(key) ?? null;

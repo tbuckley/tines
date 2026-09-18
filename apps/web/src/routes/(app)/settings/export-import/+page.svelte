@@ -1,17 +1,35 @@
 <script lang="ts">
-	import { ApiError, type ImportLibraryResponse, type LibraryDocument } from '@tines/shared';
+	import {
+		ApiError,
+		parseLibraryV3Document,
+		parseStrictLibraryJson,
+		LibraryValidationError,
+		type ImportLibraryRequest,
+		type ImportLibraryResponse,
+		type LibraryV3Document,
+		type LibraryDocument
+	} from '@tines/shared';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconUpload from '@tabler/icons-svelte/icons/upload';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
-	import { Button } from '$lib/components/ui/button/index.js';
+	import CheckboxField from '$lib/components/CheckboxField.svelte';
+	import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
+
+	let { data } = $props();
+	let workflowTargets = $state<NonNullable<ImportLibraryRequest['workflow_targets']>>({});
+	let previewRevision = 0;
 
 	let includeJournalsOnExport = $state(true);
 	let exporting = $state(false);
 	let exportError = $state<string | null>(null);
 
 	let fileName = $state<string | null>(null);
-	let document_ = $state<LibraryDocument | null>(null);
+	let document_ = $state<LibraryDocument | LibraryV3Document | null>(null);
+	const v3 = $derived(
+		document_ && 'profile' in document_ ? (document_ as LibraryV3Document) : null
+	);
+
 	let preview = $state<ImportLibraryResponse | null>(null);
 	let result = $state<ImportLibraryResponse | null>(null);
 	let busy = $state(false);
@@ -24,7 +42,7 @@
 	let includeJournalsOnImport = $state(true);
 
 	const message = (err: unknown, fallback: string) =>
-		err instanceof ApiError ? err.message : fallback;
+		err instanceof ApiError || err instanceof LibraryValidationError ? err.message : fallback;
 
 	async function download() {
 		if (exporting) return;
@@ -54,15 +72,46 @@
 		if (!file) return;
 		fileName = file.name;
 		try {
-			document_ = JSON.parse(await file.text()) as LibraryDocument;
-		} catch {
-			importError = 'That file is not valid JSON.';
+			const source = await file.text();
+			const candidate = parseStrictLibraryJson(source) as LibraryDocument;
+			if (candidate?.version === 3) {
+				const parsed = await parseLibraryV3Document(source);
+				if (parsed.profile !== 'library') {
+					importError = 'This is a workflow package. Use the workflow package install flow.';
+					return;
+				}
+				document_ = parsed;
+				const used = new Set(data.workflows.map((w) => w.name));
+				for (const w of parsed.workflows) {
+					const candidates = data.workflows.filter((target) => target.name === w.name);
+					if (
+						candidates.some((target) => target.is_system) ||
+						candidates.length > 1 ||
+						(candidates.length > 0 &&
+							parsed.workflows.filter((other) => other.name === w.name).length > 1)
+					) {
+						let name = w.name;
+						let index = 1;
+						while (used.has(name)) {
+							const suffix = ` (imported ${index++})`;
+							name = w.name.slice(0, 200 - suffix.length) + suffix;
+						}
+						used.add(name);
+						workflowTargets[w.id] = { kind: 'create', name };
+					}
+				}
+			} else document_ = candidate;
+		} catch (err) {
+			importError = message(err, 'That file is not valid JSON.');
 			return;
 		}
 		await plan();
 	}
 
 	function reset() {
+		busy = false;
+		previewRevision++;
+		workflowTargets = {};
 		fileName = null;
 		document_ = null;
 		preview = null;
@@ -73,26 +122,31 @@
 	const options = () => ({
 		on_collision: overwrite ? ('overwrite' as const) : ('skip' as const),
 		create_projects: createProjects,
-		include_journals: includeJournalsOnImport
+		include_journals: includeJournalsOnImport,
+		...(v3 ? { workflow_targets: workflowTargets } : {})
 	});
 
 	async function plan() {
 		if (!document_) return;
+		const revision = ++previewRevision;
+		preview = null;
 		busy = true;
 		importError = null;
 		result = null;
 		try {
-			preview = await api.importLibrary({ document: document_, dry_run: true, ...options() });
+			const next = await api.importLibrary({ document: document_, dry_run: true, ...options() });
+			if (revision === previewRevision) preview = next;
 		} catch (err) {
+			if (revision !== previewRevision) return;
 			preview = null;
 			importError = message(err, 'That file could not be read as a library export.');
 		} finally {
-			busy = false;
+			if (revision === previewRevision) busy = false;
 		}
 	}
 
 	async function confirm() {
-		if (!document_ || busy) return;
+		if (!document_ || busy || !preview) return;
 		busy = true;
 		importError = null;
 		try {
@@ -138,16 +192,29 @@
 </p>
 
 <section class="mb-8 rounded-lg border p-4">
+	<h2 class="mb-1 text-lg font-medium">Workflow packages</h2>
+	<p class="text-muted-foreground mb-3 max-w-2xl text-sm">
+		Install one reviewed workflow and its required dependencies as an atomic, independent copy.
+		Destination values and optional paused automation are confirmed before anything is created.
+	</p>
+	<a class={buttonVariants({ variant: 'outline' })} href="/workflows/import">
+		<IconUpload size={16} /> Install workflow package
+	</a>
+</section>
+
+<section class="mb-8 rounded-lg border p-4">
 	<h2 class="mb-1 text-lg font-medium">Export</h2>
 	<p class="text-muted-foreground mb-3 max-w-2xl text-sm">
-		Downloads one JSON file with every workflow you own and every context item that is not tied to
-		a single issue. Prompts, skills, and journals are included <span class="font-medium">in full</span
+		Downloads one JSON file with every workflow you own and every context item that is not tied to a
+		single issue. Prompts, skills, and journals are included <span class="font-medium">in full</span
 		> — treat the file as sensitive if you have pasted anything private into a prompt.
 	</p>
-	<label class="mb-3 flex items-center gap-2 text-sm">
-		<input type="checkbox" bind:checked={includeJournalsOnExport} class="size-4" />
-		Include journals (each stage's accumulated notes)
-	</label>
+	<CheckboxField
+		label="Include journals (each stage's accumulated notes)"
+		class="mb-3 text-sm"
+		checked={includeJournalsOnExport}
+		onCheckedChange={(checked) => (includeJournalsOnExport = checked)}
+	/>
 	{#if exportError}
 		<p class="text-destructive mb-3 text-sm">{exportError}</p>
 	{/if}
@@ -157,43 +224,123 @@
 	</Button>
 </section>
 
-<section class="rounded-lg border p-4">
+<section class="min-w-0 rounded-lg border p-4">
 	<h2 class="mb-1 text-lg font-medium">Import</h2>
 	<p class="text-muted-foreground mb-3 max-w-2xl text-sm">
-		Upload a file exported from Tines. Nothing is written until you confirm the preview, and
-		anything that collides with what you already have is skipped by default.
+		Upload a file exported from Tines. Existing projects and matching workflows are skipped.
+		Conflicting workflow definitions or inheritance may be refused; overwrite updates supported
+		context and inheritance only. Each workflow is identified separately in v3 files. Whole-library
+		import is best effort: valid entries may succeed while others fail. Review the plan before
+		importing.
 	</p>
 
-	<label class="mb-3 flex items-center gap-2 text-sm">
-		<input
-			type="file"
-			accept="application/json,.json"
-			onchange={chooseFile}
-			class="text-sm file:mr-3 file:rounded-md file:border file:bg-transparent file:px-3 file:py-1.5 file:text-sm"
-			aria-label="Library file"
-		/>
-	</label>
+	<div class="mb-3 flex flex-wrap items-center gap-3">
+		<!-- The label itself is the button: a nested <button> would swallow the
+		     click instead of forwarding it to the (focusable) sr-only input. -->
+		<label
+			class="{buttonVariants({
+				variant: 'outline'
+			})} focus-within:border-ring focus-within:ring-ring/50 cursor-pointer focus-within:ring-[3px]"
+		>
+			<input
+				type="file"
+				accept="application/json,.json"
+				onchange={chooseFile}
+				class="sr-only"
+				aria-label="Library file"
+				disabled={busy}
+			/>
+			<IconUpload size={16} />
+			Choose file
+		</label>
+		<span class="text-muted-foreground text-sm">{fileName ?? 'No file chosen'}</span>
+	</div>
 
 	{#if document_}
 		<div class="mb-3 flex flex-wrap gap-4 text-sm">
-			<label class="flex items-center gap-2">
-				<input type="checkbox" bind:checked={overwrite} onchange={plan} class="size-4" />
-				Overwrite existing context items
-			</label>
-			<label class="flex items-center gap-2">
-				<input type="checkbox" bind:checked={createProjects} onchange={plan} class="size-4" />
-				Create missing projects
-			</label>
-			<label class="flex items-center gap-2">
-				<input
-					type="checkbox"
-					bind:checked={includeJournalsOnImport}
-					onchange={plan}
-					class="size-4"
-				/>
-				Include journals
-			</label>
+			<CheckboxField
+				label="Overwrite existing context items and inheritance pointers"
+				checked={overwrite}
+				onCheckedChange={(checked) => {
+					overwrite = checked;
+					plan();
+				}}
+			/>
+			<CheckboxField
+				label="Create missing projects"
+				checked={createProjects}
+				onCheckedChange={(checked) => {
+					createProjects = checked;
+					plan();
+				}}
+			/>
+			<CheckboxField
+				label="Include journals"
+				checked={includeJournalsOnImport}
+				onCheckedChange={(checked) => {
+					includeJournalsOnImport = checked;
+					plan();
+				}}
+			/>
 		</div>
+	{/if}
+
+	{#if v3 && !result}
+		<fieldset class="mb-4 min-w-0 space-y-3 rounded-lg border p-3" disabled={busy}>
+			<legend class="px-1 text-sm font-medium">Workflow destinations</legend>
+			{#each v3.workflows as workflow (workflow.id)}
+				{@const targetChoice = workflowTargets[workflow.id]}
+				<div class="min-w-0 space-y-1 wrap-anywhere" data-testid="workflow-mapping">
+					<p class="text-sm font-medium">
+						{workflow.name} <span class="text-muted-foreground font-normal">[{workflow.id}]</span>
+					</p>
+					<p class="text-muted-foreground text-xs">
+						States: {workflow.states.map((s) => s.name).join(', ')}
+					</p>
+					<select
+						class="bg-background w-full rounded-md border p-2 text-sm"
+						aria-label={`Destination for ${workflow.id}`}
+						value={targetChoice?.kind === 'create'
+							? 'create'
+							: targetChoice?.kind === 'target'
+								? targetChoice.workflow_id
+								: 'auto'}
+						onchange={(event) => {
+							const value = event.currentTarget.value;
+							if (value === 'auto') delete workflowTargets[workflow.id];
+							else
+								workflowTargets[workflow.id] =
+									value === 'create'
+										? { kind: 'create', name: workflow.name + ' (imported)' }
+										: { kind: 'target', workflow_id: value };
+							plan();
+						}}
+					>
+						<option value="auto">Match a unique name, otherwise create</option>
+						<option value="create">Create an independent workflow with a new name</option>
+						{#each data.workflows.filter((w) => !w.is_system) as target (target.id)}
+							<option value={target.id}
+								>{target.name} [{target.id}] — {target.states.map((s) => s.name).join(', ')}</option
+							>
+						{/each}
+					</select>
+					{#if targetChoice?.kind === 'create'}
+						<input
+							class="bg-background w-full rounded-md border p-2 text-sm"
+							aria-label={`Create name for ${workflow.id}`}
+							maxlength="200"
+							value={targetChoice.name}
+							oninput={(event) => {
+								workflowTargets[workflow.id] = { kind: 'create', name: event.currentTarget.value };
+								preview = null;
+								previewRevision++;
+							}}
+							onchange={() => plan()}
+						/>
+					{/if}
+				</div>
+			{/each}
+		</fieldset>
 	{/if}
 
 	{#if importError}
@@ -201,12 +348,12 @@
 	{/if}
 
 	{#if report}
-		<p class="mb-2 text-sm" data-testid="import-summary">
+		<p class="mb-2 text-sm wrap-anywhere" data-testid="import-summary">
 			{#if result}Imported{fileName ? ` ${fileName}` : ''}: {summary(report)}.
 			{:else}Preview of {fileName}: {summary(report)}. Nothing has been written yet.{/if}
 		</p>
-		<div class="max-h-96 overflow-y-auto rounded-lg border">
-			<table class="w-full text-sm">
+		<div class="max-h-96 min-w-0 overflow-y-auto rounded-lg border" data-testid="import-preview">
+			<table class="w-full table-fixed text-sm">
 				<thead class="bg-muted/50 sticky top-0">
 					<tr class="text-left">
 						<th class="px-3 py-2 font-medium">Item</th>
@@ -217,7 +364,21 @@
 				<tbody class="divide-y">
 					{#each report.entries as entry, i (entry.section + entry.ref + i)}
 						<tr data-testid="import-row">
-							<td class="px-3 py-1.5">{entry.ref}</td>
+							<td class="min-w-0 px-3 py-1.5 wrap-anywhere">
+								<span>{entry.ref}</span>
+								{#if entry.section === 'workflow' && entry.target_name}
+									<span aria-hidden="true"> → </span>
+									{#if entry.target_id}
+										<a
+											href="/workflows/{entry.target_id}"
+											class="text-primary font-medium underline-offset-4 hover:underline"
+											>{entry.target_name}</a
+										>
+									{:else}
+										<span class="font-medium">{entry.target_name}</span>
+									{/if}
+								{/if}
+							</td>
 							<td
 								class="px-3 py-1.5 font-medium {entry.action === 'error' ||
 								entry.action === 'refuse'
@@ -226,7 +387,9 @@
 										? 'text-muted-foreground'
 										: ''}">{entry.action}</td
 							>
-							<td class="text-muted-foreground px-3 py-1.5">{entry.reason ?? ''}</td>
+							<td class="text-muted-foreground px-3 py-1.5 wrap-anywhere">
+								{entry.reason ?? ''}
+							</td>
 						</tr>
 					{/each}
 				</tbody>

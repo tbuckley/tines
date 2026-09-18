@@ -6,9 +6,25 @@
  * fix what it wrote itself.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { OPEN, USER, addIssue, addRun, addRunner, seedBase } from '../supervisor/test-fixtures';
+import {
+	NOW,
+	OPEN,
+	USER,
+	addComment,
+	addIssue,
+	addRun,
+	addRunKey,
+	addRunner,
+	seedBase
+} from '../supervisor/test-fixtures';
 import { ApiFail, type ActorContext } from './core';
-import { createComment, deleteComment, loadComments, updateComment } from './issues';
+import {
+	createComment,
+	deleteComment,
+	getIssueDetail,
+	loadComments,
+	updateComment
+} from './issues';
 import { createTestDb, type TestDb } from './test-db';
 
 const session: ActorContext = {
@@ -84,6 +100,169 @@ const fail = async (p: Promise<unknown>): Promise<ApiFail> => {
 };
 
 describe('updateComment', () => {
+	it('derives the final comment of the newest completed same-issue run for launch metadata', async () => {
+		const issue = addIssue(t);
+		const other = addIssue(t);
+		const runner = addRunner(t);
+		const oldRun = addRun(t, {
+			id: 'arun_old',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW
+		});
+		const newRun = addRun(t, {
+			id: 'arun_new',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW + 1
+		});
+		const crossIssue = addRun(t, {
+			id: 'arun_cross',
+			issueId: other,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW + 200
+		});
+		const activeRun = addRun(t, {
+			id: 'arun_active',
+			issueId: issue,
+			runnerId: runner,
+			status: 'running',
+			createdAt: NOW + 50
+		});
+		addRun(t, {
+			id: 'arun_commentless',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW + 100
+		});
+		const tiedA = addRun(t, {
+			id: 'arun_tie_a',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW + 20
+		});
+		const tiedB = addRun(t, {
+			id: 'arun_tie_b',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW + 20
+		});
+		const oldKey = addRunKey(t, oldRun);
+		const newKey = addRunKey(t, newRun);
+		const crossKey = addRunKey(t, crossIssue);
+		const activeKey = addRunKey(t, activeRun);
+		const tiedAKey = addRunKey(t, tiedA);
+		const tiedBKey = addRunKey(t, tiedB);
+		addComment(t, { issueId: issue, body: 'old', apiKeyId: oldKey, at: NOW, id: 'cmt_old' });
+		addComment(t, {
+			issueId: issue,
+			body: 'new first',
+			apiKeyId: newKey,
+			at: NOW + 1,
+			id: 'cmt_new_a'
+		});
+		addComment(t, {
+			issueId: issue,
+			body: 'new final',
+			apiKeyId: newKey,
+			at: NOW + 2,
+			id: 'cmt_new_b'
+		});
+		addComment(t, {
+			issueId: issue,
+			body: 'cross',
+			apiKeyId: crossKey,
+			at: NOW + 3,
+			id: 'cmt_cross'
+		});
+		addComment(t, {
+			issueId: issue,
+			body: 'active must not win',
+			apiKeyId: activeKey,
+			at: NOW + 60,
+			id: 'cmt_active'
+		});
+		addComment(t, {
+			issueId: issue,
+			body: 'tie a',
+			apiKeyId: tiedAKey,
+			at: NOW + 70,
+			id: 'cmt_tie_a'
+		});
+		addComment(t, {
+			issueId: issue,
+			body: 'tie b first',
+			apiKeyId: tiedBKey,
+			at: NOW + 70,
+			id: 'cmt_tie_b_a'
+		});
+		addComment(t, {
+			issueId: issue,
+			body: 'tie b final',
+			apiKeyId: tiedBKey,
+			at: NOW + 70,
+			id: 'cmt_tie_b_z'
+		});
+		// A comment posted later by an older run cannot make that run newest.
+		addComment(t, {
+			issueId: issue,
+			body: 'old posted late',
+			apiKeyId: oldKey,
+			at: NOW + 200,
+			id: 'cmt_old_late'
+		});
+
+		const ordinary = await getIssueDetail(t.db, USER, { id: issue });
+		expect(ordinary.launch_comments).toBeUndefined();
+		expect(ordinary.comments).toHaveLength(9);
+		const launch = await getIssueDetail(t.db, USER, { id: issue }, { launchComments: true });
+		expect(launch.comments).toHaveLength(9);
+		expect(launch.launch_comments?.latest_completed_run_comment_id).toBe('cmt_tie_b_z');
+
+		// Deleting the final comment exposes that same run's deterministic predecessor.
+		t.sqlite.prepare(`DELETE FROM comment WHERE id = 'cmt_tie_b_z'`).run();
+		const afterDelete = await getIssueDetail(t.db, USER, { id: issue }, { launchComments: true });
+		expect(afterDelete.launch_comments?.latest_completed_run_comment_id).toBe('cmt_tie_b_a');
+	});
+
+	it('finds a completed run with a comment beyond the 50-run round window', async () => {
+		const issue = addIssue(t);
+		const runner = addRunner(t);
+		const handoffRun = addRun(t, {
+			id: 'arun_handoff_beyond_cap',
+			issueId: issue,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW
+		});
+		const handoffKey = addRunKey(t, handoffRun);
+		addComment(t, {
+			issueId: issue,
+			body: 'handoff before round cap',
+			apiKeyId: handoffKey,
+			at: NOW,
+			id: 'cmt_handoff_beyond_cap'
+		});
+		for (let index = 1; index <= 51; index += 1) {
+			addRun(t, {
+				id: `arun_newer_commentless_${String(index).padStart(2, '0')}`,
+				issueId: issue,
+				runnerId: runner,
+				status: 'completed',
+				createdAt: NOW + index
+			});
+		}
+
+		const launch = await getIssueDetail(t.db, USER, { id: issue }, { launchComments: true });
+		expect(launch.launch_comments?.latest_completed_run_comment_id).toBe('cmt_handoff_beyond_cap');
+	});
+
 	it('replaces the body, stamps updated_at, and emits a content-free event', async () => {
 		const issue = addIssue(t);
 		const created = await createComment(t.db, t.env, session, issue, { body: 'orignal' });
@@ -108,10 +287,15 @@ describe('updateComment', () => {
 	it('rejects an empty or oversized body', async () => {
 		const issue = addIssue(t);
 		const created = await createComment(t.db, t.env, session, issue, { body: 'hi' });
-		expect((await fail(updateComment(t.db, t.env, session, issue, created.id, { body: '' }))).status).toBe(422);
 		expect(
-			(await fail(updateComment(t.db, t.env, session, issue, created.id, { body: 'x'.repeat(100_001) })))
-				.status
+			(await fail(updateComment(t.db, t.env, session, issue, created.id, { body: '' }))).status
+		).toBe(422);
+		expect(
+			(
+				await fail(
+					updateComment(t.db, t.env, session, issue, created.id, { body: 'x'.repeat(100_001) })
+				)
+			).status
 		).toBe(422);
 		expect((await loadComments(t.db, issue))[0].body).toBe('hi');
 	});
@@ -120,8 +304,12 @@ describe('updateComment', () => {
 		const issue = addIssue(t);
 		const other = addIssue(t);
 		const created = await createComment(t.db, t.env, session, other, { body: 'elsewhere' });
-		expect((await fail(updateComment(t.db, t.env, session, issue, 'cmt_nope', { body: 'x' }))).status).toBe(404);
-		expect((await fail(updateComment(t.db, t.env, session, issue, created.id, { body: 'x' }))).status).toBe(404);
+		expect(
+			(await fail(updateComment(t.db, t.env, session, issue, 'cmt_nope', { body: 'x' }))).status
+		).toBe(404);
+		expect(
+			(await fail(updateComment(t.db, t.env, session, issue, created.id, { body: 'x' }))).status
+		).toBe(404);
 	});
 });
 
@@ -135,7 +323,10 @@ describe('deleteComment', () => {
 
 		const deleted = events(issue).filter((e) => e.type === 'issue.comment_deleted');
 		expect(deleted).toHaveLength(1);
-		expect(deleted[0].payload).toEqual({ comment_id: created.id, body_length: 'oops --help'.length });
+		expect(deleted[0].payload).toEqual({
+			comment_id: created.id,
+			body_length: 'oops --help'.length
+		});
 		expect(JSON.stringify(deleted[0].payload)).not.toContain('oops');
 		// The record of the action survives the content.
 		expect(events(issue).map((e) => e.type)).toContain('issue.commented');
@@ -177,7 +368,9 @@ describe('comment authorization', () => {
 		const second = runActor(issue, { id: 'arun_second' });
 		const byFirst = await createComment(t.db, t.env, first, issue, { body: 'handoff notes' });
 
-		const edit = await fail(updateComment(t.db, t.env, second, issue, byFirst.id, { body: 'rewritten' }));
+		const edit = await fail(
+			updateComment(t.db, t.env, second, issue, byFirst.id, { body: 'rewritten' })
+		);
 		expect(edit.status).toBe(403);
 		expect(edit.code).toBe('run_key_forbidden');
 		const del = await fail(deleteComment(t.db, t.env, second, issue, byFirst.id));
@@ -195,7 +388,9 @@ describe('comment authorization', () => {
 		const issue = addIssue(t);
 		const run = runActor(issue);
 		const bySession = await createComment(t.db, t.env, session, issue, { body: 'human says' });
-		expect((await fail(updateComment(t.db, t.env, run, issue, bySession.id, { body: 'no' }))).status).toBe(403);
+		expect(
+			(await fail(updateComment(t.db, t.env, run, issue, bySession.id, { body: 'no' }))).status
+		).toBe(403);
 		expect((await fail(deleteComment(t.db, t.env, run, issue, bySession.id))).status).toBe(403);
 	});
 
@@ -207,7 +402,9 @@ describe('comment authorization', () => {
 				VALUES ('u2', 'bob', 'b@x', 1, 0, 0)`
 		);
 		const bob: ActorContext = { ...session, userId: 'u2', userName: 'bob' };
-		expect((await fail(updateComment(t.db, t.env, bob, issue, created.id, { body: 'x' }))).status).toBe(404);
+		expect(
+			(await fail(updateComment(t.db, t.env, bob, issue, created.id, { body: 'x' }))).status
+		).toBe(404);
 		expect((await fail(deleteComment(t.db, t.env, bob, issue, created.id))).status).toBe(404);
 	});
 });

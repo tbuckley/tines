@@ -27,6 +27,12 @@ declare global {
 		GOOGLE_CLIENT_SECRET?: string;
 		/** Encrypts stored provider secrets (AES-GCM); see lib/server/crypto.ts. */
 		SECRET_ENCRYPTION_KEY?: string;
+		/** Local scale harness only: logs one marker per executed Kysely query. */
+		USAGE_SCALE_SQL_TRACE?: string;
+		/** Local stats profiler only: reproduces the pre-optimization marker loop. */
+		STATS_SCALE_REPEAT_PREPARATION?: string;
+		/** Isolated Worker-entry response probes; set only by e2e/server.sh. */
+		E2E_PUBLICATION_BOUNDARY_TEST?: string;
 		/**
 		 * Self-referencing service binding (wrangler.jsonc `services`): lets
 		 * the supervisor call its own API in-process — a worker on a custom
@@ -34,10 +40,28 @@ declare global {
 		 */
 		SELF?: Fetcher;
 		/**
+		 * Origin that serves artifact sites (`/s/<token>/…`), e.g.
+		 * `https://tines-web.<subdomain>.workers.dev` — a different registrable
+		 * domain from the app, so a prototype's JavaScript cannot touch app
+		 * cookies. Unset (local dev, e2e, previews) degrades to serving on the
+		 * app origin under CSP `sandbox`; see lib/server/artifact-site.ts.
+		 */
+		ARTIFACT_SANDBOX_ORIGIN?: string;
+		/**
 		 * Public base URL managed runs use to reach the API (self-seeding
 		 * prompts, the agent's TINES_API_URL). Falls back to BETTER_AUTH_URL.
 		 */
 		TINES_PUBLIC_URL?: string;
+		/** Creation gate for immutable public workflow snapshots. Defaults off. */
+		PUBLIC_WORKFLOW_PUBLISHING_ENABLED?: string;
+		PUBLIC_WORKFLOW_MAX_BYTES?: string;
+		PUBLIC_WORKFLOW_DAILY_QUOTA?: string;
+		PUBLIC_WORKFLOW_MODERATOR_USER_IDS?: string;
+		PUBLIC_WORKFLOW_REPORT_HOURLY_QUOTA?: string;
+		PUBLIC_WORKFLOW_REPORT_HMAC_SECRET?: string;
+		PUBLIC_WORKFLOW_APPEAL_CONTACT?: string;
+		PUBLIC_WORKFLOW_MODERATION_QUEUE_READY?: string;
+		PUBLIC_WORKFLOW_MODERATION_JOURNEY_VERIFIED?: string;
 	}
 
 	namespace App {
@@ -48,7 +72,9 @@ declare global {
 			session: import('better-auth').Session | null;
 		}
 		// interface PageData {}
-		// interface PageState {}
+		interface PageState {
+			starterLanding?: { projectId: string; firstIssueId: string };
+		}
 		interface Platform {
 			env: Env;
 			cf?: IncomingRequestCfProperties;
