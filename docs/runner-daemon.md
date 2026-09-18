@@ -56,7 +56,7 @@ is only needed for registration and never appears in a service unit. Both values
 come from `tines login` (the same directory's `config.json`) instead of the environment; the
 env vars take precedence when set.
 
-Flags (eight are shared by `install` and `daemon`; `install` writes the shared ones you give
+Flags (nine are shared by `install` and `daemon`; `install` writes the shared ones you give
 into the unit):
 
 | Flag | Meaning | Default |
