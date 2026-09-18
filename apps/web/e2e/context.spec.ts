@@ -455,6 +455,7 @@ test.describe.serial('agent-maintained context', () => {
 			await api.post('/api/v1/context', {
 				kind: 'skill',
 				name: `sk-${runId}`,
+				description: 'Use this when the issue needs the synthetic review procedure.',
 				issue_id: issueId,
 				files: [{ path: 'SKILL.md', content: 'x' }]
 			})
@@ -469,6 +470,10 @@ test.describe.serial('agent-maintained context', () => {
 		);
 		const part = ctx.prompt.parts.find((p) => p.is_journal)!;
 		expect(part.version).toBe(3);
+		expect(ctx.skills[0].description).toBe(
+			'Use this when the issue needs the synthetic review procedure.'
+		);
+		expect(ctx.skills[0].files).toEqual([{ path: 'SKILL.md', content: 'x' }]);
 	});
 
 	test('the journal endpoint names the scope a caller owns, and is per-user', async ({
@@ -490,7 +495,7 @@ test.describe.serial('agent-maintained context', () => {
 		expect((await bob.get(`/api/v1/issues/${issueId}/journal`)).status()).toBe(404);
 	});
 
-	test('the launch prompt is id-free with the journal as its one write affordance', async ({
+	test('the launch prompt keeps context IDs private and describes readable skills', async ({
 		request
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
@@ -504,7 +509,10 @@ test.describe.serial('agent-maintained context', () => {
 		);
 		expect(prompt.text).toContain(`\`tines journal append ${issueRef} "- <date>: <lesson>"\``);
 		expect(prompt.text).toContain(`--expect-version 3`);
-		expect(prompt.text).toContain(`Attached to this issue: skill "sk-${runId}" (1 file)`);
+		expect(prompt.text).toContain(
+			`Skill "sk-${runId}" (issue ${issueRef}): read \`skills/sk-${runId}/SKILL.md\` when this applies: Use this when the issue needs the synthetic review procedure.`
+		);
+		expect(prompt.text).toContain(`tines issues context ${issueRef} --json`);
 		expect(prompt.text).toContain(`Also in effect: prompt "guidance-${runId}" (global)`);
 		expect(prompt.text).toContain('file an issue titled `Context change: <scope label>`');
 

@@ -15,28 +15,102 @@
  *
  * Serial by necessity: each step is the next state of one account.
  */
-import { expect, test, type Page } from '@playwright/test';
-import type { AgentRun, IssueDetail, ListResponse, Project, RoutingRule } from '@tines/shared';
+import type { APIRequestContext, Page, TestInfo } from '@playwright/test';
+import { expect, test } from './fixtures';
+import type {
+	AgentRun,
+	IssueDetail,
+	IssueListItem,
+	ListResponse,
+	Project,
+	RoutingRule
+} from '@tines/shared';
 import { DANA } from './constants.mjs';
-import { spawnDaemon, type Daemon } from './daemon';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { spawnDaemon, transitionHarnessCommand, type Daemon } from './daemon';
+import { apiClient, body, gotoHydrated, signIn } from './helpers';
 
 test.describe.configure({ mode: 'serial' });
 
-const PROJECT_NAME = `walk-${runId}`;
-const RUNNER_NAME = `dana-${runId}`;
+let PROJECT_NAME: string;
+let RUNNER_NAME: string;
 
 let daemon: Daemon | null = null;
 let projectId: string;
+let issueId: string;
 let issueNumber: number;
-let secondIssueNumber: number;
 
 const checklistOf = (page: Page) => page.getByRole('region', { name: 'First run checklist' });
 const item = (page: Page, id: string) => checklistOf(page).locator(`li[data-item="${id}"]`);
 const checklistControls = (page: Page) => checklistOf(page).locator('button, a[href]');
 const issuePath = (n: number) => `/issues/${encodeURIComponent(PROJECT_NAME)}/${n}`;
 
-test.beforeAll(async ({ request }) => {
+async function expectSingleAdvancedRun(
+	request: APIRequestContext,
+	settledIssueId: string,
+	testInfo: TestInfo
+): Promise<string> {
+	const api = apiClient(request, DANA.apiKey);
+	let lastRuns: ListResponse<AgentRun> | null = null;
+	let lastIssue: IssueDetail | null = null;
+
+	try {
+		await expect
+			.poll(
+				async () => {
+					lastRuns = await body<ListResponse<AgentRun>>(
+						await api.get(`/api/v1/runs?issue=${settledIssueId}`)
+					);
+					return {
+						count: lastRuns.items.length,
+						nextCursor: lastRuns.next_cursor,
+						status: lastRuns.items[0]?.status,
+						outcome: lastRuns.items[0]?.outcome,
+						ended: lastRuns.items[0]?.ended_at != null
+					};
+				},
+				{ timeout: 20_000, message: 'one terminal advanced run' }
+			)
+			.toEqual({
+				count: 1,
+				nextCursor: null,
+				status: 'completed',
+				outcome: 'advanced',
+				ended: true
+			});
+
+		const runId = lastRuns!.items[0]!.id;
+		lastIssue = await body<IssueDetail>(await api.get(`/api/v1/issues/${settledIssueId}`));
+		expect(lastIssue.state).toMatchObject({ name: 'Human Review', category: 'awaiting_human' });
+		expect(lastIssue).toMatchObject({ attempt_count: 0, needs_attention: false });
+
+		lastRuns = await body<ListResponse<AgentRun>>(
+			await api.get(`/api/v1/runs?issue=${settledIssueId}`)
+		);
+		expect(lastRuns.next_cursor).toBeNull();
+		expect(lastRuns.items).toHaveLength(1);
+		expect(lastRuns.items[0]).toMatchObject({
+			id: runId,
+			status: 'completed',
+			outcome: 'advanced'
+		});
+		expect(lastRuns.items[0]!.ended_at).not.toBeNull();
+		return runId;
+	} catch (error) {
+		await testInfo.attach(`run-settlement-${settledIssueId}.json`, {
+			body: Buffer.from(JSON.stringify({ issue: lastIssue, runs: lastRuns }, null, 2)),
+			contentType: 'application/json'
+		});
+		await testInfo.attach(`daemon-${settledIssueId}.log`, {
+			body: Buffer.from(daemon?.output() ?? 'daemon not started'),
+			contentType: 'text/plain'
+		});
+		throw error;
+	}
+}
+
+test.beforeAll(async ({ request, uniqueName }) => {
+	PROJECT_NAME = uniqueName('walk');
+	RUNNER_NAME = uniqueName('dana');
 	const api = apiClient(request, DANA.apiKey);
 	const runs = await body<ListResponse<unknown>>(await api.get('/api/v1/runs'));
 	expect(
@@ -50,9 +124,7 @@ test.beforeAll(async ({ request }) => {
 
 // Every test drives the UI as Dana; Playwright hands each one a fresh browser
 // context, so the session cookie has to be planted per test, not once.
-test.beforeEach(async ({ context }) => {
-	await signIn(context, DANA.sessionToken);
-});
+test.use({ signedIn: DANA });
 
 test.afterAll(async ({ request }) => {
 	daemon?.kill();
@@ -133,6 +205,10 @@ test('creating an issue ticks item 1 on both surfaces without a reload', async (
 	// same component with item 1 already ticked — no reload.
 	await expect(page).toHaveURL(/\/issues\/.+\/\d+$/);
 	issueNumber = Number(new URL(page.url()).pathname.split('/').pop());
+	const createdIssues = await body<ListResponse<IssueListItem>>(
+		await api.get(`/api/v1/issues?project=${projectId}`)
+	);
+	issueId = createdIssues.items.find((issue) => issue.number === issueNumber)!.id;
 	await expect(item(page, 'issue')).toHaveAttribute('data-done', 'true');
 	await expect(item(page, 'runner')).toHaveAttribute('data-current', 'true');
 	await expect(checklistControls(page)).toHaveCount(1);
@@ -173,7 +249,11 @@ test('a registering daemon ticks the runner and CLI items live', async ({ page }
 	await gotoHydrated(page, issuePath(issueNumber));
 	await expect(item(page, 'runner')).toHaveAttribute('data-done', 'false');
 
-	daemon = spawnDaemon({ apiKey: DANA.apiKey, name: RUNNER_NAME });
+	daemon = spawnDaemon({
+		apiKey: DANA.apiKey,
+		name: RUNNER_NAME,
+		command: transitionHarnessCommand('Submit for review')
+	});
 
 	// No reload: the page's 5 s poll watches the newest account event, and
 	// `runner.registered` is one.
@@ -187,7 +267,7 @@ test('a registering daemon ticks the runner and CLI items live', async ({ page }
 test('routing starts the first run without enabling or content entry on both surfaces', async ({
 	page,
 	request
-}) => {
+}, testInfo) => {
 	const api = apiClient(request, DANA.apiKey);
 	await gotoHydrated(page, issuePath(issueNumber));
 	const enabledWrites: string[] = [];
@@ -241,9 +321,13 @@ test('routing starts the first run without enabling or content entry on both sur
 		})
 	).toHaveAttribute('href', issuePath(issueNumber));
 	await agentsPage.close();
+	await expectSingleAdvancedRun(request, issueId, testInfo);
 });
 
-test('the checklist retires account-wide once a run exists', async ({ page, request }) => {
+test('the checklist retires account-wide once a run exists', async ({
+	page,
+	request
+}, testInfo) => {
 	const api = apiClient(request, DANA.apiKey);
 	const project = (await body<ListResponse<Project>>(await api.get('/api/v1/projects'))).items.find(
 		(p) => p.name === PROJECT_NAME
@@ -251,45 +335,52 @@ test('the checklist retires account-wide once a run exists', async ({ page, requ
 	const second = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Second issue' })
 	);
-	secondIssueNumber = second.number;
 
 	// A fresh load past the first run: no checklist anywhere, and the card is
 	// back to the steady-state explainer with its remedy links (Tines/252).
-	await page.goto(issuePath(secondIssueNumber));
+	await page.goto(issuePath(second.number));
 	await expect(checklistOf(page)).toHaveCount(0);
 	await expect(page.locator('details > summary').filter({ hasText: 'Why?' })).toBeVisible();
 
 	await page.goto('/agents');
 	await expect(checklistOf(page)).toHaveCount(0);
+	await expectSingleAdvancedRun(request, second.id, testInfo);
 });
 
 test('stopping then resuming dispatches title-only work without content entry', async ({
 	page,
 	request
-}) => {
+}, testInfo) => {
 	const api = apiClient(request, DANA.apiKey);
-	await api.put('/api/v1/supervisor/settings', { enabled: false });
+	expect(
+		await body<{ enabled: boolean }>(
+			await api.put('/api/v1/supervisor/settings', { enabled: false })
+		)
+	).toMatchObject({ enabled: false });
 	const stoppedIssue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${projectId}/issues`, { title: 'Runs after resume' })
 	);
+	expect(stoppedIssue.description).toBe('');
 	const before = await body<ListResponse<AgentRun>>(
 		await api.get(`/api/v1/runs?issue=${stoppedIssue.id}`)
 	);
 	expect(before.items).toHaveLength(0);
+	expect(before.next_cursor).toBeNull();
 
 	await gotoHydrated(page, issuePath(stoppedIssue.number));
 	await expect(page.getByText(/Automation is off/).first()).toBeVisible();
 	await gotoHydrated(page, '/agents');
+	const stillStopped = await body<ListResponse<AgentRun>>(
+		await api.get(`/api/v1/runs?issue=${stoppedIssue.id}`)
+	);
+	expect(stillStopped.items).toHaveLength(0);
+	expect(stillStopped.next_cursor).toBeNull();
 	await page.getByRole('button', { name: 'Resume automation' }).click();
 	await expect
 		.poll(
-			async () => {
-				const runs = await body<ListResponse<AgentRun>>(
-					await api.get(`/api/v1/runs?issue=${stoppedIssue.id}`)
-				);
-				return runs.items.length;
-			},
-			{ timeout: 60_000 }
+			async () =>
+				(await body<{ enabled: boolean }>(await api.get('/api/v1/supervisor/settings'))).enabled
 		)
-		.toBe(1);
+		.toBe(true);
+	await expectSingleAdvancedRun(request, stoppedIssue.id, testInfo);
 });

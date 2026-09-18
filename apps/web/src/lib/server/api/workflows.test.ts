@@ -1,7 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkflowStateInput, WorkflowTransitionInput } from '@tines/shared';
+import { getDb } from '$lib/server/db';
+import { USER, seedBase } from '../supervisor/test-fixtures';
+import type {
+	ArtifactRequirement,
+	CreateWorkflowRequest,
+	WorkflowStateInput,
+	WorkflowTransitionInput
+} from '@tines/shared';
 import { ApiFail } from './core';
-import { deadEndWarnings, diffTransitions, resolveDef } from './workflows';
+import { createTestDb } from './test-db';
+import {
+	createWorkflow,
+	deadEndWarnings,
+	diffTransitions,
+	loadWorkflows,
+	resolveDef,
+	workflowFingerprint
+} from './workflows';
 
 const states: WorkflowStateInput[] = [
 	{ name: 'Open', category: 'active' },
@@ -267,5 +282,254 @@ describe('deadEndWarnings', () => {
 	it('is quiet when every non-done state has an exit', () => {
 		const def = resolveDef(states, transitions, 'Open', []);
 		expect(deadEndWarnings(def)).toEqual([]);
+	});
+});
+
+describe('workflowFingerprint', () => {
+	/** A two-state shape the identity cases vary one field at a time. */
+	const base: CreateWorkflowRequest = {
+		name: 'Gate collision',
+		initial_state: 'Work',
+		states: [
+			{ name: 'Work', category: 'active' },
+			{ name: 'Done', category: 'done' }
+		],
+		transitions: [
+			{
+				name: 'Finish',
+				from: 'Work',
+				to: 'Done',
+				requires: [
+					{ artifact: 'pr', type: 'pr', description: 'Ship' },
+					{ artifact: 'tests', type: 'text' }
+				]
+			}
+		]
+	};
+
+	const fp = workflowFingerprint;
+	/** `base` with one field replaced, for the "this field is identity" table. */
+	const varied = (patch: Partial<CreateWorkflowRequest>): CreateWorkflowRequest => ({
+		...base,
+		...patch
+	});
+	/** Change one field on the first requirement while preserving both gates. */
+	const variedRequirement = (
+		patch: Partial<ArtifactRequirement>
+	): Partial<CreateWorkflowRequest> => ({
+		transitions: [
+			{
+				...base.transitions[0],
+				requires: base.transitions[0].requires?.map((requirement, index) =>
+					index === 0 ? { ...requirement, ...patch } : { ...requirement }
+				)
+			}
+		]
+	});
+
+	it('separates a state list from one whose name spells the old delimiters', () => {
+		// Tines/413: `Review:active|Done` used to serialize exactly as the two
+		// states "Review" (active) and "Done" (done) did, so the importer
+		// skipped a genuinely different graph as identical.
+		const incoming: CreateWorkflowRequest = {
+			name: 'Collision example',
+			initial_state: 'Start',
+			states: [
+				{ name: 'Start', category: 'backlog' },
+				{ name: 'Review', category: 'active' },
+				{ name: 'Done', category: 'done' }
+			],
+			transitions: []
+		};
+		const existing: CreateWorkflowRequest = {
+			...incoming,
+			states: [
+				{ name: 'Start', category: 'backlog' },
+				{ name: 'Review:active|Done', category: 'done' }
+			]
+		};
+		expect(fp(incoming)).not.toBe(fp(existing));
+	});
+
+	it('separates two gates from one whose description spells the second', () => {
+		// The other half of Tines/413: a description of "Ship,tests:text::"
+		// used to absorb the whole second requirement, hiding a gate.
+		const existing = varied({
+			transitions: [
+				{
+					name: 'Finish',
+					from: 'Work',
+					to: 'Done',
+					requires: [{ artifact: 'pr', type: 'pr', description: 'Ship,tests:text::' }]
+				}
+			]
+		});
+		expect(fp(base)).not.toBe(fp(existing));
+	});
+
+	it('ignores the order transitions and requirements arrive in', () => {
+		// Free text that would break any delimiter scheme: the separators
+		// themselves, quotes, a backslash and a control character.
+		const requires = [
+			{ artifact: 'pr', type: 'pr' as const, description: 'a"b\\c|d:e,f\u0000g' },
+			{ artifact: 'tests', type: 'text' as const, content_type: 'text/markdown' }
+		];
+		const transitions = [
+			{ name: 'Finish', from: 'Work', to: 'Done', requires },
+			{
+				name: 'Reopen',
+				from: 'Done',
+				to: 'Work',
+				requires: [{ artifact: 'why', type: 'text' as const }]
+			}
+		];
+		const forward = varied({ transitions });
+		const reversed = varied({
+			transitions: [
+				{ ...transitions[1] },
+				{ ...transitions[0], requires: [...requires].reverse() }
+			].reverse()
+		});
+		expect(fp(forward)).toBe(fp(reversed));
+		// The comparison is read-only: sorting must not reorder the caller's
+		// arrays, which are the request the caller is about to act on.
+		expect(forward.transitions.map((t) => t.name)).toEqual(['Finish', 'Reopen']);
+		expect(forward.transitions[0].requires?.map((r) => r.artifact)).toEqual(['pr', 'tests']);
+	});
+
+	it('keeps state order significant', () => {
+		const swapped = varied({ states: [...base.states].reverse() });
+		expect(fp(base)).not.toBe(fp(swapped));
+	});
+
+	const identityFields: [string, Partial<CreateWorkflowRequest>][] = [
+		['initial state', { initial_state: 'Done' }],
+		[
+			'a state name',
+			{
+				states: [
+					{ name: 'Working', category: 'active' },
+					{ name: 'Done', category: 'done' }
+				]
+			}
+		],
+		[
+			'a state category',
+			{
+				states: [
+					{ name: 'Work', category: 'backlog' },
+					{ name: 'Done', category: 'done' }
+				]
+			}
+		],
+		['a transition name', { transitions: [{ ...base.transitions[0], name: 'Complete' }] }],
+		['a transition source', { transitions: [{ ...base.transitions[0], from: 'Done' }] }],
+		['a transition destination', { transitions: [{ ...base.transitions[0], to: 'Work' }] }],
+		['a requirement slot', variedRequirement({ artifact: 'diff' })],
+		['a requirement type', variedRequirement({ type: 'file' })],
+		['a requirement content type', variedRequirement({ content_type: 'text/markdown' })],
+		['a requirement description', variedRequirement({ description: 'Land it' })],
+		['a dropped requirement', { transitions: [{ ...base.transitions[0], requires: [] }] }]
+	];
+
+	it.each(identityFields)('changing %s changes identity', (_field, patch) => {
+		expect(fp(base)).not.toBe(fp(varied(patch)));
+	});
+
+	it('ignores what is edited independently of the shape', () => {
+		// Name, description, stage instructions and inheritance are all
+		// deliberately outside structural identity — same-name matching lives
+		// in the callers, and the importer compares pointers separately.
+		const decorated = varied({
+			name: 'Something else',
+			description: 'A longer explanation',
+			states: [
+				{ id: 'wfs_abc', name: 'Work', category: 'active', prompt: 'Do the work.' },
+				{ name: 'Done', category: 'done', inherits_from: 'Work' }
+			]
+		});
+		expect(fp(base)).toBe(fp(decorated));
+	});
+
+	it('reads a missing requirement list as an empty one', () => {
+		const missing = varied({ transitions: [{ name: 'Finish', from: 'Work', to: 'Done' }] });
+		const empty = varied({
+			transitions: [{ name: 'Finish', from: 'Work', to: 'Done', requires: [] }]
+		});
+		expect(fp(missing)).toBe(fp(empty));
+	});
+
+	it('reads an omitted optional requirement field as an empty one', () => {
+		const omitted = varied({
+			transitions: [{ ...base.transitions[0], requires: [{ artifact: 'pr', type: 'pr' }] }]
+		});
+		const blank = varied({
+			transitions: [
+				{
+					...base.transitions[0],
+					requires: [{ artifact: 'pr', type: 'pr', content_type: '', description: '' }]
+				}
+			]
+		});
+		expect(fp(omitted)).toBe(fp(blank));
+	});
+});
+
+describe('loadWorkflows D1 parameter budget', () => {
+	it.each([99, 100, 180])('hydrates %i owned workflows plus Standard', async (ownedCount) => {
+		const t = createTestDb();
+		seedBase(t);
+		const actor = {
+			userId: USER,
+			userName: 'Alice',
+			apiKeyId: null,
+			apiKeyName: null,
+			viaSession: true
+		};
+		const created = [];
+		for (let i = 0; i < ownedCount; i++) {
+			const workflow = await createWorkflow(t.db, t.env, actor, {
+				name: `Workflow ${i.toString().padStart(3, '0')}`,
+				initial_state: 'Second',
+				states: [
+					{ name: 'First', category: 'backlog' },
+					{ name: 'Second', category: 'active', inherits_from: 'First' },
+					{ name: 'Done', category: 'done' }
+				],
+				transitions: [
+					{
+						name: 'Finish',
+						from: 'Second',
+						to: 'Done',
+						requires: [{ artifact: 'impl-pr', type: 'pr', description: `PR ${i}` }]
+					}
+				]
+			});
+			await t.db
+				.updateTable('workflow')
+				.set({ created_at: i + 1 })
+				.where('id', '=', workflow.id)
+				.execute();
+			created.push(workflow);
+		}
+
+		const workflows = await loadWorkflows(getDb(t.env), USER);
+		expect(workflows.map((workflow) => workflow.id)).toEqual([
+			'wf_standard',
+			...created.map((workflow) => workflow.id)
+		]);
+		expect(workflows).toHaveLength(ownedCount + 1);
+		for (const index of [0, Math.min(89, ownedCount - 1), ownedCount - 1]) {
+			if (index < 0) continue;
+			const actual = workflows[index + 1];
+			const expected = created[index];
+			expect(actual.states.map((state) => state.name)).toEqual(['First', 'Second', 'Done']);
+			expect(actual.initial_state_id).toBe(expected.initial_state_id);
+			expect(actual.states[1].inherits_from).toBe(actual.states[0].id);
+			expect(actual.transitions).toEqual(expected.transitions);
+		}
+
+		expect(await loadWorkflows(getDb(t.env), USER, created.at(-1)?.id)).toHaveLength(1);
+		expect(await loadWorkflows(getDb(t.env), USER, 'wf_missing')).toEqual([]);
 	});
 });

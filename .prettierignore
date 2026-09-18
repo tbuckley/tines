@@ -5,6 +5,7 @@ build/
 .svelte-kit/
 .wrangler/
 .wrangler-e2e/
+.wrangler-usage-scale/
 pnpm-lock.yaml
 apps/web/test-results/
 apps/web/playwright-report/

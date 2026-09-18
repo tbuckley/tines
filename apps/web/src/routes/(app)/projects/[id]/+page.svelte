@@ -62,27 +62,30 @@
 
 	// Opening a project focuses it (Tines/259). Client-side on purpose: doing it
 	// in the load would fire on hover, because the app preloads links on hover.
-	// The chrome is told optimistically rather than by an `invalidate`, whose
-	// load rerun swallowed a link click that landed in its window; the page's
-	// own data is already scoped, so nothing else here has to refetch.
+	// The chrome is told optimistically. The write is tracked so subsequent
+	// same-origin reads wait for the server to agree before they begin.
 	//
 	// Announced once per project, tracked in a plain `let` that no rerender
 	// resets. A guard reading `focusHint` instead would make the hint a
 	// dependency of this effect, so the switcher could never move the focus
-	// off this page: `chooseFocus` clears the hint and `invalidateAll`s, both
+	// off this page: `chooseFocus` clears the hint and invalidates, both
 	// of which re-run this effect, which would then PATCH this project
 	// straight back over the user's choice.
 	let announced: string | null = null;
+	let announcement = 0;
 	$effect(() => {
 		if (data.project.archived_at !== null) return;
 		if (announced === data.project.id) return;
-		announced = data.project.id;
-		focusHint.set(data.project);
-		api.updatePreferences({ focused_project_id: data.project.id }).catch(() => {
-			// The chrome must not claim a focus the server refused.
-			announced = null;
-			focusHint.clear();
+		const projectId = data.project.id;
+		const operation = ++announcement;
+		announced = projectId;
+		const hintOwner = focusHint.set(data.project);
+		const settlement = api.updatePreferences({ focused_project_id: projectId }).catch(() => {
+			// Roll back before tracked reads resume, but never erase a newer choice.
+			focusHint.clearIfCurrent(hintOwner);
+			if (announcement === operation) announced = null;
 		});
+		focusHint.track(settlement);
 	});
 
 	/** An archived project reads normally and writes nowhere. */
@@ -353,6 +356,12 @@
 		workflows={data.workflows}
 	/>
 
+	<IssuePagination
+		pagination={data.pagination}
+		itemCount={data.issues.length}
+		label="Issue pagination above results"
+		class="mb-4"
+	/>
 	<IssueList
 		issues={data.issues}
 		showProject={false}
@@ -360,11 +369,20 @@
 			? 'No issues on this page. Results may have changed.'
 			: data.filters.ready
 				? 'No ready issues in this project.'
-				: data.filters.category || data.filters.q || data.filters.labels.length > 0
+				: data.filters.workflow ||
+					  data.filters.state ||
+					  data.filters.category ||
+					  data.filters.q ||
+					  data.filters.labels.length > 0
 					? 'No issues match these filters.'
 					: 'No issues in this project yet.'}
 	/>
-	<IssuePagination pagination={data.pagination} itemCount={data.issues.length} />
+	<IssuePagination
+		pagination={data.pagination}
+		itemCount={data.issues.length}
+		label="Issue pagination below results"
+		announceCount={false}
+	/>
 </div>
 
 {#if data.schedules.length > 0}

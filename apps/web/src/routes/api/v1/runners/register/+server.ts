@@ -2,7 +2,6 @@ import { json } from '@sveltejs/kit';
 import type { RegisterRunnerRequest } from '@tines/shared';
 import { api, apiContext, readJson } from '$lib/server/api/core';
 import { registerRunner } from '$lib/server/api/runners';
-import { queueDispatchPass } from '$lib/server/supervisor/engine';
 import type { RequestHandler } from './$types';
 
 /**
@@ -11,9 +10,8 @@ import type { RequestHandler } from './$types';
  * `runner_token` is shown exactly once — only its hash is stored.
  */
 export const POST: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<RegisterRunnerRequest>(event);
-	const runner = await registerRunner(db, env, actor, body);
-	queueDispatchPass(event.platform, actor.userId);
+	const runner = await registerRunner(db, env, actor, effects, body);
 	return json(runner, { status: 201 });
 });

@@ -1,0 +1,13 @@
+{
+	"model": "gpt-6-astra",
+	"effort": "high",
+	"harness": "codex-cli 0.153.4",
+	"mode": "cold",
+	"timeout_seconds": 300,
+	"task_order": ["routine", "conditional", "old_decision"],
+	"required": {
+		"routine": ["global", "project", "state", "combined", "unknown"],
+		"conditional": ["inspect", "Scouting", "fresh", "Re-propose", "self-approve", "Root"],
+		"old_decision": ["exact current bodies", "cmt_old_detail", "JSON"]
+	}
+}

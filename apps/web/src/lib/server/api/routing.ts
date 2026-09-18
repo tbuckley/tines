@@ -9,15 +9,21 @@ import type {
 } from '@tines/shared';
 import {
 	INHERIT_RUNNER_ID,
+	isEffortToken,
+	isRecognizedEffort,
+	RECOGNIZED_EFFORT_VALUES,
 	isGlobalRoutingScope,
 	isTierOnlyTargets,
 	routingScopeSpecificity
 } from '@tines/shared';
 import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
+import { insertValues, type QueryGuard } from './query-guard';
 import { requireTier } from './runners';
+import { resolveEffort, resolveTier, type TierResolvable } from '$lib/server/supervisor/logic';
 import { resolveScope, scopeLabel, toContextScope } from './scope';
 
 // ---------------------------------------------------------------------------
@@ -143,7 +149,10 @@ export function findScopeCollision<T extends RuleScopeIds & { id: string }>(
  */
 export function validateTargets(
 	value: unknown,
-	runnersById: Map<string, { id: string; name: string }>
+	runnersById: Map<
+		string,
+		{ id: string; name: string } & Partial<TierResolvable & { effort_capabilities: string | null }>
+	>
 ): RoutingTarget[] {
 	if (!Array.isArray(value) || value.length === 0) {
 		throw new ApiFail(
@@ -171,15 +180,25 @@ export function validateTargets(
 				}
 			);
 		}
-		const input = wildcardEntries[0] as { runner_id: '*'; tier?: unknown };
+		const input = wildcardEntries[0] as { runner_id: '*'; tier?: unknown; effort?: unknown };
 		if (input.tier === undefined || input.tier === null) {
 			throw new ApiFail(422, 'invalid_field', 'A tier-only target requires an explicit tier', {
 				field: 'targets'
 			});
 		}
+		const wildcardEffort = requireTargetEffort(input.effort, 'targets[0].effort');
+		if (wildcardEffort && !isRecognizedEffort(wildcardEffort)) {
+			throw new ApiFail(
+				422,
+				'effort_incompatible',
+				`"targets[0].effort" is not a recognized provider effort`,
+				{ field: 'targets[0].effort', allowed_values: [...RECOGNIZED_EFFORT_VALUES] }
+			);
+		}
 		const target: RoutingTarget = {
 			runner_id: INHERIT_RUNNER_ID,
-			tier: requireTier(input.tier, 'targets[0].tier')
+			tier: requireTier(input.tier, 'targets[0].tier'),
+			...(wildcardEffort ? { effort: wildcardEffort } : {})
 		};
 		return [target];
 	}
@@ -196,7 +215,7 @@ export function validateTargets(
 				}
 			);
 		}
-		const input = entry as { runner_id?: unknown; tier?: unknown };
+		const input = entry as { runner_id?: unknown; tier?: unknown; effort?: unknown };
 		if (typeof input.runner_id !== 'string' || !runnersById.has(input.runner_id)) {
 			throw new ApiFail(
 				422,
@@ -209,22 +228,60 @@ export function validateTargets(
 			input.tier === undefined || input.tier === null
 				? null
 				: requireTier(input.tier, `targets[${i}].tier`);
-		const key = `${input.runner_id}:${tier ?? ''}`;
+		const effort = requireTargetEffort(input.effort, `targets[${i}].effort`);
+		const selectedRunner = runnersById.get(input.runner_id)!;
+		if (
+			effort &&
+			selectedRunner.type &&
+			selectedRunner.default_tier &&
+			typeof selectedRunner.config === 'string'
+		) {
+			const resolved = resolveTier(selectedRunner as TierResolvable, tier);
+			const compatibility = resolveEffort(
+				selectedRunner as TierResolvable & { effort_capabilities?: string | null },
+				resolved,
+				effort
+			);
+			if (!compatibility.compatible) {
+				throw new ApiFail(
+					422,
+					'effort_incompatible',
+					`Target "${selectedRunner.name}" cannot apply effort ${effort} to ${resolved.model ?? 'its fixed model'}: ${compatibility.reason}`,
+					{ field: `targets[${i}].effort`, model: resolved.model, requested_effort: effort }
+				);
+			}
+		}
+		const key = JSON.stringify([input.runner_id, tier, effort ?? null]);
 		if (seen.has(key)) {
 			const name = runnersById.get(input.runner_id)?.name;
 			throw new ApiFail(
 				422,
 				'duplicate_target',
-				`Target "${name}"${tier ? ` (tier ${tier})` : ''} is listed more than once`,
+				`Target "${name}"${tier ? ` (tier ${tier})` : ''}${effort ? ` (effort ${effort})` : ''} is listed more than once`,
 				{ field: 'targets' }
 			);
 		}
 		seen.add(key);
-		targets.push(
-			tier === null ? { runner_id: input.runner_id } : { runner_id: input.runner_id, tier }
-		);
+		targets.push({
+			runner_id: input.runner_id,
+			...(tier ? { tier } : {}),
+			...(effort ? { effort } : {})
+		});
 	}
 	return targets;
+}
+
+function requireTargetEffort(value: unknown, field: string): string | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (!isEffortToken(value)) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			`"${field}" must be a lowercase effort token (1-32 characters)`,
+			{ field }
+		);
+	}
+	return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -275,10 +332,34 @@ function rowScope(row: RuleRow): ContextScope {
 async function loadRunnersById(
 	db: Kysely<Database>,
 	userId: string
-): Promise<Map<string, { id: string; name: string; status: string }>> {
+): Promise<
+	Map<
+		string,
+		Pick<
+			Database['runner'],
+			| 'id'
+			| 'name'
+			| 'status'
+			| 'type'
+			| 'config'
+			| 'default_tier'
+			| 'tiers'
+			| 'effort_capabilities'
+		>
+	>
+> {
 	const rows = await db
 		.selectFrom('runner')
-		.select(['id', 'name', 'status'])
+		.select([
+			'id',
+			'name',
+			'status',
+			'type',
+			'config',
+			'default_tier',
+			'tiers',
+			'effort_capabilities'
+		])
 		.where('user_id', '=', userId)
 		.execute();
 	return new Map(rows.map((r) => [r.id, r]));
@@ -294,7 +375,8 @@ function serializeRule(
 				runner_id: INHERIT_RUNNER_ID,
 				runner_name: INHERIT_RUNNER_ID,
 				runner_status: null,
-				tier: t.tier ?? null
+				tier: t.tier ?? null,
+				...(t.effort ? { effort: t.effort } : {})
 			};
 		}
 		const runner = runnersById.get(t.runner_id);
@@ -302,7 +384,8 @@ function serializeRule(
 			runner_id: t.runner_id,
 			runner_name: runner?.name ?? 'removed runner',
 			runner_status: (runner?.status ?? 'paused') as 'active' | 'paused',
-			tier: t.tier ?? null
+			tier: t.tier ?? null,
+			...(t.effort ? { effort: t.effort } : {})
 		};
 	});
 	return {
@@ -449,10 +532,72 @@ function assertNoScopeCollision(
 	}
 }
 
+/** Build an ordinary rule and its event after scope/capability validation. */
+export function routingRuleInsertQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	options: {
+		id: string;
+		scope: RuleScopeIds;
+		label: string;
+		targets: RoutingTarget[];
+		runnersById: Map<string, { id: string; name: string }>;
+		now: number;
+		guard?: QueryGuard;
+		eventId?: string;
+	}
+): CompiledQuery[] {
+	const { id, scope, label, runnersById, now } = options;
+	const targets = validateTargets(options.targets, runnersById);
+	assertTierOnlyScope(scope, targets);
+	return [
+		insertValues(
+			db,
+			'routing_rule',
+			{
+				id,
+				user_id: actor.userId,
+				project_id: scope.projectId,
+				workflow_state_id: scope.workflowStateId,
+				label_id: scope.labelId,
+				targets: JSON.stringify(targets),
+				created_at: now,
+				updated_at: now
+			},
+			options.guard
+		),
+		eventInsert(
+			db,
+			actor,
+			{
+				id: options.eventId,
+				createdAt: now,
+				type: 'routing_rule.created',
+				projectId: scope.projectId,
+				payload: {
+					rule_id: id,
+					workflow_state_id: scope.workflowStateId,
+					scope_label: label,
+					targets: targets.map((t) => ({
+						runner_name:
+							t.runner_id === INHERIT_RUNNER_ID
+								? INHERIT_RUNNER_ID
+								: runnersById.get(t.runner_id)?.name,
+						tier: t.tier ?? null,
+						...(t.effort ? { effort: t.effort } : {})
+					}))
+				}
+			},
+			options.guard
+		)
+	];
+}
+
 export async function createRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	body: CreateRoutingRuleRequest
 ): Promise<RoutingRuleWithWarnings> {
 	const scope: RuleScopeIds = {
@@ -479,36 +624,18 @@ export async function createRoutingRule(
 
 	const now = Date.now();
 	const id = newId('rul');
-	await runAtomic(env, [
-		db
-			.insertInto('routing_rule')
-			.values({
-				id,
-				user_id: actor.userId,
-				project_id: scope.projectId,
-				workflow_state_id: scope.workflowStateId,
-				label_id: scope.labelId,
-				targets: JSON.stringify(targets),
-				created_at: now,
-				updated_at: now
-			})
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'routing_rule.created',
-			projectId: scope.projectId,
-			payload: {
-				rule_id: id,
-				scope_label: label,
-				targets: targets.map((t) => ({
-					runner_name:
-						t.runner_id === INHERIT_RUNNER_ID
-							? INHERIT_RUNNER_ID
-							: runnersById.get(t.runner_id)?.name,
-					tier: t.tier ?? null
-				}))
-			}
+	await runAtomic(
+		env,
+		routingRuleInsertQueries(db, actor, {
+			id,
+			scope,
+			label,
+			targets,
+			runnersById,
+			now
 		})
-	]);
+	);
+	effects.signalDispatch();
 	return {
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)
@@ -519,6 +646,7 @@ export async function updateRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string,
 	body: UpdateRoutingRuleRequest
 ): Promise<RoutingRuleWithWarnings> {
@@ -560,6 +688,7 @@ export async function updateRoutingRule(
 	assertTierOnlyScope(scope, targets);
 
 	if (!scopeChanged && JSON.stringify(targets) === row.targets) {
+		effects.signalDispatch();
 		return {
 			...serializeRule(row, runnersById),
 			warnings: shadowWarnings({ ...scope, id }, rules)
@@ -584,6 +713,7 @@ export async function updateRoutingRule(
 			payload: {
 				rule_id: id,
 				scope_label: label,
+				workflow_state_id: scope.workflowStateId,
 				targets: targets.map((t) => ({
 					runner_name:
 						t.runner_id === INHERIT_RUNNER_ID
@@ -594,6 +724,7 @@ export async function updateRoutingRule(
 			}
 		})
 	]);
+	effects.signalDispatch();
 	return {
 		...(await getRoutingRule(db, actor.userId, id)),
 		warnings: shadowWarnings({ ...scope, id }, rules)
@@ -608,11 +739,19 @@ export async function rulesScopedToLabel(
 	db: Kysely<Database>,
 	userId: string,
 	labelId: string
-): Promise<{ id: string; project_id: string | null; scope_label: string }[]> {
+): Promise<
+	{
+		id: string;
+		project_id: string | null;
+		workflow_state_id: string | null;
+		scope_label: string;
+	}[]
+> {
 	const rows = await ruleQuery(db, userId).where('routing_rule.label_id', '=', labelId).execute();
 	return rows.map((row) => ({
 		id: row.id,
 		project_id: row.project_id,
+		workflow_state_id: row.workflow_state_id,
 		scope_label: rowScope(row).label
 	}));
 }
@@ -626,14 +765,24 @@ export async function rulesScopedToLabel(
 export function routingRuleDeletes(
 	db: Kysely<Database>,
 	actor: ActorContext,
-	rules: { id: string; project_id: string | null; scope_label: string }[]
+	rules: {
+		id: string;
+		project_id: string | null;
+		workflow_state_id: string | null;
+		scope_label: string;
+	}[]
 ): CompiledQuery[] {
 	return rules.flatMap((rule) => [
 		db.deleteFrom('routing_rule').where('id', '=', rule.id).compile(),
 		eventInsert(db, actor, {
 			type: 'routing_rule.deleted',
 			projectId: rule.project_id,
-			payload: { rule_id: rule.id, scope_label: rule.scope_label, via: 'label.deleted' }
+			payload: {
+				rule_id: rule.id,
+				scope_label: rule.scope_label,
+				workflow_state_id: rule.workflow_state_id,
+				via: 'label.deleted'
+			}
 		})
 	]);
 }
@@ -642,6 +791,7 @@ export async function deleteRoutingRule(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string
 ): Promise<void> {
 	const row = await ruleQuery(db, actor.userId)
@@ -653,7 +803,12 @@ export async function deleteRoutingRule(
 		eventInsert(db, actor, {
 			type: 'routing_rule.deleted',
 			projectId: row.project_id,
-			payload: { rule_id: id, scope_label: rowScope(row).label }
+			payload: {
+				rule_id: id,
+				scope_label: rowScope(row).label,
+				workflow_state_id: row.workflow_state_id
+			}
 		})
 	]);
+	effects.signalDispatch();
 }

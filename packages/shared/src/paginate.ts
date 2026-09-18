@@ -15,17 +15,18 @@ import type { ListResponse, PageParams } from './types.js';
 export const MAX_PAGE_SIZE = 100;
 
 /**
- * Hard ceiling on a single walk. Well above any real list (the largest today is
- * the activity log, low thousands) and low enough that a runaway query fails
- * fast instead of pulling the database through the CLI.
+ * Default safety ceiling on a single walk. Callers may deliberately override
+ * it with another finite bound; accidental unbounded reads still fail fast.
  */
 export const MAX_ALL_PAGES_ITEMS = 10_000;
 
-export interface PaginateOptions {
+export interface PaginateOptions<T = { id: string }> {
 	/** Items per request; clamped by the server to MAX_PAGE_SIZE. */
 	pageSize?: number;
 	/** Ceiling on the total returned; exceeding it throws. */
 	maxItems?: number;
+	/** Stable identity for list items that do not expose the conventional `id`. */
+	identify?: (item: T) => string;
 }
 
 /** Fetches one page — every `ApiClient.list*` method has this shape once its filters are bound. */
@@ -44,20 +45,29 @@ export type PageFetcher<T> = (page: PageParams) => Promise<ListResponse<T>>;
  * @throws if more than `maxItems` distinct items are seen, or if the server
  * returns a cursor it has already handed out (which would loop forever).
  */
-export async function* listPages<T extends { id: string }>(
+export function listPages<T extends { id: string }>(
 	fetchPage: PageFetcher<T>,
-	opts: PaginateOptions = {}
+	opts?: PaginateOptions<T>
+): AsyncGenerator<T[]>;
+export function listPages<T>(
+	fetchPage: PageFetcher<T>,
+	opts: PaginateOptions<T> & { identify: (item: T) => string }
+): AsyncGenerator<T[]>;
+export async function* listPages<T>(
+	fetchPage: PageFetcher<T>,
+	opts: PaginateOptions<T> = {}
 ): AsyncGenerator<T[]> {
 	const pageSize = opts.pageSize ?? MAX_PAGE_SIZE;
 	const maxItems = opts.maxItems ?? MAX_ALL_PAGES_ITEMS;
 	const seen = new Set<string>();
 	const seenCursors = new Set<string>();
+	const identify = opts.identify ?? ((item: T) => (item as { id: string }).id);
 	let cursor: string | undefined;
 
 	for (;;) {
 		const res = await fetchPage({ limit: pageSize, cursor });
-		const fresh = res.items.filter((item) => !seen.has(item.id));
-		for (const item of fresh) seen.add(item.id);
+		const fresh = res.items.filter((item) => !seen.has(identify(item)));
+		for (const item of fresh) seen.add(identify(item));
 		if (seen.size > maxItems) {
 			throw new Error(
 				`list has more than ${maxItems} items — narrow it with filters, or page manually with --cursor`
@@ -80,11 +90,19 @@ export async function* listPages<T extends { id: string }>(
  * Collects every page into one array, in server order. See {@link listPages}
  * for the ceiling, the cursor guard, and why a walk is not a snapshot.
  */
-export async function listAll<T extends { id: string }>(
+export function listAll<T extends { id: string }>(
 	fetchPage: PageFetcher<T>,
-	opts: PaginateOptions = {}
+	opts?: PaginateOptions<T>
+): Promise<T[]>;
+export function listAll<T>(
+	fetchPage: PageFetcher<T>,
+	opts: PaginateOptions<T> & { identify: (item: T) => string }
+): Promise<T[]>;
+export async function listAll<T>(
+	fetchPage: PageFetcher<T>,
+	opts: PaginateOptions<T> = {}
 ): Promise<T[]> {
 	const items: T[] = [];
-	for await (const page of listPages(fetchPage, opts)) items.push(...page);
+	for await (const page of listPages(fetchPage, opts as never)) items.push(...page);
 	return items;
 }

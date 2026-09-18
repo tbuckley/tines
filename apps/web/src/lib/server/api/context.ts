@@ -36,10 +36,11 @@ import {
 	type RepoDirConflict,
 	type UpdateContextItemRequest
 } from '@tines/shared';
+import { insertValues, type QueryGuard } from './query-guard';
 import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { artifactKeyPrefix, getArtifactStore } from '$lib/server/artifact-store';
-import { newId, type Database } from '$lib/server/db';
+import { idChunks, newId, type Database } from '$lib/server/db';
 import {
 	ApiFail,
 	MAX_INHERITANCE_CHAIN,
@@ -53,6 +54,7 @@ import {
 import { artifactTypeOf } from './artifacts';
 import { assertScopeWritable } from './archive';
 import { eventInsert } from './events';
+import { substringMatch } from './search';
 import {
 	resolveScope,
 	scopeLabel,
@@ -303,12 +305,19 @@ export async function loadFiles(
 ): Promise<Map<string, ContextFile[]>> {
 	const map = new Map<string, ContextFile[]>();
 	if (itemIds.length === 0) return map;
-	const rows = await db
-		.selectFrom('context_item_file')
-		.select(['context_item_id', 'path', 'content'])
-		.where('context_item_id', 'in', itemIds)
-		.orderBy('path asc')
-		.execute();
+	const chunks = idChunks([...new Set(itemIds)]);
+	const rows = (
+		await Promise.all(
+			chunks.map((chunk) =>
+				db
+					.selectFrom('context_item_file')
+					.select(['context_item_id', 'path', 'content'])
+					.where('context_item_id', 'in', chunk)
+					.orderBy('path asc')
+					.execute()
+			)
+		)
+	).flat();
 	for (const row of rows) {
 		const list = map.get(row.context_item_id) ?? [];
 		list.push({ path: row.path, content: row.content });
@@ -349,7 +358,7 @@ export interface ContextItemFilters {
 	issue?: string;
 	/** Label id or name. */
 	label?: string;
-	/** Name/description substring search. */
+	/** Literal name/description substring search, case-insensitive for ASCII. */
 	q?: string;
 	/** Restrict to items whose scope sets only the given dimensions. */
 	exact?: boolean;
@@ -447,11 +456,12 @@ export async function listContextItems(
 		}
 	}
 	if (filters.q) {
-		// Plain substring search; % and _ act as wildcards, which is harmless
-		// (and occasionally useful) for a search box.
-		const like = `%${filters.q}%`;
+		const term = filters.q;
 		q = q.where((eb) =>
-			eb.or([eb('context_item.name', 'like', like), eb('context_item.description', 'like', like)])
+			eb.or([
+				substringMatch(eb.ref('context_item.name'), term),
+				substringMatch(eb.ref('context_item.description'), term)
+			])
 		);
 	}
 	if (page.cursor) {
@@ -520,6 +530,14 @@ async function runContextWrite(env: Env, queries: CompiledQuery[]): Promise<D1Re
 	try {
 		return await runAtomic(env, queries);
 	} catch (e) {
+		if (e instanceof Error && e.message.includes('incoherent_issue_project_scope')) {
+			throw new ApiFail(
+				409,
+				'scope_incoherent',
+				'The issue changed projects while this context write was in flight; re-read its scope and retry',
+				{ field: 'project_id' }
+			);
+		}
 		if (
 			e instanceof Error &&
 			e.message.includes('UNIQUE constraint failed') &&
@@ -656,12 +674,8 @@ function artifactEndpointsMessage(): string {
 	return `Artifacts are created through the artifact endpoints: ${parts.join(', ')}, or ${last}`;
 }
 
-export async function createContextItem(
-	db: Kysely<Database>,
-	env: Env,
-	actor: ActorContext,
-	body: CreateContextItemRequest
-): Promise<ContextItem> {
+/** Pure ordinary payload validation, shared with library preview. */
+export function validateContextCreateFields(body: CreateContextItemRequest) {
 	const kind = requireKind(body.kind);
 	// One creation path is saner than two, and file payloads can't ride a
 	// JSON create: artifacts are created via their own endpoints only.
@@ -674,16 +688,6 @@ export async function createContextItem(
 	const name = validateName(kind, body.name);
 	const description = optionalString(body.description, 'description', { max: 1000 }) ?? '';
 	rejectForeignPayload(kind, body as unknown as Record<string, unknown>);
-
-	const scope = await resolveScope(db, actor.userId, {
-		projectId: body.project_id ?? null,
-		workflowStateId: body.workflow_state_id ?? null,
-		labelId: body.label_id ?? null,
-		issueId: body.issue_id ?? null
-	});
-	await assertScopeWritable(db, actor, scope);
-	await assertNameAvailable(db, actor.userId, kind, name, scope);
-
 	let promptBody: string | null = null;
 	let files: ContextFile[] = [];
 	let repoUrl: string | null = null;
@@ -702,13 +706,33 @@ export async function createContextItem(
 				: validateWorkspacePath(body.repo_dir, 'repo_dir');
 	}
 
-	const now = Date.now();
-	const id = newId('ctx');
-	const position = await nextPosition(db, actor.userId, scope);
-	const queries: CompiledQuery[] = [
-		db
-			.insertInto('context_item')
-			.values({
+	return { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir };
+}
+
+/** Validated ordinary payload plus a resolved prospective scope. No writes or lookups. */
+export function contextItemInsertQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	options: {
+		id: string;
+		fields: ReturnType<typeof validateContextCreateFields>;
+		scope: ResolvedScope;
+		position: number;
+		now: number;
+		fileIds?: string[];
+		eventId?: string;
+		guard?: QueryGuard;
+	}
+): CompiledQuery[] {
+	const { id, fields, scope, position, now } = options;
+	const { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir } = fields;
+	if (options.fileIds && options.fileIds.length !== files.length)
+		throw new Error('Context file ID allocation must match the validated files');
+	return [
+		insertValues(
+			db,
+			'context_item',
+			{
 				id,
 				user_id: actor.userId,
 				kind,
@@ -726,27 +750,67 @@ export async function createContextItem(
 				version: 1,
 				created_at: now,
 				updated_at: now
-			})
-			.compile(),
-		...files.map((f) =>
-			db
-				.insertInto('context_item_file')
-				.values({
-					id: newId('ctf'),
+			},
+			options.guard
+		),
+		...files.map((f, index) =>
+			insertValues(
+				db,
+				'context_item_file',
+				{
+					id: options.fileIds?.[index] ?? newId('ctf'),
 					context_item_id: id,
 					path: f.path,
 					content: f.content,
 					created_at: now,
 					updated_at: now
-				})
-				.compile()
+				},
+				options.guard
+			)
 		),
-		eventInsert(db, actor, {
-			type: 'context.created',
-			...eventRefs(scope),
-			payload: { context_id: id, kind, name, scope: scopeEventPayload(scope) }
-		})
+		eventInsert(
+			db,
+			actor,
+			{
+				id: options.eventId,
+				createdAt: now,
+				type: 'context.created',
+				...eventRefs(scope),
+				payload: { context_id: id, kind, name, scope: scopeEventPayload(scope) }
+			},
+			options.guard
+		)
 	];
+}
+
+export async function createContextItem(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	body: CreateContextItemRequest
+): Promise<ContextItem> {
+	const fields = validateContextCreateFields(body);
+	const { kind, name } = fields;
+
+	const scope = await resolveScope(db, actor.userId, {
+		projectId: body.project_id ?? null,
+		workflowStateId: body.workflow_state_id ?? null,
+		labelId: body.label_id ?? null,
+		issueId: body.issue_id ?? null
+	});
+	await assertScopeWritable(db, actor, scope);
+	await assertNameAvailable(db, actor.userId, kind, name, scope);
+
+	const now = Date.now();
+	const id = newId('ctx');
+	const position = await nextPosition(db, actor.userId, scope);
+	const queries = contextItemInsertQueries(db, actor, {
+		id,
+		fields,
+		scope,
+		position,
+		now
+	});
 	await runContextWrite(env, queries);
 	return getContextItem(db, actor.userId, id);
 }
@@ -767,10 +831,13 @@ function guardedContextEvent(
 	itemId: string,
 	versionAfter: number
 ): CompiledQuery {
+	const projectId = input.issueId
+		? sql`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
+		: sql`${input.projectId}`;
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${newId('evt')}, ${actor.userId}, ${input.type}, ${actor.userId}, ${actor.apiKeyId},
-			${input.issueId}, ${input.projectId}, ${JSON.stringify(input.payload)}, ${Date.now()}
+			${input.issueId}, ${projectId}, ${JSON.stringify(input.payload)}, ${Date.now()}
 		WHERE EXISTS (
 			SELECT 1 FROM context_item WHERE id = ${itemId} AND version = ${versionAfter}
 		)`.compile(db);
@@ -945,6 +1012,7 @@ export async function updateContextItem(
 	// update goes first, and the file replacement plus the event only land
 	// if it did (they check for the bumped version).
 	const newVersion = row.version + 1;
+	payload.version = newVersion;
 	queries.push(
 		db
 			.updateTable('context_item')
@@ -965,6 +1033,13 @@ export async function updateContextItem(
 			})
 			.where('id', '=', id)
 			.where('version', '=', row.version)
+			// Transfer deliberately preserves version. Fence the complete scope
+			// tuple too, so an edit read before a move can neither restore the
+			// source project nor attach files/events to the wrong scope.
+			.where(sql<boolean>`project_id IS ${row.project_id}`)
+			.where(sql<boolean>`workflow_state_id IS ${row.workflow_state_id}`)
+			.where(sql<boolean>`label_id IS ${row.label_id}`)
+			.where(sql<boolean>`issue_id IS ${row.issue_id}`)
 			.compile()
 	);
 	if (filesChanged && files !== undefined) {
@@ -1102,6 +1177,7 @@ export async function appendContextItem(
 						name: row.name,
 						changed: ['body'],
 						appended: true,
+						version: newVersion,
 						scope: scopeEventPayload(scope)
 					}
 				},
@@ -1194,7 +1270,7 @@ export function stitchPrompt(parts: StitchPart[]): string {
 		.join('\n\n');
 }
 
-interface MatchTarget {
+export interface MatchTarget {
 	projectId: string;
 	/** The issue's state and its ancestors, root → leaf; the leaf is the issue's own state. */
 	stateChain: string[];
@@ -1248,7 +1324,40 @@ async function resolveStateChain(db: Kysely<Database>, leafStateId: string): Pro
 	return chain.length > 0 ? chain : [leafStateId];
 }
 
-function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchTarget) {
+/**
+ * Reads project∧issue rows of one project as though they belonged to another —
+ * what a transfer does to them atomically at commit. Only the project dimension
+ * and its display names move; identity, version, position and every other
+ * dimension are untouched, here and in the guarded UPDATE.
+ */
+export interface MatchProjection {
+	fromProjectId: string;
+	toProjectId: string;
+	toProjectName: string | null;
+	toProjectArchivedAt: number | null;
+}
+
+function projectRow(row: ItemRow, projection: MatchProjection | undefined): ItemRow {
+	if (!projection) return row;
+	if (row.project_id !== projection.fromProjectId || !row.issue_id) return row;
+	// Only the item's own project dimension moves. The issue reference in its
+	// scope label keeps the address the issue answers to today: a preview has no
+	// destination number yet, and that project's number N belongs to a different
+	// issue. The old ref keeps resolving after the move, so it stays truthful.
+	return {
+		...row,
+		project_id: projection.toProjectId,
+		scope_project_name: projection.toProjectName,
+		scope_project_archived_at: projection.toProjectArchivedAt
+	};
+}
+
+function matchingItemsQuery(
+	db: Kysely<Database>,
+	userId: string,
+	target: MatchTarget,
+	projection?: MatchProjection
+) {
 	// Artifacts are deliberately not part of the effective context: nothing
 	// is stitched into the prompt, nothing is seeded into a workspace.
 	return contextItemQuery(db, userId)
@@ -1257,7 +1366,18 @@ function matchingItemsQuery(db: Kysely<Database>, userId: string, target: MatchT
 			eb.and([
 				eb.or([
 					eb('context_item.project_id', 'is', null),
-					eb('context_item.project_id', '=', target.projectId)
+					eb('context_item.project_id', '=', target.projectId),
+					// A transfer preview reads the rows anchored to this issue in the
+					// project it is leaving as if they had already been rescoped: the
+					// commit moves their project dimension with the issue.
+					...(projection
+						? [
+								eb.and([
+									eb('context_item.project_id', '=', projection.fromProjectId),
+									eb('context_item.issue_id', '=', target.issueId)
+								])
+							]
+						: [])
 				]),
 				eb.or([
 					eb('context_item.workflow_state_id', 'is', null),
@@ -1405,12 +1525,21 @@ function dedupeByName(
 			kind: row.kind as ContextKind,
 			name: row.name,
 			...describeRow(row, leafStateId),
-			overridden_by: winner.id
+			overridden_by: winner.id,
+			...(row.kind === 'repo' && row.repo_url
+				? {
+						repo: {
+							url: row.repo_url,
+							branch: row.repo_branch,
+							dir: row.repo_dir ?? repoDirFromUrl(row.repo_url)
+						}
+					}
+				: {})
 		}))
 	};
 }
 
-async function issueMatchTarget(
+export async function issueMatchTarget(
 	db: Kysely<Database>,
 	userId: string,
 	issueId: string
@@ -1558,12 +1687,28 @@ export async function effectiveContextForIssue(
 	db: Kysely<Database>,
 	userId: string,
 	issueId: string,
-	{ skillFiles = true }: { skillFiles?: boolean } = {}
+	opts: { skillFiles?: boolean } = {}
 ): Promise<EffectiveContext> {
-	const target = await issueMatchTarget(db, userId, issueId);
+	return effectiveContextForTarget(db, userId, await issueMatchTarget(db, userId, issueId), opts);
+}
+
+/**
+ * The effective context of an explicit match target — the assembly shared by
+ * the issue's own resolution and a transfer preview's hypothetical destination.
+ * One matcher, one precedence: a preview that disagreed with the launch would
+ * be worse than no preview at all.
+ */
+export async function effectiveContextForTarget(
+	db: Kysely<Database>,
+	userId: string,
+	target: MatchTarget,
+	{ skillFiles = true, projection }: { skillFiles?: boolean; projection?: MatchProjection } = {}
+): Promise<EffectiveContext> {
 	const leafStateId = target.stateChain[target.stateChain.length - 1];
 	const rows = sortMatched(
-		await matchingItemsQuery(db, userId, target).execute(),
+		(await matchingItemsQuery(db, userId, target, projection).execute()).map((row) =>
+			projectRow(row, projection)
+		),
 		target.stateChain
 	);
 
@@ -1598,6 +1743,7 @@ export async function effectiveContextForIssue(
 	const skills: EffectiveSkill[] = skillDedupe.winners.map((r) => ({
 		item_id: r.id,
 		name: r.name,
+		description: r.description ?? '',
 		...describeRow(r, leafStateId),
 		files: fileMap.get(r.id) ?? [],
 		file_count: Number(r.file_count ?? 0),
@@ -1760,6 +1906,37 @@ function requirementStatusLabel(r: ArtifactRequirementCheck): string {
  */
 const PROMPT_LABEL_VOCABULARY_MAX = 40;
 
+function shellArg(value: string): string {
+	return /^[A-Za-z0-9_./:-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+export function selectLaunchComments(issue: IssueDetail): {
+	retained: IssueDetail['comments'];
+	omittedAgentIds: string[];
+} {
+	if (!issue.launch_comments) return { retained: issue.comments, omittedAgentIds: [] };
+	const unique = [...new Map(issue.comments.map((comment) => [comment.id, comment])).values()].sort(
+		(a, b) => a.created_at - b.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+	);
+	const protectedId = issue.launch_comments.latest_completed_run_comment_id;
+	const retainedIds = new Set(
+		unique.filter((comment) => !comment.actor.run).map((comment) => comment.id)
+	);
+	if (protectedId && unique.some((comment) => comment.id === protectedId && comment.actor.run)) {
+		retainedIds.add(protectedId);
+	}
+	for (const comment of unique
+		.filter((entry) => entry.actor.run && entry.id !== protectedId)
+		.slice(-3))
+		retainedIds.add(comment.id);
+	return {
+		retained: unique.filter((comment) => retainedIds.has(comment.id)),
+		omittedAgentIds: unique
+			.filter((comment) => comment.actor.run && !retainedIds.has(comment.id))
+			.map((comment) => comment.id)
+	};
+}
+
 /**
  * `### Since the last run` — the human's steer, rendered for the launch prompt.
  * Absent entirely when nothing human happened; never a "none" heading.
@@ -1789,7 +1966,7 @@ function sinceLastRunLines(since: SinceLastRun, now: number): string[] {
 	}
 	for (const comment of since.comments) {
 		lines.push(
-			`**${actorLabel(comment.actor)}** (${new Date(comment.created_at).toISOString()}):`,
+			`**${actorLabel(comment.actor)}** (${new Date(comment.created_at).toISOString()}, ID: ${comment.id}):`,
 			comment.body.trim(),
 			''
 		);
@@ -1852,17 +2029,27 @@ export function issueBlock(
 		'### Comments',
 		''
 	);
-	if (issue.comments.length === 0) {
+	const selectedComments = selectLaunchComments(issue);
+	if (selectedComments.retained.length === 0) {
 		lines.push('No comments yet.', '');
 	} else {
-		for (const comment of issue.comments) {
+		for (const comment of selectedComments.retained) {
 			const actor = actorLabel(comment.actor);
 			lines.push(
-				`**${actor}** (${new Date(comment.created_at).toISOString()}):`,
+				`**${actor}** (${new Date(comment.created_at).toISOString()}, ID: ${comment.id}):`,
 				comment.body.trim(),
 				''
 			);
 		}
+	}
+	if (selectedComments.omittedAgentIds.length > 0) {
+		const ids = selectedComments.omittedAgentIds;
+		const commandRef = shellArg(ref);
+		const exampleId = shellArg(ids[0]);
+		lines.push(
+			`Older agent comments: ${ids.join(', ')}. Load one (change --arg id to a listed ID): \`tines issues show ${commandRef} --json | jq -er --arg id ${exampleId} 'first(.comments[] | select(.id == $id) | .body) // error("comment not found: \\($id)")'\`. Without jq / for full history: \`tines issues show ${commandRef}\`.`,
+			''
+		);
 	}
 	// A quoted heredoc, not an inline argument: comment bodies are prose full
 	// of backticks, $VARS and apostrophes, and a mangled comment costs a round
@@ -1994,10 +2181,23 @@ export function issueBlock(
 	// command — the agent's own attachments are fair game), then the other
 	// prompt items by name and scope label only, whose sole affordance is
 	// the proposal convention.
+	if (context.skills.length > 0) {
+		lines.push('', '### Skills', '');
+		for (const skill of context.skills) {
+			const path = `skills/${skill.name}/SKILL.md`;
+			const description = skill.description.replace(/\s+/g, ' ').trim();
+			lines.push(
+				description
+					? `- Skill "${skill.name}" (${skill.scope.label}): read \`${path}\` when this applies: ${description}`
+					: `- Skill "${skill.name}" (${skill.scope.label}): read \`${path}\` when the "${skill.name}" procedure is relevant.`
+			);
+		}
+		lines.push(
+			'',
+			`If a skill path is unavailable, read its files with \`tines issues context ${ref} --json\`; to write the bundle into a new directory, use \`tines issues context ${ref} --out <dir>\`.`
+		);
+	}
 	const artifacts = [
-		...context.skills.map(
-			(s) => `skill "${s.name}" (${s.file_count} file${s.file_count === 1 ? '' : 's'})`
-		),
 		...context.repos.map((r) => `repo "${r.name}"${r.branch ? ` (branch ${r.branch})` : ''}`)
 	];
 	if (artifacts.length > 0) {
@@ -2015,6 +2215,40 @@ export function issueBlock(
 		);
 	}
 	return lines.join('\n').trimEnd();
+}
+
+/**
+ * The reduced prompt a resumed run is launched with: the stage-scoped
+ * context (the current state's instructions and its journal — the "current
+ * stage contract" a cross-stage send-back needs and the previous session
+ * never saw) followed by the issue block, which carries the steer, the
+ * current state, the available transitions and the thread.
+ *
+ * Global and project prompts are deliberately dropped: the conversation
+ * being resumed was launched with them, and re-sending them lengthens the
+ * prefix every later turn is priced on without telling the agent anything.
+ */
+export function buildResumePrompt(
+	context: EffectiveContext,
+	issue: IssueDetail,
+	issueArtifacts: Artifact[] = [],
+	labelVocabulary: string[] = []
+): string {
+	const stage = context.prompt.parts.filter((p) => p.scope.workflow_state_id !== null);
+	const block = issueBlock(issue, context, issueArtifacts, labelVocabulary);
+	if (stage.length === 0) return block;
+	const text = stage
+		.map((p) => {
+			const body = p.body.trim();
+			if (!body) return '';
+			const heading = p.is_journal
+				? `## Journal (${p.scope.label})`
+				: `## Context: ${p.scope.label}`;
+			return `${heading}\n\n${body}`;
+		})
+		.filter(Boolean)
+		.join('\n\n');
+	return text ? `${text}\n\n${block}` : block;
 }
 
 /** Context first, the issue block last — the task sits nearest the end. */
@@ -2121,6 +2355,9 @@ export function seedPromptQueries(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	opts: {
+		id?: string;
+		eventId?: string;
+		guard?: QueryGuard;
 		name: string;
 		body: string;
 		projectId?: string;
@@ -2133,15 +2370,16 @@ export function seedPromptQueries(
 	}
 ): { id: string; queries: CompiledQuery[] } {
 	validatePromptBody(opts.body);
-	const id = newId('ctx');
+	const id = opts.id ?? newId('ctx');
 	const projectId = opts.projectId ?? null;
 	const workflowStateId = opts.workflowStateId ?? null;
 	return {
 		id,
 		queries: [
-			db
-				.insertInto('context_item')
-				.values({
+			insertValues(
+				db,
+				'context_item',
+				{
 					id,
 					user_id: actor.userId,
 					kind: 'prompt',
@@ -2159,23 +2397,31 @@ export function seedPromptQueries(
 					version: 1,
 					created_at: opts.now,
 					updated_at: opts.now
-				})
-				.compile(),
-			eventInsert(db, actor, {
-				type: 'context.created',
-				projectId,
-				payload: {
-					context_id: id,
-					kind: 'prompt',
-					name: opts.name,
-					scope: {
-						project_id: projectId,
-						workflow_state_id: workflowStateId,
-						issue_id: null,
-						label: opts.label
+				},
+				opts.guard
+			),
+			eventInsert(
+				db,
+				actor,
+				{
+					id: opts.eventId,
+					createdAt: opts.now,
+					type: 'context.created',
+					projectId,
+					payload: {
+						context_id: id,
+						kind: 'prompt',
+						name: opts.name,
+						scope: {
+							project_id: projectId,
+							workflow_state_id: workflowStateId,
+							issue_id: null,
+							label: opts.label
+						}
 					}
-				}
-			})
+				},
+				opts.guard
+			)
 		]
 	};
 }

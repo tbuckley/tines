@@ -16,8 +16,12 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test": "vitest run",
-		"perf:nav": "rm -f /tmp/navperf.txt && NAVPERF=1 vitest run src/lib/server/api/nav-perf.test.ts && cat /tmp/navperf.txt",
-		"test:e2e": "playwright test"
+		"perf:nav": "f=\"${NAVPERF_OUT:-/tmp/navperf.txt}\"; rm -f \"$f\"; NAVPERF=1 vitest run src/lib/server/api/nav-perf.test.ts; s=$?; [ -f \"$f\" ] && cat \"$f\"; exit $s",
+		"perf:stats": "node scripts/stats-scale.mjs",
+		"perf:stats:cpu": "STATSPERF=1 vitest run src/lib/server/supervisor/stats-perf.test.ts",
+		"perf:usage": "node scripts/usage-scale.mjs",
+		"test:e2e": "playwright test",
+		"test:usage-mixed": "node scripts/usage-mixed.mjs"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^5.20260822.1",

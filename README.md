@@ -6,6 +6,8 @@ The core of Tines is an issue tracker, which makes work legible to both humans a
 
 Tines acts as a supervisor, assigning tasks to agents across managed services (using your own API keys) as well as local devices (using your own subscriptions). See [Running agents](#running-agents) for how that side works.
 
+Operators can reconcile finalized run spend with the [period usage ledger](docs/usage.md).
+
 ## Repository layout
 
 This is a pnpm workspace:
@@ -15,6 +17,10 @@ This is a pnpm workspace:
 | `@tines/web` | `apps/web` | SvelteKit (Svelte 5) app deployed to Cloudflare Workers. Serves the UI and the API (`/api/*`). Uses D1 for the database, [Better Auth](https://better-auth.com) for sign-in (Google OAuth and email magic links via [Cloudflare Email Service](https://developers.cloudflare.com/email-service/)), and [shadcn-svelte](https://shadcn-svelte.com) for UI components. |
 | `tines` | `packages/cli` | The `tines` CLI, published to npm as [`tines`](https://www.npmjs.com/package/tines). Talks to the same API as the web app. |
 | `@tines/shared` | `packages/shared` | Shared API types and client, used by both the web app and the CLI. |
+
+Workflow packages and default-off immutable public snapshots are documented in
+[docs/workflow-packages.md](docs/workflow-packages.md). Public launch remains disabled until the
+separate moderation and operational-readiness review is accepted.
 
 ## Getting started
 
@@ -79,7 +85,9 @@ can affect other projects using it; changing only the conventions does not make 
 workflow. Starter creation itself does not add routing rules or change automation settings.
 Continue with the app's current **Agents** checklist and [Running agents](#running-agents);
 the [runner daemon guide](docs/runner-daemon.md) explains how a local runner receives the
-repository and starts its harness.
+repository and starts its harness. A machine owner can opt into web-adjustable concurrency
+with `--allow-remote-concurrency --max-concurrent N`; `N` remains a local ceiling that the
+web cannot enable or raise.
 
 ### Contributor setup
 
@@ -108,16 +116,16 @@ With the dev server running, try the CLI with the seeded key (the seed prints it
 export TINES_API_KEY=tines_dev0000000000000000000000000000000000000
 pnpm cli time                             # dev mode (tsx, no build needed)
 pnpm cli projects list
-pnpm cli time -- --json
+pnpm cli time --json                      # flags go straight on; `--` breaks pnpm 10
 
 # or the built binary
 pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI reads the API base URL from `--url` (accepted by every command, without exception), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, `pnpm cli` **always** targets `http://localhost:5173` — its script pins `TINES_API_URL` rather than defaulting it, so a `TINES_API_URL` already in your environment (every agent run has one, pointing at production) is ignored and the snippet above talks to your dev server. To reach any other deployment from source, including a dev server vite moved to another port, pass `--url` (`pnpm cli time --url http://localhost:5174`) or use the installed `tines` / the built binary. `tines config` shows what is in effect and where each value came from.
+The CLI reads the API base URL from `--url` (accepted by every command that talks to the API), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The local-only `logout`, `runner restart`, `runner uninstall`, `runner workspaces`, and `runner workspaces prune` commands take no `--url`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, `pnpm cli` **always** targets `http://localhost:5173` — its script pins `TINES_API_URL` rather than defaulting it, so a `TINES_API_URL` already in your environment (every agent run has one, pointing at production) is ignored and the snippet above talks to your dev server. To reach any other deployment from source, including a dev server vite moved to another port, pass `--url` (`pnpm cli time --url http://localhost:5174`) or use the installed `tines` / the built binary. `tines config` shows what is in effect and where each value came from.
 
-Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
+Paginated `… list` commands return one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command, up to a default 10,000-item safety ceiling; use `--max-items <n>` with `--all-pages` to choose a different positive bound. Exceeding the bound fails without printing a partial result. Without `--all-pages`, `--json` output carries a `next_cursor` and warns on stderr that there is more. Four lists are not paginated and take no such flag: `labels list`, `runners list`, `routing list`, and `issues artifacts list` return the whole collection by design.
 
 ## Installing the CLI globally
 
@@ -215,6 +223,36 @@ tines projects unarchive "Paris 2026"    # schedules resume from their next occu
 tines projects list --archived           # include archived projects (hidden by default)
 ```
 
+An issue can also be **moved to another project** without losing anything. The issue keeps its
+stable ID, its comments, artifacts and versions, labels, links, runs, workflow state, pins,
+attempts and its schedule; it gets the destination's next never-used number, and every address
+it has ever answered to keeps resolving — for reads, for authorized writes, and for old browser
+URLs, which redirect to the current canonical one.
+
+```sh
+tines issues transfer Tines/392 --project Platform --dry-run   # review; writes nothing
+tines issues transfer Tines/392 --project Platform             # review, then confirm
+```
+
+Things worth knowing about a move:
+
+- The review is the point: it exposes guidance the issue loses, gains and retains; the effective
+  repository winner and overridden candidates with scope, URL, branch and checkout directory;
+  retained pins; checkout conflicts; and routing before and after. Missing routes, rule ties,
+  unavailable runners and checkout conflicts are disclosed, not vetoes.
+- A preview allocates nothing. The destination number is assigned by the confirmed move, so a
+  cancelled review consumes no number and emits no event.
+- A move is refused while a run is assigned, launching or running on the issue, and while
+  either project is archived. Nothing is drained or cancelled on your behalf.
+- Only a human session or an ordinary named key may move an issue. A run key may read the
+  review — that is how an agent argues for a move — but never commits one.
+- A project that owns an issue's old address cannot be deleted, even with `--force-context`;
+  archive it instead. Its old refs must keep working.
+- Activity keeps its history honest: the source project's feed retains the events recorded
+  there, the destination's feed picks up the move and everything after it, and the issue's own
+  feed stays complete.
+- `tines issues move` is unrelated: that is a workflow transition.
+
 Things worth knowing:
 
 - `projects list --archived` **includes** archived projects; it does not filter to them.
@@ -267,15 +305,23 @@ Install → key → runner → rule → observe. Automation needs no separate ar
 1. **Install** the CLI on the machine that will do the work: `npm install -g tines`.
 2. **Key** — Settings → API keys, or **Create key** inside the Agents tab's *Add runner →
    Local* dialog, which fills it into the command below for you.
-3. **Runner** — start the daemon, naming it machine-plus-harness:
+3. **Runner** — install the daemon as a service, naming it machine-plus-harness:
+
+   Using Codex? Set workspace-write and enable outbound network access before starting the
+   runner, then use `--harness codex`. Follow the
+   [Codex permissions setup](docs/runner-daemon.md#codex-permissions); the
+   [OpenAI configuration reference](https://developers.openai.com/codex/config-reference)
+   defines these settings.
 
    ```sh
-   TINES_API_KEY=tines_… tines runner daemon \
+   TINES_API_KEY=tines_… tines runner install \
      --url https://tines.tbuckley.dev \
      --name macbook-claude \
      --harness claude-code
    ```
 
+   One command registers the runner, stores its token, and loads the daemon under
+   launchd/systemd, where it survives reboots and restarts itself onto each new release.
    `macbook-claude` is what every agent comment will say ("you via macbook-claude") and what
    routing rules address. It appears on the Agents tab, online, within seconds.
 4. **Rule** — a runner takes no work until something routes to it: click **Route everything
@@ -293,7 +339,7 @@ the finish. It also keeps its own copy of the `tines` CLI current from npm and p
 the harness's PATH, so agents run the CLI that matches the prompt they were given rather
 than whatever was last installed on the machine. **[docs/runner-daemon.md](docs/runner-daemon.md)**
 covers registration, the flags, token rotation, the managed CLI, failure behaviour, and
-launchd/systemd units for keeping it running.
+the service `tines runner install` sets up.
 
 Managed runners hold an Anthropic API key encrypted at rest with `SECRET_ENCRYPTION_KEY`
 (a Workers secret — see Deploying below); it is write-only after saving. They clone repos
@@ -312,6 +358,9 @@ All of this is edited on the **Agents** tab, and most of it from the CLI too:
 - **The kill switch** — `tines supervisor enable` (resume) / `tines supervisor disable`, with
   `tines supervisor status` for a one-screen overview — which now also lists the issues
   waiting for an agent, grouped by why, with the fix for each.
+- **Stage flow** — the Agents tab and `tines supervisor stats --window 7d` compare queue wait,
+  work time, runs per visit, outcomes and sent-back rates with the prior window. Project and
+  event-window filters keep the board and `tines events list` on the same slice.
 - **Routing rules** decide who takes an issue. A rule is scoped globally, per project, per
   workflow state, or both (most specific wins), and its payload is an ordered
   preference list of `<runner>[:tier]` targets:
@@ -518,8 +567,67 @@ pnpm run build && pnpm wrangler deploy --env preview   # creates the preview wor
 ```
 
 All PRs share the one preview database, and each PR applies its own pending
-migrations to it. If PRs with conflicting migrations leave it in a bad state,
-throw it away and start over — it holds nothing precious:
+migrations to it.
+
+#### Recover an exactly renamed migration without resetting data
+
+Deleting and recreating the preview database is still the right recovery for
+disposable, genuinely divergent state, but it destroys all preview data. A
+narrower recovery is possible when an applied migration was only renamed and
+the old and new files are byte-for-byte identical. Do not use this procedure to
+hide unknown or partial schema drift.
+
+First, stop concurrent Preview migration runs. From the repository root, prove
+the old and new revisions resolve to the same Git blob, then from `apps/web`
+inspect the remote ledger, the full schema and data invariants established by
+the migration, and the pending list. Continue only if the old filename occurs
+exactly once, the new filename is absent, every expected schema object and
+backfill is present, and `PRAGMA foreign_key_check` returns no rows. For the
+`0026_issue_addresses.sql` to `0027_issue_addresses.sql` incident, for example:
+
+```sh
+git rev-parse <old-revision>:apps/web/migrations/0026_issue_addresses.sql \
+  <new-revision>:apps/web/migrations/0027_issue_addresses.sql
+
+cd apps/web
+pnpm exec wrangler d1 execute tines-preview --remote --env preview --json \
+  --command "SELECT id, name, applied_at FROM d1_migrations ORDER BY id"
+pnpm exec wrangler d1 migrations list tines-preview --remote --env preview
+```
+
+Record a [Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/)
+bookmark immediately before the repair. A secure full export is optional; it
+briefly blocks requests and can contain sensitive preview data.
+
+```sh
+pnpm exec wrangler d1 time-travel info tines-preview --env preview --json
+pnpm exec wrangler d1 execute tines-preview --remote --env preview --json \
+  --command "UPDATE d1_migrations
+    SET name = '0027_issue_addresses.sql'
+    WHERE name = '0026_issue_addresses.sql'
+      AND NOT EXISTS (
+        SELECT 1 FROM d1_migrations
+        WHERE name = '0027_issue_addresses.sql'
+      )"
+```
+
+Require a successful result with exactly one changed row. Re-read the ledger
+and confirm the new filename retained the old row's `id` and `applied_at`, then
+repeat all schema, data, and foreign-key checks. The renamed migration must
+disappear from `wrangler d1 migrations list`. Finally, run Preview from a
+current same-repository PR and require both the migration step and preview
+upload to succeed; confirm the pending list is empty afterward. If either
+filename is duplicated or missing, the blobs differ, any schema/data check
+fails, or the update changes anything other than one row, stop and investigate
+instead of inserting a ledger row, rerunning the migration, or resetting the
+database. See Cloudflare's [D1 migration
+ledger](https://developers.cloudflare.com/d1/reference/migrations/) and [Time
+Travel restore](https://developers.cloudflare.com/d1/reference/time-travel/)
+documentation; a restore replaces the whole database and discards writes made
+after the bookmark.
+
+For a disposable preview database whose state genuinely diverged, delete and
+recreate it:
 
 ```sh
 pnpm wrangler d1 delete tines-preview
@@ -538,3 +646,5 @@ From the repo root:
 - `pnpm test` — vitest unit tests (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
 - `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/` and its README for the suite's motion, hydration and geometry policies). Run by `ci.yml` on pull requests, but not by `pnpm test`.
 - `pnpm cli <command>` — run the CLI from source against the local dev server (`http://localhost:5173`, pinned; pass `--url` for anything else)
+
+  Add exact-model reasoning effort by ordered target number: `tines routing set codex:balanced claude:balanced --project Example --effort 1=low --effort 2=medium`. Re-run the same targets without `--effort` to clear routed effort; `routing clear` deletes the whole scoped rule.

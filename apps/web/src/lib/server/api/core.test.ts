@@ -1,7 +1,8 @@
 import type { RequestEvent } from '@sveltejs/kit';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
 	ApiFail,
+	api,
 	assertRunKeyAllowed,
 	decodeCursor,
 	errorResponse,
@@ -10,8 +11,133 @@ import {
 	readArchived,
 	jsonifyMethodNotAllowed,
 	pageResult,
-	readPage
+	readPage,
+	requestDispatchEffects
 } from './core';
+
+const queued = vi.hoisted(() => vi.fn());
+vi.mock('$lib/server/supervisor/engine', () => ({ queueDispatchPass: queued }));
+
+function requestEvent(): RequestEvent {
+	return {
+		platform: { env: {} as Env, ctx: { waitUntil: vi.fn() } },
+		request: new Request('http://test/api/v1/test'),
+		url: new URL('http://test/api/v1/test')
+	} as unknown as RequestEvent;
+}
+
+describe('request dispatch effects', () => {
+	it('does not schedule without a signal', async () => {
+		queued.mockClear();
+		const response = await api((event) => {
+			requestDispatchEffects(event, 'usr_one');
+			return new Response('quiet');
+		})(requestEvent());
+		expect(await response.text()).toBe('quiet');
+		expect(queued).not.toHaveBeenCalled();
+	});
+
+	it('coalesces repeated signals and binds them to the authenticated owner', async () => {
+		queued.mockClear();
+		const event = requestEvent();
+		const response = await api(async (wrapped) => {
+			const first = requestDispatchEffects(wrapped, 'usr_one');
+			expect(requestDispatchEffects(wrapped, 'usr_one')).toBe(first);
+			first.signalDispatch();
+			first.signalDispatch();
+			return new Response('ok');
+		})(event);
+		expect(response.status).toBe(200);
+		expect(queued).toHaveBeenCalledOnce();
+		expect(queued).toHaveBeenCalledWith(event.platform, 'usr_one');
+	});
+
+	it('drains a committed signal even when the handler later fails', async () => {
+		queued.mockClear();
+		const response = await api((event) => {
+			const effects = requestDispatchEffects(event, 'usr_one');
+			effects.signalDispatch();
+			effects.signalDispatch();
+			effects.signalDispatch();
+			throw new ApiFail(422, 'later_failure', 'later failure');
+		})(requestEvent());
+		expect(response.status).toBe(422);
+		expect(queued).toHaveBeenCalledOnce();
+	});
+
+	it('isolates concurrent requests by owner', async () => {
+		queued.mockClear();
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => (release = resolve));
+		const firstEvent = requestEvent();
+		const first = api(async (event) => {
+			requestDispatchEffects(event, 'usr_one').signalDispatch();
+			await gate;
+			return new Response('one');
+		})(firstEvent);
+		const secondEvent = requestEvent();
+		const second = await api((event) => {
+			requestDispatchEffects(event, 'usr_two').signalDispatch();
+			return new Response('two');
+		})(secondEvent);
+		expect(second.status).toBe(200);
+		expect(queued).toHaveBeenCalledWith(secondEvent.platform, 'usr_two');
+		release();
+		await first;
+		expect(queued).toHaveBeenCalledWith(firstEvent.platform, 'usr_one');
+		expect(queued).toHaveBeenCalledTimes(2);
+	});
+
+	it('closes and removes the collector after success and unexpected failure', async () => {
+		queued.mockClear();
+		let captured!: ReturnType<typeof requestDispatchEffects>;
+		const event = requestEvent();
+		const ok = await api((wrapped) => {
+			captured = requestDispatchEffects(wrapped, 'usr_one');
+			return new Response('ok');
+		})(event);
+		expect(ok.status).toBe(200);
+		captured.signalDispatch();
+		expect(queued).not.toHaveBeenCalled();
+		expect(() => requestDispatchEffects(event, 'usr_one')).toThrow(
+			'Dispatch effects requested outside api()'
+		);
+
+		const failed = await api((wrapped) => {
+			requestDispatchEffects(wrapped, 'usr_two').signalDispatch();
+			throw new Error('boom');
+		})(requestEvent());
+		expect(failed.status).toBe(500);
+		expect(queued).toHaveBeenCalledOnce();
+	});
+
+	it('does not let a scheduling failure replace the handler response', async () => {
+		queued.mockImplementationOnce(() => {
+			throw new Error('waitUntil failed');
+		});
+		const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const response = await api((event) => {
+			requestDispatchEffects(event, 'usr_one').signalDispatch();
+			return new Response('preserved', { status: 201 });
+		})(requestEvent());
+		expect(response.status).toBe(201);
+		expect(await response.text()).toBe('preserved');
+		expect(error).toHaveBeenCalledWith('Failed to schedule dispatch pass:', expect.any(Error));
+		error.mockRestore();
+	});
+
+	it('rejects owner rebinding and use outside the wrapper', async () => {
+		expect(() => requestDispatchEffects(requestEvent(), 'usr_one')).toThrow(
+			'Dispatch effects requested outside api()'
+		);
+		const response = await api((event) => {
+			requestDispatchEffects(event, 'usr_one');
+			requestDispatchEffects(event, 'usr_two');
+			return new Response('unreachable');
+		})(requestEvent());
+		expect(response.status).toBe(500);
+	});
+});
 
 /** readPage only touches `url.searchParams`. */
 function eventWithUrl(query: string): RequestEvent {
@@ -100,6 +226,8 @@ describe('isControlPlanePath', () => {
 		// Key metadata stays fenced even to a read.
 		['/api/v1/api-keys', 'GET'],
 		['/api/v1/api-keys/key_1', 'DELETE'],
+		['/api/v1/host/workflow-moderation/cases', 'GET'],
+		['/api/v1/host/workflow-moderation/decisions', 'POST'],
 		// Minting, renaming, and deleting terms is taxonomy, not classification.
 		['/api/v1/labels', 'POST'],
 		['/api/v1/labels/lbl_1', 'PATCH'],
@@ -108,6 +236,7 @@ describe('isControlPlanePath', () => {
 		// context changes, it does not apply a whole library.
 		['/api/v1/import', 'GET'],
 		['/api/v1/import', 'POST'],
+		['/api/v1/library/install', 'POST'],
 		// Archiving is an operator act: an agent must not freeze the project it
 		// is working in, nor thaw one a human froze.
 		['/api/v1/projects/prj_1/archive', 'POST'],
@@ -130,6 +259,9 @@ describe('isControlPlanePath', () => {
 		['/api/v1/context', 'GET'],
 		// Export is a read of what a run key can already list.
 		['/api/v1/export', 'GET'],
+		['/api/v1/library/validate', 'POST'],
+		['/api/v1/library/prepare', 'POST'],
+		['/api/v1/library/installs/lin_1', 'GET'],
 		['/api/v1/events', 'GET'],
 		['/api/v1/projects/prj_1/issues', 'GET'],
 		// The vocabulary itself: an agent must know the terms to apply them,
@@ -147,6 +279,11 @@ describe('isControlPlanePath', () => {
 		// `supervisor/settings`, not `supervisor/*`.
 		['/api/v1/supervisor/queue', 'GET'],
 		['/api/v1/supervisor/queue', 'HEAD'],
+		// The stage stats beside it (Tines/257): the fence pattern names
+		// `supervisor/settings`, not `supervisor/*`, so this stays open — the
+		// rows are here so narrowing the pattern later has to be deliberate.
+		['/api/v1/supervisor/stats', 'GET'],
+		['/api/v1/supervisor/stats', 'HEAD'],
 		// Methods arrive from the request verbatim; compare case-insensitively.
 		['/api/v1/labels', 'get'],
 		// Similar-looking but distinct segments stay open.
@@ -180,16 +317,19 @@ describe('assertRunKeyAllowed', () => {
 			assertRunKeyAllowed(runKey, '/api/v1/supervisor/settings', 'GET', now)
 		).not.toThrow();
 		expect(() => assertRunKeyAllowed(runKey, '/api/v1/supervisor/queue', 'GET', now)).not.toThrow();
+		expect(() => assertRunKeyAllowed(runKey, '/api/v1/supervisor/stats', 'GET', now)).not.toThrow();
 	});
 
 	it('403s a run key on every control-plane surface, naming the proposal convention', () => {
 		for (const [path, method] of [
 			['/api/v1/runners', 'POST'],
+			['/api/v1/runners/rnr_1', 'PATCH'],
 			['/api/v1/routing-rules/rul_1', 'PATCH'],
 			['/api/v1/supervisor/settings', 'PUT'],
 			['/api/v1/issues/iss_1/resume', 'POST'],
 			['/api/v1/api-keys', 'GET'],
-			['/api/v1/labels', 'POST']
+			['/api/v1/labels', 'POST'],
+			['/api/v1/library/install', 'POST']
 		]) {
 			try {
 				assertRunKeyAllowed(runKey, path, method, now);
@@ -315,5 +455,18 @@ describe('readArchived', () => {
 			expect((e as ApiFail).code).toBe('invalid_field');
 			expect((e as ApiFail).details).toEqual({ field: 'archived' });
 		}
+	});
+});
+
+describe('workflow package read-only run-key paths', () => {
+	it.each([
+		['/api/v1/workflows/wf_standard/export', 'GET'],
+		['/api/v1/library/validate', 'POST'],
+		['/api/v1/library/prepare', 'POST']
+	])('permits %s %s without opening whole-library import', (path, method) => {
+		expect(() =>
+			assertRunKeyAllowed({ agentRunId: 'run', expiresAt: Date.now() + 60_000 }, path, method)
+		).not.toThrow();
+		expect(isControlPlanePath('/api/v1/import', 'POST')).toBe(true);
 	});
 });

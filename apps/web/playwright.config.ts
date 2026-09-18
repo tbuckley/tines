@@ -13,7 +13,7 @@ export default defineConfig({
 	testDir: 'e2e',
 	timeout: 30_000,
 	// The suite shares one local D1 database; a single worker keeps state
-	// deterministic (specs still use per-run unique names).
+	// deterministic (fixtures.ts allocates worker-namespaced runtime names).
 	workers: 1,
 	reporter: [['list']],
 	use: {

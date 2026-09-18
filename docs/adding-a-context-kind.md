@@ -1,7 +1,7 @@
 # Adding a context kind
 
-Context items are typed — `prompt`, `skill`, `repo`, `artifact` — and the
-type set is designed to grow ([specs/context/SPEC.md](../specs/context/SPEC.md)).
+Context items are typed — `prompt`, `skill`, `repo` — and the type set is
+designed to grow ([specs/context/SPEC.md](../specs/context/SPEC.md)).
 `kind` is an open string with a per-kind payload, so a new kind is an
 **additive** change: no row migration, and no changes to scoping, layer
 ordering, name uniqueness, events, list filters, lifecycle guards, or the
@@ -22,11 +22,10 @@ a kind accepts arbitrary payload.
    - **Nullable columns** for flat payloads — how `repo` stores
      `repo_url` / `repo_branch` / `repo_dir`.
    - **A JSON `config` column** for structured payloads. The parent spec
-     reserved this deliberately ("a future kind with a structured payload
-     can use a JSON `config` column added at that time"), and `0011` has
-     since added it; the `artifact` kind stores `{"artifact_type": …}`
-     there. A new structured kind reuses that column rather than adding
-     one. `mcp` (command, args, env) would take this route.
+     reserves this deliberately ("a future kind with a structured payload
+     can use a JSON `config` column added at that time"). The first
+     structured kind adds it — one `ALTER TABLE ADD COLUMN` — and later
+     kinds reuse it. `mcp` (command, args, env) would take this route.
    - Child tables are for repeated sub-entities only (`context_item_file`
      for skill files); don't reach for one unless the payload is a
      collection with per-row identity.
@@ -55,12 +54,11 @@ UI panels.
 
 ### Migration — `apps/web/migrations/000N_….sql`
 
-- Add the payload column(s), if the kind needs any of its own. A
-  structured payload needs none: `config TEXT` already exists (`0011`).
-- There is no `kind` CHECK constraint to widen — `0006` rebuilt the table
-  without it, leaving the API layer as the real gate (the same trade the
-  spec already makes for name uniqueness). A kind that adds no column
-  therefore needs no migration file at all.
+- Add the payload column(s) (`config TEXT` for the first structured kind).
+- The `kind` CHECK constraint must admit the new value. SQLite can't alter
+  a CHECK in place; either rebuild the table or, simpler, drop the CHECK
+  during the rebuild and rely on the API layer, which is the real gate
+  (the same trade the spec already makes for name uniqueness).
 
 ### Shared types — `packages/shared/src/types.ts`
 
@@ -151,7 +149,7 @@ If a new kind requires edits to any of these, the change is off the rails
 ## 4. Definition of done
 
 - [ ] Spec section written (shape, caps, merge rule, bundle form).
-- [ ] Any migration applies on a fresh DB and on one carrying existing items.
+- [ ] Migration applies on a fresh DB and on one carrying existing items.
 - [ ] Unknown-field and wrong-kind payloads 422 in both directions.
 - [ ] Item round-trips through API, CLI, and the web editor.
 - [ ] Appears in the effective context with dedupe-by-name override

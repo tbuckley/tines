@@ -1,5 +1,10 @@
 import { encodeCursor } from '$lib/server/api/core';
-import { eventQuery, serializeEvent } from '$lib/server/api/events';
+import {
+	applyEventWindow,
+	eventTimeParam,
+	eventQuery,
+	serializeEvent
+} from '$lib/server/api/events';
 import { getDb } from '$lib/server/db';
 import { resolvePageFocus } from '$lib/server/page-focus';
 import type { PageServerLoad } from './$types';
@@ -14,7 +19,10 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 
 	const type = url.searchParams.get('type') ?? undefined;
 
-	let q = eventQuery(db, userId);
+	const since = eventTimeParam(url.searchParams, 'since');
+	const until = eventTimeParam(url.searchParams, 'until');
+	const state = url.searchParams.get('state') ?? undefined;
+	let q = applyEventWindow(eventQuery(db, userId), { since, until, state });
 	if (focusId) q = q.where('event.project_id', '=', focusId);
 	if (type) q = q.where('event.type', '=', type);
 
@@ -31,6 +39,6 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 		nextCursor: rows.length > PAGE_SIZE && last ? encodeCursor(last.created_at, last.id) : null,
 		focusId,
 		notice,
-		filters: { type: type ?? '' }
+		filters: { type: type ?? '', since, until, state }
 	};
 };
