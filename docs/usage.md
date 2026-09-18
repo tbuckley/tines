@@ -1,8 +1,28 @@
-# Period usage
+# Usage and evidence
 
-`GET /api/v1/usage` and `tines usage` report retained, finalized run cost for a period. The web view is under **Agents → Spend** and defaults to the last seven days; the API and CLI default to Today.
+`GET /api/v1/usage` and `tines usage` report retained, finalized run cost for a period. The web view is under **Agents → Analysis → Spend** and defaults to the last seven days; the API and CLI default to Today.
 
-The Now view is operational and does not depend on usage accumulating. Spend keeps its project scope independent from the global project focus and records project, workflow, breakdown, period, Custom bounds, and sort in the URL, so reload and browser Back/Forward restore the same report selection. Changing project resets workflow narrowing to All; changing sort only reorders the current groups. Custom ranges require both From and exclusive To before a request is made.
+Every report now returns signed, owner-bound scopes for its project total, matching subtotal, pending population, and groups. Open **View contributing issues and runs**, or use `GET /api/v1/usage/evidence`, to enumerate the complete direct issue/run contribution. Evidence defaults to exact stored cost descending; unpriced contributions sort last in both directions. Cost ties use newest evidence then raw ID, and every page returns whole-selection totals rather than a sum of that visible page. Signed cursors bind the scope, evidence kind, population, member and ordering. Scopes freeze resolved selection and cutoff, not retained rows or current labels; key rotation requires restarting from the report.
+
+`mode=issue&issue=<id>` and `tines usage --issue Tines/123` report **Lifetime through now** across every retained direct attempt, stage and retry. Child and dependency runs are never traversed. Attempts created at the cutoff are absent; attempts ending at or after it are pending, and the pending projection cannot expose facts learned later. A retained raw issue ID remains readable when its owned runs survive but current metadata does not. A measured zero is `$0.00`, absent dollars are Unknown, and an issue without attempts says **No agent runs**.
+
+`mode=cohort&workflow=<id>` and `tines usage --cohort --workflow Engineering` report distinct issues with a recorded entry into a selected terminal state in `[from,to)`. Omission selects every actual done state; repeat `done_state`/`--done-state` to select exact states. Membership uses the latest qualifying entry per issue, while accounting includes every retained direct attempt created before `to`, including pre-window research, retries, pending attempts, and zero-run issues. Known-dollar and attempt means divide by all cohort issues. A fully priced issue has at least one finalized attempt, all finalized attempts priced, and no pending attempt. Reopening is observed separately through the signed `observed_through` cutoff. Cohort costs are not additive to period spend.
+
+```sh
+tines usage --issue Tines/123
+tines usage --cohort --workflow Engineering --window 7d
+tines usage --cohort --workflow wf_ID --from 2026-09-01 --to 2026-09-08 --done-state wfs_CLOSED
+tines usage --window 7d --by workflow --json
+tines usage --scope "$SCOPE" --evidence issues --sort cost --direction desc
+tines usage --scope "$SCOPE" --evidence runs --member iss_123 --all-pages --json
+tines usage --scope "$SCOPE" --evidence runs --population pending
+```
+
+Period, issue-lifetime, cohort, and scope-replay inputs are mutually exclusive. Evidence-only options require `--scope --evidence`; invalid combinations fail before name resolution or an API request. Completion-event cohorts and all-issue means are intentionally not inferred from current state.
+
+Use the signed scope printed by a cohort report to reproduce every denominator and numerator: `tines usage --scope TOKEN --evidence issues --all-pages --json` lists all members including no-run issues, `--evidence runs --member iss_ID` lists finalized cutoff attempts, `--population pending` lists attempts still pending at the cutoff without later facts, and `--evidence entries` audits retained qualifying, chosen, reopening, excluded, and unclassifiable entry facts. Retained history can be partial or unavailable; current state is never substituted. Direct costs exclude child and dependency runs, may include attempts before the completion window, and reflect recorded provider/list prices rather than an invoice.
+
+The Now view is operational and does not depend on usage accumulating. Analysis presents Spend before a default-closed, independently scoped weekly State analysis. Spend keeps its project scope independent from the global project focus and records project, workflow, breakdown, period, Custom bounds, and sort in the URL, so reload and browser Back/Forward restore the same report selection. Changing project resets workflow narrowing to All; changing sort only reorders the current groups. Custom ranges require both From and exclusive To before a request is made.
 
 An initial failure replaces the report with a Retry action. A failed manual refresh may retain only the report for the same selection and labels it with that report's original generated time and resolved bounds. Missing usage is shown as Unknown or Partial—not `$0`—and waiting cannot repair a navigation or request failure.
 
@@ -27,7 +47,7 @@ tines runs list --population finalized \
   --project Tines --all-pages --json > runs.json
 ```
 
-Use `scope_evidence_filters`, `matching_evidence_filters`, and `pending_evidence_filters` returned by the report; `evidence_filters` remains an alias for matching finalized evidence. Walk every `next_cursor`, including across an empty or short page when `usage_window.scan_complete` is false. Manual paging is available above the CLI's 10,000-item all-pages safety bound. New chains use `usage-runs-v2`: resolved bounds, timezone and timezone source are frozen in the cursor even if supervisor settings change. An in-flight v1 period cursor is rejected with `unsupported_cursor_version`; restart from the report filters. Ordinary non-period run cursors are unchanged.
+Use the signed `scope` fields for new detail views. The older `scope_evidence_filters`, `matching_evidence_filters`, and `pending_evidence_filters` remain available; `evidence_filters` remains an alias for matching finalized evidence. Existing `/runs` chains use `usage-runs-v2` and ordinary non-period run cursors remain unchanged.
 
 Finalized evidence adds `usage_dimensions` and `usage_accounting`. Sum `cost_exact`, normalized per-class token values, source portions, diagnostics and pricing reasons to independently reproduce aggregate counters without reparsing malformed historical JSON. Pending evidence includes only structural dimensions and `accounting_status: pending`; it never reveals later usage, outcome, end/error or pricing facts. Bounds require real calendar dates or explicit-offset timestamps, evidence limits are strict integers from 1 through 100, and invalid/contradictory values return actionable 422 errors.
 

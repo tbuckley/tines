@@ -3,6 +3,7 @@ import {
 	addUsage,
 	aggregateUsage,
 	classifyUsage,
+	compareUsageDecimals,
 	createUsageAccumulator,
 	finalizeUsage,
 	mergeSortedUsageSamples,
@@ -12,6 +13,12 @@ import {
 } from './usage.js';
 
 describe('usage accounting', () => {
+	it('compares exact decimal and exponent spellings numerically', () => {
+		expect(compareUsageDecimals('1e-7', '0.000001')).toBeLessThan(0);
+		expect(compareUsageDecimals('0.000001', '1e-7')).toBeGreaterThan(0);
+		expect(compareUsageDecimals('1e-6', '0.000001')).toBe(0);
+	});
+
 	it('distinguishes priced zero, token-only zero, null and malformed records', () => {
 		expect(classifyUsage({ cost_usd: 0, cost_source: 'provider' }).status).toBe('priced');
 		expect(classifyUsage({ input_tokens: 0, cost_source: 'none' })).toMatchObject({

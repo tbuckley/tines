@@ -2,11 +2,16 @@ import {
 	ACTIVE_RUN_STATUSES,
 	QUEUE_GROUP_REF_LIMIT,
 	type FleetQueue,
+	type ChangeMarker,
 	type QueueBinding,
 	type QueueGroup,
 	type QueueIssueRef,
 	type QueueVerdict,
 	type QuotaPolicy,
+	type RunEndOutcome,
+	type SentBackDrilldown,
+	type StageStatsReport,
+	type StatsQuery,
 	type SupervisorSettings,
 	type SupervisorSettingsResponse,
 	type UpdateSupervisorSettingsRequest
@@ -34,9 +39,15 @@ import {
 	type ActiveCounts,
 	type TargetVerdictResult
 } from '$lib/server/supervisor/logic';
+import {
+	computePreparedStageStats,
+	evaluatePreparedState,
+	prepareStageStats,
+	type StatsEvent
+} from '$lib/server/supervisor/stats';
 import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
+import { applyEventWindow, eventInsert, eventQuery, serializeEvent } from './events';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
-import { eventInsert } from './events';
 import { effectiveAutomationEnabled } from '../supervisor/settings';
 
 // ---------------------------------------------------------------------------
@@ -391,9 +402,11 @@ function refOf(row: QueueRefRow, queuePosition: number | null): QueueIssueRef {
 export async function loadFleetQueue(
 	db: Kysely<Database>,
 	userId: string,
-	now: number = Date.now()
+	now: number = Date.now(),
+	options: { project?: string } = {}
 ): Promise<FleetQueue> {
-	const [settings, eligible, runners, rules, counts, parkedRows, humanRow] = await Promise.all([
+	const project = options.project ? await resolveProjectRef(db, userId, options.project) : null;
+	const [settings, allEligible, runners, rules, counts, parkedRows, humanRow] = await Promise.all([
 		loadDispatchSettings(db, userId),
 		loadEligibleIssues(db, userId),
 		loadEngineRunners(db, userId),
@@ -402,7 +415,7 @@ export async function loadFleetQueue(
 		// Parked issues are excluded from the eligible set by definition, so
 		// they need their own read. Same eligibility joins, `needs_attention`
 		// flipped: these are the issues a human has to resume.
-		queueRefQuery(db, userId).where('issue.needs_attention', '=', 1).execute(),
+		queueRefQuery(db, userId, project?.id).where('issue.needs_attention', '=', 1).execute(),
 		// Human stages get a summary line only, so a count and a min suffice.
 		db
 			.selectFrom('issue')
@@ -411,12 +424,16 @@ export async function loadFleetQueue(
 			.where('project.user_id', '=', userId)
 			.where('project.archived_at', 'is', null)
 			.where('st.category', '=', 'awaiting_human')
+			.$if(project !== null, (q) => q.where('issue.project_id', '=', project!.id))
 			.select((eb) => [
 				eb.fn.countAll<number>().as('n'),
 				eb.fn.min(sql<number>`COALESCE(issue.state_entered_at, issue.created_at)`).as('oldest')
 			])
 			.executeTakeFirst()
 	]);
+	const eligible = project
+		? allEligible.filter((issue) => issue.project_id === project.id)
+		: allEligible;
 
 	// The queue the explainer reports positions in: eligible issues that would
 	// actually route somewhere, oldest-`updated_at` first.
@@ -487,6 +504,7 @@ export async function loadFleetQueue(
 	const parked = parkedRows.map((row) => refOf(row, null));
 	return {
 		generated_at: now,
+		project,
 		automation_enabled: settings.enabled,
 		quota: settings.quota,
 		// Biggest problem first, then whatever has been waiting longest.
@@ -510,14 +528,16 @@ export async function loadFleetQueue(
 }
 
 /** The eligibility joins plus the ref columns, ordered by the wait clock. */
-function queueRefQuery(db: Kysely<Database>, userId: string) {
-	return db
+function queueRefQuery(db: Kysely<Database>, userId: string, projectId?: string) {
+	let q = db
 		.selectFrom('issue')
 		.innerJoin('project', 'project.id', 'issue.project_id')
 		.innerJoin('workflow_state as st', 'st.id', 'issue.state_id')
 		.where('project.user_id', '=', userId)
 		.where('project.archived_at', 'is', null)
-		.where('st.category', '=', 'active')
+		.where('st.category', '=', 'active');
+	if (projectId) q = q.where('issue.project_id', '=', projectId);
+	return q
 		.select([
 			'issue.id as id',
 			'issue.number as number',
@@ -592,4 +612,593 @@ function bindingFor(
 		};
 	}
 	return null;
+}
+
+// ---------------------------------------------------------------------------
+// Stage stats — the "This week" row (Tines/257)
+
+/** Types the visit timeline is built from; anything else cannot open or close a visit. */
+const STATS_EVENT_TYPES = ['issue.transitioned', 'issue.created', 'issue.updated'] as const;
+
+/** `1h ≤ window ≤ 90d`; the cap is what bounds the scan. */
+export function parseStatsWindow(raw: string | null | undefined): number {
+	if (raw === null || raw === undefined || raw === '') return 7 * 24 * 60 * 60 * 1000;
+	const match = /^(\d+)(h|d)$/.exec(raw.trim());
+	if (!match) {
+		throw new ApiFail(422, 'validation_error', '"window" must look like "24h" or "7d"', {
+			field: 'window'
+		});
+	}
+	const ms = Number(match[1]) * (match[2] === 'h' ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000);
+	if (ms < 60 * 60 * 1000 || ms > 90 * 24 * 60 * 60 * 1000) {
+		throw new ApiFail(422, 'validation_error', '"window" must be between 1h and 90d', {
+			field: 'window'
+		});
+	}
+	return ms;
+}
+
+/** A project id or name, for the board's filter chip; 404 when it names nothing. */
+export async function resolveProjectRef(
+	db: Kysely<Database>,
+	userId: string,
+	ref: string
+): Promise<{ id: string; name: string }> {
+	const row = await db
+		.selectFrom('project')
+		.where('user_id', '=', userId)
+		.where((eb) => eb.or([eb('id', '=', ref), eb('name', '=', ref)]))
+		.select(['id', 'name'])
+		.executeTakeFirst();
+	if (!row) throw new ApiFail(404, 'not_found', `No project "${ref}"`);
+	return row;
+}
+
+/**
+ * Per-stage flow over a rolling window, computed on request: two indexed
+ * reads feed `computeStageStats`. No rollup table — the PRD's rule is to
+ * revisit only if p95 on `/agents` passes a second.
+ */
+export async function loadStageStats(
+	db: Kysely<Database>,
+	userId: string,
+	query: StatsQuery = {},
+	now: number = Date.now(),
+	observer?: {
+		evaluatedState?: (stateId: string) => void;
+		phase?: (name: 'read' | 'prepare' | 'base' | 'markers', durationMs: number) => void;
+		/** Local retained profiler: reproduce the pre-Tines/518 marker loop. */
+		profileRepeatPreparation?: boolean;
+	}
+): Promise<StageStatsReport> {
+	const windowMs = parseStatsWindow(query.window);
+	if (query.compare !== undefined && query.compare !== 'previous' && query.compare !== 'none') {
+		throw new ApiFail(422, 'validation_error', '"compare" must be "previous" or "none"', {
+			field: 'compare'
+		});
+	}
+	const compare = query.compare !== 'none';
+	const project = query.project ? await resolveProjectRef(db, userId, query.project) : null;
+	// Both windows are scanned in one pass; `compare=none` still reads them,
+	// which keeps the query plan (and the cache) identical.
+	const scanFrom = now - 2 * windowMs;
+
+	const readStarted = performance.now();
+	const [stateRows, eventRows, runRows, outcomeRow, markerRows] = await Promise.all([
+		db
+			.selectFrom('workflow_state as st')
+			.innerJoin('workflow as wf', 'wf.id', 'st.workflow_id')
+			.where((eb) => eb.or([eb('wf.user_id', '=', userId), eb('wf.user_id', 'is', null)]))
+			.select([
+				'st.id as id',
+				'st.name as name',
+				'st.category as category',
+				'st.position as position',
+				'wf.id as workflow_id',
+				'wf.name as workflow_name'
+			])
+			.execute(),
+		(() => {
+			let q = db
+				.selectFrom('event')
+				.leftJoin('api_key', 'api_key.id', 'event.actor_api_key_id')
+				.where('event.user_id', '=', userId)
+				// A deleted issue's events keep a NULL issue_id (ON DELETE SET
+				// NULL); grouping them by issue would merge every such issue
+				// into one timeline.
+				.where('event.issue_id', 'is not', null)
+				.select([
+					'event.id as id',
+					'event.type as type',
+					'event.issue_id as issue_id',
+					'event.payload as payload',
+					'event.created_at as created_at',
+					'event.actor_api_key_id as actor_api_key_id',
+					sql<number>`CASE WHEN api_key.agent_run_id IS NOT NULL THEN 1 ELSE 0 END`.as(
+						'actor_is_run'
+					)
+				]);
+			q = applyEventWindow(q, { since: scanFrom, until: now, type: [...STATS_EVENT_TYPES] });
+			if (project) q = q.where('event.project_id', '=', project.id);
+			return q.execute();
+		})(),
+		(() => {
+			let q = db
+				.selectFrom('agent_run')
+				.innerJoin('runner', 'runner.id', 'agent_run.runner_id')
+				.innerJoin('issue', 'issue.id', 'agent_run.issue_id')
+				.where('agent_run.user_id', '=', userId)
+				.where('agent_run.created_at', '>=', scanFrom)
+				.select([
+					'agent_run.id as id',
+					'agent_run.issue_id as issue_id',
+					'agent_run.runner_id as runner_id',
+					'runner.name as runner_name',
+					'agent_run.status as status',
+					'agent_run.outcome as outcome',
+					'agent_run.state_id_at_start as state_id_at_start',
+					'agent_run.api_key_id as api_key_id',
+					'agent_run.created_at as created_at',
+					'agent_run.started_at as started_at',
+					'agent_run.ended_at as ended_at'
+				]);
+			if (project) q = q.where('issue.project_id', '=', project.id);
+			return q.execute();
+		})(),
+		db
+			.selectFrom('agent_run')
+			.where('user_id', '=', userId)
+			.where('outcome', 'is not', null)
+			.select((eb) => eb.fn.min<number | null>('ended_at').as('since'))
+			.executeTakeFirst(),
+		(() => {
+			let q = db
+				.selectFrom('event')
+				.select([
+					'id',
+					'type',
+					'payload',
+					'project_id',
+					'created_at',
+					'actor_api_key_id',
+					'actor_user_id'
+				])
+				.where('user_id', '=', userId)
+				.where('created_at', '>=', now - windowMs)
+				.where('created_at', '<', now)
+				.where('type', 'in', [
+					'context.created',
+					'context.updated',
+					'context.deleted',
+					'settings.updated',
+					'runner.updated',
+					'routing_rule.created',
+					'routing_rule.updated',
+					'routing_rule.deleted'
+				]);
+			if (project) {
+				q = q.where((eb) =>
+					eb.or([eb('project_id', 'is', null), eb('project_id', '=', project.id)])
+				);
+			}
+			return q.execute();
+		})()
+	]);
+	observer?.phase?.('read', performance.now() - readStarted);
+	eventRows.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+	markerRows.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+
+	const events: StatsEvent[] = [];
+	const advancedByKey = new Set<string>();
+	for (const row of eventRows) {
+		const payload = JSON.parse(row.payload) as Record<string, unknown>;
+		const type = row.type as (typeof STATS_EVENT_TYPES)[number];
+		let toStateId: string | null = null;
+		let fromStateId: string | null = null;
+		if (type === 'issue.transitioned') {
+			fromStateId = (payload.from_state_id as string | undefined) ?? null;
+			toStateId = (payload.to_state_id as string | undefined) ?? null;
+			if (row.actor_api_key_id) advancedByKey.add(row.actor_api_key_id);
+		} else if (type === 'issue.created') {
+			toStateId = (payload.state_id as string | undefined) ?? null;
+		} else {
+			// A workflow change moves the issue but emits `issue.updated`; the
+			// state ids are only on rows written since Tines/257. Resolve older
+			// payloads by the state names within the named workflows.
+			if (!payload.workflow_to_id) continue;
+			const resolveNamedState = (workflowId: unknown, stateName: unknown) =>
+				typeof workflowId === 'string' && typeof stateName === 'string'
+					? (stateRows.find((state) => state.workflow_id === workflowId && state.name === stateName)
+							?.id ?? null)
+					: null;
+			fromStateId =
+				(payload.from_state_id as string | undefined) ??
+				resolveNamedState(payload.workflow_from_id, payload.from_state_name);
+			toStateId =
+				(payload.to_state_id as string | undefined) ??
+				resolveNamedState(payload.workflow_to_id, payload.to_state_name);
+			if (!toStateId) continue;
+		}
+		if (!toStateId && !fromStateId) continue;
+		events.push({
+			id: row.id,
+			type,
+			issue_id: row.issue_id as string,
+			created_at: row.created_at,
+			actor_api_key_id: row.actor_api_key_id,
+			actor_is_run: row.actor_is_run === 1,
+			from_state_id: fromStateId,
+			to_state_id: toStateId
+		});
+	}
+
+	const states = stateRows.map((s) => ({
+		id: s.id,
+		name: s.name,
+		workflow_id: s.workflow_id,
+		workflow_name: s.workflow_name,
+		category: s.category,
+		position: s.position
+	}));
+	const runs = runRows.map((r) => ({
+		...r,
+		outcome: (r.outcome as RunEndOutcome | null) ?? null
+	}));
+	const baseInput = {
+		now,
+		windowMs,
+		compare,
+		states,
+		events,
+		runs,
+		advancedByKey,
+		outcomeRecordedSince: outcomeRow?.since ?? null,
+		project
+	};
+	const prepareStarted = performance.now();
+	const prepared = prepareStageStats(baseInput);
+	observer?.phase?.('prepare', performance.now() - prepareStarted);
+	const baseStarted = performance.now();
+	const report = computePreparedStageStats(prepared, { now, windowMs, compare });
+	observer?.phase?.('base', performance.now() - baseStarted);
+
+	type MarkerSeed = Omit<ChangeMarker, 'effects'> & { actor: string; ruleScope: string | null };
+	const seeds: MarkerSeed[] = [];
+	for (const row of markerRows) {
+		const payload = JSON.parse(row.payload) as Record<string, any>;
+		let kind: ChangeMarker['kind'] | null = null;
+		let label = '';
+		let stateIds: string[] = [];
+		if (row.type.startsWith('context.')) {
+			const scope = payload.scope ?? payload.scope_to;
+			if (payload.kind !== 'prompt' || payload.name === 'journal' || !scope?.workflow_state_id)
+				continue;
+			kind = 'prompt';
+			stateIds = [scope.workflow_state_id];
+			const meta = states.find((state) => state.id === scope.workflow_state_id);
+			label = `Stage prompt edited${meta ? `: ${meta.workflow_name}/${meta.name}` : ''}`;
+		} else if (row.type === 'settings.updated') {
+			const changed = Array.isArray(payload.changed) ? payload.changed : [];
+			if (changed.includes('quota')) {
+				kind = 'quota';
+				label = 'Supervisor quota changed';
+			} else if (changed.includes('enabled')) {
+				kind = 'automation';
+				label = 'Automation setting changed';
+			}
+		} else if (row.type === 'runner.updated') {
+			if (
+				!(payload.changed as unknown[] | undefined)?.includes('max_concurrent') ||
+				payload.reconnected
+			)
+				continue;
+			kind = 'runner_cap';
+			label = `Runner cap changed${payload.name ? `: ${payload.name}` : ''}`;
+		} else if (row.type.startsWith('routing_rule.')) {
+			kind = 'rule';
+			if (typeof payload.workflow_state_id === 'string') {
+				stateIds = [payload.workflow_state_id];
+			}
+			const scope = stateIds.length > 0 ? 'Stage' : row.project_id ? 'Project' : 'Global';
+			label = `${scope} routing rule changed`;
+		}
+		if (!kind) continue;
+		const actor = row.actor_api_key_id ?? row.actor_user_id;
+		const ruleScope = kind === 'rule' ? JSON.stringify([row.project_id, stateIds]) : null;
+		const previous = seeds.at(-1);
+		if (
+			previous &&
+			previous.kind === kind &&
+			previous.ruleScope === ruleScope &&
+			previous.actor === actor &&
+			row.created_at - previous.at <= 60_000
+		) {
+			previous.event_ids.push(row.id);
+			previous.state_ids = [...new Set([...previous.state_ids, ...stateIds])];
+			continue;
+		}
+		seeds.push({
+			id: row.id,
+			at: row.created_at,
+			kind,
+			label,
+			event_ids: [row.id],
+			state_ids: stateIds,
+			ruleScope,
+			actor
+		});
+	}
+	const figures = (stateId: string, since: number, until: number) => {
+		observer?.evaluatedState?.(stateId);
+		const index = observer?.profileRepeatPreparation ? prepareStageStats(baseInput) : prepared;
+		const row = evaluatePreparedState(index, stateId, since, until);
+		return row
+			? {
+					visits: row.visits,
+					exits: row.exits,
+					sent_back_share: row.sent_back.share,
+					queue_wait_p50: row.queue_wait?.p50 ?? null
+				}
+			: null;
+	};
+	const markersStarted = performance.now();
+	report.markers = seeds
+		.slice(-20)
+		.reverse()
+		.map(({ ruleScope: _ruleScope, ...seed }) => {
+			const beforeSince = seed.at - Math.max(1, seed.at - report.window.since);
+			const afterSince = now - Math.max(1, now - seed.at);
+			const affected =
+				seed.state_ids.length > 0 ? seed.state_ids : report.states.map((stage) => stage.state_id);
+			return {
+				...seed,
+				effects: affected.map((stateId) => ({
+					state_id: stateId,
+					before: figures(stateId, beforeSince, seed.at),
+					after: figures(stateId, afterSince, now)
+				}))
+			};
+		});
+	observer?.phase?.('markers', performance.now() - markersStarted);
+	return report;
+}
+
+/** The issue, actor, comment and prompt-version evidence behind sent-back. */
+export async function loadSentBackDrilldown(
+	db: Kysely<Database>,
+	userId: string,
+	query: { state: string; window?: string; project?: string; until?: number },
+	now: number = Date.now()
+): Promise<SentBackDrilldown> {
+	const windowMs = parseStatsWindow(query.window);
+	if (query.until !== undefined) {
+		if (!Number.isSafeInteger(query.until) || query.until < 0 || query.until > now)
+			throw new ApiFail(
+				422,
+				'validation_error',
+				'until must be a nonfuture epoch millisecond integer'
+			);
+		now = query.until;
+	}
+	const since = now - windowMs;
+	const project = query.project ? await resolveProjectRef(db, userId, query.project) : null;
+	const states = await db
+		.selectFrom('workflow_state as st')
+		.innerJoin('workflow as wf', 'wf.id', 'st.workflow_id')
+		.where((eb) => eb.or([eb('wf.user_id', '=', userId), eb('wf.user_id', 'is', null)]))
+		.select([
+			'st.id',
+			'st.name',
+			'st.position',
+			'st.category',
+			'st.workflow_id',
+			'wf.name as workflow_name'
+		])
+		.execute();
+	const state = states.find((row) => row.id === query.state);
+	if (!state) throw new ApiFail(404, 'not_found', `No workflow state "${query.state}"`);
+	const stateById = new Map(states.map((row) => [row.id, row]));
+
+	let transitions = applyEventWindow(eventQuery(db, userId), {
+		since,
+		until: now,
+		type: 'issue.transitioned',
+		state: query.state
+	});
+	transitions = transitions.where(
+		sql<string>`json_extract(event.payload, '$.from_state_id')`,
+		'=',
+		query.state
+	);
+	if (project) transitions = transitions.where('event.project_id', '=', project.id);
+	const events = (await transitions.execute())
+		.map(serializeEvent)
+		.sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id));
+	const sent = events.filter((event) => {
+		const target = stateById.get(String(event.payload.to_state_id ?? ''));
+		return (
+			target?.workflow_id === state.workflow_id &&
+			target.category !== 'done' &&
+			target.position < state.position
+		);
+	});
+
+	const issueIds = [
+		...new Set(sent.map((event) => event.issue_id).filter((id): id is string => id !== null))
+	];
+	const latestTransitionAt = sent.reduce((latest, event) => Math.max(latest, event.created_at), 0);
+	const commentChunks: string[][] = [];
+	for (let i = 0; i < issueIds.length; i += 90) commentChunks.push(issueIds.slice(i, i + 90));
+	const comments = (
+		await Promise.all(
+			commentChunks.map((ids) =>
+				db
+					.selectFrom('comment')
+					.select(['id', 'issue_id', 'body', 'created_at', 'actor_api_key_id', 'actor_user_id'])
+					.where('issue_id', 'in', ids)
+					.where('created_at', '<=', latestTransitionAt)
+					.execute()
+			)
+		)
+	)
+		.flat()
+		.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+	const commentsByIssue = new Map<string, typeof comments>();
+	for (const comment of comments) {
+		const list = commentsByIssue.get(comment.issue_id);
+		if (list) list.push(comment);
+		else commentsByIssue.set(comment.issue_id, [comment]);
+	}
+	const prompt = await db
+		.selectFrom('context_item')
+		.select(['id', 'name', 'version'])
+		.where('user_id', '=', userId)
+		.where('kind', '=', 'prompt')
+		.where('name', '=', 'instructions')
+		.where('workflow_state_id', '=', state.id)
+		.executeTakeFirst();
+	// Resolve prompt generations from their lifecycle events, not from the
+	// currently-live row: delete/recreate gives the replacement a new id.
+	const relevantPromptIds = db
+		.selectFrom('event as created')
+		.select(sql<string>`json_extract(created.payload, '$.context_id')`.as('context_id'))
+		.where('created.user_id', '=', userId)
+		.where('created.type', '=', 'context.created')
+		.where(sql<string>`json_extract(created.payload, '$.kind')`, '=', 'prompt')
+		.where(sql<string>`json_extract(created.payload, '$.name')`, '=', 'instructions')
+		.where(
+			sql<string>`CASE WHEN COALESCE(json_type(created.payload, '$.scope_to'), 'null') <> 'null'
+				THEN json_extract(created.payload, '$.scope_to.workflow_state_id')
+				ELSE json_extract(created.payload, '$.scope.workflow_state_id') END`,
+			'=',
+			state.id
+		);
+	const promptEvents = (
+		issueIds.length === 0
+			? []
+			: await db
+					.selectFrom('event')
+					.select(['id', 'type', 'payload', 'created_at'])
+					.where('user_id', '=', userId)
+					.where('type', 'in', ['context.created', 'context.updated', 'context.deleted'])
+					.where((eb) => {
+						const lifecycleId = sql<string>`json_extract(event.payload, '$.context_id')`;
+						const relevant = eb(lifecycleId, 'in', relevantPromptIds);
+						return prompt ? eb.or([relevant, eb(lifecycleId, '=', prompt.id)]) : relevant;
+					})
+					.execute()
+	).sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+	type PromptGeneration = {
+		id: string;
+		created_at: number;
+		deleted_at: number | null;
+		updates: { at: number; version: number | null }[];
+	};
+	const generations = new Map<string, PromptGeneration>();
+	for (const event of promptEvents) {
+		const payload = JSON.parse(event.payload) as Record<string, any>;
+		const id = typeof payload.context_id === 'string' ? payload.context_id : null;
+		if (!id) continue;
+		const scope = payload.scope_to ?? payload.scope;
+		const relevant =
+			payload.kind === 'prompt' &&
+			payload.name === 'instructions' &&
+			scope?.workflow_state_id === state.id;
+		if (event.type === 'context.created' && relevant) {
+			generations.set(id, { id, created_at: event.created_at, deleted_at: null, updates: [] });
+			continue;
+		}
+		const generation = generations.get(id);
+		if (!generation) continue;
+		if (event.type === 'context.deleted') generation.deleted_at = event.created_at;
+		else if (event.type === 'context.updated') {
+			generation.updates.push({
+				at: event.created_at,
+				version: Number.isFinite(Number(payload.version)) ? Number(payload.version) : null
+			});
+		}
+	}
+	// Old fixtures/data may predate context.created events. The current row is
+	// still a valid generation, with its version countable backwards.
+	if (prompt && !generations.has(prompt.id)) {
+		generations.set(prompt.id, {
+			id: prompt.id,
+			created_at: 0,
+			deleted_at: null,
+			updates: promptEvents
+				.filter((event) => {
+					const payload = JSON.parse(event.payload) as Record<string, unknown>;
+					return event.type === 'context.updated' && payload.context_id === prompt.id;
+				})
+				.map((event) => {
+					const version = Number((JSON.parse(event.payload) as Record<string, unknown>).version);
+					return { at: event.created_at, version: Number.isFinite(version) ? version : null };
+				})
+		});
+	}
+	const promptAt = (at: number) => {
+		const generation = [...generations.values()]
+			.filter((item) => item.created_at <= at && (item.deleted_at === null || item.deleted_at > at))
+			.at(-1);
+		if (!generation) return { prompt_context_id: null, prompt_version: null };
+		const updates = generation.updates.filter((event) => event.at <= at);
+		return {
+			prompt_context_id: generation.id,
+			prompt_version:
+				updates
+					.map((event) => event.version)
+					.filter((v): v is number => v !== null)
+					.at(-1) ?? 1 + updates.length
+		};
+	};
+
+	return {
+		state: {
+			id: state.id,
+			name: state.name,
+			workflow_id: state.workflow_id,
+			workflow_name: state.workflow_name
+		},
+		window: { since, until: now },
+		prompt: prompt
+			? {
+					context_id: prompt.id,
+					name: prompt.name,
+					current_version: prompt.version,
+					edit_url: `/workflows/${state.workflow_id}?state=${state.id}#state-${state.id}`
+				}
+			: null,
+		items: sent.flatMap((event) => {
+			if (!event.issue_id || !event.issue_ref) return [];
+			const candidates = (commentsByIssue.get(event.issue_id) ?? []).filter(
+				(comment) => comment.created_at <= event.created_at
+			);
+			const authored = candidates.filter((comment) =>
+				event.actor.api_key_id
+					? comment.actor_api_key_id === event.actor.api_key_id
+					: comment.actor_user_id === event.actor.user_id && comment.actor_api_key_id === null
+			);
+			const comment = authored.at(-1) ?? candidates.at(-1) ?? null;
+			const targetId = String(event.payload.to_state_id);
+			return [
+				{
+					issue: { id: event.issue_id, ...event.issue_ref },
+					transitioned_at: event.created_at,
+					to_state_id: targetId,
+					to_state_name:
+						stateById.get(targetId)?.name ?? String(event.payload.to_state_name ?? targetId),
+					action: typeof event.payload.action === 'string' ? event.payload.action : null,
+					actor: event.actor,
+					comment: comment
+						? {
+								id: comment.id,
+								excerpt: comment.body.slice(0, 280),
+								created_at: comment.created_at
+							}
+						: null,
+					...promptAt(event.created_at)
+				}
+			];
+		})
+	};
 }

@@ -97,6 +97,272 @@ it('forwards retained opaque identities without metadata lookups', async () => {
 	expect(url).toContain('runner=rnr_deleted123');
 });
 
+it('uses the explicit cohort API mode and repeats exact terminal states', async () => {
+	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
+	vi.stubEnv('TINES_API_KEY', 'test-key');
+	const report = { mode: 'cohort', scope: 'frozen-cohort' };
+	const fetchMock = vi.fn(async (_input: string | URL | Request) =>
+		Promise.resolve(
+			new Response(JSON.stringify(report), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		)
+	);
+	vi.stubGlobal('fetch', fetchMock);
+	const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+	vi.resetModules();
+	const { program } = await import('./program.js');
+	await program.parseAsync([
+		'node',
+		'tines',
+		'usage',
+		'--cohort',
+		'--workflow',
+		'wf_retained',
+		'--done-state',
+		'wfs_closed',
+		'--done-state',
+		'wfs_canceled',
+		'--from',
+		'2026-09-01T00:00:00Z',
+		'--to',
+		'2026-09-08T00:00:00Z',
+		'--json'
+	]);
+
+	expect(fetchMock).toHaveBeenCalledOnce();
+	const url = new URL(String(fetchMock.mock.calls[0][0]));
+	expect(url.pathname).toBe('/api/v1/usage');
+	expect(url.searchParams.get('mode')).toBe('cohort');
+	expect(url.searchParams.get('workflow')).toBe('wf_retained');
+	expect(url.searchParams.getAll('done_state')).toEqual(['wfs_closed', 'wfs_canceled']);
+	expect(JSON.parse(String(log.mock.calls[0][0]))).toEqual(report);
+});
+
+it('exports all frozen evidence pages without summing page totals', async () => {
+	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
+	vi.stubEnv('TINES_API_KEY', 'test-key');
+	const aggregate = { cost_usd: 0.3, finalized_run_count: 2 };
+	const pages = [
+		{
+			items: [
+				{
+					issue_id: 'iss_a',
+					issue_ref: null,
+					aggregate,
+					attempt_count: 1,
+					pending_count: 0,
+					fully_priced: true,
+					latest_at: 2
+				}
+			],
+			next_cursor: 'next',
+			previous_cursor: null,
+			total_count: 2,
+			scope: 'frozen',
+			kind: 'issues',
+			population: 'finalized',
+			sort: 'cost',
+			direction: 'desc',
+			matching_total: aggregate,
+			attempt_count: 2,
+			pending_count: 0
+		},
+		{
+			items: [
+				{
+					issue_id: 'iss_b',
+					issue_ref: null,
+					aggregate,
+					attempt_count: 1,
+					pending_count: 0,
+					fully_priced: true,
+					latest_at: 1
+				}
+			],
+			next_cursor: null,
+			previous_cursor: 'previous',
+			total_count: 2,
+			scope: 'frozen',
+			kind: 'issues',
+			population: 'finalized',
+			sort: 'cost',
+			direction: 'desc',
+			matching_total: aggregate,
+			attempt_count: 2,
+			pending_count: 0
+		}
+	];
+	const fetchMock = vi.fn(
+		async (_input: string | URL | Request) =>
+			new Response(JSON.stringify(pages.shift()), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+	);
+	vi.stubGlobal('fetch', fetchMock);
+	const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+	vi.resetModules();
+	const { program } = await import('./program.js');
+	await program.parseAsync([
+		'node',
+		'tines',
+		'usage',
+		'--scope',
+		'frozen',
+		'--evidence',
+		'issues',
+		'--all-pages',
+		'--json'
+	]);
+	expect(fetchMock).toHaveBeenCalledTimes(2);
+	expect(String(fetchMock.mock.calls[1][0])).toContain('cursor=next');
+	const output = JSON.parse(String(log.mock.calls[0][0]));
+	expect(output.items.map((item: { issue_id: string }) => item.issue_id)).toEqual([
+		'iss_a',
+		'iss_b'
+	]);
+	expect(output.matching_total).toEqual(aggregate);
+});
+
+it('exports every completion entry page using event identity', async () => {
+	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
+	vi.stubEnv('TINES_API_KEY', 'test-key');
+	const page = (event_id: string, next_cursor: string | null) => ({
+		items: [{ event_id, event_type: 'issue.transitioned', issue_id: 'iss_a', created_at: 1 }],
+		next_cursor,
+		previous_cursor: null,
+		total_count: 2,
+		scope: 'frozen',
+		kind: 'entries',
+		population: 'all',
+		sort: 'time',
+		direction: 'desc',
+		matching_total: {},
+		attempt_count: 0,
+		pending_count: 0
+	});
+	const pages = [page('evt_new', 'next'), page('evt_old', null)];
+	const fetchMock = vi.fn(async () =>
+		Promise.resolve(
+			new Response(JSON.stringify(pages.shift()), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		)
+	);
+	vi.stubGlobal('fetch', fetchMock);
+	const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+	vi.resetModules();
+	const { program } = await import('./program.js');
+	await program.parseAsync([
+		'node',
+		'tines',
+		'usage',
+		'--scope',
+		'frozen',
+		'--evidence',
+		'entries',
+		'--all-pages',
+		'--json'
+	]);
+	expect(fetchMock).toHaveBeenCalledTimes(2);
+	expect(
+		JSON.parse(String(log.mock.calls[0][0])).items.map(
+			(item: { event_id: string }) => item.event_id
+		)
+	).toEqual(['evt_new', 'evt_old']);
+});
+
+it('prints per-run accounting provenance and diagnostics for signed evidence', async () => {
+	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
+	vi.stubEnv('TINES_API_KEY', 'test-key');
+	const dimension = (id: string, name: string) => ({ id, name });
+	const aggregate = { cost_usd: 0.25, finalized_run_count: 1 };
+	const page = {
+		items: [
+			{
+				id: 'arun_evidence_detail',
+				issue_id: 'iss_evidence',
+				created_at: 1,
+				ended_at: 2,
+				usage_dimensions: {
+					project: dimension('prj_1', 'Project'),
+					workflow: dimension('wf_1', 'Workflow'),
+					state: dimension('wfs_1', 'State'),
+					outcome: dimension('advanced', 'Advanced'),
+					runner: dimension('rnr_1', 'Runner'),
+					tier: dimension('balanced', 'balanced')
+				},
+				usage_accounting: {
+					status: 'priced',
+					cost: 0.25,
+					cost_exact: '0.25',
+					source: 'calculated',
+					basis: null,
+					tokens: {
+						input_tokens: null,
+						output_tokens: 12,
+						cache_read_tokens: null,
+						cache_write_tokens: 0
+					},
+					invalid_tokens: ['input_tokens'],
+					diagnostics: { partial_token_fields: 1 },
+					pricing_reason: null
+				}
+			}
+		],
+		next_cursor: null,
+		previous_cursor: null,
+		total_count: 1,
+		scope: 'frozen',
+		kind: 'runs',
+		population: 'finalized',
+		sort: 'cost',
+		direction: 'desc',
+		matching_total: aggregate,
+		attempt_count: 1,
+		pending_count: 0
+	};
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(
+			async () =>
+				new Response(JSON.stringify(page), {
+					status: 200,
+					headers: { 'content-type': 'application/json' }
+				})
+		)
+	);
+	const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+	vi.resetModules();
+	const { program } = await import('./program.js');
+	await program.parseAsync(['node', 'tines', 'usage', '--scope', 'frozen', '--evidence', 'runs']);
+	const output = log.mock.calls.map(([line]) => String(line)).join('\n');
+	expect(output).toContain(
+		'Accounting arun_evidence_detail: priced · source calculated · exact cost 0.25 · diagnostics partial_token_fields=1'
+	);
+	expect(output).toContain(
+		'Tokens arun_evidence_detail: input_tokens=unavailable · output_tokens=12 · cache_read_tokens=unavailable · cache_write_tokens=0 · invalid_tokens=input_tokens'
+	);
+	expect(output).toContain(
+		'Rate arun_evidence_detail: historical calculated amount · basis unavailable'
+	);
+});
+
+it('rejects explicit grouping with issue lifetime before a request', async () => {
+	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
+	const fetchMock = vi.fn();
+	vi.stubGlobal('fetch', fetchMock);
+	vi.resetModules();
+	const { program } = await import('./program.js');
+	await expect(
+		program.parseAsync(['node', 'tines', 'usage', '--issue', 'iss_retained', '--by', 'workflow'])
+	).rejects.toThrow('--issue cannot be combined');
+	expect(fetchMock).not.toHaveBeenCalled();
+});
+
 it('prints complete aggregate diagnostics and historical rate references', async () => {
 	vi.stubEnv('TINES_API_URL', 'https://usage.example.test');
 	vi.stubEnv('TINES_API_KEY', 'test-key');

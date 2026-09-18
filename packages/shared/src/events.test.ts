@@ -103,6 +103,7 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 		context_id: 'ctx_1',
 		kind: 'prompt',
 		name: 'house-style',
+		version: 2,
 		scope: { label: 'project Tines' }
 	},
 	'context.updated': {

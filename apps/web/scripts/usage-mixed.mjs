@@ -13,6 +13,7 @@ import {
 	foreignUser,
 	seedMixed,
 	verifyMixed,
+	verifyMixedCohort,
 	assertAggregate,
 	selected
 } from '../test-fixtures/usage-mixed.mjs';
@@ -22,6 +23,7 @@ const persist = '.wrangler-usage-mixed';
 const localKey = 'tines_mixed_local_only_0000000000000000000000000000';
 const runKey = `${localKey}_run`;
 const foreignKey = `${localKey}_foreign`;
+const tokenNames = ['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens'];
 const wrangler = (args) =>
 	execFileSync('pnpm', ['exec', 'wrangler', ...args], {
 		cwd: webDir,
@@ -88,10 +90,18 @@ worker.stderr.on('data', (b) => (logs += b));
 const comparable = (report) => {
 	const copy = structuredClone(report);
 	delete copy.generated_at;
+	if (copy.mode === 'cohort') {
+		delete copy.scope;
+		delete copy.observed_through;
+		if (copy.history) delete copy.history.to;
+	}
 	return copy;
 };
 const flags = (query) =>
-	Object.entries(query).flatMap(([k, v]) => [`--${k.replaceAll('_', '-')}`, String(v)]);
+	Object.entries(query).flatMap(([k, v]) => [
+		`--${k.replaceAll('_', '-')}`,
+		...(v === true ? [] : [String(v)])
+	]);
 // Resolve tsx relative to the CLI package; every process executes src/index.ts directly.
 const cli = (command, query = {}, json = true, key = localKey) =>
 	execFileSync(
@@ -117,6 +127,7 @@ const cli = (command, query = {}, json = true, key = localKey) =>
 		}
 	);
 let cliCalls = 0;
+let signedEvidenceCliChecked = false;
 try {
 	for (let attempt = 0; ; attempt++) {
 		try {
@@ -190,6 +201,17 @@ try {
 							`Accounting ${item.id}: ${a.status} · source ${a.source ?? 'unavailable'} · exact cost ${a.cost_exact ?? 'unavailable'}`
 						)
 					);
+					const tokenLine = rendered
+						.split('\n')
+						.find((line) => line.startsWith(`Tokens ${item.id}:`));
+					assert.ok(tokenLine, item.id);
+					for (const name of tokenNames)
+						assert.ok(tokenLine.includes(`${name}=${a.tokens[name] ?? 'unavailable'}`));
+					assert.ok(
+						tokenLine.includes(
+							`invalid_tokens=${a.invalid_tokens.length ? a.invalid_tokens.join(',') : 'none'}`
+						)
+					);
 					if (a.source === 'calculated' && !a.basis)
 						assert.ok(
 							rendered.includes(`Rate ${item.id}: historical calculated amount · basis unavailable`)
@@ -210,7 +232,83 @@ try {
 				])
 					assert.ok(rendered.includes(reference), reference);
 		}
+		if (!signedEvidenceCliChecked && populations.finalized.length) {
+			const finalized = populations.finalized;
+			const output = JSON.parse(
+				cli(['usage'], {
+					scope: report.matching_scope,
+					evidence: 'runs',
+					'all-pages': true,
+					limit: '17'
+				})
+			);
+			cliCalls++;
+			assert.deepEqual(
+				output.items.map((item) => item.id).sort(),
+				finalized.map((item) => item.id).sort()
+			);
+			const rendered = cli(
+				['usage'],
+				{
+					scope: report.matching_scope,
+					evidence: 'runs',
+					'all-pages': true,
+					limit: '17'
+				},
+				false
+			);
+			cliCalls++;
+			assert.ok(rendered.includes('Accounting arun_mixed_'));
+			assert.ok(rendered.includes('exact cost'));
+			assert.ok(rendered.includes('Evidence arun_mixed_'));
+			signedEvidenceCliChecked = true;
+		}
 	});
+	const cohort = await verifyMixedCohort(request);
+	const cohortQuery = { ...bounds, cohort: true, workflow: 'wf_mixed' };
+	const cohortJson = JSON.parse(cli(['usage'], cohortQuery));
+	cliCalls++;
+	assert.deepEqual(comparable(cohortJson), comparable(cohort.report));
+	const cohortText = cli(['usage'], cohortQuery, false);
+	cliCalls++;
+	assert.ok(cohortText.includes('4 issues · 169/4 attempts/all issues'));
+	assert.ok(cohortText.includes('Terminal states: Closed, Canceled, Dropped'));
+	for (const [kind, population, expected] of [
+		['issues', null, cohort.issues],
+		['runs', 'finalized', cohort.finalized],
+		['runs', 'pending', cohort.pending],
+		['entries', null, cohort.entries]
+	]) {
+		const query = {
+			scope: cohort.report.scope,
+			evidence: kind,
+			...(population ? { population } : {}),
+			...(population === 'pending' ? { sort: 'time' } : {}),
+			'all-pages': true,
+			limit: '2'
+		};
+		const output = JSON.parse(cli(['usage'], query));
+		cliCalls++;
+		assert.deepEqual(
+			output.items.map((item) => item.id ?? item.issue_id ?? item.event_id).sort(),
+			expected.map((item) => item.id ?? item.issue_id ?? item.event_id).sort()
+		);
+		const rendered = cli(['usage'], query, false);
+		cliCalls++;
+		assert.ok(rendered.includes(`Usage evidence · ${kind}`));
+	}
+	assert.deepEqual(
+		comparable(
+			await request('/usage', { ...bounds, mode: 'cohort', workflow: 'wf_mixed' }, runKey)
+		),
+		comparable(cohort.report)
+	);
+	await request(
+		'/usage',
+		{ ...bounds, mode: 'cohort', workflow: 'wf_mixedforeign' },
+		localKey,
+		404
+	);
 	// Defaults and manual CLI cursors remain separate from --all-pages' deduplication.
 	const first = JSON.parse(cli(['runs', 'list'], { ...bounds, population: 'finalized' }));
 	assert.equal(first.items.length, 50);

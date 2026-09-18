@@ -1,0 +1,1 @@
+- 2026-09-01: Always preserve source-version conflicts and recurrence marks. (seen again 2026-09-08)

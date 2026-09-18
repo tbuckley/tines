@@ -8,6 +8,7 @@ import {
 	addComment,
 	addIssue,
 	addRun,
+	addRunKey,
 	addRunner,
 	addTransitionEvent,
 	eventsOfType,
@@ -30,6 +31,7 @@ import {
 	authenticateRunnerToken,
 	finishRun,
 	pollRunner,
+	validateEffortCapabilities,
 	type RunnerRow
 } from './runner-protocol';
 import { registerRunner, rotateRunnerToken, updateRunner } from './runners';
@@ -50,6 +52,38 @@ function world(): TestDb {
 	setSettings(t);
 	return t;
 }
+
+describe('effort capability validation', () => {
+	const report = {
+		version: 1 as const,
+		daemon_version: '0.0.194',
+		harness: 'codex' as const,
+		harness_version: '0.153.4',
+		catalog_digest: 'sha256:test',
+		models: [{ model: 'gpt-5.6', efforts: ['low', 'ultra'] }]
+	};
+
+	it('accepts bounded exact-model reports only from identified daemon boots', () => {
+		expect(validateEffortCapabilities(report, 'boot_1')).toEqual(report);
+		expect(() => validateEffortCapabilities(report)).toThrowError(ApiFail);
+		expect(() =>
+			validateEffortCapabilities(
+				{ ...report, models: [{ model: 'gpt-5.6', efforts: ['High'] }] },
+				'boot_1'
+			)
+		).toThrowError(ApiFail);
+	});
+
+	it('retains unsupported protocol versions distinctly from absent legacy reports', () => {
+		expect(validateEffortCapabilities(undefined, 'boot_1')).toBeNull();
+		expect(
+			validateEffortCapabilities({ version: 2, reason: 'upgrade required' }, 'boot_1')
+		).toEqual({
+			version: 2,
+			reason: 'upgrade required'
+		});
+	});
+});
 
 async function runnerRow(t: TestDb, id: string): Promise<RunnerRow> {
 	const row = await t.db.selectFrom('runner').selectAll().where('id', '=', id).executeTakeFirst();
@@ -82,7 +116,7 @@ describe('registerRunner', () => {
 			platform: 'darwin'
 		});
 		expect(runner.type).toBe('local');
-		expect(runner.online).toBe(true); // registration counts as a heartbeat
+		expect(runner.online).toBe(false); // policy must be confirmed by the first poll
 		expect(runner_token).toMatch(/^tines_rt_/);
 		const row = runnerById(t, runner.id);
 		expect(row.runner_token_hash).toBe(await sha256Hex(runner_token));
@@ -154,7 +188,7 @@ describe('registerRunner', () => {
 			max_concurrent: 3,
 			hostname: 'mbp.local'
 		});
-		expect(second.runner.max_concurrent).toBe(3); // sent: updated
+		expect(second.runner.max_concurrent).toBe(2); // registration cannot overwrite durable intent
 		expect(second.runner.max_run_minutes).toBe(90); // not sent: kept
 		expect(second.runner.default_tier).toBe('smartest'); // not sent: kept
 		expect(second.runner.config.hostname).toBe('mbp.local');
@@ -496,7 +530,8 @@ describe('pollRunner', () => {
 		expect(runnerById(t, id).max_concurrent).toBe(3);
 		const updates = eventsOfType(t, 'runner.updated');
 		expect(updates).toHaveLength(1);
-		expect(updates[0].payload.changed).toEqual(['max_concurrent']);
+		expect(updates[0].payload.changed).toEqual(['max_concurrent', 'concurrency_control']);
+		expect(updates[0].payload.source).toBe('daemon');
 
 		// Same value: no event, no new capacity.
 		const same = await pollRunner(
@@ -532,6 +567,196 @@ describe('pollRunner', () => {
 		expect(runnerById(t, id).max_concurrent).toBe(2);
 	});
 
+	it('bounds revisioned web requests for sessions and ordinary owner keys', async () => {
+		const t = world();
+		const id = addRunner(t, { maxConcurrent: 1 });
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 1
+		);
+		const initialRevision = Number(runnerById(t, id).concurrency_revision);
+
+		const sessionWrite = await updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			max_concurrent: 2,
+			expected_concurrency_revision: initialRevision
+		});
+		expect(sessionWrite).toMatchObject({ max_concurrent: 2 });
+		expect(sessionWrite.concurrency_control).toMatchObject({
+			status: 'pending',
+			revision: initialRevision + 1
+		});
+
+		t.sqlite
+			.prepare(
+				`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+				 VALUES ('key_owner', ?, 'owner automation', 'hash-owner', 'tines_owner', ?)`
+			)
+			.run(USER, NOW);
+		const keyActor: ActorContext = {
+			...actor,
+			apiKeyId: 'key_owner',
+			apiKeyName: 'owner automation',
+			viaSession: false
+		};
+		const keyWrite = await updateRunner(t.db, t.env, keyActor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			max_concurrent: 3,
+			expected_concurrency_revision: initialRevision + 1
+		});
+		expect(keyWrite).toMatchObject({ max_concurrent: 3 });
+		expect(keyWrite.concurrency_control).toMatchObject({
+			status: 'pending',
+			revision: initialRevision + 2
+		});
+		const updates = eventsOfType(t, 'runner.updated');
+		expect(
+			updates.find((event) => JSON.stringify(event.payload).includes('"requested_cap":3'))
+				?.actor_api_key_id
+		).toBe('key_owner');
+		await expect(
+			updateRunner(t.db, t.env, { ...actor, userId: 'usr_other' }, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				max_concurrent: 1,
+				expected_concurrency_revision: initialRevision + 2
+			})
+		).rejects.toMatchObject({ code: 'not_found' });
+	});
+
+	it('rejects missing and stale revisions, ceiling bypass, opt-out, and mixed patches atomically', async () => {
+		const t = world();
+		const id = addRunner(t, { name: 'bounded', maxConcurrent: 1 });
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 1
+		);
+		const currentRevision = Number(runnerById(t, id).concurrency_revision);
+
+		for (const request of [
+			{ max_concurrent: 2 },
+			{ max_concurrent: 2, expected_concurrency_revision: 9 }
+		]) {
+			await expect(
+				updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, request)
+			).rejects.toMatchObject({ code: 'concurrency_conflict' });
+		}
+		await expect(
+			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				name: 'must-not-commit',
+				max_concurrent: 4,
+				expected_concurrency_revision: currentRevision
+			})
+		).rejects.toMatchObject({ code: 'invalid_field', details: { ceiling: 3 } });
+		expect(runnerById(t, id)).toMatchObject({ name: 'bounded', max_concurrent: 1 });
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1); // daemon policy report only
+
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: false, ceiling: 3 }
+			},
+			NOW + 2
+		);
+		await expect(
+			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				max_concurrent: 2,
+				expected_concurrency_revision: Number(runnerById(t, id).concurrency_revision)
+			})
+		).rejects.toMatchObject({ code: 'concurrency_unavailable' });
+	});
+
+	it('retries poll reconciliation without overwriting a concurrent web cap request', async () => {
+		const t = world();
+		const id = addRunner(t, { name: 'concurrent-cap', maxConcurrent: 1 });
+		t.sqlite
+			.prepare('UPDATE runner SET runner_token_hash = ? WHERE id = ?')
+			.run(await sha256Hex('tines_rt_concurrent-cap'), id);
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 1
+		);
+		const stale = await runnerRow(t, id);
+		const winningRevision = stale.concurrency_revision + 1;
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let injected = false;
+		let batchCount = 0;
+		t.env.DB.batch = async (statements) => {
+			batchCount += 1;
+			if (batchCount === 2) {
+				injected = true;
+				// This is the storage result of an owner PATCH that commits after
+				// the poll read but before its guarded reconciliation batch.
+				t.sqlite
+					.prepare(
+						`UPDATE runner
+						 SET max_concurrent = 3,
+						     concurrency_requested = 3,
+						     concurrency_revision = ?,
+						     updated_at = ?
+						 WHERE id = ?`
+					)
+					.run(winningRevision, NOW + 2, id);
+			}
+			return realBatch(statements);
+		};
+
+		const result = await pollRunner(
+			t.db,
+			t.env,
+			stale,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 3
+		);
+
+		expect(injected).toBe(true);
+		expect(result.response.concurrency_control).toMatchObject({
+			available: true,
+			cap: 3,
+			revision: winningRevision
+		});
+		expect(runnerById(t, id)).toMatchObject({
+			max_concurrent: 3,
+			concurrency_requested: 3,
+			concurrency_revision: winningRevision
+		});
+	});
+
 	it('draining is stated per poll: set while true, cleared when absent, and leaving it frees capacity', async () => {
 		const t = world();
 		const id = addRunner(t);
@@ -545,8 +770,9 @@ describe('pollRunner', () => {
 		);
 		expect(entering.capRaised).toBe(false);
 		expect(runnerById(t, id).draining).toBe(1);
-		// No runner.updated event: draining is the daemon's transient state, not an edit.
-		expect(eventsOfType(t, 'runner.updated')).toHaveLength(0);
+		// Draining itself is transient, but the first legacy poll records the
+		// daemon-owned concurrency policy transition once.
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1);
 
 		// Still draining: nothing new to dispatch for.
 		const still = await pollRunner(
@@ -676,6 +902,56 @@ describe('pollRunner', () => {
 		expect(second.response.assignments).toEqual([]);
 	});
 
+	it('selects essential comments in the locally delivered cold prompt', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		const completed = addRun(t, {
+			id: 'arun_completed',
+			issueId: issue,
+			runnerId,
+			status: 'completed',
+			createdAt: NOW - 100
+		});
+		const noisy = addRun(t, {
+			id: 'arun_noisy',
+			issueId: issue,
+			runnerId,
+			status: 'failed',
+			createdAt: NOW
+		});
+		addComment(t, {
+			issueId: issue,
+			id: 'cmt_handoff',
+			body: 'protected handoff',
+			apiKeyId: addRunKey(t, completed),
+			at: NOW - 90
+		});
+		const noisyKey = addRunKey(t, noisy);
+		for (let i = 0; i < 4; i++)
+			addComment(t, {
+				issueId: issue,
+				id: `cmt_noise_${i}`,
+				body: i === 0 ? 'OMITTED LOCAL SENTINEL' : `noise ${i}`,
+				apiKeyId: noisyKey,
+				at: NOW + i
+			});
+		addRun(t, { issueId: issue, runnerId });
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [] },
+			NOW + 10
+		);
+		const prompt = response.assignments[0].prompt;
+		expect(prompt).toContain('protected handoff');
+		expect(prompt).toContain('Older agent comments: cmt_noise_0.');
+		expect(prompt).not.toContain('OMITTED LOCAL SENTINEL');
+	});
+
 	it('opens the delivered issue block with the human steer that started the round', async () => {
 		const t = world();
 		const runnerId = addRunner(t);
@@ -761,6 +1037,71 @@ describe('pollRunner', () => {
 		expect(issueById(t, issue).attempt_count).toBe(0);
 		// No run key was ever minted for it.
 		expect(keyForRun(t, runId)).toBeUndefined();
+	});
+
+	it('cancels and redispatches when an enforced claim reaches a downgraded daemon', async () => {
+		const t = world();
+		const effects = recordDispatchEffects();
+		const runnerId = addRunner(t, { harness: 'codex' });
+		const issue = addIssue(t);
+		const runId = addRun(t, { issueId: issue, runnerId, model: 'gpt-5.6' });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'low', effort_source = ?, effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(JSON.stringify({ kind: 'runner_tier', runner_id: runnerId, tier: 'balanced' }), runId);
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			effects,
+			{ owned_runs: [], instance_id: 'legacy-boot' },
+			NOW + 1
+		);
+		expect(response.assignments).toEqual([]);
+		expect(runById(t, runId)?.status).toBe('canceled');
+		expect(runById(t, runId)?.error).toContain('not supported');
+		expect(keyForRun(t, runId)).toBeUndefined();
+		expect(effects.count()).toBe(1);
+	});
+
+	it('reclaims a legacy-tier claim after an effort-capable daemon upgrade', async () => {
+		const t = world();
+		const effects = recordDispatchEffects();
+		const runnerId = addRunner(t, { harness: 'codex' });
+		const issue = addIssue(t);
+		const runId = addRun(t, { issueId: issue, runnerId, model: 'gpt-5.6' });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'low', effort_source = ?, effort_application_status = 'legacy_not_applied' WHERE id = ?`
+			)
+			.run(JSON.stringify({ kind: 'runner_tier', runner_id: runnerId, tier: 'balanced' }), runId);
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			effects,
+			{
+				owned_runs: [],
+				instance_id: 'upgraded-boot',
+				effort_capabilities: {
+					version: 1,
+					daemon_version: '0.0.194',
+					harness: 'codex',
+					harness_version: '0.153.4',
+					catalog_digest: 'catalog-a',
+					models: [{ model: 'gpt-5.6', efforts: ['low'] }]
+				}
+			},
+			NOW + 1
+		);
+		expect(response.assignments).toEqual([]);
+		expect(runById(t, runId)?.status).toBe('canceled');
+		expect(runById(t, runId)?.error).toContain('changed after claim');
+		expect(keyForRun(t, runId)).toBeUndefined();
+		expect(effects.count()).toBe(1);
 	});
 
 	it('cancels the assignment when automation was disarmed or the issue parked', async () => {
@@ -1032,6 +1373,47 @@ describe('finishRun', () => {
 		expect(issueById(t, issue).attempt_count).toBe(1);
 		const ended = eventsOfType(t, 'agent_run.ended');
 		expect(ended[ended.length - 1].payload.outcome).toBe('stalled');
+	});
+
+	it('recovers the last effort milestone in the terminal CAS and freezes it', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		const runId = await delivered(t, { runnerId, issueId: issue });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(runId);
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			runId,
+			{
+				status: 'completed',
+				effort_application: {
+					status: 'accepted_unconfirmed',
+					transport: 'argv',
+					attempted_effort: 'high'
+				}
+			},
+			NOW + 30
+		);
+		expect(run.effort_application_status).toBe('accepted_unconfirmed');
+		expect(run.effort_application_evidence).toMatchObject({
+			milestones: [expect.objectContaining({ attempted_effort: 'high' })]
+		});
+		await expect(
+			appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, '', NOW + 40, undefined, {
+				status: 'rejected',
+				transport: 'argv',
+				attempted_effort: 'high',
+				reason: 'late request'
+			})
+		).rejects.toMatchObject({ code: 'run_already_ended' });
+		expect(runById(t, runId)?.effort_application_status).toBe('accepted_unconfirmed');
 	});
 
 	it('atomically stores and emits a reproducible Codex estimate', async () => {
@@ -2011,6 +2393,56 @@ describe('resume (retention and delivery)', () => {
 		// The resource is claimed, so a GC sweep cannot take it underneath.
 		expect(resources(t)[0]!.state).toBe('claimed');
 		expect(resources(t)[0]!.claim_run_id).toBe(second.runId);
+	});
+
+	it('retains an enforced local effort fingerprint and resumes only the matching effort', async () => {
+		const t = world();
+		const runnerId = resumeRunner(t);
+		const issue = addIssue(t);
+		const first = await deliver(t, runnerId, issue);
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET model = 'claude-sonnet-5', resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(first.runId);
+		await finishAdvanced(t, runnerId, issue, first.runId, {
+			effort_application: {
+				status: 'accepted_unconfirmed',
+				transport: 'argv',
+				attempted_effort: 'high'
+			}
+		});
+		expect(resources(t)[0]!.resume_fingerprint).toContain('"version":2');
+		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(OPEN, issue);
+		const secondRunId = addRun(t, { issueId: issue, runnerId, model: 'claude-sonnet-5' });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(secondRunId);
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				owned_runs: [],
+				instance_id: 'effort-resume-boot',
+				effort_capabilities: {
+					version: 1,
+					daemon_version: 'test',
+					harness: 'claude_code',
+					harness_version: '2.1.258',
+					catalog_digest: 'effort-resume',
+					models: [{ model: 'claude-sonnet-5', efforts: ['high'] }]
+				}
+			},
+			NOW + 40
+		);
+		expect(response.assignments.find((item) => item.run.id === secondRunId)?.resume).toMatchObject({
+			previous_run_id: first.runId,
+			provider_session_id: 'sess-abc'
+		});
 	});
 
 	it('launches fresh outside the window, recording why', async () => {

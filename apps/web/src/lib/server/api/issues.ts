@@ -615,7 +615,7 @@ export function resolveStateRef(
 	return state;
 }
 
-async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comment[]> {
+async function loadCommentHistory(db: Kysely<Database>, issueId: string) {
 	const rows = await db
 		.selectFrom('comment')
 		.innerJoin('user as actor_user', 'actor_user.id', 'comment.actor_user_id')
@@ -632,13 +632,16 @@ async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comm
 			'actor_run.id as actor_run_id',
 			'actor_runner.name as actor_runner_name',
 			'actor_run_project.name as actor_run_project_name',
-			'actor_run_issue.number as actor_run_issue_number'
+			'actor_run_issue.number as actor_run_issue_number',
+			'actor_run.issue_id as actor_run_issue_id',
+			'actor_run.status as actor_run_status',
+			'actor_run.created_at as actor_run_created_at'
 		])
 		.where('comment.issue_id', '=', issueId)
 		.orderBy('comment.created_at asc')
 		.orderBy('comment.id asc')
 		.execute();
-	return rows.map((row) => ({
+	const comments = rows.map((row) => ({
 		id: row.id,
 		issue_id: row.issue_id,
 		body: row.body,
@@ -646,6 +649,30 @@ async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comm
 		created_at: row.created_at,
 		updated_at: row.updated_at
 	}));
+	let selectedRun: { id: string; createdAt: number } | null = null;
+	for (const row of rows) {
+		if (
+			row.actor_run_id === null ||
+			row.actor_run_issue_id !== issueId ||
+			row.actor_run_status !== 'completed' ||
+			row.actor_run_created_at === null
+		)
+			continue;
+		if (
+			selectedRun === null ||
+			row.actor_run_created_at > selectedRun.createdAt ||
+			(row.actor_run_created_at === selectedRun.createdAt && row.actor_run_id > selectedRun.id)
+		)
+			selectedRun = { id: row.actor_run_id, createdAt: row.actor_run_created_at };
+	}
+	const latestCompletedRunCommentId = selectedRun
+		? ([...rows].reverse().find((row) => row.actor_run_id === selectedRun!.id)?.id ?? null)
+		: null;
+	return { comments, latestCompletedRunCommentId };
+}
+
+async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comment[]> {
+	return (await loadCommentHistory(db, issueId)).comments;
 }
 
 /**
@@ -753,6 +780,8 @@ export async function loadIssue(
 }
 
 export interface IssueDetailOptions {
+	/** Include metadata used only by launch-prompt comment selection. */
+	launchComments?: boolean;
 	/**
 	 * Every workflow the user can see, when the caller already has (or is
 	 * already fetching) them — saves the two-statement `loadWorkflow`. A promise
@@ -794,10 +823,10 @@ export async function getIssueDetail(
 	// otherwise only if some outgoing transition declares requirements — which
 	// we cannot know until the workflow lands. Fetching them in this wave when
 	// asked keeps the requirement pre-flight off the critical path entirely.
-	const [workflows, comments, links, contextSummary, preloadedArtifacts, handoff] =
+	const [workflows, commentHistory, links, contextSummary, preloadedArtifacts, handoff] =
 		await Promise.all([
 			opts.workflows ?? loadWorkflows(db, userId, issue.workflow_id),
-			loadComments(db, issue.id),
+			loadCommentHistory(db, issue.id),
 			loadIssueLinks(db, userId, issue.id),
 			contextSummaryForIssue(db, userId, {
 				projectId: issue.project_id,
@@ -807,6 +836,7 @@ export async function getIssueDetail(
 			opts.artifacts ? listArtifacts(db, userId, issue.id) : null,
 			opts.round ? loadHandoffRows(db, userId, issue.id) : null
 		]);
+	const comments = commentHistory.comments;
 
 	const workflow = workflows.find((w) => w.id === issue.workflow_id);
 	if (!workflow) throw notFound();
@@ -834,6 +864,13 @@ export async function getIssueDetail(
 		links,
 		context_summary: contextSummary,
 		...(preloadedArtifacts ? { artifacts: preloadedArtifacts } : {}),
+		...(opts.launchComments
+			? {
+					launch_comments: {
+						latest_completed_run_comment_id: commentHistory.latestCompletedRunCommentId
+					}
+				}
+			: {}),
 		...(handoff
 			? {
 					round: deriveRound({ issue, workflow, comments, ...handoff }),
@@ -886,8 +923,10 @@ export function issueInsertQueries(
 		title: string;
 		description: string;
 		workflowId: string;
+		workflowName: string;
 		stateId: string;
 		stateName: string;
+		stateCategory: StateCategory;
 		now: number;
 		scheduledTask?: { id: string; name: string };
 	}
@@ -921,10 +960,13 @@ export function issueInsertQueries(
 			issueId: id,
 			projectId,
 			payload: {
+				state_entry_version: 1,
 				title: opts.title,
 				workflow_id: workflowId,
+				workflow_name: opts.workflowName,
 				state_id: stateId,
 				state_name: opts.stateName,
+				state_category: opts.stateCategory,
 				...(scheduledTask
 					? { scheduled_task_id: scheduledTask.id, scheduled_task_name: scheduledTask.name }
 					: {})
@@ -1011,8 +1053,10 @@ export async function createIssue(
 			title: issueTitle,
 			description: issueDescription,
 			workflowId: workflow.id,
+			workflowName: workflow.name,
 			stateId: initialState.id,
 			stateName: initialState.name,
+			stateCategory: initialState.category,
 			now,
 			...(schedule ? { scheduledTask: { id: schedule.id, name: schedule.name } } : {})
 		})
@@ -1189,12 +1233,16 @@ export async function updateIssue(
 			payload.pinned_tier = pinnedTier;
 		}
 		if (workflowChanged) {
+			payload.state_entry_version = 1;
 			payload.workflow_from_id = current.workflow.id;
 			payload.workflow_from_name = current.workflow.name;
 			payload.workflow_to_id = workflow.id;
 			payload.workflow_to_name = workflow.name;
+			payload.from_state_id = current.state.id;
 			payload.from_state_name = current.state.name;
+			payload.to_state_id = nextState.id;
 			payload.to_state_name = nextState.name;
+			payload.to_state_category = nextState.category;
 		}
 		queries.push(
 			eventInsert(
@@ -1215,11 +1263,15 @@ export async function updateIssue(
 					issueId: id,
 					projectId: current.project_id,
 					payload: {
+						state_entry_version: 1,
 						forced: true,
+						workflow_id: current.workflow.id,
+						workflow_name: current.workflow.name,
 						from_state_id: current.state.id,
 						from_state_name: current.state.name,
 						to_state_id: nextState.id,
-						to_state_name: nextState.name
+						to_state_name: nextState.name,
+						to_state_category: nextState.category
 					}
 				},
 				guard
@@ -1366,12 +1418,16 @@ export async function transitionIssue(
 				issueId: id,
 				projectId: current.project_id,
 				payload: {
+					state_entry_version: 1,
 					transition_id: target.transition_id,
 					action: target.name,
+					workflow_id: current.workflow.id,
+					workflow_name: current.workflow.name,
 					from_state_id: current.state.id,
 					from_state_name: current.state.name,
 					to_state_id: target.to_state.id,
-					to_state_name: target.to_state.name
+					to_state_name: target.to_state.name,
+					to_state_category: target.to_state.category
 				}
 			},
 			{ issueId: id, stateId: target.to_state.id, updatedAt: now }

@@ -1,0 +1,793 @@
+import {
+	canonicalizeLibraryValue,
+	parsePublicWorkflowDocument,
+	PUBLIC_WORKFLOW_POLICY_VERSION,
+	validateModerationText,
+	validateRequestId,
+	type ModerationDecisionReceipt,
+	type ModerationDecisionRequest,
+	type PublicationMetadata,
+	type PublicationReportReason,
+	type WorkflowReportCase
+} from '@tines/shared';
+import { sql, type Kysely, type RawBuilder } from 'kysely';
+import { sha256Hex } from '../crypto';
+import { ApiFail, runAtomic, type ActorContext } from '../api/core';
+import { newId, type Database } from '../db';
+import { assertHostModerator } from './moderation-auth';
+
+const AUDIT_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+const ACTIONS = new Set(['dismiss', 'disable', 'restore', 'suspend', 'unsuspend']);
+
+function boundedLimit(limit: number | undefined): number {
+	if (limit === undefined) return 50;
+	if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+		throw new ApiFail(422, 'invalid_field', 'limit must be an integer from 1 to 100');
+	return limit;
+}
+
+function publicLabels(documentJson: string, metadataJson: string) {
+	let displayName = 'Publisher';
+	let title = 'Snapshot';
+	try {
+		displayName = (JSON.parse(metadataJson) as PublicationMetadata).display_name || displayName;
+		const document = JSON.parse(documentJson) as {
+			main_workflow_id?: string;
+			workflows?: Array<{ id: string; name: string }>;
+		};
+		title =
+			document.workflows?.find((item) => item.id === document.main_workflow_id)?.name || title;
+	} catch {
+		// Deliberately use neutral labels for malformed stored public bytes.
+	}
+	return { displayName, title };
+}
+
+export async function listModerationCases(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	options: {
+		filter?: 'unread' | 'open' | 'resolved' | 'all';
+		limit?: number;
+		cursor?: string;
+	} = {}
+): Promise<{ items: WorkflowReportCase[]; next_cursor: string | null }> {
+	assertHostModerator(actor, env);
+	const filter = options.filter ?? 'unread';
+	let query = db
+		.selectFrom('workflow_report_case as c')
+		.leftJoin('workflow_publication as p', 'p.snapshot_id', 'c.snapshot_id')
+		.leftJoin('workflow_publisher_status as s', 's.user_id', 'p.user_id')
+		.select([
+			'c.snapshot_id',
+			'c.version',
+			'c.read_through_version',
+			'c.resolved_through_version',
+			'c.latest_report_at',
+			'p.document_json',
+			'p.metadata_json',
+			'p.owner_state',
+			'p.host_state',
+			'p.status_version',
+			's.suspended',
+			's.status_version as publisher_status_version'
+		]);
+	if (filter === 'unread') query = query.whereRef('c.version', '>', 'c.read_through_version');
+	if (filter === 'open') query = query.whereRef('c.version', '>', 'c.resolved_through_version');
+	if (filter === 'resolved') query = query.whereRef('c.version', '=', 'c.resolved_through_version');
+	if (options.cursor) {
+		const match = /^(\d+):([A-Za-z0-9_-]+)$/.exec(options.cursor);
+		if (!match) throw new ApiFail(422, 'invalid_cursor', 'Invalid cursor');
+		const latest = Number(match[1]);
+		query = query.where((eb) =>
+			eb.or([
+				eb('c.latest_report_at', '<', latest),
+				eb.and([eb('c.latest_report_at', '=', latest), eb('c.snapshot_id', '>', match[2])])
+			])
+		);
+	}
+	const limit = boundedLimit(options.limit);
+	const rows = await query
+		.orderBy('c.latest_report_at', 'desc')
+		.orderBy('c.snapshot_id', 'asc')
+		.limit(limit + 1)
+		.execute();
+	const pageRows = rows.slice(0, limit);
+	const items = await Promise.all(
+		pageRows.map(async (row) => {
+			const counts = await db
+				.selectFrom('workflow_report')
+				.select(['reason', (eb) => eb.fn.countAll<number>().as('count')])
+				.where('snapshot_id', '=', row.snapshot_id)
+				.groupBy('reason')
+				.execute();
+			const labels =
+				row.document_json && row.metadata_json
+					? publicLabels(row.document_json, row.metadata_json)
+					: { displayName: 'Publisher', title: 'Snapshot no longer stored' };
+			return {
+				snapshot_id: row.snapshot_id,
+				display_name: labels.displayName,
+				title: labels.title,
+				version: row.version,
+				read_through_version: row.read_through_version,
+				resolved_through_version: row.resolved_through_version,
+				latest_report_at: row.latest_report_at,
+				total: counts.reduce((sum, item) => sum + Number(item.count), 0),
+				reason_counts: Object.fromEntries(
+					counts.map((item) => [item.reason as PublicationReportReason, Number(item.count)])
+				),
+				owner_state:
+					row.owner_state === 'published' || row.owner_state === 'withdrawn'
+						? row.owner_state
+						: null,
+				host_state: row.host_state ?? null,
+				status_version: row.status_version ?? null,
+				suspended: row.suspended === 1,
+				publisher_status_version: row.publisher_status_version ?? 0
+			} satisfies WorkflowReportCase;
+		})
+	);
+	const last = pageRows.at(-1);
+	return {
+		items,
+		next_cursor: rows.length > limit && last ? `${last.latest_report_at}:${last.snapshot_id}` : null
+	};
+}
+
+export async function listSuspendedPublishers(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	options: { limit?: number; cursor?: string } = {}
+) {
+	assertHostModerator(actor, env);
+	let query = db
+		.selectFrom('workflow_publisher_status')
+		.select(['user_id', 'status_version', 'decision_reason', 'decision_reference'])
+		.where('suspended', '=', 1);
+	if (options.cursor) {
+		if (!/^[A-Za-z0-9_-]{1,200}$/.test(options.cursor))
+			throw new ApiFail(422, 'invalid_cursor', 'Invalid cursor');
+		query = query.where('user_id', '>', options.cursor);
+	}
+	const limit = boundedLimit(options.limit);
+	const statuses = await query
+		.orderBy('user_id')
+		.limit(limit + 1)
+		.execute();
+	const pageRows = statuses.slice(0, limit);
+	const items = await Promise.all(
+		pageRows.map(async (status) => {
+			const [anchor, affected] = await Promise.all([
+				db
+					.selectFrom('workflow_publication')
+					.select(['snapshot_id', 'metadata_json'])
+					.where('user_id', '=', status.user_id)
+					.where('snapshot_id', 'is not', null)
+					.orderBy('published_at', 'desc')
+					.executeTakeFirst(),
+				db
+					.selectFrom('workflow_publication')
+					.select((eb) => eb.fn.countAll<number>().as('count'))
+					.where('user_id', '=', status.user_id)
+					.where('snapshot_id', 'is not', null)
+					.executeTakeFirstOrThrow()
+			]);
+			return {
+				publisher_id: status.user_id,
+				status_version: status.status_version,
+				reason: status.decision_reason,
+				reference: status.decision_reference,
+				snapshot_id: anchor?.snapshot_id ?? null,
+				display_name: anchor?.metadata_json
+					? publicLabels('{}', anchor.metadata_json).displayName
+					: 'Suspended publisher',
+				affected_snapshot_count: Number(affected.count)
+			};
+		})
+	);
+	return {
+		items,
+		next_cursor: statuses.length > limit && pageRows.length ? pageRows.at(-1)!.user_id : null
+	};
+}
+
+export async function inspectModerationSnapshot(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	snapshotId: string
+) {
+	assertHostModerator(actor, env);
+	const reportCase = await db
+		.selectFrom('workflow_report_case')
+		.selectAll()
+		.where('snapshot_id', '=', snapshotId)
+		.executeTakeFirst();
+	const row = await db
+		.selectFrom('workflow_publication as p')
+		.leftJoin('workflow_publisher_status as s', 's.user_id', 'p.user_id')
+		.select([
+			'p.snapshot_id',
+			'p.user_id',
+			'p.document_json',
+			'p.document_digest',
+			'p.bytes_sha256',
+			'p.review_digest',
+			'p.metadata_json',
+			'p.published_at',
+			'p.owner_state',
+			'p.host_state',
+			'p.status_version',
+			'p.host_decision_reason',
+			'p.host_decision_reference',
+			's.suspended',
+			's.status_version as publisher_status_version',
+			's.decision_reason as suspension_reason',
+			's.decision_reference as suspension_reference'
+		])
+		.where('p.snapshot_id', '=', snapshotId)
+		.executeTakeFirst();
+	if (!row && !reportCase) throw new ApiFail(404, 'not_found', 'Not found');
+	let document = null;
+	let diagnostics: string[] = [];
+	if (row) {
+		try {
+			const parsed = await parsePublicWorkflowDocument(row.document_json);
+			document = parsed.diagnostics.length ? null : parsed.document;
+			diagnostics = parsed.diagnostics.map((item) => item.message);
+		} catch {
+			diagnostics = ['Stored snapshot could not be parsed'];
+		}
+	} else {
+		diagnostics = ['Snapshot no longer stored'];
+	}
+	return {
+		snapshot_id: snapshotId,
+		stored: !!row,
+		publisher_id: row?.user_id ?? null,
+		metadata: row ? (JSON.parse(row.metadata_json) as PublicationMetadata) : null,
+		document,
+		...(row && !document ? { raw_document_json: row.document_json } : {}),
+		diagnostics,
+		hashes: row
+			? {
+					document_digest: row.document_digest,
+					bytes_sha256: row.bytes_sha256,
+					review_digest: row.review_digest
+				}
+			: null,
+		published_at: row?.published_at ?? null,
+		owner_state: row?.owner_state ?? null,
+		host_state: row?.host_state ?? null,
+		status_version: row?.status_version ?? null,
+		host_removal:
+			row?.host_state === 'removed'
+				? { reason: row.host_decision_reason, reference: row.host_decision_reference }
+				: null,
+		suspension:
+			row?.suspended === 1
+				? { reason: row.suspension_reason, reference: row.suspension_reference }
+				: null,
+		publisher_status_version: row?.publisher_status_version ?? 0,
+		case: reportCase ?? null
+	};
+}
+
+export async function listModerationReports(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	snapshotId: string,
+	options: { limit?: number; cursor?: string } = {}
+) {
+	assertHostModerator(actor, env);
+	const exists = await db
+		.selectFrom('workflow_report_case')
+		.select('snapshot_id')
+		.where('snapshot_id', '=', snapshotId)
+		.executeTakeFirst();
+	if (!exists) throw new ApiFail(404, 'not_found', 'Not found');
+	let query = db
+		.selectFrom('workflow_report')
+		.select([
+			'reason',
+			'note',
+			'note_hash',
+			(eb) => eb.fn.countAll<number>().as('count'),
+			(eb) => eb.fn.max<number>('created_at').as('latest_report_at')
+		])
+		.where('snapshot_id', '=', snapshotId)
+		.groupBy(['reason', 'note_hash', 'note']);
+	if (options.cursor) {
+		const match =
+			/^(\d+):(harmful_abusive|malicious_phishing|private_information|rights|other):(.+)$/.exec(
+				options.cursor
+			);
+		if (!match) throw new ApiFail(422, 'invalid_cursor', 'Invalid cursor');
+		const latest = Number(match[1]);
+		query = query.having(
+			sql<boolean>`max(created_at) < ${latest} OR
+				(max(created_at) = ${latest} AND (reason > ${match[2]} OR
+				(reason = ${match[2]} AND note_hash > ${match[3]})))`
+		);
+	}
+	const limit = boundedLimit(options.limit);
+	const groups = await query
+		.orderBy('latest_report_at', 'desc')
+		.orderBy('reason', 'asc')
+		.orderBy('note_hash', 'asc')
+		.limit(limit + 1)
+		.execute();
+	const pageRows = groups.slice(0, limit);
+	const items = await Promise.all(
+		pageRows.map(async (group) => {
+			const receipts = await db
+				.selectFrom('workflow_report')
+				.select(['id', 'created_at', 'resolved_at'])
+				.where('snapshot_id', '=', snapshotId)
+				.where('reason', '=', group.reason)
+				.where('note_hash', '=', group.note_hash)
+				.where('note', '=', group.note)
+				.orderBy('created_at', 'desc')
+				.orderBy('id', 'desc')
+				.limit(limit + 1)
+				.execute();
+			return {
+				...group,
+				count: Number(group.count),
+				receipt_references: receipts.slice(0, limit).map((receipt) => receipt.id),
+				receipts_truncated: receipts.length > limit
+			};
+		})
+	);
+	const last = pageRows.at(-1);
+	return {
+		items,
+		next_cursor:
+			groups.length > limit && last
+				? `${last.latest_report_at}:${last.reason}:${last.note_hash}`
+				: null
+	};
+}
+
+export async function listModerationAudit(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	snapshotId: string,
+	options: { limit?: number; cursor?: string } = {}
+) {
+	assertHostModerator(actor, env);
+	const row = await db
+		.selectFrom('workflow_publication')
+		.select('user_id')
+		.where('snapshot_id', '=', snapshotId)
+		.executeTakeFirst();
+	const reportCase = row
+		? true
+		: !!(await db
+				.selectFrom('workflow_report_case')
+				.select('snapshot_id')
+				.where('snapshot_id', '=', snapshotId)
+				.executeTakeFirst());
+	if (!row && !reportCase) throw new ApiFail(404, 'not_found', 'Not found');
+	const publisherUserId = row?.user_id;
+	let auditQuery = db
+		.selectFrom('workflow_moderation_audit')
+		.select([
+			'id',
+			'actor_user_id',
+			'actor_name',
+			'action',
+			'target_kind',
+			'target_id',
+			'before_json',
+			'after_json',
+			'case_cutoff',
+			'reason',
+			'created_at'
+		])
+		.where((eb) =>
+			publisherUserId
+				? eb.or([
+						eb('snapshot_id', '=', snapshotId),
+						eb.and([
+							eb('target_kind', '=', 'publisher'),
+							eb('publisher_user_id', '=', publisherUserId)
+						])
+					])
+				: eb('snapshot_id', '=', snapshotId)
+		);
+	if (options.cursor) {
+		const match = /^(\d+):([A-Za-z0-9_-]+)$/.exec(options.cursor);
+		if (!match) throw new ApiFail(422, 'invalid_cursor', 'Invalid cursor');
+		const createdAt = Number(match[1]);
+		auditQuery = auditQuery.where((eb) =>
+			eb.or([
+				eb('created_at', '<', createdAt),
+				eb.and([eb('created_at', '=', createdAt), eb('id', '<', match[2])])
+			])
+		);
+	}
+	const limit = boundedLimit(options.limit);
+	const audit = await auditQuery
+		.orderBy('created_at', 'desc')
+		.orderBy('id', 'desc')
+		.limit(limit + 1)
+		.execute();
+	const pageRows = audit.slice(0, limit);
+	const last = pageRows.at(-1);
+	return {
+		items: pageRows.map(({ before_json, after_json, ...item }) => ({
+			...item,
+			before: JSON.parse(before_json),
+			after: JSON.parse(after_json)
+		})),
+		next_cursor: audit.length > limit && last ? `${last.created_at}:${last.id}` : null
+	};
+}
+
+export async function listModerationReportReceipts(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	snapshotId: string,
+	group: { reason: PublicationReportReason; noteHash: string },
+	options: { limit?: number; cursor?: string } = {}
+) {
+	assertHostModerator(actor, env);
+	if (
+		!['harmful_abusive', 'malicious_phishing', 'private_information', 'rights', 'other'].includes(
+			group.reason
+		) ||
+		!/^[0-9a-f]{64}$/.test(group.noteHash)
+	)
+		throw new ApiFail(422, 'invalid_field', 'Invalid report group');
+	let query = db
+		.selectFrom('workflow_report')
+		.select(['id', 'created_at', 'resolved_at'])
+		.where('snapshot_id', '=', snapshotId)
+		.where('reason', '=', group.reason)
+		.where('note_hash', '=', group.noteHash);
+	if (options.cursor) {
+		const match = /^(\d+):([A-Za-z0-9_-]+)$/.exec(options.cursor);
+		if (!match) throw new ApiFail(422, 'invalid_cursor', 'Invalid cursor');
+		const createdAt = Number(match[1]);
+		query = query.where((eb) =>
+			eb.or([
+				eb('created_at', '<', createdAt),
+				eb.and([eb('created_at', '=', createdAt), eb('id', '<', match[2])])
+			])
+		);
+	}
+	const limit = boundedLimit(options.limit);
+	const rows = await query
+		.orderBy('created_at', 'desc')
+		.orderBy('id', 'desc')
+		.limit(limit + 1)
+		.execute();
+	if (!rows.length && !options.cursor) throw new ApiFail(404, 'not_found', 'Not found');
+	const pageRows = rows.slice(0, limit);
+	const last = pageRows.at(-1);
+	return {
+		items: pageRows.map((row) => ({
+			reference: row.id,
+			received_at: row.created_at,
+			resolved_at: row.resolved_at
+		})),
+		next_cursor: rows.length > limit && last ? `${last.created_at}:${last.id}` : null
+	};
+}
+
+export async function markModerationCaseRead(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	snapshotId: string,
+	throughVersion: number
+) {
+	assertHostModerator(actor, env);
+	if (!Number.isSafeInteger(throughVersion) || throughVersion < 1)
+		throw new ApiFail(422, 'invalid_field', 'through_version must be a positive integer');
+	await db
+		.updateTable('workflow_report_case')
+		.set((eb) => ({
+			read_through_version: eb.fn('max', ['read_through_version', eb.val(throughVersion)])
+		}))
+		.where('snapshot_id', '=', snapshotId)
+		.where('version', '>=', throughVersion)
+		.execute();
+	const row = await db
+		.selectFrom('workflow_report_case')
+		.select(['version', 'read_through_version', 'resolved_through_version'])
+		.where('snapshot_id', '=', snapshotId)
+		.executeTakeFirst();
+	if (!row) throw new ApiFail(404, 'not_found', 'Not found');
+	return row;
+}
+
+function validateDecision(input: ModerationDecisionRequest) {
+	if (!input || typeof input !== 'object' || Array.isArray(input))
+		throw new ApiFail(422, 'invalid_decision', 'Invalid moderation decision');
+	try {
+		validateRequestId(input.request_id);
+		validateModerationText(input.reason, true);
+	} catch (error) {
+		throw new ApiFail(
+			422,
+			'invalid_decision',
+			error instanceof Error ? error.message : 'Invalid decision'
+		);
+	}
+	if (!ACTIONS.has(input.action)) throw new ApiFail(422, 'invalid_decision', 'Invalid action');
+	const allowed = new Set([
+		'request_id',
+		'action',
+		'target',
+		'reason',
+		'expected_snapshot_version',
+		'expected_publisher_version',
+		'case_through_version'
+	]);
+	if (Object.keys(input).some((key) => !allowed.has(key)))
+		throw new ApiFail(422, 'invalid_decision', 'Unknown decision field');
+	if (!input.target || typeof input.target !== 'object' || Array.isArray(input.target))
+		throw new ApiFail(422, 'invalid_decision', 'Decision target is required');
+	if (Object.keys(input.target).some((key) => !['snapshot_id', 'publisher_id'].includes(key)))
+		throw new ApiFail(422, 'invalid_decision', 'Unknown decision target field');
+	for (const value of [
+		input.expected_snapshot_version,
+		input.expected_publisher_version,
+		input.case_through_version
+	]) {
+		if (value !== undefined && (!Number.isSafeInteger(value) || value < 0))
+			throw new ApiFail(422, 'invalid_decision', 'Decision versions must be nonnegative integers');
+	}
+}
+
+export async function decideModeration(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	input: ModerationDecisionRequest,
+	now = Date.now()
+): Promise<ModerationDecisionReceipt> {
+	assertHostModerator(actor, env);
+	validateDecision(input);
+	const reason = validateModerationText(input.reason, true).trim();
+	const targetKind =
+		input.action === 'suspend' || input.action === 'unsuspend' ? 'publisher' : 'snapshot';
+	const targetId =
+		targetKind === 'publisher' ? input.target.publisher_id : input.target.snapshot_id;
+	if (!targetId) throw new ApiFail(422, 'invalid_decision', 'Decision target is required');
+	const requestHash = await sha256Hex(canonicalizeLibraryValue({ ...input, reason }));
+	const oldAudit = await db
+		.selectFrom('workflow_moderation_audit')
+		.selectAll()
+		.where('actor_user_id', '=', actor.userId)
+		.where('request_id', '=', input.request_id)
+		.executeTakeFirst();
+	if (oldAudit) {
+		if (oldAudit.request_hash !== requestHash)
+			throw new ApiFail(
+				409,
+				'moderation_request_conflict',
+				'Use a new request ID for changed details'
+			);
+		return {
+			decision_id: oldAudit.id,
+			action: oldAudit.action,
+			target: { kind: oldAudit.target_kind, id: oldAudit.target_id },
+			decided_at: oldAudit.created_at
+		};
+	}
+
+	const snapshot = input.target.snapshot_id
+		? await db
+				.selectFrom('workflow_publication')
+				.select([
+					'snapshot_id',
+					'user_id',
+					'owner_state',
+					'host_state',
+					'status_version',
+					'document_json',
+					'document_digest',
+					'bytes_sha256',
+					'policy_version'
+				])
+				.where('snapshot_id', '=', input.target.snapshot_id)
+				.executeTakeFirst()
+		: undefined;
+	if (targetKind === 'snapshot' && !snapshot && input.action !== 'dismiss')
+		throw new ApiFail(404, 'not_found', 'Not found');
+	const publisherId = targetKind === 'publisher' ? targetId : (snapshot?.user_id ?? null);
+	const publisher = await db
+		.selectFrom('workflow_publisher_status')
+		.selectAll()
+		.where('user_id', '=', publisherId ?? '')
+		.executeTakeFirst();
+	if (
+		targetKind === 'publisher' &&
+		((snapshot && snapshot.user_id !== publisherId) || (!snapshot && !publisher))
+	)
+		throw new ApiFail(404, 'not_found', 'Not found');
+	const currentPublisherVersion = publisher?.status_version ?? 0;
+	const auditId = newId('mod');
+	let before: Record<string, unknown>;
+	let after: Record<string, unknown>;
+	let auditGuard: RawBuilder<boolean>;
+	if (input.action === 'dismiss') {
+		const reportCase = await db
+			.selectFrom('workflow_report_case')
+			.selectAll()
+			.where('snapshot_id', '=', targetId)
+			.executeTakeFirst();
+		const cutoff = input.case_through_version;
+		if (
+			!reportCase ||
+			!Number.isSafeInteger(cutoff) ||
+			cutoff! < 1 ||
+			cutoff! > reportCase.version ||
+			cutoff! <= reportCase.resolved_through_version
+		)
+			throw new ApiFail(409, 'moderation_state_changed', 'Reload the moderation case');
+		before = { resolved_through_version: reportCase.resolved_through_version };
+		after = { resolved_through_version: cutoff };
+		auditGuard = sql<boolean>`EXISTS (SELECT 1 FROM workflow_report_case
+			WHERE snapshot_id = ${targetId} AND version >= ${cutoff!}
+			AND resolved_through_version < ${cutoff!})`;
+	} else if (targetKind === 'snapshot') {
+		if (input.action === 'restore') {
+			const parsed = await parsePublicWorkflowDocument(snapshot!.document_json);
+			if (
+				snapshot!.policy_version !== PUBLIC_WORKFLOW_POLICY_VERSION ||
+				parsed.diagnostics.length ||
+				parsed.canonical_json !== snapshot!.document_json ||
+				parsed.document.digest !== snapshot!.document_digest ||
+				parsed.bytes_sha256 !== snapshot!.bytes_sha256
+			)
+				throw new ApiFail(
+					409,
+					'publication_policy_changed',
+					'Snapshot does not meet current publication policy'
+				);
+		}
+		if (
+			input.expected_snapshot_version !== undefined &&
+			input.expected_snapshot_version !== snapshot!.status_version
+		)
+			throw new ApiFail(409, 'moderation_state_changed', 'Reload the snapshot status');
+		const desired = input.action === 'disable' ? 'removed' : 'active';
+		if (snapshot!.host_state === desired)
+			throw new ApiFail(409, 'moderation_state_changed', 'The requested state is already active');
+		before = { host_state: snapshot!.host_state, status_version: snapshot!.status_version };
+		after = { host_state: desired, status_version: snapshot!.status_version + 1 };
+		if (input.case_through_version !== undefined) {
+			const reportCase = await db
+				.selectFrom('workflow_report_case')
+				.select('version')
+				.where('snapshot_id', '=', targetId)
+				.executeTakeFirst();
+			if (!reportCase || input.case_through_version > reportCase.version)
+				throw new ApiFail(409, 'moderation_state_changed', 'Reload the moderation case');
+		}
+		auditGuard = sql<boolean>`EXISTS (SELECT 1 FROM workflow_publication
+			WHERE snapshot_id = ${targetId} AND status_version = ${snapshot!.status_version}
+			AND host_state = ${snapshot!.host_state}
+			${input.action === 'restore' ? sql`AND policy_version = ${snapshot!.policy_version} AND document_digest = ${snapshot!.document_digest} AND bytes_sha256 = ${snapshot!.bytes_sha256} AND document_json = ${snapshot!.document_json}` : sql``})`;
+	} else {
+		if (
+			input.expected_publisher_version !== undefined &&
+			input.expected_publisher_version !== currentPublisherVersion
+		)
+			throw new ApiFail(409, 'moderation_state_changed', 'Reload the publisher status');
+		const desired = input.action === 'suspend' ? 1 : 0;
+		if ((publisher?.suspended ?? 0) === desired)
+			throw new ApiFail(409, 'moderation_state_changed', 'The requested state is already active');
+		before = { suspended: publisher?.suspended ?? 0, status_version: currentPublisherVersion };
+		after = { suspended: desired, status_version: currentPublisherVersion + 1 };
+		auditGuard =
+			currentPublisherVersion === 0
+				? sql<boolean>`NOT EXISTS (SELECT 1 FROM workflow_publisher_status WHERE user_id = ${publisherId})`
+				: sql<boolean>`EXISTS (SELECT 1 FROM workflow_publisher_status
+					WHERE user_id = ${publisherId} AND status_version = ${currentPublisherVersion}
+					AND suspended = ${publisher!.suspended})`;
+	}
+	const beforeJson = canonicalizeLibraryValue(before);
+	const afterJson = canonicalizeLibraryValue(after);
+	const queries = [
+		sql`INSERT INTO workflow_moderation_audit
+			(id, request_id, request_hash, actor_user_id, actor_name, action, target_kind,
+			 target_id, snapshot_id, document_digest, bytes_sha256, publisher_user_id,
+			 before_json, after_json, case_cutoff, reason, created_at, expires_at)
+		SELECT ${auditId}, ${input.request_id}, ${requestHash}, ${actor.userId}, ${actor.userName},
+			${input.action}, ${targetKind}, ${targetId}, ${snapshot?.snapshot_id ?? input.target.snapshot_id ?? null},
+			${snapshot?.document_digest ?? null}, ${snapshot?.bytes_sha256 ?? null}, ${publisherId},
+			${beforeJson}, ${afterJson}, ${input.case_through_version ?? null}, ${reason}, ${now}, ${now + AUDIT_TTL_MS}
+		WHERE ${auditGuard}
+		ON CONFLICT(actor_user_id, request_id) DO NOTHING`.compile(db)
+	];
+	const freshAudit = sql<boolean>`EXISTS (SELECT 1 FROM workflow_moderation_audit WHERE id = ${auditId} AND actor_user_id = ${actor.userId})`;
+	if (input.action === 'dismiss') {
+		queries.push(
+			sql`UPDATE workflow_report_case SET
+				read_through_version = max(read_through_version, ${input.case_through_version!}),
+				resolved_through_version = max(resolved_through_version, ${input.case_through_version!}), updated_at = ${now}
+			WHERE snapshot_id = ${targetId} AND version >= ${input.case_through_version!} AND ${freshAudit}`.compile(
+				db
+			),
+			sql`UPDATE workflow_report SET resolved_at = ${now}
+			WHERE snapshot_id = ${targetId} AND case_version <= ${input.case_through_version!}
+			AND resolved_at IS NULL AND ${freshAudit}`.compile(db)
+		);
+	} else if (targetKind === 'snapshot') {
+		const removed = input.action === 'disable';
+		queries.push(
+			sql`UPDATE workflow_publication SET host_state = ${removed ? 'removed' : 'active'},
+				status_version = status_version + 1,
+				host_decision_reason = ${removed ? reason : null},
+				host_decision_reference = ${removed ? auditId : null}
+			WHERE snapshot_id = ${targetId} AND status_version = ${snapshot!.status_version}
+			AND host_state = ${snapshot!.host_state} AND ${freshAudit}`.compile(db)
+		);
+		if (removed && input.case_through_version)
+			queries.push(
+				sql`UPDATE workflow_report_case SET
+					read_through_version = max(read_through_version, ${input.case_through_version}),
+					resolved_through_version = max(resolved_through_version, ${input.case_through_version}), updated_at = ${now}
+				WHERE snapshot_id = ${targetId} AND version >= ${input.case_through_version} AND ${freshAudit}`.compile(
+					db
+				),
+				sql`UPDATE workflow_report SET resolved_at = ${now}
+				WHERE snapshot_id = ${targetId} AND case_version <= ${input.case_through_version}
+				AND resolved_at IS NULL AND ${freshAudit}`.compile(db)
+			);
+	} else {
+		const suspended = input.action === 'suspend' ? 1 : 0;
+		queries.push(
+			sql`INSERT INTO workflow_publisher_status
+				(user_id, suspended, status_version, decision_reference, decision_reason)
+			SELECT ${publisherId}, ${suspended}, ${currentPublisherVersion + 1},
+				${suspended ? auditId : null}, ${suspended ? reason : null} WHERE ${freshAudit}
+			ON CONFLICT(user_id) DO UPDATE SET suspended = excluded.suspended,
+				status_version = workflow_publisher_status.status_version + 1,
+				decision_reference = excluded.decision_reference,
+				decision_reason = excluded.decision_reason`.compile(db)
+		);
+	}
+	queries.push(sql`SELECT id FROM workflow_moderation_audit WHERE id = ${auditId}`.compile(db));
+	const results = await runAtomic(env, queries);
+	if (!results.at(-1)?.results?.length) {
+		const reconciled = await db
+			.selectFrom('workflow_moderation_audit')
+			.selectAll()
+			.where('actor_user_id', '=', actor.userId)
+			.where('request_id', '=', input.request_id)
+			.executeTakeFirst();
+		if (reconciled) {
+			if (reconciled.request_hash !== requestHash)
+				throw new ApiFail(
+					409,
+					'moderation_request_conflict',
+					'Use a new request ID for changed details'
+				);
+			return {
+				decision_id: reconciled.id,
+				action: reconciled.action,
+				target: { kind: reconciled.target_kind, id: reconciled.target_id },
+				decided_at: reconciled.created_at
+			};
+		}
+		throw new ApiFail(409, 'moderation_state_changed', 'Reload the current moderation state');
+	}
+	return {
+		decision_id: auditId,
+		action: input.action,
+		target: { kind: targetKind, id: targetId },
+		decided_at: now
+	};
+}

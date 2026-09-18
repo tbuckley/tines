@@ -184,15 +184,25 @@ export function runnerStatusLabel(runner: Runner): string {
 	return runner.online ? 'online' : 'offline';
 }
 
+export function runnerConcurrencyLabel(runner: Runner): string {
+	if (runner.type !== 'local' || !runner.concurrency_control) return `${runner.max_concurrent}`;
+	const control = runner.concurrency_control;
+	if (control.status === 'applied')
+		return `${runner.max_concurrent} applied · ceiling ${control.ceiling ?? '?'}`;
+	if (control.status === 'pending')
+		return `${runner.max_concurrent} pending · confirmed ${control.applied_cap ?? 'none'} · ceiling ${control.ceiling ?? '?'}`;
+	return `${runner.max_concurrent} web off (${control.reason ?? 'unavailable'})`;
+}
+
 export function ruleTargetsLabel(rule: RoutingRule): string {
 	if (rule.targets.length === 0) return '(no targets)';
 	if (rule.targets.length === 1 && rule.targets[0]?.runner_id === '*') {
-		return `*:${rule.targets[0].tier} (inherited runners)`;
+		return `1. *:${rule.targets[0].tier}${rule.targets[0].effort ? ` effort=${rule.targets[0].effort}` : ''} (inherited runners)`;
 	}
 	return rule.targets
 		.map(
-			(t) =>
-				`${t.runner_name}${t.tier ? `:${t.tier}` : ''}${t.runner_status === 'paused' ? ' (paused)' : ''}`
+			(t, index) =>
+				`${index + 1}. ${t.runner_name}${t.tier ? `:${t.tier}` : ''}${t.effort ? ` effort=${t.effort}` : ''}${t.runner_status === 'paused' ? ' (paused)' : ''}`
 		)
 		.join(' → ');
 }
@@ -332,7 +342,7 @@ export function runRow(run: AgentRun): string[] {
 		run.id,
 		run.issue_ref ? issueRef(run.issue_ref) : run.issue_id,
 		run.runner_name,
-		`${run.tier}${run.model ? ` (${run.model})` : ''}`,
+		`${run.tier}${run.model ? ` (${run.model})` : ''}${run.resolved_effort ? ` · effort ${run.resolved_effort} · ${run.effort_application_status}` : ''}`,
 		`${run.status}${run.resumed_from_run_id ? ` · resumed run ${run.resumed_from_run_id}` : ''}`,
 		runDurationLabel(run),
 		runCostLabel(run) ?? '—',

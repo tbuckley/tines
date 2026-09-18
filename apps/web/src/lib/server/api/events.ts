@@ -1,8 +1,39 @@
 import type { Actor, ActorRun, TinesEvent } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
+import { ApiFail, type ActorContext } from './core';
+
+export interface EventWindowFilters {
+	since?: number;
+	until?: number;
+	type?: string | string[];
+	state?: string;
+}
+
+/** Apply the time/type/state predicates shared by activity and stage stats. */
+export function applyEventWindow<Q>(query: Q, filters: EventWindowFilters): Q {
+	// Kysely's table type differs for the display query and the slim analytics
+	// query; both expose the same where builder for event columns.
+	let q = query as Q & { where: (...args: unknown[]) => Q };
+	if (filters.since !== undefined) q = q.where('event.created_at', '>=', filters.since) as typeof q;
+	if (filters.until !== undefined) q = q.where('event.created_at', '<', filters.until) as typeof q;
+	if (filters.type) {
+		const types = Array.isArray(filters.type) ? filters.type : [filters.type];
+		q = q.where('event.type', 'in', types) as typeof q;
+	}
+	if (filters.state) {
+		const state = filters.state;
+		q = q.where((eb: any) =>
+			eb.or([
+				eb(sql<string>`json_extract(event.payload, '$.from_state_id')`, '=', state),
+				eb(sql<string>`json_extract(event.payload, '$.to_state_id')`, '=', state),
+				eb(sql<string>`json_extract(event.payload, '$.state_id')`, '=', state)
+			])
+		) as typeof q;
+	}
+	return q as Q;
+}
 import type { QueryGuard } from './query-guard';
-import type { ActorContext } from './core';
 
 export interface EventInput {
 	/** Stable batch allocation; ordinary callers omit these. */
@@ -194,4 +225,18 @@ export function serializeEvent(row: EventRow): TinesEvent {
 		payload,
 		created_at: row.created_at
 	};
+}
+
+export function eventTimeParam(
+	params: URLSearchParams,
+	name: 'since' | 'until'
+): number | undefined {
+	const value = params.get(name);
+	if (!value) return undefined;
+	const parsed = /^\d+$/.test(value) ? Number(value) : Date.parse(value);
+	if (!Number.isFinite(parsed))
+		throw new ApiFail(422, 'validation_error', `"${name}" must be epoch milliseconds or ISO 8601`, {
+			field: name
+		});
+	return parsed;
 }

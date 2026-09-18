@@ -12,6 +12,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+	ACTIVITY_RUN_EVENTS,
 	AGENTS_FIRST_RUN,
 	ALICE,
 	ALICE_AGENT,
@@ -21,6 +22,8 @@ import {
 	DANA,
 	EXPLAINER_REMEDIES,
 	MANAGED_SETTINGS,
+	NATIVE_MODERATION_PUBLISHER,
+	NATIVE_PUBLICATIONS_PUBLISHER,
 	PAGINATION,
 	RUNROW,
 	RUNROW_ESTIMATED,
@@ -28,14 +31,19 @@ import {
 	SPEND,
 	SCHED,
 	STOPPED_FIRST_RUN,
-	TRANSFER_RUNTIME
+	TRANSFER_RUNTIME,
+	WORKFLOW_MODERATION_PUBLISHER,
+	WORKFLOW_PUBLICATIONS_PUBLISHER
 } from './constants.mjs';
 import { spendStatements } from './spend-seed.mjs';
 
+import { WEEKLY, stageStatsSeed } from './stage-stats-seed.mjs';
+import { statsScaleStatements } from '../scripts/stats-scale-fixture.mjs';
+
 const sha256Hex = (s) => createHash('sha256').update(s).digest('hex');
 
-const nowIso = new Date().toISOString();
-const nowMs = Date.now();
+const nowMs = Number(process.env.E2E_SEED_NOW ?? Date.now());
+const nowIso = new Date(nowMs).toISOString();
 const expires = '2030-01-01T00:00:00.000Z';
 
 const statements = [];
@@ -50,8 +58,13 @@ for (const user of [
 	STOPPED_FIRST_RUN,
 	MANAGED_SETTINGS,
 	TRANSFER_RUNTIME,
+	NATIVE_MODERATION_PUBLISHER,
+	NATIVE_PUBLICATIONS_PUBLISHER,
+	WORKFLOW_MODERATION_PUBLISHER,
+	WORKFLOW_PUBLICATIONS_PUBLISHER,
 	PAGINATION.user,
-	SPEND
+	SPEND,
+	WEEKLY
 ]) {
 	statements.push(
 		`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
@@ -66,6 +79,33 @@ for (const user of [
 statements.push(
 	`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
 	 VALUES ('${ALICE_AGENT.id}', '${ALICE.id}', '${ALICE_AGENT.apiKeyName}', '${sha256Hex(ALICE_AGENT.apiKey)}', '${ALICE_AGENT.apiKey.slice(0, 14)}', ${nowMs});`
+);
+
+const activityPayloads = [
+	{ tier: 'balanced', runner_name: ACTIVITY_RUN_EVENTS.events[0].runner },
+	{ status: 'completed', outcome: 'advanced', runner_name: ACTIVITY_RUN_EVENTS.events[1].runner },
+	{ status: 'failed', outcome: 'advanced', runner_name: ACTIVITY_RUN_EVENTS.events[2].runner },
+	{ status: 'failed', outcome: 'interrupted', runner_name: ACTIVITY_RUN_EVENTS.events[3].runner },
+	{ status: 'completed', outcome: 'stalled', runner_name: ACTIVITY_RUN_EVENTS.events[4].runner },
+	{
+		status: 'completed',
+		outcome: 'future-outcome',
+		runner_name: ACTIVITY_RUN_EVENTS.events[5].runner
+	}
+];
+statements.push(
+	`INSERT INTO project (id, user_id, name, description, created_at, updated_at)
+	 VALUES ('${ACTIVITY_RUN_EVENTS.projectId}', '${ALICE.id}', '${ACTIVITY_RUN_EVENTS.projectName}', '', ${nowMs}, ${nowMs});`,
+	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
+	 VALUES ('${ACTIVITY_RUN_EVENTS.issueId}', '${ACTIVITY_RUN_EVENTS.projectId}', ${ACTIVITY_RUN_EVENTS.issueNumber},
+	   'Activity run presentation', '', 'wf_standard', 'wfs_std_open', ${nowMs}, ${nowMs});`,
+	...ACTIVITY_RUN_EVENTS.events.map(
+		(event, index) =>
+			`INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+			 VALUES ('${event.id}', '${ALICE.id}', '${event.type}', '${ALICE.id}', NULL,
+			   '${ACTIVITY_RUN_EVENTS.issueId}', '${ACTIVITY_RUN_EVENTS.projectId}',
+			   '${JSON.stringify(activityPayloads[index])}', ${nowMs + index + 1});`
+	)
 );
 
 statements.push(...spendStatements(nowMs));
@@ -209,9 +249,9 @@ statements.push(
 	 VALUES ('${RUNROW.issueId}', '${RUNROW.projectId}', ${RUNROW.issueNumber}, 'Managed run row', '',
 	   'wf_standard', 'wfs_std_open', ${nowMs}, ${nowMs});`,
 	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier,
-	   config, created_at, updated_at)
+	   config, launch_failures, created_at, updated_at)
 	 VALUES ('${RUNROW.runnerId}', '${ALICE.id}', 'claude_managed', '${RUNROW.runnerName}', 'active', 1, 30,
-	   'balanced', '{}', ${nowMs}, ${nowMs});`,
+	   'balanced', '{}', 1, ${nowMs}, ${nowMs});`,
 	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage,
 	   state_id_at_start, state_id_at_end, provider_session_id, provider_url, log, error,
 	   created_at, started_at, ended_at)
@@ -255,6 +295,12 @@ statements.push(
 	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage, state_id_at_start, state_id_at_end, log, created_at, started_at, ended_at)
 	 VALUES ('${RUNROW_ESTIMATED.runId}', '${ALICE.id}', '${RUNROW_ESTIMATED.issueId}', '${RUNROW_ESTIMATED.runnerId}', 'completed', 'advanced', 'balanced', 'gpt-5.6-sol', '${estimatedUsage}', 'wfs_std_open', 'wfs_std_open', 'priced log', ${runStart + 1}, ${runStart + 1}, ${nowMs});`
 );
+
+statements.push(...stageStatsSeed(nowMs));
+if (process.env.STATS_SCALE === '1')
+	statements.push(
+		...statsScaleStatements(nowMs, Number(process.env.STATS_IRRELEVANT_MULTIPLIER ?? 1))
+	);
 
 const sqlFile = join(mkdtempSync(join(tmpdir(), 'tines-e2e-')), 'seed.sql');
 writeFileSync(sqlFile, statements.join('\n'));

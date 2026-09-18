@@ -14,6 +14,9 @@ export const BASE_URL = `http://127.0.0.1:${PORT}`;
 export const AUTH_SECRET =
 	'tines-e2e-secret-4b8e1c3f9a2d7e5b0c6f1a8d3e9b2c7f4a1e6d0b5c8f3a2e7d9b4c1f6a0e3d8b';
 
+/** Shared worker setting and native-D1 final-slot fixture boundary. */
+export const PUBLICATION_DAILY_QUOTA = 20;
+
 export const ALICE = {
 	id: 'usr_e2e_alice',
 	name: 'Alice E2E',
@@ -41,7 +44,7 @@ export const SPEND = {
 	projects: {
 		alpha: { id: 'prj_e2e_spend_alpha', name: 'Spend Alpha' },
 		beta: { id: 'prj_e2e_spend_beta', name: 'Spend Beta' },
-		empty: { id: 'prj_e2e_spend_empty', name: 'Spend Empty' },
+		empty: { id: 'prj_e2e_spend_empty', name: 'SpendEmpty' + 'P'.repeat(190) },
 		pending: { id: 'prj_e2e_spend_pending', name: 'Spend Pending' },
 		unreported: { id: 'prj_e2e_spend_unreported', name: 'Spend Unreported' },
 		tokens: { id: 'prj_e2e_spend_tokens', name: 'Spend Tokens' },
@@ -51,7 +54,7 @@ export const SPEND = {
 	workflows: {
 		build: { id: 'wf_e2e_spend_build', name: 'Build' },
 		ship: { id: 'wf_e2e_spend_ship', name: 'Ship' },
-		unknown: { id: 'wf_e2e_spend_unknown', name: 'Unknown cost' }
+		unknown: { id: 'wf_e2e_spend_unknown', name: 'UnknownCost' + 'W'.repeat(189) }
 	}
 };
 
@@ -147,6 +150,29 @@ export const RUNROW_ESTIMATED = {
 };
 
 /**
+ * Seeded event presentations for the shared Activity feed. These rows cover
+ * the outcome precedence and conservative fallback without launching agents.
+ */
+export const ACTIVITY_RUN_EVENTS = {
+	projectId: 'prj_e2e_activity_runs',
+	projectName: 'activity-runs-seed',
+	issueId: 'iss_e2e_activity_runs_1',
+	issueNumber: 1,
+	events: [
+		{ id: 'evt_e2e_activity_started', type: 'agent_run.started', runner: 'activity-start' },
+		{ id: 'evt_e2e_activity_completed', type: 'agent_run.ended', runner: 'activity-success' },
+		{ id: 'evt_e2e_activity_failed', type: 'agent_run.ended', runner: 'activity-failure' },
+		{
+			id: 'evt_e2e_activity_interrupted',
+			type: 'agent_run.ended',
+			runner: 'activity-interrupted'
+		},
+		{ id: 'evt_e2e_activity_stalled', type: 'agent_run.ended', runner: 'activity-stalled' },
+		{ id: 'evt_e2e_activity_unknown', type: 'agent_run.ended', runner: 'activity-unknown' }
+	]
+};
+
+/**
  * A third account with **no projects of its own**, for the "hidden below two
  * projects" half of the project switcher (Tines/259). Bob cannot serve: the
  * library spec imports projects for him.
@@ -167,6 +193,40 @@ export const BOB = {
 	apiKey: 'tines_e2ebob000000000000000000000000000000000000',
 	apiKeyName: 'bob-key',
 	sessionToken: 'e2e-session-bob'
+};
+
+/** Dedicated publishers keep the publication-heavy specs below their independent quotas. */
+export const NATIVE_MODERATION_PUBLISHER = {
+	id: 'usr_e2e_native_moderation_publisher',
+	name: 'Native Moderation Publisher E2E',
+	email: 'native-moderation-publisher@e2e.test',
+	apiKey: 'tines_e2enativemoderationpublisher0000000000000000000',
+	apiKeyName: 'native-moderation-publisher-key',
+	sessionToken: 'e2e-session-native-moderation-publisher'
+};
+export const NATIVE_PUBLICATIONS_PUBLISHER = {
+	id: 'usr_e2e_native_publications_publisher',
+	name: 'Native Publications Publisher E2E',
+	email: 'native-publications-publisher@e2e.test',
+	apiKey: 'tines_e2enativepublicationspublisher00000000000000000',
+	apiKeyName: 'native-publications-publisher-key',
+	sessionToken: 'e2e-session-native-publications-publisher'
+};
+export const WORKFLOW_MODERATION_PUBLISHER = {
+	id: 'usr_e2e_workflow_moderation_publisher',
+	name: 'Workflow Moderation Publisher E2E',
+	email: 'workflow-moderation-publisher@e2e.test',
+	apiKey: 'tines_e2eworkflowmoderationpublisher00000000000000000',
+	apiKeyName: 'workflow-moderation-publisher-key',
+	sessionToken: 'e2e-session-workflow-moderation-publisher'
+};
+export const WORKFLOW_PUBLICATIONS_PUBLISHER = {
+	id: 'usr_e2e_workflow_publications_publisher',
+	name: 'Workflow Publications Publisher E2E',
+	email: 'workflow-publications-publisher@e2e.test',
+	apiKey: 'tines_e2eworkflowpublicationspublisher000000000000000',
+	apiKeyName: 'workflow-publications-publisher-key',
+	sessionToken: 'e2e-session-workflow-publications-publisher'
 };
 
 /** Independent empty accounts: these specs must be runnable in any order. */

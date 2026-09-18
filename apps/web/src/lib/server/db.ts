@@ -265,6 +265,17 @@ export interface RunnerTable {
 	/** 'active' | 'paused'. */
 	status: string;
 	max_concurrent: number;
+	/** 'legacy' | 'local' | 'remote'. */
+	concurrency_mode: string;
+	concurrency_ceiling: number | null;
+	concurrency_requested: number | null;
+	concurrency_revision: number;
+	concurrency_instance_id: string | null;
+	concurrency_applied_revision: number | null;
+	concurrency_applied_cap: number | null;
+	concurrency_applied_instance_id: string | null;
+	concurrency_applied_at: number | null;
+	concurrency_unavailable_reason: string | null;
 	max_run_minutes: number;
 	default_tier: string;
 	/** JSON per-tier model overrides; NULL = built-ins only. */
@@ -279,6 +290,8 @@ export interface RunnerTable {
 	runner_token_hash: string | null;
 	/** Current local-daemon boot admitted to mutate this runner through poll. */
 	daemon_instance_id: string | null;
+	/** JSON exact-model support asserted by the admitted daemon boot. */
+	effort_capabilities: string | null;
 	/** Immediately preceding daemon boot, rejected if it polls again. */
 	fenced_instance_id: string | null;
 	last_seen_at: number | null;
@@ -317,6 +330,11 @@ export interface AgentRunTable {
 	tier: string;
 	/** Resolved at launch; NULL when the harness cannot vary its model. */
 	model: string | null;
+	requested_effort: string | null;
+	resolved_effort: string | null;
+	effort_source: string | null;
+	effort_application_status: string | null;
+	effort_application_evidence: string | null;
 	/** JSON usage record. */
 	usage: string | null;
 	state_id_at_start: string;
@@ -457,6 +475,135 @@ export interface LibraryInstallTable {
 	created_at: number;
 }
 
+export interface WorkflowPublicationTable {
+	id: string;
+	user_id: string;
+	actor_key: string;
+	prepare_request_id: string;
+	prepare_request_hash: string;
+	source_workflow_id: string | null;
+	source_kind: 'owned_workflow' | 'file';
+	source_provenance_json: string;
+	document_json: string;
+	document_digest: string;
+	bytes_sha256: string;
+	byte_length: number;
+	metadata_json: string;
+	review_digest: string;
+	policy_version: number;
+	created_at: number;
+	expires_at: number;
+	snapshot_id: string | null;
+	published_at: number | null;
+	owner_state: 'candidate' | 'published' | 'withdrawn';
+	host_state: 'active' | 'removed';
+	status_version: number;
+	confirmed_at: number | null;
+	confirmed_actor_key: string | null;
+	publication_receipt_json: string | null;
+	attempt_nonce: string | null;
+	host_decision_reason: string | null;
+	host_decision_reference: string | null;
+}
+
+export interface WorkflowPublicationSourceTable {
+	publication_id: string;
+	source_witness_json: string;
+	source_fingerprint: string;
+}
+
+export interface WorkflowPublisherStatusTable {
+	user_id: string;
+	suspended: number;
+	status_version: number;
+	decision_reference: string | null;
+	decision_reason: string | null;
+}
+
+export interface WorkflowPublicationQuotaFenceTable {
+	user_id: string;
+	version: number;
+	attempt_nonce: string;
+}
+
+export interface WorkflowPublicationEventTable {
+	id: string;
+	publication_id: string;
+	snapshot_id: string | null;
+	user_id: string;
+	actor_key: string;
+	action:
+		| 'published'
+		| 'withdrawn'
+		| 'restored'
+		| 'host_removed'
+		| 'publisher_suspended'
+		| 'publisher_restored';
+	publication_status_version: number;
+	publisher_status_version: number;
+	reason: string | null;
+	reference: string | null;
+	created_at: number;
+}
+
+export interface WorkflowReportCaseTable {
+	snapshot_id: string;
+	version: number;
+	read_through_version: number;
+	resolved_through_version: number;
+	latest_report_at: number;
+	updated_at: number;
+}
+
+export interface WorkflowReportTable {
+	id: string;
+	snapshot_id: string;
+	case_version: number;
+	reason: 'harmful_abusive' | 'malicious_phishing' | 'private_information' | 'rights' | 'other';
+	note: string;
+	note_hash: string;
+	created_at: number;
+	resolved_at: number | null;
+}
+
+export interface WorkflowReportRequestTable {
+	request_token: string;
+	body_hash: string;
+	receipt_id: string;
+	created_at: number;
+	expires_at: number;
+	attempt_nonce: string;
+}
+
+export interface WorkflowReportRateEventTable {
+	receipt_id: string;
+	subject_kind: 'network' | 'account';
+	subject_token: string;
+	accepted_at: number;
+	expires_at: number;
+}
+
+export interface WorkflowModerationAuditTable {
+	id: string;
+	request_id: string;
+	request_hash: string;
+	actor_user_id: string;
+	actor_name: string;
+	action: 'dismiss' | 'disable' | 'restore' | 'suspend' | 'unsuspend';
+	target_kind: 'snapshot' | 'publisher';
+	target_id: string;
+	snapshot_id: string | null;
+	document_digest: string | null;
+	bytes_sha256: string | null;
+	publisher_user_id: string | null;
+	before_json: string;
+	after_json: string;
+	case_cutoff: number | null;
+	reason: string;
+	created_at: number;
+	expires_at: number;
+}
+
 export interface Database {
 	project: ProjectTable;
 	workflow: WorkflowTable;
@@ -483,6 +630,16 @@ export interface Database {
 	supervisor_sweep_state: SupervisorSweepStateTable;
 	user_preference: UserPreferenceTable;
 	library_install: LibraryInstallTable;
+	workflow_publication: WorkflowPublicationTable;
+	workflow_publication_source: WorkflowPublicationSourceTable;
+	workflow_publisher_status: WorkflowPublisherStatusTable;
+	workflow_publication_quota_fence: WorkflowPublicationQuotaFenceTable;
+	workflow_publication_event: WorkflowPublicationEventTable;
+	workflow_report_case: WorkflowReportCaseTable;
+	workflow_report: WorkflowReportTable;
+	workflow_report_request: WorkflowReportRequestTable;
+	workflow_report_rate_event: WorkflowReportRateEventTable;
+	workflow_moderation_audit: WorkflowModerationAuditTable;
 	user: UserTable;
 }
 

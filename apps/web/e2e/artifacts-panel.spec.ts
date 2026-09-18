@@ -1,7 +1,17 @@
 import type { Artifact, IssueDetail, Project, WorkflowResponse } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, clickUntil, gotoHydrated, readSettled, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	clickUntil,
+	gotoHydrated,
+	readSettled,
+	runId,
+	signIn,
+	issuePath
+} from './helpers';
 
 /**
  * A folder artifact's row on a phone (Tines/30): the type icon, the thumbnail
@@ -21,7 +31,7 @@ const PNG = Buffer.from(
 	'base64'
 );
 
-const projectName = `artifacts-panel-${runId}`;
+let projectName: string;
 let project: Project;
 let plain: IssueDetail;
 let stale: IssueDetail;
@@ -31,11 +41,9 @@ let gatedPlain: IssueDetail;
 let gatedPhone: IssueDetail;
 let gatedFile: IssueDetail;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName, workerRequest: request }) => {
+	projectName = uniqueName('artifacts-panel');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 
 	// Eight images: more than the three thumbnails a row shows, as in the
@@ -63,7 +71,7 @@ test.beforeAll(async ({ playwright }) => {
 	// requires the slot — so the row renders both.
 	const workflow = await body<WorkflowResponse>(
 		await api.post('/api/v1/workflows', {
-			name: `Panel loop ${runId}`,
+			name: uniqueName('Panel loop', { maxLength: 100 }),
 			initial_state: 'Design',
 			states: [
 				{ name: 'Design', category: 'active' },
@@ -126,13 +134,9 @@ test.beforeAll(async ({ playwright }) => {
 	gatedPlain = await inDesign('Panel gated plain');
 	gatedPhone = await inDesign('Panel gated phone');
 	gatedFile = await inDesign('Panel gated file');
-
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
 /**
  * On a phone the Artifacts panel folds to one row (Tines/165); open it before
@@ -147,9 +151,6 @@ async function unfoldArtifacts(page: Page): Promise<void> {
 		expect(await fold.getAttribute('aria-expanded')).toBe('true');
 	}).toPass({ timeout: 15_000 });
 }
-
-const issueUrl = (issue: IssueDetail) =>
-	`/issues/${encodeURIComponent(projectName)}/${issue.number}`;
 
 /** The `photos` row, keyed off the artifact-name button inside it. */
 function photosRow(page: Page): Locator {
@@ -203,7 +204,7 @@ const settledGeometry = (row: Locator): Promise<RowGeometry> => readSettled(() =
 
 test('a folder row keeps its metadata readable on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await gotoHydrated(page, issueUrl(plain));
+	await gotoHydrated(page, issuePath(projectName, plain.number));
 	await unfoldArtifacts(page);
 
 	const row = photosRow(page);
@@ -225,7 +226,7 @@ test('a folder row keeps its metadata readable on a phone', async ({ page }) => 
 
 test('a stale folder row keeps its metadata and actions on a phone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await gotoHydrated(page, issueUrl(stale));
+	await gotoHydrated(page, issuePath(projectName, stale.number));
 	await unfoldArtifacts(page);
 
 	const row = photosRow(page);
@@ -255,7 +256,7 @@ test('a stale folder row keeps its metadata and actions on a phone', async ({ pa
 
 test('a folder row stays one line on a desktop', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await gotoHydrated(page, issueUrl(plain));
+	await gotoHydrated(page, issuePath(projectName, plain.number));
 	await unfoldArtifacts(page);
 
 	const row = photosRow(page);
@@ -295,7 +296,7 @@ const typeOption = (page: Page, type: string): Locator =>
 
 /** Open the Attach dialog and name the slot, through the hydration window. */
 async function openAttachFor(page: Page, issue: IssueDetail, name: string): Promise<Locator> {
-	await gotoHydrated(page, issueUrl(issue));
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 	await unfoldArtifacts(page);
 	const nameField = page.locator('#artifact-name');
 	await clickUntil(page.getByRole('button', { name: 'Attach artifact' }), async () => {
@@ -307,7 +308,7 @@ async function openAttachFor(page: Page, issue: IssueDetail, name: string): Prom
 
 test('the attach dialog pre-selects the gate type and warns on one it rejects', async ({
 	page,
-	playwright
+	apiFor
 }) => {
 	await openAttachFor(page, gatedMd, 'prd');
 
@@ -335,10 +336,7 @@ test('the attach dialog pre-selects the gate type and warns on one it rejects', 
 	await expect(page.getByRole('button', { name: 'prd', exact: true })).toBeVisible();
 
 	// What the gate wanted, and it clears the gate on the first try.
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+	const api = apiFor(ALICE);
 	const artifact = await body<Artifact>(
 		await api.get(`/api/v1/issues/${gatedMd.id}/artifacts/prd`)
 	);
@@ -346,12 +344,11 @@ test('the attach dialog pre-selects the gate type and warns on one it rejects', 
 	expect(artifact.current_version.content_type).toBe('text/markdown');
 	const moved = await api.post(`/api/v1/issues/${gatedMd.id}/transition`, { action: 'submit' });
 	expect(moved.status(), await moved.text()).toBe(200);
-	await request.dispose();
 });
 
 test('a text gate with a concrete content type is declared on the write', async ({
 	page,
-	playwright
+	apiFor
 }) => {
 	await openAttachFor(page, gatedPlain, 'notes');
 
@@ -362,15 +359,11 @@ test('a text gate with a concrete content type is declared on the write', async 
 	await expect(page.getByRole('button', { name: 'notes', exact: true })).toBeVisible();
 
 	// The gate's MIME, not the server's text/markdown default.
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+	const api = apiFor(ALICE);
 	const artifact = await body<Artifact>(
 		await api.get(`/api/v1/issues/${gatedPlain.id}/artifacts/notes`)
 	);
 	expect(artifact.current_version.content_type).toBe('text/plain');
-	await request.dispose();
 });
 
 test('the gate note and warning wrap on a phone', async ({ page }) => {

@@ -1,6 +1,7 @@
 /** Wire types for the Tines phase-one API (`/api/v1/*`). All snake_case. */
 
 import type { SchedulePreset } from './schedule.js';
+import type { EffortApplicationStatus, EffortCapabilities, EffortSource } from './effort.js';
 
 export type StateCategory = 'backlog' | 'active' | 'awaiting_human' | 'done';
 
@@ -58,6 +59,9 @@ export function actorLabel(actor: Actor): string {
 
 // ---------------------------------------------------------------------------
 // Projects
+
+/** Project names are measured as JavaScript string length (UTF-16 code units). */
+export const PROJECT_NAME_MAX = 200;
 
 export interface Project {
 	id: string;
@@ -614,6 +618,8 @@ export interface IssueDetail extends Issue {
 	 * in; null when nothing human happened after it, or there is no previous run.
 	 */
 	since_last_run?: SinceLastRun | null;
+	/** Prompt-only metadata, emitted when launch comment selection is requested. */
+	launch_comments?: { latest_completed_run_comment_id: string | null };
 }
 
 // ---------------------------------------------------------------------------
@@ -1077,6 +1083,8 @@ export interface EffectivePromptPart {
 export interface EffectiveSkill {
 	item_id: string;
 	name: string;
+	/** Existing context-item description used as the skill's discovery cue. */
+	description: string;
 	scope: ContextScope;
 	/** Empty when the bundle was assembled without file contents. */
 	files: ContextFile[];
@@ -1570,6 +1578,26 @@ export const RUNNER_TYPES: readonly RunnerType[] = ['claude_managed', 'gemini_ma
 
 export type RunnerStatus = 'active' | 'paused';
 
+export type RunnerConcurrencyMode = 'legacy' | 'local' | 'remote';
+export type RunnerConcurrencyUnavailableReason =
+	| 'legacy'
+	| 'opted_out'
+	| 'awaiting_policy'
+	| 'unsupported_protocol'
+	| 'invalid_protocol'
+	| 'offline';
+
+export interface RunnerConcurrencyControl {
+	status: 'applied' | 'pending' | 'unavailable';
+	reason: RunnerConcurrencyUnavailableReason | null;
+	requested_cap: number | null;
+	ceiling: number | null;
+	revision: number;
+	applied_cap: number | null;
+	applied_revision: number | null;
+	applied_at: number | null;
+}
+
 /**
  * The routing vocabulary for how hard to think. A closed set: adding a tier
  * is a code change, so routing rules can rely on it staying small.
@@ -1716,7 +1744,10 @@ export const MODEL_PREDECESSORS: Record<string, readonly string[]> = {
 	'claude-haiku-4-5': ['claude-3-5-haiku-latest'],
 	'gemini-2.5-pro': ['gemini-1.5-pro'],
 	'gemini-2.5-flash': ['gemini-2.0-flash', 'gemini-1.5-flash'],
-	'gemini-2.5-flash-lite': ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b']
+	'gemini-2.5-flash-lite': ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b'],
+	'gpt-6-astra': ['gpt-5-codex'],
+	'gpt-5.6-sol': ['gpt-5-codex'],
+	'gpt-5.6-luna': ['gpt-5-codex']
 };
 
 /** True when a tier override points at a model older than its tier's current built-in. */
@@ -1820,6 +1851,8 @@ export interface Runner {
 	status: RunnerStatus;
 	/** The runner's own concurrency cap; always enforced. */
 	max_concurrent: number;
+	/** Local runners only: durable requested cap and daemon acknowledgement state. */
+	concurrency_control: RunnerConcurrencyControl | null;
 	max_run_minutes: number;
 	/** Experimental continuation policy; disabled by default. */
 	resume_enabled: boolean;
@@ -1848,6 +1881,10 @@ export interface Runner {
 	 */
 	online: boolean;
 	last_seen_at: number | null;
+	/** Last capability assertion from this daemon boot; null means a legacy daemon. */
+	effort_capabilities: EffortCapabilities | null;
+	/** Exact-model effort choices projected by the server; null means unknown/unsupported. */
+	effort_models: Record<string, string[]> | null;
 	/**
 	 * Local runners: the daemon is finishing its in-flight runs and will exit
 	 * for its service manager to relaunch a newer version. Nothing new is
@@ -1902,6 +1939,8 @@ export interface UpdateRunnerRequest {
 	/** Managed types: replace the provider API key (ping-validated first). */
 	api_key?: string;
 	max_concurrent?: number;
+	/** Required when changing a remotely controlled local runner cap. */
+	expected_concurrency_revision?: number;
 	max_run_minutes?: number;
 	resume_enabled?: boolean;
 	resume_window_hours?: number;
@@ -1966,6 +2005,15 @@ export interface RunnerPollRequest {
 	 * effect without re-registering.
 	 */
 	max_concurrent?: number;
+	/** Locally asserted, machine-owned remote concurrency boundary. */
+	concurrency_control?: {
+		version: 1;
+		allow_remote: boolean;
+		ceiling: number;
+		applied?: { revision: number; cap: number };
+	};
+	/** Assignments refused before process launch and awaiting server release. */
+	declined_assignments?: string[];
 	/**
 	 * True while the daemon is finishing its runs before exiting for a
 	 * self-update restart: the dispatcher assigns it nothing new, while runs
@@ -1973,11 +2021,21 @@ export interface RunnerPollRequest {
 	 * the relaunched daemon's first poll reopens the runner.
 	 */
 	draining?: boolean;
+	/** V1 exact-model effort support discovered by this daemon boot. */
+	effort_capabilities?: EffortCapabilities;
 }
 
 /** One delivered assignment: everything the daemon needs to launch. */
 export interface RunnerAssignment {
 	run: AgentRun;
+	/** Enforced launch setting, omitted for provider-default and legacy-tier delivery. */
+	effort?: {
+		version: 1;
+		value: string;
+		source: import('./effort.js').EffortSource;
+		/** Capability catalog the server checked immediately before delivery. */
+		capability_digest: string;
+	};
 	/** Supervisor preamble + stitched context + issue block, assembled at delivery. */
 	prompt: string;
 	/**
@@ -2016,6 +2074,16 @@ export interface RunnerAssignmentResume {
 
 export interface RunnerPollResponse {
 	assignments: RunnerAssignment[];
+	concurrency_control?: {
+		version: 1;
+		available: boolean;
+		revision: number;
+		cap: number;
+		ceiling: number | null;
+		reason?: RunnerConcurrencyUnavailableReason;
+	};
+	/** Declines now terminal or absent and safe to forget locally. */
+	released_assignments?: string[];
 	/**
 	 * Run ids to kill WITHOUT finish-reporting: the supervisor has already
 	 * settled these (cancel, timeout, the offline sweep).
@@ -2026,6 +2094,13 @@ export interface RunnerPollResponse {
 /** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */
 export interface AppendRunLogRequest {
 	chunk: string;
+	/** Local launch milestone; accepted only for this run's resolved effort. */
+	effort_application?: {
+		status: 'accepted_unconfirmed' | 'rejected';
+		attempted_effort: string;
+		transport: 'argv';
+		reason?: string;
+	};
 	/**
 	 * Per-run, 1-based, monotonic chunk number assigned by the daemon. A
 	 * chunk whose seq the server has already applied is a retry of a send
@@ -2047,6 +2122,8 @@ export interface AppendRunLogResponse {
 export interface FinishRunRequest {
 	status: 'completed' | 'failed';
 	error?: string;
+	/** Last local launch milestone, repeated so a fast finish can recover a lost log request. */
+	effort_application?: AppendRunLogRequest['effort_application'];
 	/**
 	 * `interrupted` = the daemon died, restarted, or was shut down around the
 	 * run; the work did not fail, so the issue must not take a strike. Only
@@ -2091,6 +2168,8 @@ export interface RoutingTarget {
 	runner_id: string;
 	/** Null/absent = the runner's default tier. */
 	tier?: ModelTier | null;
+	/** Explicit routing override; absent inherits the selected runner tier. */
+	effort?: string;
 }
 
 /** A target with its runner denormalized for display. */
@@ -2100,6 +2179,7 @@ export interface RoutingRuleTarget {
 	/** Null for the `'*'` inherited-runner sentinel. */
 	runner_status: RunnerStatus | null;
 	tier: ModelTier | null;
+	effort?: string;
 }
 
 /**
@@ -2172,7 +2252,8 @@ export type CodexRequestContextV1 = {
 } & (
 	| {
 			status: 'complete';
-			harness_version: '0.153.4';
+			/** A supported Codex CLI version; see `isSupportedCodexRolloutVersion`. */
+			harness_version: string;
 			request_count: number;
 			max_request_input_tokens: number;
 			reconciled_usage: Required<CodexRawUsageV1>;
@@ -2301,6 +2382,13 @@ export interface AgentRun {
 	tier: ModelTier;
 	/** Resolved at launch; null when the harness cannot vary its model. */
 	model: string | null;
+	/** Routed request before runner-tier fallback; immutable after claim. */
+	requested_effort: string | null;
+	/** Final configured intent, not proof of provider application. */
+	resolved_effort: string | null;
+	effort_source: EffortSource | null;
+	effort_application_status: EffortApplicationStatus;
+	effort_application_evidence: Record<string, unknown> | null;
 	usage: AgentRunUsage | null;
 	/** Resolved ledger dimensions, populated only for finalized period evidence. */
 	usage_dimensions?: import('./usage.js').UsageDimensions;
@@ -2368,6 +2456,8 @@ export interface RunFilters {
 	issue?: string;
 	/** Runner id. */
 	runner?: string;
+	/** Workflow state id captured when the run started. */
+	state?: string;
 	/** Only runs holding a claim (assigned/launching/running). */
 	active?: boolean;
 	/** Usage evidence population; requires from/to. */
@@ -2378,7 +2468,6 @@ export interface RunFilters {
 	to?: string;
 	project?: string;
 	workflow?: string;
-	state?: string;
 	tier?: string;
 	outcome?: RunEndOutcome | 'unknown';
 	accounting_status?: 'priced' | 'unpriced' | 'unreported';
@@ -2540,7 +2629,8 @@ export type DispatchTargetVerdict =
 	| 'at_capacity'
 	| 'backing_off'
 	| 'rate_limited'
-	| 'quota_exhausted';
+	| 'quota_exhausted'
+	| 'effort_incompatible';
 
 /** One rule/pin target's verdict, in preference order. */
 export interface DispatchTarget {
@@ -2656,6 +2746,7 @@ export const QUEUE_GROUP_REF_LIMIT = 10;
 /** `GET /api/v1/supervisor/queue` — the fleet's waiting work. */
 export interface FleetQueue {
 	generated_at: number;
+	project: { id: string; name: string } | null;
 	automation_enabled: boolean;
 	quota: QuotaPolicy;
 	/** Sorted count desc, then oldest first. */
@@ -2665,6 +2756,166 @@ export interface FleetQueue {
 	parked: { count: number; oldest_entered_at: number | null; issues: QueueIssueRef[] };
 	/** Human stages get a summary line only — no table (Tines/256 scope). */
 	awaiting_human: { count: number; oldest_entered_at: number | null };
+}
+
+// ---------------------------------------------------------------------------
+// Stage stats — the flow board's "This week" row (Tines/257)
+
+/**
+ * How a run ended, for the stage table's outcome mix. `RunEndOutcome` plus the
+ * two buckets the column needs that the stored outcome cannot express: a run
+ * that never started (a launch failure — nothing to judge) and a row that
+ * ended before migration 0016 added the column.
+ */
+export type RunOutcomeBucket = RunEndOutcome | 'failed' | 'unrecorded';
+
+export const RUN_OUTCOME_BUCKETS: readonly RunOutcomeBucket[] = [
+	...RUN_END_OUTCOMES,
+	'failed',
+	'unrecorded'
+];
+
+/** A duration distribution in ms; `n` is how many samples it was measured over. */
+export interface DurationStats {
+	p50: number;
+	p90: number;
+	total: number;
+	n: number;
+}
+
+/** One stage's figures over one window. All durations are ms. */
+export interface StageWindowFigures {
+	since: number;
+	until: number;
+	/** Entries into the state inside the window. */
+	visits: number;
+	/** Exits from the state inside the window; not the same population as `visits`. */
+	exits: number;
+	/** Entry → first started run. Null when nothing was measurable. */
+	queue_wait: DurationStats | null;
+	queue_wait_measured: number;
+	/** Visits still waiting for their first run — excluded from the percentiles. */
+	waiting_now: number;
+	/** Closed visits that never saw a started run. */
+	never_started: number;
+	/** First started run → exit, closed visits only. */
+	work: DurationStats | null;
+	work_measured: number;
+	open_now: number;
+	runs: {
+		total: number;
+		/** Runs bound to visits ÷ all entered visits; null when there are no entered visits. */
+		per_visit: number | null;
+		active: number;
+		/** Runs that could not be bound to a visit in the scan (see `bindRuns`). */
+		unbound: number;
+		/** `unrecorded` rows judged `advanced` from the run key's own transition. */
+		recovered_advanced: number;
+		outcomes: Record<RunOutcomeBucket, number>;
+		top_runner: { id: string; name: string; runs: number } | null;
+	};
+	sent_back: {
+		count: number;
+		/** Of exits; null when there were none. */
+		share: number | null;
+		agent: number;
+		human: number;
+		by_target: {
+			state_id: string;
+			state_name: string;
+			count: number;
+			agent: number;
+			human: number;
+		}[];
+	};
+	received_back: number;
+	/** Reserved for the spend column (Tines/199); always null here. */
+	cost: null;
+}
+
+/** Current − previous per figure; null when either side is unmeasured. */
+export interface StageStatsDelta {
+	visits: number | null;
+	exits: number | null;
+	queue_wait_p50: number | null;
+	queue_wait_p90: number | null;
+	work_p50: number | null;
+	work_p90: number | null;
+	runs_per_visit: number | null;
+	sent_back_share: number | null;
+	outcomes: Record<RunOutcomeBucket, number | null>;
+}
+
+export interface StageStats {
+	state_id: string;
+	state_name: string;
+	workflow_id: string;
+	workflow_name: string;
+	current: StageWindowFigures;
+	previous: StageWindowFigures | null;
+	delta: StageStatsDelta;
+}
+
+export interface MarkerFigures {
+	visits: number;
+	exits: number;
+	sent_back_share: number | null;
+	queue_wait_p50: number | null;
+}
+
+export interface ChangeMarker {
+	id: string;
+	at: number;
+	kind: 'prompt' | 'quota' | 'automation' | 'runner_cap' | 'rule';
+	label: string;
+	event_ids: string[];
+	state_ids: string[];
+	effects: { state_id: string; before: MarkerFigures | null; after: MarkerFigures | null }[];
+}
+
+/** `GET /api/v1/supervisor/stats` — per-stage flow over a rolling window. */
+export interface StageStatsReport {
+	generated_at: number;
+	window: { ms: number; since: number; until: number };
+	previous: { since: number; until: number } | null;
+	project: { id: string; name: string } | null;
+	/**
+	 * The oldest recorded run outcome. Deltas whose previous window starts
+	 * before this are blanked rather than reported as a fall to zero.
+	 */
+	outcome_recorded_since: number | null;
+	/** Active states that saw work in either window, ordered by total queue wait desc. */
+	states: StageStats[];
+	/** Newest prompt, quota, cap and routing edits inside the current window. */
+	markers: ChangeMarker[];
+}
+
+/** Query for `GET /api/v1/supervisor/stats`. */
+export interface StatsQuery {
+	/** `<n>h` or `<n>d`, 1h–90d; default `7d`. */
+	window?: string;
+	/** `previous` (default) computes the prior window and the deltas. */
+	compare?: 'previous' | 'none';
+	/** Project id or name; narrows both board rows. */
+	project?: string;
+}
+
+/** Evidence behind one stage's sent-back figure. */
+export interface SentBackDrilldown {
+	state: { id: string; name: string; workflow_id: string; workflow_name: string };
+	window: { since: number; until: number };
+	prompt: { context_id: string; name: string; current_version: number; edit_url: string } | null;
+	items: {
+		issue: { id: string; project_name: string; number: number; title: string };
+		transitioned_at: number;
+		to_state_id: string;
+		to_state_name: string;
+		action: string | null;
+		actor: Actor;
+		comment: { id: string; excerpt: string; created_at: number } | null;
+		prompt_version: number | null;
+		prompt_context_id: string | null;
+	}[];
 }
 
 // ---------------------------------------------------------------------------
@@ -2771,7 +3022,14 @@ export interface EventFilters {
 	issue?: string;
 	/** Project id. */
 	project?: string;
+	/** One event type or a comma-separated list. */
 	type?: string;
+	/** Inclusive lower time bound, epoch ms or ISO 8601. */
+	since?: number | string;
+	/** Exclusive upper time bound, epoch ms or ISO 8601. */
+	until?: number | string;
+	/** Workflow state id referenced by an event payload. */
+	state?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,10 @@ This is a pnpm workspace:
 | `tines` | `packages/cli` | The `tines` CLI, published to npm as [`tines`](https://www.npmjs.com/package/tines). Talks to the same API as the web app. |
 | `@tines/shared` | `packages/shared` | Shared API types and client, used by both the web app and the CLI. |
 
+Workflow packages and default-off immutable public snapshots are documented in
+[docs/workflow-packages.md](docs/workflow-packages.md). Public launch remains disabled until the
+separate moderation and operational-readiness review is accepted.
+
 ## Getting started
 
 ### Your first project (hosted)
@@ -81,7 +85,9 @@ can affect other projects using it; changing only the conventions does not make 
 workflow. Starter creation itself does not add routing rules or change automation settings.
 Continue with the app's current **Agents** checklist and [Running agents](#running-agents);
 the [runner daemon guide](docs/runner-daemon.md) explains how a local runner receives the
-repository and starts its harness.
+repository and starts its harness. A machine owner can opt into web-adjustable concurrency
+with `--allow-remote-concurrency --max-concurrent N`; `N` remains a local ceiling that the
+web cannot enable or raise.
 
 ### Contributor setup
 
@@ -110,16 +116,16 @@ With the dev server running, try the CLI with the seeded key (the seed prints it
 export TINES_API_KEY=tines_dev0000000000000000000000000000000000000
 pnpm cli time                             # dev mode (tsx, no build needed)
 pnpm cli projects list
-pnpm cli time -- --json
+pnpm cli time --json                      # flags go straight on; `--` breaks pnpm 10
 
 # or the built binary
 pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI reads the API base URL from `--url` (accepted by every command, without exception), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, `pnpm cli` **always** targets `http://localhost:5173` — its script pins `TINES_API_URL` rather than defaulting it, so a `TINES_API_URL` already in your environment (every agent run has one, pointing at production) is ignored and the snippet above talks to your dev server. To reach any other deployment from source, including a dev server vite moved to another port, pass `--url` (`pnpm cli time --url http://localhost:5174`) or use the installed `tines` / the built binary. `tines config` shows what is in effect and where each value came from.
+The CLI reads the API base URL from `--url` (accepted by every command that talks to the API), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The local-only `logout`, `runner restart`, `runner uninstall`, `runner workspaces`, and `runner workspaces prune` commands take no `--url`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, `pnpm cli` **always** targets `http://localhost:5173` — its script pins `TINES_API_URL` rather than defaulting it, so a `TINES_API_URL` already in your environment (every agent run has one, pointing at production) is ignored and the snippet above talks to your dev server. To reach any other deployment from source, including a dev server vite moved to another port, pass `--url` (`pnpm cli time --url http://localhost:5174`) or use the installed `tines` / the built binary. `tines config` shows what is in effect and where each value came from.
 
-Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
+Paginated `… list` commands return one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command, up to a default 10,000-item safety ceiling; use `--max-items <n>` with `--all-pages` to choose a different positive bound. Exceeding the bound fails without printing a partial result. Without `--all-pages`, `--json` output carries a `next_cursor` and warns on stderr that there is more. Four lists are not paginated and take no such flag: `labels list`, `runners list`, `routing list`, and `issues artifacts list` return the whole collection by design.
 
 ## Installing the CLI globally
 
@@ -301,6 +307,12 @@ Install → key → runner → rule → observe. Automation needs no separate ar
    Local* dialog, which fills it into the command below for you.
 3. **Runner** — install the daemon as a service, naming it machine-plus-harness:
 
+   Using Codex? Set workspace-write and enable outbound network access before starting the
+   runner, then use `--harness codex`. Follow the
+   [Codex permissions setup](docs/runner-daemon.md#codex-permissions); the
+   [OpenAI configuration reference](https://developers.openai.com/codex/config-reference)
+   defines these settings.
+
    ```sh
    TINES_API_KEY=tines_… tines runner install \
      --url https://tines.tbuckley.dev \
@@ -346,6 +358,9 @@ All of this is edited on the **Agents** tab, and most of it from the CLI too:
 - **The kill switch** — `tines supervisor enable` (resume) / `tines supervisor disable`, with
   `tines supervisor status` for a one-screen overview — which now also lists the issues
   waiting for an agent, grouped by why, with the fix for each.
+- **Stage flow** — the Agents tab and `tines supervisor stats --window 7d` compare queue wait,
+  work time, runs per visit, outcomes and sent-back rates with the prior window. Project and
+  event-window filters keep the board and `tines events list` on the same slice.
 - **Routing rules** decide who takes an issue. A rule is scoped globally, per project, per
   workflow state, or both (most specific wins), and its payload is an ordered
   preference list of `<runner>[:tier]` targets:
@@ -631,3 +646,5 @@ From the repo root:
 - `pnpm test` — vitest unit tests (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
 - `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/` and its README for the suite's motion, hydration and geometry policies). Run by `ci.yml` on pull requests, but not by `pnpm test`.
 - `pnpm cli <command>` — run the CLI from source against the local dev server (`http://localhost:5173`, pinned; pass `--url` for anything else)
+
+  Add exact-model reasoning effort by ordered target number: `tines routing set codex:balanced claude:balanced --project Example --effort 1=low --effort 2=medium`. Re-run the same targets without `--effort` to clear routed effort; `routing clear` deletes the whole scoped rule.

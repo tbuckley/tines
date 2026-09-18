@@ -46,6 +46,7 @@ const instrument = (t: TestDb) => instrumentLatency(t, LATENCY_MS);
 const AMBIENT_ISSUES = 20;
 
 function seed(t: TestDb) {
+	t.env.BETTER_AUTH_SECRET = 'navigation-probe-secret';
 	seedBase(t);
 	setSettings(t);
 	addRunner(t);

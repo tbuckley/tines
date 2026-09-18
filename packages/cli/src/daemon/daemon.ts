@@ -38,15 +38,19 @@ import { CodexStreamRenderer } from './codex-stream.js';
 import { collectCodexRequestContext, resolveCodexHome } from './codex-rollout.js';
 import type { RunStreamRenderer } from './stream-summary.js';
 import { RateLimitDetector } from './rate-limit';
+import { assignmentEffortRejection, EffortCapabilityRefresher } from './effort-capabilities.js';
 import { agentCliPrefix, installAgentCli } from './cli-refresh.js';
 import { ensureRunnerCredentials, nextStepsMessage } from './register.js';
 import {
 	clearRunnerCredentials,
+	daemonDeclinesPath,
 	daemonStatePath,
+	loadDaemonDeclines,
 	loadDaemonState,
 	processStartTimeMs,
 	pruneKeptWorkspaces,
 	saveDaemonState,
+	saveDaemonDeclines,
 	workspacesDir,
 	writeKeptMarker,
 	type DaemonStateEntry,
@@ -79,6 +83,8 @@ export interface DaemonOptions {
 	harness: HarnessKind;
 	command?: string;
 	maxConcurrent: number;
+	/** Machine-local consent for web requests; maxConcurrent remains the hard ceiling. */
+	allowRemoteConcurrency: boolean;
 	pollIntervalMs: number;
 	configDir: string;
 	/** Keep the agent-facing `tines` current from npm (--no-cli-refresh turns it off). */
@@ -127,6 +133,7 @@ interface ActiveRun extends ManagedRun {
 	keepForResume: boolean;
 	/** Immutable facts used to qualify Codex's requested-model estimate. */
 	pricingModel?: string | null;
+	effortEvidence?: NonNullable<import('@tines/shared').FinishRunRequest['effort_application']>;
 	pricingSessionMode?: 'cold' | 'resumed';
 	codexHome?: string;
 }
@@ -272,6 +279,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		harness: opts.harness,
 		...(opts.command !== undefined ? { command: opts.command } : {}),
 		maxConcurrent: opts.maxConcurrent,
+		allowRemoteConcurrency: opts.allowRemoteConcurrency,
 		...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
 		log
 	});
@@ -285,7 +293,12 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 	const client = createApiClient({ baseUrl, apiKey: creds.token });
 	const statePath = daemonStatePath(opts.configDir, creds.runner_id);
+	const declinesPath = daemonDeclinesPath(opts.configDir, creds.runner_id);
 	let shuttingDown = false;
+	let effectiveConcurrency = opts.allowRemoteConcurrency ? 1 : opts.maxConcurrent;
+	let appliedConcurrency: { revision: number; cap: number } | undefined;
+	const declinedAssignments = new Set(loadDaemonDeclines(declinesPath));
+	let warnedUnsupportedConcurrency = false;
 
 	// -- the agent-facing CLI -------------------------------------------------
 	// The launch prompt is always current (it deploys on every merge); the
@@ -396,6 +409,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				await run.batcher.flush();
 				const ended = await client.finishRun(run.runId, {
 					status,
+					...(run.effortEvidence ? { effort_application: run.effortEvidence } : {}),
 					...(error ? { error } : {}),
 					...judgment,
 					usage: accounting.usage,
@@ -530,6 +544,8 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		// No process yet (still materializing): the launch path's settled
 		// checks clean up.
 	};
+	const effortRefresher = new EffortCapabilityRefresher(opts.harness, DAEMON_VERSION);
+	let effortCapabilities = await effortRefresher.get();
 
 	// -- launching one assignment ---------------------------------------------
 	const launch = async (assignment: RunnerAssignment) => {
@@ -568,6 +584,26 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		};
 		run.flush = () => run.batcher.flush();
 		table.track(run);
+		// Enforced effort never trusts the catalog advertised by an earlier probe.
+		// Reprobe the same PATH/environment used below and require the assignment's
+		// digest to still match before any workspace or child process is started.
+		if (assignment.effort) effortCapabilities = await effortRefresher.get(true);
+		const effortRejection = assignmentEffortRejection(assignment, effortCapabilities, opts.harness);
+		if (effortRejection && assignment.effort) {
+			run.effortEvidence = {
+				status: 'rejected',
+				attempted_effort: assignment.effort.value,
+				transport: 'argv',
+				reason: effortRejection
+			};
+			await client
+				.appendRunLog(runId, {
+					chunk: '',
+					effort_application: run.effortEvidence
+				})
+				.catch(() => undefined);
+			return table.finishAndCleanup(run, 'failed', effortRejection);
+		}
 		log(
 			resume
 				? `run ${runId} assigned (issue ${issueLabel ?? assignment.run.issue_id}); resuming run ${resume.previous_run_id} in ${workspace}`
@@ -638,6 +674,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				promptFile: join(workspace, 'prompt.md'),
 				prompt: assignment.prompt,
 				model: assignment.run.model,
+				effort: assignment.effort?.value ?? null,
 				...(resume ? { resumeSessionId: resume.provider_session_id } : {})
 			};
 			const invocation = buildHarnessInvocation(
@@ -672,6 +709,21 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				stdio: ['ignore', 'pipe', 'pipe'],
 				detached: true
 			});
+			if (assignment.effort) {
+				child.once('spawn', () => {
+					run.effortEvidence = {
+						status: 'accepted_unconfirmed',
+						attempted_effort: assignment.effort!.value,
+						transport: 'argv'
+					};
+					void client
+						.appendRunLog(runId, {
+							chunk: '',
+							effort_application: run.effortEvidence
+						})
+						.catch((err) => log(`run ${runId}: effort evidence rejected: ${message(err)}`));
+				});
+			}
 			run.child = child;
 			run.spawnedAt = Date.now();
 			table.persist();
@@ -736,7 +788,23 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				if (child.pid) setTimeout(() => killTree(child.pid!, 'SIGKILL'), 5000).unref?.();
 			}, assignment.timeout_minutes * 60_000);
 			child.on('error', (err) => {
-				void table.finishAndCleanup(run, 'failed', `failed to launch harness: ${message(err)}`);
+				const reason = `failed to launch harness: ${message(err)}`;
+				if (assignment.effort)
+					run.effortEvidence = {
+						status: 'rejected',
+						attempted_effort: assignment.effort.value,
+						transport: 'argv',
+						reason
+					};
+				const evidence = assignment.effort
+					? client
+							.appendRunLog(runId, {
+								chunk: '',
+								effort_application: run.effortEvidence
+							})
+							.catch(() => undefined)
+					: Promise.resolve();
+				void evidence.then(() => table.finishAndCleanup(run, 'failed', reason));
 			});
 			child.on('close', (code, signal) => {
 				// The harness's last words first — a stream renderer holding a
@@ -818,18 +886,28 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 	// -- the poll loop ---------------------------------------------------------
 	log(
-		`polling ${baseUrl} every ${Math.round(opts.pollIntervalMs / 1000)}s (harness ${opts.harness}, max ${opts.maxConcurrent} concurrent) — Ctrl-C to stop`
+		`polling ${baseUrl} every ${Math.round(opts.pollIntervalMs / 1000)}s (harness ${opts.harness}, ${opts.allowRemoteConcurrency ? `web-adjustable with local ceiling ${opts.maxConcurrent}` : `local cap ${opts.maxConcurrent}`}) — Ctrl-C to stop`
 	);
 	let failures = 0;
 	while (!shuttingDown) {
 		try {
-			// `max_concurrent` rides along so the server cap tracks the flag —
-			// a restart with a new --max-concurrent takes effect without
-			// re-registering.
+			effortCapabilities = await effortRefresher.get();
 			const res = await client.pollRunner(creds.runner_id, {
 				instance_id: instanceId,
 				owned_runs: table.ids(),
-				max_concurrent: opts.maxConcurrent,
+				// Kept for older servers. Opted-in daemons advertise only the last
+				// accepted scheduling cap, never the higher machine ceiling.
+				max_concurrent: effectiveConcurrency,
+				concurrency_control: {
+					version: 1,
+					allow_remote: opts.allowRemoteConcurrency,
+					ceiling: opts.maxConcurrent,
+					...(appliedConcurrency ? { applied: appliedConcurrency } : {})
+				},
+				...(declinedAssignments.size > 0
+					? { declined_assignments: [...declinedAssignments].slice(0, 100) }
+					: {}),
+				...(effortCapabilities ? { effort_capabilities: effortCapabilities } : {}),
 				// Stated on every poll while pending; absent otherwise, which
 				// the server reads as "not draining" — so a daemon that died
 				// mid-drain cannot pin its runner shut past its relaunch.
@@ -837,15 +915,38 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			});
 			failures = 0;
 			for (const runId of res.cancels) killWithoutFinish(runId);
+			let declinesChanged = false;
+			for (const runId of res.released_assignments ?? []) {
+				if (declinedAssignments.delete(runId)) declinesChanged = true;
+			}
+			if (declinesChanged) saveDaemonDeclines(declinesPath, declinedAssignments);
+			if (res.concurrency_control) {
+				const control = res.concurrency_control;
+				if (
+					opts.allowRemoteConcurrency &&
+					control.available &&
+					Number.isSafeInteger(control.revision) &&
+					Number.isInteger(control.cap) &&
+					control.cap >= 1 &&
+					control.cap <= opts.maxConcurrent
+				) {
+					effectiveConcurrency = control.cap;
+					appliedConcurrency = { revision: control.revision, cap: control.cap };
+				}
+			} else if (opts.allowRemoteConcurrency && !warnedUnsupportedConcurrency) {
+				warnedUnsupportedConcurrency = true;
+				log(
+					'web concurrency adjustment unavailable: upgrade the server; retaining conservative cap'
+				);
+			}
 			for (const assignment of res.assignments) {
-				// The server's guarded flip is the authority on capacity: a
-				// delivered run already holds its claim and key, so dropping it
-				// here would strand it as a mislabeled launch failure. Launch
-				// anyway and flag the divergence.
-				if (table.size >= opts.maxConcurrent) {
+				if (declinedAssignments.size > 0 || table.size >= opts.maxConcurrent) {
 					log(
-						`warning: supervisor delivered ${assignment.run.id} beyond --max-concurrent ${opts.maxConcurrent}; launching anyway (the server cap governs)`
+						`run ${assignment.run.id}: refusing launch beyond local ceiling ${opts.maxConcurrent}; requesting safe release`
 					);
+					declinedAssignments.add(assignment.run.id);
+					saveDaemonDeclines(declinesPath, declinedAssignments);
+					continue;
 				}
 				void launch(assignment);
 			}

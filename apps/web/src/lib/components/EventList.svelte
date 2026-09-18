@@ -2,7 +2,9 @@
 	import type { TinesEvent } from '@tines/shared';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
+	import IconCircleCheck from '@tabler/icons-svelte/icons/circle-check';
 	import IconCirclePlus from '@tabler/icons-svelte/icons/circle-plus';
+	import IconCircleX from '@tabler/icons-svelte/icons/circle-x';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconKey from '@tabler/icons-svelte/icons/key';
@@ -60,6 +62,53 @@
 		return IconPencil;
 	}
 
+	function presentation(ev: TinesEvent) {
+		if (ev.type === 'agent_run.started') {
+			return { Icon: IconRobot, colorClass: 'text-primary' };
+		}
+
+		if (ev.type === 'agent_run.ended') {
+			const status = ev.payload.status;
+			const outcome = ev.payload.outcome;
+			const terminalStatuses = ['completed', 'failed', 'timed_out', 'canceled'];
+			const knownOutcomes = ['advanced', 'stalled', 'interrupted'];
+
+			if (
+				typeof status !== 'string' ||
+				!terminalStatuses.includes(status) ||
+				(outcome !== undefined &&
+					outcome !== null &&
+					(typeof outcome !== 'string' || !knownOutcomes.includes(outcome)))
+			) {
+				return { Icon: IconRobot, colorClass: 'text-muted-foreground' };
+			}
+
+			if (outcome === 'interrupted') {
+				return {
+					Icon: IconAlertTriangle,
+					colorClass: 'text-amber-700 dark:text-amber-400'
+				};
+			}
+			if (status === 'failed') {
+				return { Icon: IconCircleX, colorClass: 'text-destructive' };
+			}
+			if (outcome === 'stalled' || status === 'timed_out' || status === 'canceled') {
+				return {
+					Icon: IconAlertTriangle,
+					colorClass: 'text-amber-700 dark:text-amber-400'
+				};
+			}
+			if (status === 'completed') {
+				return {
+					Icon: IconCircleCheck,
+					colorClass: 'text-emerald-600 dark:text-emerald-400'
+				};
+			}
+		}
+
+		return { Icon: icon(ev), colorClass: 'text-muted-foreground' };
+	}
+
 	function isLinkEvent(ev: TinesEvent): boolean {
 		return ev.type === 'issue.link_added' || ev.type === 'issue.link_removed';
 	}
@@ -89,14 +138,15 @@
 {:else}
 	<ul class="space-y-1">
 		{#each events as ev (ev.id)}
-			{@const Icon = icon(ev)}
+			{@const { Icon, colorClass } = presentation(ev)}
 			<li
 				class="flex items-start gap-3 rounded-md px-2 py-2.5 text-sm"
 				in:slide={{ duration: dur() }}
 				out:fade={{ duration: dur() }}
 			>
 				<span
-					class="bg-muted text-muted-foreground mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full"
+					class="bg-muted mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full {colorClass}"
+					aria-hidden="true"
 				>
 					<Icon size={14} stroke={1.75} />
 				</span>

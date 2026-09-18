@@ -68,9 +68,15 @@ export function usageEvidenceLines(
 		.filter(([, count]) => count > 0)
 		.map(([name, count]) => `${name}=${count}`)
 		.join(' · ');
+	const tokens = (
+		['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens'] as const
+	)
+		.map((name) => `${name}=${present(accounting.tokens[name])}`)
+		.join(' · ');
 	return [
 		`Evidence ${id}: ${dims}`,
 		`Accounting ${id}: ${accounting.status} · source ${accounting.source ?? 'unavailable'} · exact cost ${accounting.cost_exact ?? 'unavailable'}${accounting.pricing_reason ? ` · reason ${accounting.pricing_reason}` : ''}${diagnostics ? ` · diagnostics ${diagnostics}` : ''}`,
+		`Tokens ${id}: ${tokens} · invalid_tokens=${accounting.invalid_tokens.length ? accounting.invalid_tokens.join(',') : 'none'}`,
 		...(accounting.source === 'calculated' ? [`Rate ${id}: ${basisLine(accounting.basis)}`] : [])
 	];
 }

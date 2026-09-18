@@ -58,14 +58,15 @@ export function spendStatements(nowMs) {
 		`INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at) VALUES
 		 ('wfs_e2e_spend_design', '${w.build.id}', 'Design', 'active', 0, ${nowMs}),
 		 ('wfs_e2e_spend_implementation', '${w.build.id}', 'Implementation', 'active', 1, ${nowMs}),
+		 ('wfs_e2e_spend_closed', '${w.build.id}', 'Closed', 'done', 2, ${nowMs}),
+		 ('wfs_e2e_spend_canceled', '${w.build.id}', 'Canceled', 'done', 3, ${nowMs}),
 		 ('wfs_e2e_spend_review', '${w.ship.id}', 'Review', 'active', 0, ${nowMs}),
 		 ('wfs_e2e_spend_open', '${w.unknown.id}', 'Open', 'active', 0, ${nowMs});`,
 		`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier, config, created_at, updated_at, last_seen_at)
 		 VALUES ('rnr_e2e_spend', '${SPEND.id}', 'local', 'spend-paused', 'paused', 1, 1440, 'balanced', '{}', ${nowMs}, ${nowMs}, ${nowMs});`
 	];
-	// Distinct `created_at` per project: the project list orders by it, so the
-	// select's option order is a seeded fact rather than a SQLite tie-break —
-	// the keyboard case in spend-a11y.spec.ts addresses options by position.
+	// Distinct `created_at` values keep the project list deterministic across
+	// database query plans; listProjects orders by creation time.
 	const projects = Object.values(p);
 	statements.push(
 		`INSERT INTO project (id, user_id, name, description, default_workflow_id, created_at, updated_at, archived_at) VALUES
@@ -197,6 +198,48 @@ export function spendStatements(nowMs) {
 		 VALUES ('iss_e2e_spend_pending', '${p.pending.id}', 1, 'Spend pending', '', '${w.build.id}', 'wfs_e2e_spend_design', ${nowMs}, ${nowMs});`,
 		`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage, state_id_at_start, log, created_at, started_at, ended_at)
 		 VALUES ('run_e2e_spend_pending', '${SPEND.id}', 'iss_e2e_spend_pending', 'rnr_e2e_spend', 'running', NULL, 'balanced', NULL, NULL, 'wfs_e2e_spend_design', '', ${nowMs}, ${nowMs}, NULL);`
+	);
+	statements.push(
+		`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
+		 VALUES ('iss_e2e_spend_no_run', '${p.alpha.id}', 5, 'Spend completed without a run', '', '${w.build.id}', 'wfs_e2e_spend_canceled', ${times.alpha_today + 10}, ${times.alpha_today + 10});`,
+		...[
+			[
+				'evt_e2e_spend_alpha_done',
+				'iss_e2e_spend_alpha_today',
+				'wfs_e2e_spend_closed',
+				'Closed',
+				'done',
+				times.alpha_today - 100
+			],
+			[
+				'evt_e2e_spend_alpha_reopened',
+				'iss_e2e_spend_alpha_today',
+				'wfs_e2e_spend_design',
+				'Design',
+				'active',
+				times.alpha_today - 50
+			],
+			[
+				'evt_e2e_spend_two_day_done',
+				'iss_e2e_spend_alpha_2d',
+				'wfs_e2e_spend_closed',
+				'Closed',
+				'done',
+				times.alpha_2d
+			],
+			[
+				'evt_e2e_spend_no_run_done',
+				'iss_e2e_spend_no_run',
+				'wfs_e2e_spend_canceled',
+				'Canceled',
+				'done',
+				times.alpha_today + 10
+			]
+		].map(
+			([id, issueId, stateId, stateName, category, createdAt]) =>
+				`INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at)
+			 VALUES ('${id}','${SPEND.id}','issue.transitioned','${SPEND.id}','${issueId}','${p.alpha.id}','${json({ state_entry_version: 1, workflow_id: w.build.id, workflow_name: w.build.name, to_state_id: stateId, to_state_name: stateName, to_state_category: category })}',${createdAt});`
+		)
 	);
 	return statements;
 }

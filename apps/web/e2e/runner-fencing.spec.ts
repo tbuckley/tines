@@ -1,9 +1,8 @@
 import type { Runner, RunnerPollResponse, RunnerTokenResponse } from '@tines/shared';
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import type { APIRequestContext } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, errorBody, runId } from './helpers';
-
-const name = `fencing-${runId}`;
+import { apiClient, body, errorBody } from './helpers';
 
 async function poll(
 	request: APIRequestContext,
@@ -18,9 +17,11 @@ async function poll(
 }
 
 test('native D1 polling fences the immediate predecessor and preserves legacy omission', async ({
-	request
+	request,
+	uniqueName
 }) => {
 	const api = apiClient(request, ALICE.apiKey);
+	const name = uniqueName('fencing');
 	const registered = await body<RunnerTokenResponse>(
 		await api.post('/api/v1/runners/register', { name, harness: 'custom', command: 'true' })
 	);
@@ -51,7 +52,18 @@ test('native D1 polling fences the immediate predecessor and preserves legacy om
 		poll(request, id, token, 'daemon_C'),
 		poll(request, id, token, 'daemon_D')
 	]);
-	expect(attempts.every((response) => response.ok())).toBe(true);
+	const attemptResults = await Promise.all(
+		attempts.map(async (response, index) => ({
+			instance: ['daemon_C', 'daemon_D'][index],
+			ok: response.ok(),
+			status: response.status(),
+			body: await response.text()
+		}))
+	);
+	expect(
+		attemptResults.map(({ ok }) => ok),
+		`concurrent unseen poll responses:\n${JSON.stringify(attemptResults, null, 2)}`
+	).toEqual([true, true]);
 	const followups = await Promise.all([
 		poll(request, id, token, 'daemon_C'),
 		poll(request, id, token, 'daemon_D')

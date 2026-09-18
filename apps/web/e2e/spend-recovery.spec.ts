@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { SPEND } from './constants.mjs';
 import { gotoHydrated, signIn } from './helpers';
 
@@ -91,7 +92,7 @@ test.describe('Agents Spend recovery', () => {
 			await route.continue();
 		});
 		await gotoHydrated(page, '/agents');
-		await page.getByRole('button', { name: 'Spend', exact: true }).click();
+		await page.getByRole('button', { name: 'Analysis', exact: true }).click();
 		await expect(page.getByRole('heading', { name: 'Spend' })).toBeVisible();
 		await page.getByLabel('Spend project').selectOption(SPEND.projects.alpha.id);
 		await page.getByLabel('Spend project').selectOption(SPEND.projects.beta.id);
@@ -155,7 +156,7 @@ test.describe('Agents Spend recovery', () => {
 		await expect(page.getByRole('heading', { name: 'Spend' })).toBeHidden();
 		releaseAlpha();
 		await settle(page);
-		await page.getByRole('button', { name: 'Spend', exact: true }).click();
+		await page.getByRole('button', { name: 'Analysis', exact: true }).click();
 		await expect(projectTotal(page)).toHaveText('$5.00');
 		expect(alphaCalls).toBe(2);
 	});

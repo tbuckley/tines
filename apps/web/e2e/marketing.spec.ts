@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { gotoHydrated } from './helpers';
 
 test('renders the complete public story and shares one sign-in dialog', async ({ page }) => {

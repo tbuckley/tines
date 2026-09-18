@@ -246,6 +246,24 @@ describe('validateTargets', () => {
 		expect(targets).toEqual([{ runner_id: 'rnr_2', tier: 'cheapest' }, { runner_id: 'rnr_1' }]);
 	});
 
+	it('round-trips distinct effort tokens and includes effort in duplicate identity', () => {
+		expect(
+			validateTargets(
+				[
+					{ runner_id: 'rnr_2', tier: 'balanced', effort: 'low' },
+					{ runner_id: 'rnr_2', tier: 'balanced', effort: 'max' }
+				],
+				runners
+			)
+		).toEqual([
+			{ runner_id: 'rnr_2', tier: 'balanced', effort: 'low' },
+			{ runner_id: 'rnr_2', tier: 'balanced', effort: 'max' }
+		]);
+		expect(() => validateTargets([{ runner_id: 'rnr_1', effort: 'High' }], runners)).toThrowError(
+			ApiFail
+		);
+	});
+
 	it('rejects an empty list', () => {
 		expect(() => validateTargets([], runners)).toThrowError(ApiFail);
 	});
@@ -258,6 +276,12 @@ describe('validateTargets', () => {
 		expect(() =>
 			validateTargets([{ runner_id: '*', tier: 'balanced' }, { runner_id: 'rnr_1' }], runners)
 		).toThrowError(ApiFail);
+		expect(() =>
+			validateTargets([{ runner_id: '*', tier: 'balanced', effort: 'extreme' }], runners)
+		).toThrowError(ApiFail);
+		expect(
+			validateTargets([{ runner_id: '*', tier: 'balanced', effort: 'ultra' }], runners)
+		).toEqual([{ runner_id: '*', tier: 'balanced', effort: 'ultra' }]);
 	});
 
 	it("rejects a runner that isn't the user's", () => {
@@ -346,6 +370,11 @@ describe('rule scope state category', () => {
 		});
 		expect(rule.scope.workflow_state_id).toBe('wfs_std_open');
 		expect(rule.scope.label).toBe('state Open');
+		const event = t.all(`SELECT payload FROM event WHERE type='routing_rule.created'`)[0];
+		expect(JSON.parse(event.payload as string)).toMatchObject({
+			rule_id: rule.id,
+			workflow_state_id: 'wfs_std_open'
+		});
 	});
 
 	it('dispatch effects: routing owners signal successes and keep rejections silent', async () => {

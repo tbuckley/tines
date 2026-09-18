@@ -40,6 +40,8 @@ export interface HarnessInput {
 	prompt: string;
 	/** Resolved model, or null when the harness cannot vary it. */
 	model: string | null;
+	/** Resolved effort from the assignment; never inferred locally. */
+	effort?: string | null;
 	/**
 	 * Set when this run continues a previous one: the harness reopens that
 	 * conversation instead of starting a new one, and the prompt file holds
@@ -49,12 +51,13 @@ export interface HarnessInput {
 }
 
 /**
- * Expands a custom command template: `{prompt_file}`, `{workspace}`, and
- * `{model}` are substituted shell-quoted (an absent model becomes `''`), so
- * paths with spaces survive the `sh -c` round trip.
+ * Expands a custom command template: `{prompt_file}`, `{workspace}`, `{model}`,
+ * and `{effort}` are substituted shell-quoted (an absent model or effort
+ * becomes `''`), so values with spaces survive the `sh -c` round trip.
  */
 export function expandCommandTemplate(template: string, input: HarnessInput): string {
 	return template
+		.replaceAll('{effort}', () => (input.effort ? shellQuote(input.effort) : "''"))
 		.replaceAll('{prompt_file}', shellQuote(input.promptFile))
 		.replaceAll('{workspace}', shellQuote(input.workspace))
 		.replaceAll('{model}', input.model ? shellQuote(input.model) : "''");
@@ -90,7 +93,7 @@ export function buildHarnessInvocation(
 				file: 'sh',
 				args: [
 					'-c',
-					`claude -p${input.resumeSessionId ? ` --resume ${shellQuote(input.resumeSessionId)}` : ''} --output-format stream-json --verbose${input.model ? ` --model ${shellQuote(input.model)}` : ''} < ${shellQuote(input.promptFile)}`
+					`claude -p${input.resumeSessionId ? ` --resume ${shellQuote(input.resumeSessionId)}` : ''} --output-format stream-json --verbose${input.model ? ` --model ${shellQuote(input.model)}` : ''}${input.effort ? ` --effort ${shellQuote(input.effort)}` : ''} < ${shellQuote(input.promptFile)}`
 				]
 			};
 		case 'codex':
@@ -102,6 +105,7 @@ export function buildHarnessInvocation(
 					'--json',
 					'--skip-git-repo-check',
 					...(input.model ? ['--model', input.model] : []),
+					...(input.effort ? ['-c', `model_reasoning_effort=${JSON.stringify(input.effort)}`] : []),
 					input.prompt
 				]
 			};
@@ -171,6 +175,7 @@ export function formatLaunchBanner(
 	const fields = [
 		`harness=${meta.harness}`,
 		`model=${input.model ?? '(fixed)'}`,
+		`effort=${input.effort ?? '(provider-default)'}`,
 		`timeout=${meta.timeoutMinutes}m`,
 		`cli=${meta.cliVersion}`,
 		`workspace=${input.workspace}`,

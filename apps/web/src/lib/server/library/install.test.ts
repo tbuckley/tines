@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { withLibraryDocumentDigest } from '@tines/shared';
+import { canonicalizeLibraryValue, withLibraryDocumentDigest } from '@tines/shared';
 import {
 	automatedPackage,
 	inheritedPackage
@@ -10,6 +10,13 @@ import { PROJECT, USER, addRunner, seedBase } from '../supervisor/test-fixtures'
 import { getWorkflowPackageReceipt, installWorkflowPackage } from './install';
 import { prepareWorkflowPackage } from './plan';
 import { PACKAGE_PLAN_TTL_MS } from './token';
+import { preparePublication } from '../publications/prepare';
+import {
+	publishPublication,
+	restorePublication,
+	withdrawPublication
+} from '../publications/publish';
+import { resolveHostedPublicSnapshot } from '../publications/public';
 
 const actor: ActorContext = {
 	userId: USER,
@@ -39,6 +46,215 @@ async function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe('atomic workflow package install', () => {
+	it('pins host removal and publisher suspension before commit while preserving completed receipts', async () => {
+		for (const mode of ['host', 'publisher'] as const) {
+			const t = createTestDb();
+			seedBase(t);
+			const document = await withLibraryDocumentDigest(inheritedPackage());
+			const documentJson = canonicalizeLibraryValue(document);
+			const env = {
+				...t.env,
+				...signing,
+				PUBLIC_WORKFLOW_PUBLISHING_ENABLED: 'true',
+				PUBLIC_WORKFLOW_MODERATOR_USER_IDS: USER,
+				PUBLIC_WORKFLOW_REPORT_HMAC_SECRET: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+				PUBLIC_WORKFLOW_APPEAL_CONTACT: 'mailto:appeals@example.test',
+				PUBLIC_WORKFLOW_MODERATION_QUEUE_READY: 'true',
+				PUBLIC_WORKFLOW_MODERATION_JOURNEY_VERIFIED: 'true',
+				TINES_PUBLIC_URL: 'https://tines.example'
+			} as Env;
+			const proof = await preparePublication(t.db, env, actor, {
+				prepare_request_id: `hosted-${mode}`,
+				source: { kind: 'file', document_json: documentJson },
+				metadata: { display_name: 'Example Team', license: 'MIT', license_year: 2026 }
+			});
+			const publication = await publishPublication(t.db, env, actor, proof.candidate_id, {
+				review_digest: proof.review_digest,
+				sharing_rights: true,
+				exact_content: true,
+				reviewed_repo_ids: ['context:3']
+			});
+			if (mode === 'publisher')
+				t.sqlite
+					.prepare(
+						'INSERT INTO workflow_publisher_status(user_id,suspended,status_version) VALUES(?,0,1)'
+					)
+					.run(USER);
+			const hosted = (await resolveHostedPublicSnapshot(t.db, publication.receipt.snapshot_id))!;
+			const prepare = () =>
+				prepareWorkflowPackage(
+					t.db,
+					env,
+					actor,
+					documentJson,
+					{ inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } } },
+					hosted.source
+				);
+			const revoke = () => {
+				if (mode === 'host')
+					t.sqlite
+						// Deliberately keep the version unchanged: this pins the
+						// independent host-state predicate in the transaction guard.
+						.prepare("UPDATE workflow_publication SET host_state='removed' WHERE snapshot_id=?")
+						.run(publication.receipt.snapshot_id);
+				else
+					t.sqlite
+						.prepare('UPDATE workflow_publisher_status SET suspended=1 WHERE user_id=?')
+						.run(USER);
+			};
+
+			const refusedPlan = await prepare();
+			revoke();
+			await expect(
+				installWorkflowPackage(t.db, env, actor, {
+					document_json: documentJson,
+					plan_token: refusedPlan.plan_token,
+					confirmation: { plan_digest: refusedPlan.plan_digest }
+				})
+			).rejects.toMatchObject({ status: 409, code: 'plan_stale' });
+			expect(t.all('SELECT * FROM library_install')).toEqual([]);
+			expect(t.all('SELECT * FROM workflow WHERE user_id IS NOT NULL')).toEqual([]);
+			expect(t.all('SELECT * FROM event')).toEqual([]);
+		}
+
+		for (const mode of ['host', 'publisher'] as const) {
+			const t = createTestDb();
+			seedBase(t);
+			const document = await withLibraryDocumentDigest(inheritedPackage());
+			const documentJson = canonicalizeLibraryValue(document);
+			const env = {
+				...t.env,
+				...signing,
+				PUBLIC_WORKFLOW_PUBLISHING_ENABLED: 'true',
+				PUBLIC_WORKFLOW_MODERATOR_USER_IDS: USER,
+				PUBLIC_WORKFLOW_REPORT_HMAC_SECRET: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+				PUBLIC_WORKFLOW_APPEAL_CONTACT: 'mailto:appeals@example.test',
+				PUBLIC_WORKFLOW_MODERATION_QUEUE_READY: 'true',
+				PUBLIC_WORKFLOW_MODERATION_JOURNEY_VERIFIED: 'true',
+				TINES_PUBLIC_URL: 'https://tines.example'
+			} as Env;
+			const proof = await preparePublication(t.db, env, actor, {
+				prepare_request_id: `completed-${mode}`,
+				source: { kind: 'file', document_json: documentJson },
+				metadata: { display_name: 'Example Team', license: 'MIT', license_year: 2026 }
+			});
+			const publication = await publishPublication(t.db, env, actor, proof.candidate_id, {
+				review_digest: proof.review_digest,
+				sharing_rights: true,
+				exact_content: true,
+				reviewed_repo_ids: ['context:3']
+			});
+			const hosted = (await resolveHostedPublicSnapshot(t.db, publication.receipt.snapshot_id))!;
+			const preview = await prepareWorkflowPackage(
+				t.db,
+				env,
+				actor,
+				documentJson,
+				{ inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } } },
+				hosted.source
+			);
+			const request = {
+				document_json: documentJson,
+				plan_token: preview.plan_token,
+				confirmation: { plan_digest: preview.plan_digest }
+			};
+			const receipt = await installWorkflowPackage(t.db, env, actor, request);
+			if (mode === 'host')
+				t.sqlite
+					.prepare(
+						"UPDATE workflow_publication SET host_state='removed',status_version=status_version+1 WHERE snapshot_id=?"
+					)
+					.run(publication.receipt.snapshot_id);
+			else
+				t.sqlite
+					.prepare(
+						'INSERT INTO workflow_publisher_status(user_id,suspended,status_version) VALUES(?,1,1)'
+					)
+					.run(USER);
+			expect(await installWorkflowPackage(t.db, env, actor, request)).toEqual(receipt);
+			expect(t.all('SELECT * FROM library_install')).toHaveLength(1);
+		}
+	});
+
+	it('fences a hosted snapshot in the receipt transaction while preserving private plans', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const document = await withLibraryDocumentDigest(inheritedPackage());
+		const documentJson = canonicalizeLibraryValue(document);
+		const env = {
+			...t.env,
+			...signing,
+			PUBLIC_WORKFLOW_PUBLISHING_ENABLED: 'true',
+			PUBLIC_WORKFLOW_MODERATOR_USER_IDS: USER,
+			PUBLIC_WORKFLOW_REPORT_HMAC_SECRET: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+			PUBLIC_WORKFLOW_APPEAL_CONTACT: 'mailto:appeals@example.test',
+			PUBLIC_WORKFLOW_MODERATION_QUEUE_READY: 'true',
+			PUBLIC_WORKFLOW_MODERATION_JOURNEY_VERIFIED: 'true',
+			TINES_PUBLIC_URL: 'https://tines.example'
+		} as Env;
+		const proof = await preparePublication(t.db, env, actor, {
+			prepare_request_id: 'hosted-install',
+			source: { kind: 'file', document_json: documentJson },
+			metadata: { display_name: 'Example Team', license: 'MIT', license_year: 2026 }
+		});
+		const publication = await publishPublication(t.db, env, actor, proof.candidate_id, {
+			review_digest: proof.review_digest,
+			sharing_rights: true,
+			exact_content: true,
+			reviewed_repo_ids: ['context:3']
+		});
+		const hosted = await resolveHostedPublicSnapshot(t.db, publication.receipt.snapshot_id);
+		expect(hosted).not.toBeNull();
+		const preview = await prepareWorkflowPackage(
+			t.db,
+			env,
+			actor,
+			documentJson,
+			{ inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } } },
+			hosted!.source
+		);
+		expect(preview.source).toEqual(hosted!.source);
+		await withdrawPublication(t.db, env, actor, publication.receipt.snapshot_id);
+		await expect(
+			installWorkflowPackage(t.db, env, actor, {
+				document_json: documentJson,
+				plan_token: preview.plan_token,
+				confirmation: { plan_digest: preview.plan_digest }
+			})
+		).rejects.toMatchObject({ status: 409, code: 'plan_stale' });
+		expect(t.all('SELECT * FROM library_install')).toEqual([]);
+		expect(t.all('SELECT * FROM workflow WHERE user_id IS NOT NULL')).toEqual([]);
+		expect(t.all('SELECT * FROM event')).toEqual([]);
+
+		await restorePublication(t.db, env, actor, publication.receipt.snapshot_id);
+		await expect(
+			installWorkflowPackage(t.db, env, actor, {
+				document_json: documentJson,
+				plan_token: preview.plan_token,
+				confirmation: { plan_digest: preview.plan_digest }
+			})
+		).rejects.toMatchObject({ status: 409, code: 'plan_stale' });
+		const restored = await resolveHostedPublicSnapshot(t.db, publication.receipt.snapshot_id);
+		const fresh = await prepareWorkflowPackage(
+			t.db,
+			env,
+			actor,
+			documentJson,
+			{ inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } } },
+			restored!.source
+		);
+		const request = {
+			document_json: documentJson,
+			plan_token: fresh.plan_token,
+			confirmation: { plan_digest: fresh.plan_digest }
+		};
+		const receipt = await installWorkflowPackage(t.db, env, actor, request);
+		expect(receipt.source).toEqual(restored!.source);
+		await withdrawPublication(t.db, env, actor, publication.receipt.snapshot_id);
+		expect(await installWorkflowPackage(t.db, env, actor, request)).toEqual(receipt);
+		expect(t.all('SELECT * FROM library_install')).toHaveLength(1);
+	});
+
 	it('commits one guarded batch, links every created object, and retries from the receipt', async () => {
 		const f = await fixture();
 		const first = await installWorkflowPackage(
@@ -77,6 +293,20 @@ describe('atomic workflow package install', () => {
 		expect(first.objects.find((o) => o.relationship === 'main')).toMatchObject({
 			name: f.preview.resolved.workflows.find((w) => w.id === f.document.main_workflow_id)!.name
 		});
+		for (const workflow of f.preview.resolved.workflows) {
+			const workflowId = f.preview.allocation.records[workflow.id].id;
+			for (const state of workflow.states) {
+				const stateId = f.preview.allocation.records[state.id].id;
+				const expected = {
+					kind: 'state',
+					local_id: state.id,
+					id: stateId,
+					href: `/workflows/${workflowId}?state=${stateId}#state-${stateId}`
+				};
+				expect(f.preview.operations).toContainEqual(expect.objectContaining(expected));
+				expect(first.objects).toContainEqual(expect.objectContaining(expected));
+			}
+		}
 		expect(f.t.all('SELECT enabled,run_count FROM scheduled_task')).toEqual([]);
 		expect(f.t.all('SELECT * FROM issue')).toEqual([]);
 		expect(f.t.all('SELECT * FROM library_install')).toHaveLength(1);

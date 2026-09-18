@@ -16,30 +16,53 @@
 
 	const reasonText: Record<string, string> = {
 		pricing_evidence_missing:
-			'This daemon did not report the evidence required to calculate a price.',
+			'The runner reported token counts but not the details Tines needs to price them. It is probably running an older version of the Tines CLI.',
 		invalid_pricing_evidence:
-			'The reported pricing evidence used an unsupported or invalid format.',
-		model_missing: 'The requested model identity was not recorded.',
-		model_mismatch: 'The launch model did not match the model stored on this run.',
+			'The runner sent pricing details in a format Tines does not recognise.',
+		model_missing: 'Tines does not know which model this run used.',
+		model_mismatch:
+			'The model the runner launched is not the model recorded on this run, so Tines cannot tell which rate applies.',
 		model_rerouted:
-			'Codex reported a model reroute, so mixed-model totals cannot be priced safely.',
-		unsupported_model: 'This exact model is not in the reviewed rate catalog.',
-		missing_rate: 'No reviewed rate applied when this run was claimed.',
-		missing_token_dimension: 'At least one required token dimension was not measured.',
-		invalid_token_dimension:
-			'The token dimensions were invalid or did not reproduce the normalized totals.',
+			'Codex switched models partway through the run. The token totals mix two rates, so they cannot be priced.',
+		unsupported_model: 'Tines has no price list for this model.',
+		missing_rate: 'Tines had no price for this model at the time the run started.',
+		missing_token_dimension:
+			'The runner did not report all four token counts (input, cache read, cache write, output).',
+		invalid_token_dimension: 'The token counts the runner reported do not add up.',
 		long_context_band_unknown:
-			'The aggregate input exceeded the range whose rate can be selected safely.',
+			'OpenAI charges a higher rate for any request over 272,000 input tokens. This run used more than that in total, and the runner could not confirm that every individual request stayed under the limit, so Tines cannot tell which rate applies.',
 		request_context_invalid:
-			'The reported request-level context evidence was invalid or contradictory.',
+			'The per-request breakdown the runner sent is inconsistent with the run totals, so Tines cannot use it to pick a rate.',
 		long_context_rate_unsupported:
-			'At least one verified request used a context band whose rate is not adopted.',
-		attempt_scope_unknown: 'A resumed cumulative total cannot yet be isolated to this attempt.',
-		incomplete_attempt: 'A later turn started without a final cumulative usage snapshot.',
-		nonmonotonic_usage: 'Cumulative usage decreased during the attempt.',
-		multiple_threads: 'More than one Codex thread appeared in this attempt.',
-		cost_out_of_range:
-			'The exact result could not be represented by the compatibility dollar field.'
+			'At least one request in this run went over 272,000 input tokens. OpenAI charges a higher rate for those, and Tines does not have that rate.',
+		attempt_scope_unknown:
+			'This run resumed an earlier session, and Codex reports one running total for the whole session. Tines cannot separate out what this run alone used.',
+		incomplete_attempt:
+			'Codex started another turn before reporting the final token counts for the previous one, so the totals are incomplete.',
+		nonmonotonic_usage:
+			'The running token total went down during the run, which should never happen. The counts cannot be trusted.',
+		multiple_threads:
+			'More than one Codex session ran inside this run, so the token totals cannot be attributed to a single model and rate.',
+		cost_out_of_range: 'The calculated cost is too large to store.'
+	};
+	const contextReasonText: Record<string, string> = {
+		unsupported_version: 'The runner is using a Codex CLI version Tines does not support.',
+		not_applicable: 'A per-request breakdown was not needed for this run.',
+		thread_id_missing: 'Codex did not report a session id, so its log could not be found.',
+		rollout_missing: 'The Codex session log was not found on the runner.',
+		rollout_ambiguous: 'More than one Codex session log matched this run.',
+		unsafe_path: 'The Codex session log was outside the expected directory and was not read.',
+		read_failed: 'The Codex session log could not be read.',
+		limit_exceeded: 'The Codex session log was too large to read.',
+		metadata_mismatch: 'The Codex session log did not match this run.',
+		malformed: 'The Codex session log was not valid JSON.',
+		missing_dimension: 'The Codex session log was missing some token counts.',
+		nonmonotonic: 'Token totals in the Codex session log went down at some point.',
+		delta_mismatch:
+			'Per-request token counts in the Codex session log do not add up to the totals.',
+		terminal_mismatch:
+			'The final total in the Codex session log does not match what the runner reported.',
+		model_mismatch: 'The Codex session log shows a different model than this run was launched with.'
 	};
 	const count = (value: number | undefined) =>
 		value === undefined ? 'unknown' : value.toLocaleString();
@@ -107,7 +130,10 @@
 				Standard API list-price estimate; not an invoice or subscription usage.
 			</p>
 		{:else if pricing?.status === 'unpriced'}
-			<p class="text-sm">{reasonText[pricing.reason] ?? 'Pricing basis unavailable.'}</p>
+			<p class="text-sm font-medium">Not priced</p>
+			<p class="text-sm">
+				{reasonText[pricing.reason] ?? 'Tines could not work out a price for this run.'}
+			</p>
 			<div class="grid grid-cols-2 gap-2 text-xs tabular-nums">
 				<div>Input: {count(usage?.input_tokens)}</div>
 				<div>Cache read: {count(usage?.cache_read_tokens)}</div>
@@ -129,15 +155,18 @@
 		{/if}
 		{#if evidence?.request_context?.status === 'complete'}
 			<p class="text-muted-foreground text-xs">
-				Short-context requests verified: {count(evidence.request_context.request_count)}; largest
-				inclusive input {count(evidence.request_context.max_request_input_tokens)}; Codex
-				{evidence.request_context.harness_version}; {evidence.request_context.normalization}.
+				Per-request breakdown from the Codex session log: {count(
+					evidence.request_context.request_count
+				)} requests, largest {count(evidence.request_context.max_request_input_tokens)} input tokens.
+				Codex CLI {evidence.request_context.harness_version}.
 			</p>
 		{:else if evidence?.request_context}
 			<p class="text-muted-foreground text-xs">
-				Request-context evidence: {evidence.request_context.status} ({evidence.request_context
-					.reason});
-				{evidence.request_context.normalization}.
+				{contextReasonText[evidence.request_context.reason] ??
+					`Per-request breakdown unavailable (${evidence.request_context.reason}).`}
+				{#if evidence.request_context.harness_version}
+					Codex CLI {evidence.request_context.harness_version}.
+				{/if}
 			</p>
 		{/if}
 	</div>

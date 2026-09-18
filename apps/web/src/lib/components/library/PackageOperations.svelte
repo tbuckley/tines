@@ -17,11 +17,9 @@
 
 <section class="space-y-4" aria-labelledby="operations-title">
 	<div>
-		<h2 id="operations-title" class="text-lg font-semibold">Complete installation plan</h2>
+		<h2 id="operations-title" class="text-lg font-semibold">What will be installed</h2>
 		<p class="text-muted-foreground mt-1 text-sm">
-			{plan.operations.length} operations · {plan.budget.statements} atomic statements · expires {new Date(
-				plan.expires_at
-			).toLocaleTimeString()}
+			{plan.operations.length} change{plan.operations.length === 1 ? '' : 's'} prepared.
 		</p>
 	</div>
 	<ul class="divide-y rounded-lg border text-sm">
@@ -37,7 +35,7 @@
 
 	{#if plan.resolved.patches.length}
 		<div class="space-y-3">
-			<h3 class="font-semibold">Exact declared substitutions</h3>
+			<h3 class="font-semibold">Variable values</h3>
 			{#each plan.resolved.patches as patch (patch.record_id + patch.field)}
 				<article class="rounded-lg border p-3" id="patch-{patch.record_id}-{patch.field}">
 					<h4 class="text-sm font-medium">
@@ -63,7 +61,7 @@
 								type="button"
 								class="text-primary min-h-10 text-xs underline"
 								onclick={(event) => onToken(use.input_id, event.currentTarget)}
-								>Show destination input for exact use {use.id}</button
+								>Show variable value</button
 							>
 						{/each}
 					</div>

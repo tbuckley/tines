@@ -21,7 +21,15 @@ import {
 	type RunnerAssignment,
 	type RunnerAssignmentResume,
 	type RunnerPollRequest,
-	type RunnerPollResponse
+	type RunnerPollResponse,
+	type EffortCapabilities,
+	type EffortCapabilitiesV1,
+	isEffortToken,
+	isSupportedCodexRolloutVersion,
+	EFFORT_CAPABILITIES_MAX_BYTES,
+	EFFORT_CAPABILITIES_MAX_EFFORTS,
+	EFFORT_CAPABILITIES_MAX_MODELS,
+	supportedEfforts
 } from '@tines/shared';
 import type { RequestEvent } from '@sveltejs/kit';
 import { sql, type Kysely } from 'kysely';
@@ -34,10 +42,13 @@ import {
 	mintRunKeyAndFlip,
 	noteInterruption,
 	noteRateLimit,
+	releaseDeclinedAssignments,
+	releaseSurplusAssigned,
 	supervisorEvent
 } from '$lib/server/supervisor/engine';
 import { getRunLogStore, runLogRawKey } from '$lib/server/run-log-store';
 import { spillEvicted } from '$lib/server/supervisor/run-log';
+import { mergeEffortEvidence } from '$lib/server/supervisor/effort-evidence';
 import { appendLogTail } from '$lib/server/supervisor/logic';
 import { buildResumePreamble, buildSupervisorPreamble } from '$lib/server/supervisor/preamble';
 import {
@@ -59,6 +70,11 @@ import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { getIssueDetail } from './issues';
 import { validateBoundedInt } from './runners';
 import { runQuery, serializeRun } from './runs';
+import {
+	concurrencyInstruction,
+	validateConcurrencyPoll,
+	validateDeclinedAssignments
+} from './runner-concurrency';
 
 const ACTIVE = [...ACTIVE_RUN_STATUSES];
 
@@ -176,6 +192,81 @@ function validateInstanceId(body: RunnerPollRequest): string | undefined {
 	return instanceId;
 }
 
+/** Validate and bound the daemon assertion before it reaches durable state. */
+export function validateEffortCapabilities(
+	value: unknown,
+	instanceId?: string
+): EffortCapabilities | null {
+	if (value === undefined) return null;
+	if (!instanceId) {
+		throw new ApiFail(422, 'invalid_field', '"effort_capabilities" requires "instance_id"', {
+			field: 'effort_capabilities'
+		});
+	}
+	if (typeof value !== 'object' || value === null || Array.isArray(value))
+		throw new ApiFail(422, 'invalid_field', '"effort_capabilities" must be an object', {
+			field: 'effort_capabilities'
+		});
+	let encoded: string;
+	try {
+		encoded = JSON.stringify(value);
+	} catch {
+		throw new ApiFail(422, 'invalid_field', '"effort_capabilities" must be JSON serializable');
+	}
+	if (new TextEncoder().encode(encoded).length > EFFORT_CAPABILITIES_MAX_BYTES)
+		throw new ApiFail(422, 'invalid_field', '"effort_capabilities" exceeds 64 KiB', {
+			field: 'effort_capabilities'
+		});
+	const raw = value as Record<string, unknown>;
+	if (raw.version !== 1) {
+		if (!Number.isInteger(raw.version) || typeof raw.reason !== 'string' || raw.reason.length > 200)
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'unsupported capability versions require a bounded reason',
+				{
+					field: 'effort_capabilities'
+				}
+			);
+		return { version: raw.version as number, reason: raw.reason };
+	}
+	if (
+		(raw.harness !== 'claude_code' && raw.harness !== 'codex') ||
+		typeof raw.daemon_version !== 'string' ||
+		raw.daemon_version.length > 100 ||
+		typeof raw.harness_version !== 'string' ||
+		raw.harness_version.length > 100 ||
+		typeof raw.catalog_digest !== 'string' ||
+		raw.catalog_digest.length > 100 ||
+		!Array.isArray(raw.models) ||
+		raw.models.length > EFFORT_CAPABILITIES_MAX_MODELS
+	) {
+		throw new ApiFail(422, 'invalid_field', 'malformed V1 effort capability report', {
+			field: 'effort_capabilities'
+		});
+	}
+	const models = raw.models as Array<Record<string, unknown>>;
+	const names = new Set<string>();
+	for (const model of models) {
+		if (
+			typeof model.model !== 'string' ||
+			model.model.length < 1 ||
+			model.model.length > 200 ||
+			names.has(model.model) ||
+			!Array.isArray(model.efforts) ||
+			model.efforts.length > EFFORT_CAPABILITIES_MAX_EFFORTS ||
+			model.efforts.some((effort) => !isEffortToken(effort)) ||
+			new Set(model.efforts).size !== model.efforts.length
+		) {
+			throw new ApiFail(422, 'invalid_field', 'malformed V1 model effort capability', {
+				field: 'effort_capabilities.models'
+			});
+		}
+		names.add(model.model);
+	}
+	return value as EffortCapabilities;
+}
+
 async function admitDaemonInstance(
 	db: Kysely<Database>,
 	env: Env,
@@ -251,10 +342,14 @@ export async function pollRunner(
 	runner: RunnerRow,
 	effects: DispatchEffects,
 	body: RunnerPollRequest,
-	now: number = Date.now()
+	now: number = Date.now(),
+	reconcileAttempt = 0
 ): Promise<PollOutcome> {
 	const owned = new Set(validateOwnedRuns(body));
 	const instanceId = validateInstanceId(body);
+	const effortCapabilities = validateEffortCapabilities(body.effort_capabilities, instanceId);
+	const concurrencyReport = validateConcurrencyPoll(body.concurrency_control, instanceId);
+	const declinedAssignments = validateDeclinedAssignments(body.declined_assignments);
 	const requestedCap =
 		body.max_concurrent === undefined
 			? undefined
@@ -264,7 +359,71 @@ export async function pollRunner(
 	}
 	if (instanceId !== undefined)
 		runner = await admitDaemonInstance(db, env, runner, instanceId, now);
-	const cap = requestedCap === undefined ? runner.max_concurrent : requestedCap;
+	let cap = requestedCap === undefined ? runner.max_concurrent : requestedCap;
+	let concurrencyRevision = runner.concurrency_revision;
+	let concurrencyMode = runner.concurrency_mode;
+	let concurrencyCeiling = runner.concurrency_ceiling;
+	let concurrencyRequested = runner.concurrency_requested;
+	let concurrencyInstanceId = runner.concurrency_instance_id;
+	let concurrencyAppliedRevision = runner.concurrency_applied_revision;
+	let concurrencyAppliedCap = runner.concurrency_applied_cap;
+	let concurrencyAppliedInstanceId = runner.concurrency_applied_instance_id;
+	let concurrencyAppliedAt = runner.concurrency_applied_at;
+	let concurrencyUnavailableReason = runner.concurrency_unavailable_reason;
+	let policyChanged = false;
+	let acknowledgementChanged = false;
+	if (concurrencyReport) {
+		const nextMode = concurrencyReport.allow_remote ? 'remote' : 'local';
+		const nextRequested = concurrencyReport.allow_remote
+			? Math.min(
+					runner.concurrency_mode === 'remote'
+						? (runner.concurrency_requested ?? runner.max_concurrent)
+						: runner.max_concurrent,
+					concurrencyReport.ceiling
+				)
+			: concurrencyReport.ceiling;
+		policyChanged =
+			nextMode !== runner.concurrency_mode ||
+			concurrencyReport.ceiling !== runner.concurrency_ceiling ||
+			nextRequested !== runner.concurrency_requested;
+		concurrencyRevision = runner.concurrency_revision + (policyChanged ? 1 : 0);
+		concurrencyMode = nextMode;
+		concurrencyCeiling = concurrencyReport.ceiling;
+		concurrencyRequested = nextRequested;
+		concurrencyInstanceId = instanceId ?? null;
+		concurrencyUnavailableReason = concurrencyReport.allow_remote ? null : 'opted_out';
+		cap = nextRequested;
+		const ack = concurrencyReport.applied;
+		if (
+			concurrencyReport.allow_remote &&
+			ack?.revision === concurrencyRevision &&
+			ack.cap === nextRequested
+		) {
+			acknowledgementChanged =
+				runner.concurrency_applied_revision !== ack.revision ||
+				runner.concurrency_applied_cap !== ack.cap ||
+				runner.concurrency_applied_instance_id !== (instanceId ?? null);
+			concurrencyAppliedRevision = ack.revision;
+			concurrencyAppliedCap = ack.cap;
+			concurrencyAppliedInstanceId = instanceId ?? null;
+			concurrencyAppliedAt = now;
+		}
+	} else {
+		policyChanged =
+			runner.concurrency_mode !== 'legacy' ||
+			runner.concurrency_requested !== cap ||
+			runner.concurrency_ceiling !== null;
+		concurrencyRevision = runner.concurrency_revision + (policyChanged ? 1 : 0);
+		concurrencyMode = 'legacy';
+		concurrencyCeiling = null;
+		concurrencyRequested = cap;
+		concurrencyInstanceId = null;
+		concurrencyAppliedRevision = null;
+		concurrencyAppliedCap = null;
+		concurrencyAppliedInstanceId = null;
+		concurrencyAppliedAt = null;
+		concurrencyUnavailableReason = 'legacy';
+	}
 	const capChanged = cap !== runner.max_concurrent;
 	// Every poll states the flag, so a daemon that died mid-drain cannot pin
 	// the runner shut: its relaunch (or any older daemon) polls without it.
@@ -274,35 +433,137 @@ export async function pollRunner(
 	const capRaised = cap > runner.max_concurrent || (runner.draining === 1 && draining === 0);
 	const cameOnline =
 		runner.last_seen_at === null || now - runner.last_seen_at > RUNNER_ONLINE_WINDOW_MS;
-	await runAtomic(env, [
-		db
-			.updateTable('runner')
-			.set({
-				last_seen_at: now,
-				draining,
-				...(capChanged ? { max_concurrent: cap, updated_at: now } : {})
-			})
-			.where('id', '=', runner.id)
-			.compile(),
-		// The same runner.updated event a UI edit records, so the change shows
-		// up in history (attributed to the owning user; polls carry no actor).
-		...(capChanged
+	const reconciliationGuard = sql<boolean>`EXISTS (
+		SELECT 1 FROM runner
+		WHERE id = ${runner.id}
+			AND runner_token_hash IS ${runner.runner_token_hash}
+			AND concurrency_revision = ${runner.concurrency_revision}
+			AND concurrency_mode IS ${runner.concurrency_mode}
+			AND concurrency_ceiling IS ${runner.concurrency_ceiling}
+			AND concurrency_requested IS ${runner.concurrency_requested}
+			AND concurrency_instance_id IS ${runner.concurrency_instance_id}
+			AND concurrency_applied_revision IS ${runner.concurrency_applied_revision}
+			AND concurrency_applied_cap IS ${runner.concurrency_applied_cap}
+			AND concurrency_applied_instance_id IS ${runner.concurrency_applied_instance_id}
+			${instanceId === undefined ? sql`` : sql`AND daemon_instance_id = ${instanceId}`}
+	)`;
+	const auditChanged = policyChanged || acknowledgementChanged;
+	const heartbeatQueries = [
+		...(auditChanged
 			? [
 					supervisorEvent(
 						db,
 						runner.user_id,
 						{
 							type: 'runner.updated',
-							payload: { runner_id: runner.id, name: runner.name, changed: ['max_concurrent'] }
+							payload: {
+								runner_id: runner.id,
+								name: runner.name,
+								changed: capChanged
+									? ['max_concurrent', 'concurrency_control']
+									: ['concurrency_control'],
+								source: 'daemon',
+								reason: policyChanged ? 'local_policy' : 'acknowledged',
+								concurrency: {
+									before: {
+										mode: runner.concurrency_mode,
+										ceiling: runner.concurrency_ceiling,
+										requested_cap: runner.concurrency_requested,
+										revision: runner.concurrency_revision
+									},
+									after: {
+										mode: concurrencyMode,
+										ceiling: concurrencyCeiling,
+										requested_cap: concurrencyRequested,
+										revision: concurrencyRevision,
+										applied_revision: concurrencyAppliedRevision,
+										applied_cap: concurrencyAppliedCap
+									}
+								}
+							}
 						},
-						now
+						now,
+						reconciliationGuard
 					)
 				]
-			: [])
-	]);
+			: []),
+		db
+			.updateTable('runner')
+			.set({
+				last_seen_at: now,
+				draining,
+				effort_capabilities: effortCapabilities ? JSON.stringify(effortCapabilities) : null,
+				max_concurrent: cap,
+				concurrency_mode: concurrencyMode,
+				concurrency_ceiling: concurrencyCeiling,
+				concurrency_requested: concurrencyRequested,
+				concurrency_revision: concurrencyRevision,
+				concurrency_instance_id: concurrencyInstanceId,
+				concurrency_applied_revision: concurrencyAppliedRevision,
+				concurrency_applied_cap: concurrencyAppliedCap,
+				concurrency_applied_instance_id: concurrencyAppliedInstanceId,
+				concurrency_applied_at: concurrencyAppliedAt,
+				concurrency_unavailable_reason: concurrencyUnavailableReason,
+				...(capChanged ? { updated_at: now } : {})
+			})
+			.where('id', '=', runner.id)
+			.where(reconciliationGuard)
+			.compile()
+	];
+	const heartbeatResults = await runAtomic(env, heartbeatQueries);
+	const heartbeatResult = heartbeatResults[auditChanged ? 1 : 0];
+	if ((heartbeatResult?.meta.changes ?? 0) === 0) {
+		if (reconcileAttempt < 2) {
+			const current = await db
+				.selectFrom('runner')
+				.selectAll()
+				.where('id', '=', runner.id)
+				.where('runner_token_hash', '=', runner.runner_token_hash)
+				.executeTakeFirst();
+			if (current && (instanceId === undefined || current.daemon_instance_id === instanceId)) {
+				return pollRunner(db, env, current, effects, body, now, reconcileAttempt + 1);
+			}
+		}
+		throw new ApiFail(
+			409,
+			'runner_conflict',
+			'runner policy changed during poll reconciliation; retry the poll'
+		);
+	}
 	if (cameOnline || capRaised) effects.signalDispatch();
 	runner.max_concurrent = cap;
 	runner.draining = draining;
+	runner.effort_capabilities = effortCapabilities ? JSON.stringify(effortCapabilities) : null;
+	runner.concurrency_mode = concurrencyMode;
+	runner.concurrency_ceiling = concurrencyCeiling;
+	runner.concurrency_requested = concurrencyRequested;
+	runner.concurrency_revision = concurrencyRevision;
+	runner.concurrency_instance_id = concurrencyInstanceId;
+	runner.concurrency_applied_revision = concurrencyAppliedRevision;
+	runner.concurrency_applied_cap = concurrencyAppliedCap;
+	runner.concurrency_applied_instance_id = concurrencyAppliedInstanceId;
+	runner.concurrency_applied_at = concurrencyAppliedAt;
+	runner.concurrency_unavailable_reason = concurrencyUnavailableReason;
+	if (concurrencyReport && instanceId) {
+		await releaseSurplusAssigned(
+			db,
+			env,
+			{
+				userId: runner.user_id,
+				runnerId: runner.id,
+				instanceId,
+				ceiling: concurrencyReport.ceiling,
+				now
+			},
+			() => effects.signalDispatch()
+		);
+	}
+	const releasedAssignments = await releaseDeclinedAssignments(
+		db,
+		env,
+		{ userId: runner.user_id, runnerId: runner.id, runIds: declinedAssignments, now },
+		() => effects.signalDispatch()
+	);
 
 	const active = await db
 		.selectFrom('agent_run')
@@ -364,12 +625,22 @@ export async function pollRunner(
 	if (runner.status === 'active') {
 		for (const run of active) {
 			if (run.status !== 'assigned') continue;
-			const assignment = await deliverAssignedRun(db, env, runner, run, now);
+			const assignment = await deliverAssignedRun(db, env, runner, effects, run, now);
 			if (assignment) assignments.push(assignment);
 		}
 	}
 
-	return { response: { assignments, cancels }, cameOnline, capRaised, reconciled };
+	return {
+		response: {
+			assignments,
+			cancels,
+			...(concurrencyReport ? { concurrency_control: concurrencyInstruction(runner) } : {}),
+			...(releasedAssignments.length > 0 ? { released_assignments: releasedAssignments } : {})
+		},
+		cameOnline,
+		capRaised,
+		reconciled
+	};
 }
 
 /**
@@ -393,6 +664,7 @@ async function deliverAssignedRun(
 	db: Kysely<Database>,
 	env: Env,
 	runner: RunnerRow,
+	effects: DispatchEffects,
 	run: Database['agent_run'],
 	now: number
 ): Promise<RunnerAssignment | null> {
@@ -427,18 +699,61 @@ async function deliverAssignedRun(
 		return null;
 	}
 
+	// A claim can race a daemon upgrade, downgrade, or reprobe. Check the
+	// immutable claim against the admitted boot before minting its run key.
+	let deliveryCapabilities: EffortCapabilitiesV1 | null = null;
+	let effortRaceReason: string | null = null;
+	if (run.effort_application_status === 'legacy_not_applied') {
+		if (runner.effort_capabilities !== null)
+			effortRaceReason = 'assignment capability changed after claim; redispatching tier effort';
+	} else if (run.effort_application_status === 'pending' && run.resolved_effort) {
+		try {
+			const parsed = runner.effort_capabilities
+				? (JSON.parse(runner.effort_capabilities) as EffortCapabilities)
+				: null;
+			if (parsed?.version === 1 && 'models' in parsed) deliveryCapabilities = parsed;
+			const allowed = supportedEfforts(parsed, run.model);
+			if (!allowed?.includes(run.resolved_effort))
+				effortRaceReason =
+					'assignment effort is not supported by the daemon capability report at delivery';
+		} catch {
+			effortRaceReason = 'daemon capability report is unreadable at delivery';
+		}
+	}
+	if (effortRaceReason) {
+		const endable = await loadEndableRun(db, run.user_id, run.id);
+		if (endable && endable.status === 'assigned') {
+			const ended = await endRun(db, env, endable, {
+				status: 'canceled',
+				error: effortRaceReason,
+				now
+			});
+			if (ended.ended) effects.signalDispatch();
+		}
+		return null;
+	}
+
 	// The guarded one-shot flip; a lost race means another poll (a second
 	// daemon sharing this token) already took it — degrade to skipping.
 	const minted = await mintRunKeyAndFlip(db, env, {
 		runId: run.id,
 		userId: run.user_id,
 		maxRunMinutes: runner.max_run_minutes,
-		now
+		now,
+		...(runner.concurrency_instance_id && runner.concurrency_ceiling
+			? {
+					localAdmission: {
+						runnerId: runner.id,
+						instanceId: runner.concurrency_instance_id,
+						ceiling: runner.concurrency_ceiling
+					}
+				}
+			: {})
 	});
 	if (!minted) return null;
 
 	const [issue, bundle, artifacts, labels] = await Promise.all([
-		getIssueDetail(db, run.user_id, { id: run.issue_id }, { round: true }),
+		getIssueDetail(db, run.user_id, { id: run.issue_id }, { round: true, launchComments: true }),
 		effectiveContextForIssue(db, run.user_id, run.issue_id),
 		listArtifacts(db, run.user_id, run.issue_id),
 		listLabels(db, run.user_id)
@@ -461,6 +776,16 @@ async function deliverAssignedRun(
 		});
 		return {
 			run: await serializedRun(db, run.user_id, run.id),
+			...(run.resolved_effort && run.effort_source && run.effort_application_status === 'pending'
+				? {
+						effort: {
+							version: 1 as const,
+							value: run.resolved_effort,
+							source: JSON.parse(run.effort_source),
+							capability_digest: deliveryCapabilities!.catalog_digest
+						}
+					}
+				: {}),
 			prompt: `${preamble}\n\n${buildResumePrompt(
 				bundle,
 				issue,
@@ -482,6 +807,16 @@ async function deliverAssignedRun(
 	});
 	return {
 		run: await serializedRun(db, run.user_id, run.id),
+		...(run.resolved_effort && run.effort_source && run.effort_application_status === 'pending'
+			? {
+					effort: {
+						version: 1 as const,
+						value: run.resolved_effort,
+						source: JSON.parse(run.effort_source),
+						capability_digest: deliveryCapabilities!.catalog_digest
+					}
+				}
+			: {}),
 		prompt: `${preamble}\n\n${buildLaunchPrompt(
 			bundle,
 			issue,
@@ -554,6 +889,7 @@ async function prepareResume(
 		runnerId: runner.id,
 		harness: String(config.harness ?? 'claude_code'),
 		model: run.model,
+		effort: run.effort_application_status === 'pending' ? run.resolved_effort : null,
 		preambleVariant: 'local'
 	});
 	const verdict = resumeEligibility({
@@ -706,7 +1042,8 @@ export async function appendRunLog(
 	runId: string,
 	chunk: unknown,
 	now: number = Date.now(),
-	seq?: unknown
+	seq?: unknown,
+	effortApplication?: import('@tines/shared').AppendRunLogRequest['effort_application']
 ): Promise<AppendRunLogResponse> {
 	if (typeof chunk !== 'string' || chunk.length > 1_000_000) {
 		throw new ApiFail(
@@ -722,6 +1059,19 @@ export async function appendRunLog(
 		throw new ApiFail(422, 'invalid_field', '"seq" must be a positive integer', { field: 'seq' });
 	}
 	const run = await loadRunnerRun(db, runner, runId);
+	if (
+		effortApplication &&
+		((effortApplication.status !== 'accepted_unconfirmed' &&
+			effortApplication.status !== 'rejected') ||
+			effortApplication.transport !== 'argv' ||
+			effortApplication.attempted_effort !== run.resolved_effort ||
+			(effortApplication.reason !== undefined &&
+				(typeof effortApplication.reason !== 'string' || effortApplication.reason.length > 500)))
+	) {
+		throw new ApiFail(422, 'invalid_field', 'effort application does not match the claimed run', {
+			field: 'effort_application'
+		});
+	}
 	if (run.status === 'assigned') {
 		throw new ApiFail(
 			422,
@@ -752,6 +1102,14 @@ export async function appendRunLog(
 	let current = run;
 	for (let attempt = 0; ; attempt++) {
 		const appended = appendLogTail(current.log, current.log_bytes_dropped, chunk);
+		const mergedEffort = effortApplication
+			? mergeEffortEvidence(
+					(current.effort_application_status ?? 'unknown') as AgentRun['effort_application_status'],
+					current.effort_application_evidence,
+					effortApplication,
+					now
+				)
+			: null;
 		// Bytes the tail evicts go to R2 *before* the D1 update, so D1 never
 		// records dropped bytes that no object holds. The reverse — an object
 		// whose update then loses a guard — is an orphan the sweep GCs.
@@ -763,7 +1121,13 @@ export async function appendRunLog(
 					log: appended.log,
 					log_bytes_dropped: appended.dropped,
 					...(spill ?? {}),
-					...(seq === undefined ? {} : { log_seq: seq })
+					...(seq === undefined ? {} : { log_seq: seq }),
+					...(mergedEffort
+						? {
+								effort_application_status: mergedEffort.status,
+								effort_application_evidence: mergedEffort.evidence
+							}
+						: {})
 				})
 				.where('id', '=', runId)
 				// A chunk racing a cancel/sweep must not extend a settled run's
@@ -895,7 +1259,8 @@ function validatePricingEvidence(value: unknown): {
 		if (item.normalization !== 'codex-rollout-delta-v1') return malformedRequestContext();
 		if (item.status === 'complete') {
 			if (
-				harnessVersion !== '0.153.4' ||
+				!harnessVersion ||
+				!isSupportedCodexRolloutVersion(harnessVersion) ||
 				!Number.isSafeInteger(item.request_count) ||
 				(item.request_count as number) < 0 ||
 				!Number.isSafeInteger(item.max_request_input_tokens) ||
@@ -920,7 +1285,7 @@ function validatePricingEvidence(value: unknown): {
 			return {
 				version: 1,
 				normalization: 'codex-rollout-delta-v1',
-				harness_version: '0.153.4',
+				harness_version: harnessVersion,
 				status: 'complete',
 				request_count: item.request_count as number,
 				max_request_input_tokens: item.max_request_input_tokens as number,
@@ -1096,7 +1461,13 @@ async function retainAwaitingSession(
 	db: Kysely<Database>,
 	runner: RunnerRow,
 	input: {
-		run: { user_id: string; issue_id: string; model: string | null };
+		run: {
+			user_id: string;
+			issue_id: string;
+			model: string | null;
+			resolved_effort: string | null;
+			effort_application_status: string | null;
+		};
 		runId: string;
 		providerSessionId: string | null;
 		workspacePath: string | null;
@@ -1131,6 +1502,10 @@ async function retainAwaitingSession(
 			runnerId: runner.id,
 			harness: String(config.harness ?? 'claude_code'),
 			model: input.run.model,
+			effort:
+				input.run.effort_application_status === 'accepted_unconfirmed'
+					? input.run.resolved_effort
+					: null,
 			preambleVariant: 'local'
 		}),
 		expiresAt: input.now + runner.resume_window_hours * 60 * 60 * 1000,
@@ -1184,6 +1559,27 @@ export async function finishRun(
 	}
 
 	const run = await loadRunnerRun(db, runner, runId);
+	const finishEffort = body.effort_application;
+	if (
+		finishEffort &&
+		(finishEffort.transport !== 'argv' ||
+			finishEffort.attempted_effort !== run.resolved_effort ||
+			!['accepted_unconfirmed', 'rejected'].includes(finishEffort.status) ||
+			(finishEffort.reason !== undefined &&
+				(typeof finishEffort.reason !== 'string' || finishEffort.reason.length > 500)))
+	) {
+		throw new ApiFail(422, 'invalid_field', 'effort application does not match the claimed run', {
+			field: 'effort_application'
+		});
+	}
+	const mergedFinishEffort = finishEffort
+		? mergeEffortEvidence(
+				(run.effort_application_status ?? 'unknown') as AgentRun['effort_application_status'],
+				run.effort_application_evidence,
+				finishEffort,
+				now
+			)
+		: null;
 	if (run.status === 'assigned') {
 		throw new ApiFail(
 			422,
@@ -1241,6 +1637,12 @@ export async function finishRun(
 			error: error ?? null,
 			...(judgment ? { judgment: 'interrupted' as const } : {}),
 			finalReport: {
+				...(mergedFinishEffort
+					? {
+							effort_application_status: mergedFinishEffort.status,
+							effort_application_evidence: mergedFinishEffort.evidence
+						}
+					: {}),
 				...(usage ? { usage: JSON.stringify(usage) } : {}),
 				...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
 				...(turnCount !== undefined ? { turn_count: turnCount } : {}),
@@ -1283,7 +1685,10 @@ export async function finishRun(
 			// `endRun` as `interrupted`, so a separate interruption arm would
 			// double-notify it — the runner is already held to the reset.
 			await retainAwaitingSession(db, runner, {
-				run,
+				run: {
+					...run,
+					effort_application_status: mergedFinishEffort?.status ?? run.effort_application_status
+				},
 				runId,
 				providerSessionId: providerSessionId ?? run.provider_session_id ?? null,
 				workspacePath: workspacePath ?? null,

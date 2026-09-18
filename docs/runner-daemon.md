@@ -22,6 +22,9 @@ Four setup steps from nothing to an agent working an issue. The hosted app is
 
 3. **Runner** — install the daemon as a service (or paste the block the dialog shows):
 
+   Using Codex? Configure its [permissions](#codex-permissions) before starting the runner,
+   and use `--harness codex`.
+
    ```sh
    TINES_API_KEY=tines_… tines runner install \
      --url https://tines.tbuckley.dev \
@@ -60,8 +63,9 @@ into the unit):
 | --- | --- | --- |
 | `--name` | Runner name, unique per user; name it machine-plus-harness, e.g. `macbook-claude` — routing rules and agent comments address it | the hostname |
 | `--harness` | `claude-code`, `codex`, or `custom` | `claude-code` |
-| `--command` | Custom harness command template; placeholders `{prompt_file}`, `{workspace}`, `{model}` | — |
-| `--max-concurrent` | Simultaneous runs on this machine (1–100); sent on every poll, so a restart with a new value updates the server-side cap | 1 |
+| `--command` | Custom harness command template; placeholders `{prompt_file}`, `{workspace}`, `{model}`, `{effort}` | — |
+| `--max-concurrent` | Simultaneous runs on this machine (1–100), or the machine-owned ceiling when remote adjustment is enabled | 1 |
+| `--allow-remote-concurrency` | Let signed-in operators request a cap up to the local ceiling; never enabled remotely | off |
 | `--poll-interval` | Seconds between polls | 15 |
 | `--keep-workspaces` | Keep settled runs' workspaces for debugging: `never`, `failed`, or `always` | `never` |
 | `--keep-workspaces-for` | Hours a kept workspace survives | 72 |
@@ -71,6 +75,12 @@ into the unit):
 
 The service created by `runner install` always keeps both the harness-facing CLI and the daemon
 itself current, so `install` does not accept the two `--no-*` flags.
+
+Custom command placeholders are shell-quoted before the daemon passes the expanded template
+to `sh -c`. A missing model or effort expands to the empty shell word `''`, so the flag can
+remain in the template: `my-runner --prompt {prompt_file} --model {model} --effort {effort}`.
+The effort placeholder forwards an effort already present on the assignment; it does not
+enable effort routing for custom harnesses, which currently advertise no effort capability.
 
 Each run's workspace (under the config dir) contains `prompt.md` (supervisor preamble +
 stitched context + issue block), `skills/<name>/…`, `repos.json`, and a clone of each listed
@@ -94,6 +104,48 @@ Rotating a token: `tines runners rotate-token <name>` invalidates the old token 
 the new one once. Run it on the daemon machine and the stored token is updated in place —
 just restart the daemon; elsewhere, the daemon exits with a clear 401 message until the new
 token is dropped into its config.
+
+## Codex permissions
+
+Before starting a Codex runner, edit or create `~/.codex/config.toml` for the OS user that
+runs the daemon. For the usual service installed by `tines runner install`, merge these
+settings into that file:
+
+```toml
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+```
+
+`sandbox_mode` is a top-level key, so place it before any table headers. If the file already
+has a `[sandbox_workspace_write]` table, update it instead of adding a duplicate table.
+
+Workspace-write lets Codex edit the per-run workspace, including cloned repositories.
+Outbound network access lets subprocesses such as `tines` reach `TINES_API_URL`; it permits
+connections beyond that Tines server too.
+
+These are defaults for every Codex session run by this OS user. Commands with network access
+can send data off the machine, so enable these permissions only for work and repositories
+you trust. Tines gives each run an ephemeral API key and revokes it when the run ends; do not
+put that key in Codex configuration. The key's lifetime does not restrict network
+destinations.
+
+Tines invokes `codex exec` without overriding its sandbox or network settings. The snippet
+uses Codex's sandbox configuration and is not compatible with `default_permissions` or the
+permission-profile configuration model. If you use a permission profile, consult the
+[OpenAI configuration reference](https://developers.openai.com/codex/config-reference) for
+your chosen model before editing it; do not remove organization-managed policy. See
+[Config basics](https://developers.openai.com/codex/config-basic) for configuration
+precedence and managed constraints. A foreground daemon or custom service explicitly given
+`CODEX_HOME` reads configuration from that home; the normal Tines installer does not copy an
+arbitrary shell `CODEX_HOME` into its service unit.
+
+If a new run cannot edit files or `tines` reports a network denial, check the configuration
+used by the daemon's OS user and any higher-priority or managed policy, then start another
+run. An online runner confirms only that registration and heartbeat work. These settings do
+not guarantee authentication, DNS, or every Git operation, and Tines does not recommend
+`danger-full-access`, changing approval policy, or bypassing managed restrictions.
 
 ## The agent-facing CLI
 
@@ -236,6 +288,9 @@ workspace and its harness session, and the send-back is delivered as a continuat
   carries on rather than starting over;
 - the prompt is the reduced continuation message (what changed since the last run, the
   current stage's instructions and the issue block), not the full cold launch prompt;
+- the issue block uses the same essential-comment selection and skill discovery as a cold
+  launch. Older agent comment IDs resolve current bodies through `tines issues show --json`;
+  bodies already present in the retained conversation cannot be removed retroactively;
 - the launch banner names it: `# tines runner: … resumed=<previous-run-id>`, and the run
   row says `resumed run <id>`.
 
@@ -254,6 +309,21 @@ and reboots, and it is launched from the managed prefix, which is what lets it u
 ```sh
 TINES_API_KEY=tines_… tines runner install --name macbook-claude --harness claude-code
 ```
+
+To let the Agents page adjust concurrency, opt in locally and set the highest value this
+machine may run:
+
+```bash
+TINES_API_KEY=tines_… tines runner install --name macbook-claude --harness claude-code \
+  --allow-remote-concurrency --max-concurrent 4
+```
+
+The web request starts at 1 for a new runner and can never exceed 4 in this example. Raising it
+can increase CPU, memory, network, and provider usage or cost. To disable adjustment, pause the
+runner, wait for zero active runs, uninstall it, then reinstall with the complete desired flags
+but without `--allow-remote-concurrency`. `runner restart` preserves the installed arguments and
+therefore does not change this policy. Lowering the requested cap lets existing runs finish and
+blocks new claims until usage is below the new cap.
 
 In order, it:
 
@@ -393,3 +463,11 @@ tines runner workspaces prune --all
 Both sweeps and both commands only ever delete a directory containing a `kept.json`. The
 workspaces directory is shared by every run of every daemon on the machine, so an unmarked
 directory is assumed to be a live run and is left alone.
+
+## Reasoning effort
+
+Current Codex and Claude Code daemons discover and report exact-model effort support at boot. Set routed effort by target position, for example `tines routing set codex:balanced claude:balanced --project Example --effort 1=low --effort 2=medium`. A runner-tier effort is the fallback when routing omits it. Explicit routed effort never launches through an old or incompatible daemon; the next compatible ordered target may win.
+
+During daemon rollout, an old daemon may still take a run that has only runner-tier effort. Tines omits the setting and records `legacy_not_applied`; actual provider effort is unknown. After upgrade, Claude receives `--effort VALUE` and Codex receives `-c model_reasoning_effort="VALUE"`. Successful local spawn is recorded as `accepted_unconfirmed`, not proof of internal reasoning depth.
+
+To roll back, save the current route/tier JSON, remove routed effort and every applicable local tier effort, inspect `tines issues dispatch`, then settle active effort assignments before downgrading the server. Clearing a route override alone can reveal a broader override or runner-tier fallback.

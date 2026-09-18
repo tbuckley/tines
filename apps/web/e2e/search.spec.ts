@@ -1,10 +1,10 @@
 import type { ContextItem, IssueDetail, ListResponse, Project } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, DESKTOP, gotoHydrated, PHONE, runId, signIn } from './helpers';
+import { apiClient, body, DESKTOP, gotoHydrated, PHONE, signIn } from './helpers';
 
 test.describe.serial('literal long search', () => {
-	const projectName = `literal-search-${runId}`;
+	let projectName: string;
 	const ascii = 'a'.repeat(49) + 'needle' + 'b'.repeat(145);
 	const japanese = 'あ'.repeat(49);
 	let project: Project;
@@ -16,11 +16,9 @@ test.describe.serial('literal long search', () => {
 	let japaneseContext: ContextItem;
 	let literalContext: ContextItem;
 
-	test.beforeAll(async ({ playwright }) => {
-		const request = await playwright.request.newContext({
-			baseURL: test.info().project.use.baseURL
-		});
-		const api = apiClient(request, ALICE.apiKey);
+	test.beforeAll(async ({ apiFor, uniqueName }) => {
+		projectName = uniqueName('literal-search');
+		const api = apiFor(ALICE);
 		project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 		asciiIssue = await body<IssueDetail>(
 			await api.post(`/api/v1/projects/${project.id}/issues`, { title: ascii })
@@ -34,12 +32,14 @@ test.describe.serial('literal long search', () => {
 			await api.post(`/api/v1/projects/${project.id}/issues`, { title: japanese })
 		);
 		literalIssue = await body<IssueDetail>(
-			await api.post(`/api/v1/projects/${project.id}/issues`, { title: `literal % _ \\ ${runId}` })
+			await api.post(`/api/v1/projects/${project.id}/issues`, {
+				title: uniqueName('literal % _ \\', { maxLength: 100 })
+			})
 		);
 		asciiContext = await body<ContextItem>(
 			await api.post('/api/v1/context', {
 				kind: 'prompt',
-				name: `long-search-${runId}`,
+				name: uniqueName('long-search'),
 				description: ascii,
 				project_id: project.id,
 				body: ''
@@ -56,13 +56,12 @@ test.describe.serial('literal long search', () => {
 		literalContext = await body<ContextItem>(
 			await api.post('/api/v1/context', {
 				kind: 'prompt',
-				name: `literal-%-_-${runId}`,
-				description: `literal % _ \\ ${runId}`,
+				name: uniqueName('literal-%-_'),
+				description: uniqueName('literal % _ \\', { maxLength: 100 }),
 				project_id: project.id,
 				body: ''
 			})
 		);
-		await request.dispose();
 	});
 
 	test('native D1 accepts the exact boundary, long and multibyte terms on every API', async ({

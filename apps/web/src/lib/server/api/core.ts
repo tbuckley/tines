@@ -233,6 +233,7 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	// is fenced, so a run cannot re-home itself into different guidance.
 	{ pattern: /^\/api\/v1\/issues\/[^/]+\/transfer$/, readable: true },
 	{ pattern: /^\/api\/v1\/api-keys(\/|$)/ },
+	{ pattern: /^\/api\/v1\/host\/workflow-moderation(\/|$)/ },
 	// The label library is vocabulary, not classification: run keys may read it
 	// (`tines labels list` — the launch prompt points at it) and may apply and
 	// remove existing labels (/issues/:id/labels stays open to them), but
@@ -244,6 +245,9 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	// Preparing/recovering is read-only; committing an installation is an
 	// operator action and is also denied again inside the install service.
 	{ pattern: /^\/api\/v1\/library\/install$/ },
+	// Agents may validate and prepare publication proofs, but only a human or
+	// named key may publish, withdraw, restore, or install the hosted snapshot.
+	{ pattern: /^\/api\/v1\/publications\/[^/]+\/(publish|withdraw|restore)$/ },
 	// Archiving is an operator act: an agent must not freeze (or thaw) the
 	// project it is working in, least of all the one draining around it.
 	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ },

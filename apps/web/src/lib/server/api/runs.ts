@@ -89,6 +89,11 @@ const evidenceRunSelection = [
 	'agent_run.outcome',
 	'agent_run.tier',
 	'agent_run.model',
+	'agent_run.requested_effort',
+	'agent_run.resolved_effort',
+	'agent_run.effort_source',
+	'agent_run.effort_application_status',
+	'agent_run.effort_application_evidence',
 	'agent_run.usage',
 	'agent_run.state_id_at_start',
 	'agent_run.state_id_at_end',
@@ -148,6 +153,79 @@ const pendingEvidenceSelection = [
 	'issue_workflow.name as issue_workflow_name'
 ] as const;
 
+/** Hydrate only already-selected usage evidence IDs, rechecking ownership and cutoff. */
+export async function hydrateUsageEvidenceRuns(
+	db: Kysely<Database>,
+	userId: string,
+	ids: string[],
+	population: 'finalized' | 'pending',
+	cutoff: number
+): Promise<(AgentRun | UsagePendingRun)[]> {
+	if (!ids.length) return [];
+	const rows =
+		population === 'pending'
+			? await evidenceBaseQuery(db, userId)
+					.select(pendingEvidenceSelection)
+					.where('agent_run.id', 'in', ids)
+					.where('agent_run.created_at', '<', cutoff)
+					.where((eb) =>
+						eb.or([eb('agent_run.ended_at', 'is', null), eb('agent_run.ended_at', '>=', cutoff)])
+					)
+					.execute()
+			: await runQuery(db, userId)
+					.leftJoin('workflow as end_workflow', (join) =>
+						join
+							.onRef('end_workflow.id', '=', 'end_state.workflow_id')
+							.on((eb) =>
+								eb.or([
+									eb('end_workflow.user_id', '=', userId),
+									eb('end_workflow.user_id', 'is', null)
+								])
+							)
+					)
+					.clearSelect()
+					.select(evidenceRunSelection)
+					.where('agent_run.id', 'in', ids)
+					.where('agent_run.created_at', '<', cutoff)
+					.where('agent_run.ended_at', '<', cutoff)
+					.execute();
+	const byId = new Map((rows as unknown as RunRow[]).map((row) => [row.id, row]));
+	const result: (AgentRun | UsagePendingRun)[] = [];
+	for (const id of ids) {
+		const row = byId.get(id);
+		if (!row) continue;
+		if (population === 'pending') {
+			result.push({
+				id: row.id,
+				issue_id: row.issue_id,
+				issue_ref:
+					row.project_name !== null && row.issue_number !== null && row.issue_title !== null
+						? {
+								project_name: row.project_name,
+								number: row.issue_number,
+								title: row.issue_title
+							}
+						: null,
+				runner_id: row.runner_id,
+				runner_name: row.runner_name ?? `Unknown/deleted runner (${row.runner_id})`,
+				tier: row.tier as ModelTier,
+				state_id_at_start: row.state_id_at_start,
+				state_at_start_name: row.start_state_name,
+				created_at: row.created_at,
+				pending_at: cutoff,
+				usage_dimensions: (({ outcome: _, ...safe }) => safe)(usageDimensions(row)),
+				accounting_status: 'pending' as const
+			} satisfies UsagePendingRun);
+		} else
+			result.push({
+				...serializeRun(row),
+				usage_dimensions: usageDimensions(row),
+				usage_accounting: (({ usage: _, ...accounting }) => accounting)(classifyUsage(row.usage))
+			});
+	}
+	return result;
+}
+
 function usageDimensions(row: RunRow): UsageDimensions {
 	const workflowId = row.start_workflow_id ?? row.issue_workflow_id ?? null;
 	const workflowName =
@@ -204,6 +282,16 @@ export function serializeRun(row: RunRow): AgentRun {
 		outcome: (row.outcome as RunEndOutcome | null) ?? null,
 		tier: row.tier as ModelTier,
 		model: row.model,
+		requested_effort: row.requested_effort,
+		resolved_effort: row.resolved_effort,
+		effort_source: row.effort_source
+			? (JSON.parse(row.effort_source) as AgentRun['effort_source'])
+			: null,
+		effort_application_status:
+			(row.effort_application_status as AgentRun['effort_application_status'] | null) ?? 'unknown',
+		effort_application_evidence: row.effort_application_evidence
+			? (JSON.parse(row.effort_application_evidence) as Record<string, unknown>)
+			: null,
 		usage: parseUsage(row.usage),
 		state_id_at_start: row.state_id_at_start,
 		state_at_start_name: row.start_state_name,

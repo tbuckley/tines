@@ -27,12 +27,16 @@ describe('web issue page parsing', () => {
 
 describe('issue pagination URLs', () => {
 	it('preserves repeated filters while removing all paging and one-shot project params', () => {
-		const source = url('?label=a&label=b&after=old&before=older&page_scope=old&project=demo&q=hi');
+		const source = url(
+			'?label=a&label=b&workflow=wf_eng&state=s_review&after=old&before=older&page_scope=old&project=demo&q=hi'
+		);
 		expect(issuePageHref(source, 'after', 'new', 'all')).toBe(
-			'/issues?label=a&label=b&q=hi&after=new&page_scope=all'
+			'/issues?label=a&label=b&workflow=wf_eng&state=s_review&q=hi&after=new&page_scope=all'
 		);
 		clearIssuePagination(source.searchParams);
 		expect(source.searchParams.getAll('label')).toEqual(['a', 'b']);
+		expect(source.searchParams.get('workflow')).toBe('wf_eng');
+		expect(source.searchParams.get('state')).toBe('s_review');
 		expect(source.searchParams.has('after')).toBe(false);
 	});
 

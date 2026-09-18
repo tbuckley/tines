@@ -75,7 +75,8 @@ describe('reconcileCodexRollout', () => {
 			'delta_mismatch'
 		],
 		[[meta(), count(total1, total1)], 'terminal_mismatch'],
-		[[meta('0.154.0'), count(total2, total2)], 'unsupported_version'],
+		[[meta('0.153.3'), count(total2, total2)], 'unsupported_version'],
+		[[meta('0.154.0-beta.1'), count(total2, total2)], 'unsupported_version'],
 		[
 			[meta(), { type: 'turn_context', payload: { model: 'gpt-6-astra' } }, count(total2, total2)],
 			'model_mismatch'
@@ -84,6 +85,32 @@ describe('reconcileCodexRollout', () => {
 		expect(
 			reconcileCodexRollout(records, { threadId, model: 'gpt-5.6-sol', terminalUsage: total2 })
 		).toMatchObject({ reason });
+	});
+
+	it.each(['0.153.5', '0.154.0', '1.2.3'])('accepts a newer Codex CLI (%s)', (version) => {
+		expect(
+			reconcileCodexRollout([meta(version), count(total1, total1), count(total2, last2)], {
+				threadId,
+				model: 'gpt-5.6-sol',
+				terminalUsage: total2
+			})
+		).toMatchObject({ status: 'complete', harness_version: version, request_count: 2 });
+	});
+
+	it('reports the actual Codex CLI version when it is unsupported', () => {
+		expect(
+			reconcileCodexRollout([meta('0.150.0'), count(total2, total2)], {
+				threadId,
+				model: 'gpt-5.6-sol',
+				terminalUsage: total2
+			})
+		).toEqual({
+			version: 1,
+			normalization: 'codex-rollout-delta-v1',
+			harness_version: '0.150.0',
+			status: 'unsupported',
+			reason: 'unsupported_version'
+		});
 	});
 
 	it('distinguishes no observation from measured zero', () => {

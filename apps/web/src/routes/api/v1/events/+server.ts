@@ -1,7 +1,12 @@
 import { json } from '@sveltejs/kit';
 import type { ListResponse, TinesEvent } from '@tines/shared';
 import { api, apiContext, encodeCursor, readPage } from '$lib/server/api/core';
-import { eventQuery, serializeEvent } from '$lib/server/api/events';
+import {
+	applyEventWindow,
+	eventQuery,
+	serializeEvent,
+	eventTimeParam
+} from '$lib/server/api/events';
 import type { RequestHandler } from './$types';
 
 /** Global activity feed, newest first. */
@@ -10,7 +15,12 @@ export const GET: RequestHandler = api(async (event) => {
 	const page = readPage(event);
 	const params = event.url.searchParams;
 
-	let q = eventQuery(db, actor.userId);
+	let q = applyEventWindow(eventQuery(db, actor.userId), {
+		since: eventTimeParam(params, 'since'),
+		until: eventTimeParam(params, 'until'),
+		type: params.get('type')?.split(',').filter(Boolean),
+		state: params.get('state') ?? undefined
+	});
 	const issue = params.get('issue');
 	if (issue) q = q.where('event.issue_id', '=', issue);
 	const project = params.get('project');
@@ -19,8 +29,6 @@ export const GET: RequestHandler = api(async (event) => {
 			eb.or([eb('event.project_id', '=', project), eb('event_project.name', '=', project)])
 		);
 	}
-	const type = params.get('type');
-	if (type) q = q.where('event.type', '=', type);
 	if (page.cursor) {
 		const { createdAt, id } = page.cursor;
 		q = q.where((eb) =>

@@ -194,7 +194,7 @@ describe('destination package resolution (read-only)', () => {
 		expect(plan.routing[0]).toMatchObject({
 			tier: 'smartest',
 			runner_rule_id: 'global',
-			targets: [{ runner_id: runner, supported: true, model: 'gpt-5-codex' }]
+			targets: [{ runner_id: runner, supported: true, model: 'gpt-6-astra' }]
 		});
 		f.t.sqlite.exec(
 			`UPDATE runner SET last_seen_at=0,backoff_until=9999999999999 WHERE id='${runner}'`
