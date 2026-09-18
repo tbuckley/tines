@@ -404,7 +404,7 @@ thinks; every run's launch banner shows which daemon binary actually ran it (`cl
   `rate_limit_event` on its stream, or as its own message on stderr when the limit was
   already spent before the process started — the daemon finish-reports the run as rate
   limited rather than failed. The issue takes no strike, and the runner's card reads
-  "rate limited — resumes <time>" until the window resets. Nothing needs doing: the
+  "usage limit — resumes <time>" until the window resets. Nothing needs doing: the
   supervisor dispatches to it again on its own. A weekly limit is re-probed once a day,
   which costs one run that ends in about a second.
 - **Network errors**: polls retry with backoff; the loop never crashes. A 401 (rotated
