@@ -1,9 +1,44 @@
-import type { Actor, TinesEvent } from '@tines/shared';
+import type { Actor, ActorRun, TinesEvent } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
-import type { ActorContext } from './core';
+import { ApiFail, type ActorContext } from './core';
+
+export interface EventWindowFilters {
+	since?: number;
+	until?: number;
+	type?: string | string[];
+	state?: string;
+}
+
+/** Apply the time/type/state predicates shared by activity and stage stats. */
+export function applyEventWindow<Q>(query: Q, filters: EventWindowFilters): Q {
+	// Kysely's table type differs for the display query and the slim analytics
+	// query; both expose the same where builder for event columns.
+	let q = query as Q & { where: (...args: unknown[]) => Q };
+	if (filters.since !== undefined) q = q.where('event.created_at', '>=', filters.since) as typeof q;
+	if (filters.until !== undefined) q = q.where('event.created_at', '<', filters.until) as typeof q;
+	if (filters.type) {
+		const types = Array.isArray(filters.type) ? filters.type : [filters.type];
+		q = q.where('event.type', 'in', types) as typeof q;
+	}
+	if (filters.state) {
+		const state = filters.state;
+		q = q.where((eb: any) =>
+			eb.or([
+				eb(sql<string>`json_extract(event.payload, '$.from_state_id')`, '=', state),
+				eb(sql<string>`json_extract(event.payload, '$.to_state_id')`, '=', state),
+				eb(sql<string>`json_extract(event.payload, '$.state_id')`, '=', state)
+			])
+		) as typeof q;
+	}
+	return q as Q;
+}
+import type { QueryGuard } from './query-guard';
 
 export interface EventInput {
+	/** Stable batch allocation; ordinary callers omit these. */
+	id?: string;
+	createdAt?: number;
 	type: string;
 	issueId?: string | null;
 	projectId?: string | null;
@@ -29,28 +64,64 @@ export function eventInsert(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	input: EventInput,
-	guard?: EventGuard
+	guard?: EventGuard | QueryGuard
 ): CompiledQuery {
 	const values = {
-		id: newId('evt'),
+		id: input.id ?? newId('evt'),
 		user_id: actor.userId,
 		type: input.type,
 		actor_user_id: actor.userId,
 		actor_api_key_id: actor.apiKeyId,
 		issue_id: input.issueId ?? null,
-		project_id: input.projectId ?? null,
 		payload: JSON.stringify(input.payload ?? {}),
-		created_at: Date.now()
+		created_at: input.createdAt ?? Date.now()
 	};
-	if (!guard) return db.insertInto('event').values(values).compile();
+	// Issue-scoped attribution belongs to the issue's project at the instant the
+	// event commits. Resolving it here avoids a read-before-transfer writer
+	// recording a new event in the issue's former project.
+	const projectId = input.issueId
+		? sql<string | null>`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
+		: sql<string | null>`${input.projectId ?? null}`;
+	if (!guard)
+		return sql`
+			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+			VALUES (${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
+				${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at})`.compile(db);
+	if ('predicate' in guard)
+		return sql`
+			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+			SELECT ${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
+				${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at}
+			WHERE ${guard.predicate}`.compile(db);
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
-			${values.issue_id}, ${values.project_id}, ${values.payload}, ${values.created_at}
+			${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at}
 		WHERE EXISTS (
 			SELECT 1 FROM issue
 			WHERE id = ${guard.issueId} AND state_id = ${guard.stateId} AND updated_at = ${guard.updatedAt}
 		)`.compile(db);
+}
+
+/**
+ * Resolve a run key's provenance from a row that joined `agent_run` → `runner`
+ * → the run's issue and project. Shared by the event feed's actor and the API
+ * keys listing, so both fall back the same way when a name is missing.
+ */
+export function actorRunOf(row: {
+	run_id: string;
+	runner_name: string | null;
+	run_project_name: string | null;
+	run_issue_number: number | null;
+}): ActorRun {
+	return {
+		run_id: row.run_id,
+		runner_name: row.runner_name ?? 'unknown runner',
+		issue_ref:
+			row.run_project_name && row.run_issue_number != null
+				? { project_name: row.run_project_name, number: row.run_issue_number }
+				: null
+	};
 }
 
 export function actorOf(row: {
@@ -71,14 +142,12 @@ export function actorOf(row: {
 		api_key_name: row.actor_api_key_id ? (row.actor_api_key_name ?? 'unknown key') : null
 	};
 	if (row.actor_run_id) {
-		actor.run = {
+		actor.run = actorRunOf({
 			run_id: row.actor_run_id,
-			runner_name: row.actor_runner_name ?? 'unknown runner',
-			issue_ref:
-				row.actor_run_project_name && row.actor_run_issue_number != null
-					? { project_name: row.actor_run_project_name, number: row.actor_run_issue_number }
-					: null
-		};
+			runner_name: row.actor_runner_name ?? null,
+			run_project_name: row.actor_run_project_name ?? null,
+			run_issue_number: row.actor_run_issue_number ?? null
+		});
 	}
 	return actor;
 }
@@ -101,7 +170,10 @@ export function eventQuery(db: Kysely<Database>, userId: string) {
 				'actor_run_issue.project_id'
 			)
 			.leftJoin('issue', 'issue.id', 'event.issue_id')
-			.leftJoin('project', 'project.id', 'event.project_id')
+			// Event project is immutable historical attribution. The issue ref is
+			// independently canonical and follows the issue's current identity.
+			.leftJoin('project as event_project', 'event_project.id', 'event.project_id')
+			.leftJoin('project as issue_project', 'issue_project.id', 'issue.project_id')
 			.select([
 				'event.id',
 				'event.type',
@@ -119,7 +191,8 @@ export function eventQuery(db: Kysely<Database>, userId: string) {
 				'actor_run_issue.number as actor_run_issue_number',
 				'issue.number as issue_number',
 				'issue.title as issue_title',
-				'project.name as project_name'
+				'event_project.name as project_name',
+				'issue_project.name as issue_project_name'
 			])
 			.where('event.user_id', '=', userId)
 	);
@@ -141,9 +214,9 @@ export function serializeEvent(row: EventRow): TinesEvent {
 		issue_id: row.issue_id,
 		project_id: row.project_id,
 		issue_ref:
-			row.issue_id && row.issue_number !== null && row.project_name
+			row.issue_id && row.issue_number !== null && row.issue_project_name
 				? {
-						project_name: row.project_name,
+						project_name: row.issue_project_name,
 						number: row.issue_number,
 						title: row.issue_title ?? ''
 					}
@@ -152,4 +225,18 @@ export function serializeEvent(row: EventRow): TinesEvent {
 		payload,
 		created_at: row.created_at
 	};
+}
+
+export function eventTimeParam(
+	params: URLSearchParams,
+	name: 'since' | 'until'
+): number | undefined {
+	const value = params.get(name);
+	if (!value) return undefined;
+	const parsed = /^\d+$/.test(value) ? Number(value) : Date.parse(value);
+	if (!Number.isFinite(parsed))
+		throw new ApiFail(422, 'validation_error', `"${name}" must be epoch milliseconds or ISO 8601`, {
+			field: name
+		});
+	return parsed;
 }

@@ -48,20 +48,24 @@ export function addIssue(
 		workflow?: string;
 		project?: string;
 		updatedAt?: number;
+		/** The wait clock the fleet queue reads; defaults to `created_at`. */
+		stateEnteredAt?: number;
 		pinnedRunner?: string;
 		pinnedTier?: ModelTier;
 		attemptCount?: number;
 		needsAttention?: boolean;
 		title?: string;
 		description?: string;
+		labels?: string[];
 	} = {}
 ): string {
 	const id = opts.id ?? `iss_${++issueSeq}`;
 	t.sqlite
 		.prepare(
 			`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id,
-				pinned_runner_id, pinned_tier, attempt_count, needs_attention, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				pinned_runner_id, pinned_tier, attempt_count, needs_attention, created_at, updated_at,
+				state_entered_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(
 			id,
@@ -76,8 +80,28 @@ export function addIssue(
 			opts.attemptCount ?? 0,
 			opts.needsAttention ? 1 : 0,
 			NOW,
-			opts.updatedAt ?? NOW
+			opts.updatedAt ?? NOW,
+			opts.stateEnteredAt ?? NOW
 		);
+	for (const labelId of opts.labels ?? []) {
+		t.sqlite
+			.prepare(`INSERT INTO issue_label (issue_id, label_id, created_at) VALUES (?, ?, ?)`)
+			.run(id, labelId, NOW);
+	}
+	return id;
+}
+
+let labelSeq = 0;
+
+/** An issue label, the fourth scope dimension a rule can carry. */
+export function addLabel(t: TestDb, name: string, opts: { id?: string } = {}): string {
+	const id = opts.id ?? `lab_${++labelSeq}`;
+	t.sqlite
+		.prepare(
+			`INSERT INTO label (id, user_id, name, color, description, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`
+		)
+		.run(id, USER, name, 'slate', '', NOW, NOW);
 	return id;
 }
 
@@ -101,14 +125,15 @@ export function addRunner(
 		lastSeen?: number | null;
 		launchFailures?: number;
 		backoffUntil?: number | null;
+		draining?: boolean;
 	} = {}
 ): string {
 	const id = opts.id ?? `rnr_${++runnerSeq}`;
 	t.sqlite
 		.prepare(
 			`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes,
-				default_tier, tiers, budget, config, secret_enc, last_seen_at, launch_failures, backoff_until, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				default_tier, tiers, budget, config, secret_enc, last_seen_at, launch_failures, backoff_until, draining, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(
 			id,
@@ -126,6 +151,7 @@ export function addRunner(
 			opts.lastSeen === undefined ? NOW : opts.lastSeen,
 			opts.launchFailures ?? 0,
 			opts.backoffUntil ?? null,
+			opts.draining ? 1 : 0,
 			NOW,
 			NOW
 		);
@@ -136,19 +162,26 @@ let ruleSeq = 0;
 
 export function addRule(
 	t: TestDb,
-	opts: { id?: string; project?: string | null; state?: string | null; targets: RoutingTarget[] }
+	opts: {
+		id?: string;
+		project?: string | null;
+		state?: string | null;
+		label?: string | null;
+		targets: RoutingTarget[];
+	}
 ): string {
 	const id = opts.id ?? `rul_${++ruleSeq}`;
 	t.sqlite
 		.prepare(
-			`INSERT INTO routing_rule (id, user_id, project_id, workflow_state_id, targets, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`
+			`INSERT INTO routing_rule (id, user_id, project_id, workflow_state_id, label_id, targets, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(
 			id,
 			USER,
 			opts.project ?? null,
 			opts.state ?? null,
+			opts.label ?? null,
 			JSON.stringify(opts.targets),
 			NOW,
 			NOW
@@ -192,6 +225,10 @@ export function addRun(
 		providerMeta?: string | null;
 		createdAt?: number;
 		startedAt?: number | null;
+		endedAt?: number | null;
+		stateAtEnd?: string | null;
+		outcome?: string | null;
+		usage?: string | null;
 		log?: string;
 		logBytesDropped?: number;
 	}
@@ -200,8 +237,9 @@ export function addRun(
 	t.sqlite
 		.prepare(
 			`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, model,
-				state_id_at_start, api_key_id, provider_session_id, provider_meta, log, log_bytes_dropped, created_at, started_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				state_id_at_start, api_key_id, provider_session_id, provider_meta, log, log_bytes_dropped,
+				created_at, started_at, ended_at, state_id_at_end, outcome, usage)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(
 			id,
@@ -218,9 +256,68 @@ export function addRun(
 			opts.log ?? '',
 			opts.logBytesDropped ?? 0,
 			opts.createdAt ?? NOW,
-			opts.startedAt ?? null
+			opts.startedAt ?? null,
+			opts.endedAt ?? null,
+			opts.stateAtEnd ?? null,
+			opts.outcome ?? null,
+			opts.usage ?? null
 		);
 	return id;
+}
+
+/**
+ * A run key: the `api_key` row with `agent_run_id` set that a run acts through.
+ * Comments, events and artifact versions are attributed to a run only via one
+ * of these, so every round scenario needs one per run.
+ */
+export function addRunKey(t: TestDb, runId: string, opts: { id?: string } = {}): string {
+	const id = opts.id ?? `key_${runId}`;
+	t.sqlite
+		.prepare(
+			`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, agent_run_id, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`
+		)
+		.run(id, USER, `run ${runId}`, `hash_${id}`, id.slice(0, 8), runId, NOW);
+	return id;
+}
+
+let commentSeq = 0;
+
+/** A comment, optionally attributed to a run key. */
+export function addComment(
+	t: TestDb,
+	opts: { issueId: string; body: string; apiKeyId?: string | null; at: number; id?: string }
+): string {
+	const id = opts.id ?? `cmt_${++commentSeq}`;
+	t.sqlite
+		.prepare(
+			`INSERT INTO comment (id, issue_id, body, actor_user_id, actor_api_key_id, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`
+		)
+		.run(id, opts.issueId, opts.body, USER, opts.apiKeyId ?? null, opts.at);
+	return id;
+}
+
+/** The Engineering-shaped workflow the round scenarios walk. */
+export const ENG_STATES = {
+	research: 'wfs_eng_research',
+	design: 'wfs_eng_design',
+	impl: 'wfs_eng_impl',
+	autoReview: 'wfs_eng_auto',
+	humanReview: 'wfs_eng_human'
+} as const;
+
+export function addEngineeringWorkflow(t: TestDb): void {
+	t.sqlite.exec(`
+		INSERT INTO workflow (id, user_id, name, initial_state_id, created_at, updated_at)
+			VALUES ('wf_eng', '${USER}', 'Engineering', '${ENG_STATES.research}', ${NOW}, ${NOW});
+		INSERT INTO workflow_state (id, workflow_id, name, category, position, created_at) VALUES
+			('${ENG_STATES.research}', 'wf_eng', 'Research', 'active', 0, ${NOW}),
+			('${ENG_STATES.design}', 'wf_eng', 'Design', 'active', 1, ${NOW}),
+			('${ENG_STATES.impl}', 'wf_eng', 'Implementation', 'active', 2, ${NOW}),
+			('${ENG_STATES.autoReview}', 'wf_eng', 'Automated Review', 'active', 3, ${NOW}),
+			('${ENG_STATES.humanReview}', 'wf_eng', 'Human Review', 'awaiting_human', 4, ${NOW});
+	`);
 }
 
 /** A raw issue.transitioned event, for end-judgment scenarios. */
@@ -232,6 +329,10 @@ export function addTransitionEvent(
 		at: number;
 		from?: string;
 		to?: string;
+		action?: string | null;
+		fromName?: string;
+		toName?: string;
+		forced?: boolean;
 	}
 ): void {
 	t.sqlite
@@ -246,7 +347,14 @@ export function addTransitionEvent(
 			opts.apiKeyId,
 			opts.issueId,
 			PROJECT,
-			JSON.stringify({ from_state_id: opts.from ?? OPEN, to_state_id: opts.to ?? REVIEW }),
+			JSON.stringify({
+				from_state_id: opts.from ?? OPEN,
+				to_state_id: opts.to ?? REVIEW,
+				...(opts.fromName === undefined ? {} : { from_state_name: opts.fromName }),
+				...(opts.toName === undefined ? {} : { to_state_name: opts.toName }),
+				...(opts.action === undefined || opts.action === null ? {} : { action: opts.action }),
+				...(opts.forced ? { forced: true } : {})
+			}),
 			opts.at
 		);
 }

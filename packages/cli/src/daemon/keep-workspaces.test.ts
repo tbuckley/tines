@@ -12,8 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:f
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
 	keptMarkerPath,
@@ -21,10 +20,7 @@ import {
 	writeKeptMarker,
 	type KeptWorkspaceMarker
 } from './store.js';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const tsx = join(here, '..', '..', 'node_modules', '.bin', 'tsx');
-const entry = join(here, '..', 'index.ts');
+import { CLI_BIN, NODE } from '../test-bin.js';
 
 const RUN_ID = 'run_stub1';
 
@@ -95,9 +91,9 @@ function stubSupervisor(): { server: Server; done: Promise<Harvest> } {
 
 function startDaemon(port: number, dir: string, command: string, extra: string[]): ChildProcess {
 	return spawn(
-		tsx,
+		NODE,
 		[
-			entry,
+			CLI_BIN,
 			'runner',
 			'daemon',
 			'--url',
@@ -128,6 +124,16 @@ async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<bo
 		await new Promise((r) => setTimeout(r, 50));
 	}
 	return predicate();
+}
+
+/** The kept marker, or null while it is absent (or, historically, half-written). */
+function readMarker(ws: string): KeptWorkspaceMarker | null {
+	if (!existsSync(keptMarkerPath(ws))) return null;
+	try {
+		return JSON.parse(readFileSync(keptMarkerPath(ws), 'utf8')) as KeptWorkspaceMarker;
+	} catch {
+		return null;
+	}
 }
 
 let child: ChildProcess | null = null;
@@ -168,11 +174,19 @@ async function runOnce(
 describe('--keep-workspaces', () => {
 	it('failed: a harness that exits non-zero leaves its workspace, marked and logged', async () => {
 		const { harvest, ws } = await runOnce('exit 3', ['--keep-workspaces', 'failed']);
-		expect(harvest.finish).toEqual({ status: 'failed', error: 'harness exited with code 3' });
-		expect(await waitFor(() => existsSync(keptMarkerPath(ws)))).toBe(true);
+		expect(harvest.finish).toEqual({
+			workspace_path: expect.any(String),
+			status: 'failed',
+			error: 'harness exited with code 3',
+			usage: { cost_source: 'none' }
+		});
+		// Wait on a *parseable* marker: the write is atomic (config.ts), but
+		// polling existsSync alone would still be a race if it ever stopped
+		// being — this is the assertion that caught it.
+		expect(await waitFor(() => readMarker(ws) !== null)).toBe(true);
 		// The clone the agent was editing is still there, not just the marker.
 		expect(existsSync(join(ws, 'prompt.md'))).toBe(true);
-		const marker = JSON.parse(readFileSync(keptMarkerPath(ws), 'utf8')) as KeptWorkspaceMarker;
+		const marker = readMarker(ws)!;
 		expect(marker).toMatchObject({
 			run_id: RUN_ID,
 			issue_ref: 'Stub/1',
@@ -181,20 +195,32 @@ describe('--keep-workspaces', () => {
 		});
 		expect(Number.isFinite(Date.parse(marker.kept_at))).toBe(true);
 		// And the path is discoverable from the run's own log tail.
-		expect(harvest.log.trimEnd().endsWith(`workspace kept at ${ws}`)).toBe(true);
+		expect(harvest.log).toContain(`workspace kept at ${ws}\n`);
+		expect(harvest.log).toContain('[usage] ');
 	}, 30_000);
 
 	it('failed: a completed run is still removed', async () => {
 		const { harvest, ws } = await runOnce('true', ['--keep-workspaces', 'failed']);
-		expect(harvest.finish).toEqual({ status: 'completed' });
+		expect(harvest.finish).toEqual({
+			workspace_path: expect.any(String),
+			status: 'completed',
+			usage: { cost_source: 'none' }
+		});
 		expect(await waitFor(() => !existsSync(ws))).toBe(true);
 		expect(harvest.log).not.toContain('workspace kept at');
 	}, 30_000);
 
 	it('always: a completed run is kept too', async () => {
 		const { harvest, ws } = await runOnce('true', ['--keep-workspaces', 'always']);
-		expect(harvest.finish).toEqual({ status: 'completed' });
-		expect(await waitFor(() => existsSync(keptMarkerPath(ws)))).toBe(true);
+		expect(harvest.finish).toEqual({
+			workspace_path: expect.any(String),
+			status: 'completed',
+			usage: { cost_source: 'none' }
+		});
+		// Wait on a *parseable* marker: the write is atomic (config.ts), but
+		// polling existsSync alone would still be a race if it ever stopped
+		// being — this is the assertion that caught it.
+		expect(await waitFor(() => readMarker(ws) !== null)).toBe(true);
 		const marker = JSON.parse(readFileSync(keptMarkerPath(ws), 'utf8')) as KeptWorkspaceMarker;
 		expect(marker.status).toBe('completed');
 		expect(marker.error).toBeUndefined();

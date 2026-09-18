@@ -36,9 +36,12 @@
 			"custom_domain": true
 		}
 	],
-	// No production traffic on tines-web.<subdomain>.workers.dev —
-	// production is served only at tines.tbuckley.dev...
-	"workers_dev": false,
+	// The app is served only at tines.tbuckley.dev, but the workers.dev hostname
+	// is enabled as the *artifact sandbox origin*: workers.dev is on the Public
+	// Suffix List, so it is a different registrable domain and carries none of
+	// the app's cookies. hooks.server.ts serves nothing but /s/* on that host
+	// (see specs/artifacts/SPEC.md "Sites: HTML artifacts").
+	"workers_dev": true,
 	// ...but keep per-version preview URLs on workers.dev
 	// (used by the PR preview workflow, .github/workflows/preview.yml).
 	"preview_urls": true,
@@ -92,6 +95,13 @@
 		// Sender for magic-link emails. Must be an address on a domain onboarded to
 		// Email Service (Cloudflare dash → Compute → Email Service → Email Sending).
 		"EMAIL_FROM": "tines-noreply@tbuckley.dev"
+		// Origin that executes HTML artifacts. Set this to
+		// "https://tines-web.<subdomain>.workers.dev" — <subdomain> is the
+		// account's workers.dev subdomain, visible in any preview URL
+		// (pr-<n>-tines-web-preview.<subdomain>.workers.dev). Until it is set,
+		// sites are served from the app origin under CSP `sandbox`, which works
+		// but gives the page an opaque origin (localStorage throws).
+		// "ARTIFACT_SANDBOX_ORIGIN": "https://tines-web.<subdomain>.workers.dev"
 	},
 	"env": {
 		// PR previews (.github/workflows/preview.yml): a separate worker

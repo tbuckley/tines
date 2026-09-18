@@ -2,6 +2,12 @@
 
 Two measurements, one modelled and one real.
 
+## Weekly stats: `pnpm --filter web perf:stats`
+
+The opt-in weekly-stats probe constructs 524 issues, 28 active states, 1,525 runs and 40 marker-style windows. Its CPU companion runs a frozen pre-refactor arithmetic oracle against complete reports and generated marker windows, then reports the old repeated-preparation shape versus the shared prepared-index shape. It is excluded from the normal unit suite and has no wall-clock gate because local CPU timings vary.
+
+The command builds three fresh isolated Worker/D1 stacks over the same fixture: the pre-change repeated-preparation marker loop, shared preparation with 1,000 irrelevant events, then shared preparation with 10,000 irrelevant events. It collects ten sequential samples for the unfiltered, project-filtered and `compare=none` API, authenticated `/agents`, and lazy evidence. It prints loader phases, query/transfer counts, native `rows_read`, response bytes, stable full-output hashes and the unforced plan for the actual parameterized shipping event query. It fails if baseline/current figures differ or evidence changes between volumes. Set `STATS_PROFILE_PORT` or `STATS_PROFILE_SAMPLES` when needed. `pnpm --filter web perf:stats:cpu` retains the preparation diagnostic and full differential oracle.
+
 ## Modelled: `pnpm --filter web perf:nav`
 
 `apps/web/src/lib/server/api/nav-perf.test.ts` runs the real route `load`
@@ -11,7 +17,16 @@ latency (20 ms) on every statement. Because the latency dominates, wall-clock ÷
 which is what actually sets navigation time on a Worker talking to D1.
 
 It is excluded from `pnpm test` (it spends seconds sleeping); `perf:nav` sets
-`NAVPERF=1` to opt in and prints `/tmp/navperf.txt` afterwards.
+`NAVPERF=1` to opt in and prints the report afterwards. The report prints even
+when a page fails, so the completed pages' numbers are never lost, and the
+command still exits non-zero.
+
+CI runs `pnpm --filter web perf:nav` as its own step in the `check` job
+(~1 s), so a route `load` that grows a new event dependency, or a loader that
+starts fetching something twice, is caught on the pull request rather than by
+the next person who reads this file. That step gates **execution** and the
+zero-duplicates rule below — never a wave count or a millisecond, which move
+between machines.
 
 - `NAVPERF_SERIALIZE=1` forces Kysely's connection mutex back on, reproducing
   the pre-`ConcurrentD1Dialect` baseline — that is how before/after numbers for
@@ -30,10 +45,11 @@ Visible per request in DevTools → Network → Timing on any deployment, with n
 OTel plumbing. (`kit.experimental.tracing` would need an exporter on Workers;
 that is a project of its own.)
 
-## Baseline, 2026-08-29 (Tines/32)
+## Historical baseline, 2026-08-29 (Tines/32)
 
 Sequential waves per page, modelled, before and after lifting the D1 connection
-mutex:
+mutex. Kept as the record of what lifting the mutex bought; the loaders have
+gained work since, so compare against the current table below, not this one:
 
 | Page | Queries | Waves before | Waves after |
 |---|---|---|---|
@@ -43,6 +59,25 @@ mutex:
 | `/issues` | 5 | 5.7 | 2.4 |
 | `/projects` | 4 | 4.5 | 2.3 |
 | `/activity` | 2 | 2.2 | 1.2 |
+
+## Current, 2026-09-10 (Tines/416)
+
+One local run of `pnpm --filter web perf:nav` on the tree that repaired the
+probe. Query counts are the stable comparison; waves are derived from
+wall-clock and move by a tenth or two between machines:
+
+| Page | Queries | Waves |
+|---|---|---|
+| `/issues/[project]/[number]` | 11 blocking, 25 total | 3.4 to first paint, 6.8 to fully settled |
+| `/agents` | 17 | 2.3 |
+| `/issues` | 7 | 3.4 |
+| `/context` | 7 | 3.4 |
+| `/projects` | 3 | 2.2 |
+| `/activity` | 2 | 2.2 |
+
+The counts moved because the loaders did — `/agents`, for instance, gained the
+fleet queue (2026-09-06) and the first-run checklist (2026-09-09) — not because
+a wave was added: every multi-query page still fans out in one or two waves.
 
 ## What a page load may await
 
@@ -61,16 +96,16 @@ anything it streams is not. The issue page is the worked example:
   while a replacement is in flight, instead of `{#await}` collapsing the
   panel back to a skeleton on every resync.
 
-Result (`pnpm --filter web perf:nav`): 21 statements, ~3.4 waves to first
-paint, ~5.5 to fully settled — from 26 statements and 29.1 waves before
-Tines/32.
+Result (`pnpm --filter web perf:nav`, 2026-09-10): 11 statements and ~3.4 waves
+to first paint, 25 statements and ~6.8 waves to fully settled — from 26
+statements and 29.1 waves before Tines/32.
 
-Two rules follow, and the probe enforces the first:
+Two rules follow, and the probe asserts the first:
 
 1. **Nothing may be fetched twice.** `getIssueDetail` takes the workflows the
    page is already loading and returns the artifacts the page needs, and
    `explainDispatch` takes the issue row rather than re-reading it. The probe
-   reports `duplicated statements`; it should stay at 0.
+   reports `duplicated statements` and fails when it is not 0.
 2. **Moving something out of `deferred` puts it back on the critical path.**
 
 ### Scoped invalidation

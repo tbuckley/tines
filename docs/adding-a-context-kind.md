@@ -22,11 +22,10 @@ a kind accepts arbitrary payload.
    - **Nullable columns** for flat payloads — how `repo` stores
      `repo_url` / `repo_branch` / `repo_dir`.
    - **A JSON `config` column** for structured payloads. The parent spec
-     reserved this deliberately ("a future kind with a structured payload
-     can use a JSON `config` column added at that time") and
-     `0011_issue_artifacts.sql` has since added it, so a structured kind
-     now **reuses the existing column** rather than adding one. `mcp`
-     (command, args, env) would take this route.
+     reserves this deliberately ("a future kind with a structured payload
+     can use a JSON `config` column added at that time"). The first
+     structured kind adds it — one `ALTER TABLE ADD COLUMN` — and later
+     kinds reuse it. `mcp` (command, args, env) would take this route.
    - Child tables are for repeated sub-entities only (`context_item_file`
      for skill files); don't reach for one unless the payload is a
      collection with per-row identity.
@@ -55,17 +54,11 @@ UI panels.
 
 ### Migration — `apps/web/migrations/000N_….sql`
 
-Often there is nothing to do here at all:
-
-- **A structured payload needs no migration.** The JSON `config` column
-  already exists on `context_item` (`0011_issue_artifacts.sql`) and is
-  typed on `ContextItemTable` — reuse it. Only a flat payload that wants
-  its own nullable columns, the way `repo` does, adds any.
-- **There is no `kind` CHECK constraint to widen.** `0005_context_items.sql`
-  created one, but `0006_context_versioning_global.sql` rebuilt the table
-  without it and moved the kind allowlist to the API layer, where
-  `CONTEXT_KINDS` is now the real gate. Nothing about a new kind requires
-  a table rebuild.
+- Add the payload column(s) (`config TEXT` for the first structured kind).
+- The `kind` CHECK constraint must admit the new value. SQLite can't alter
+  a CHECK in place; either rebuild the table or, simpler, drop the CHECK
+  during the rebuild and rely on the API layer, which is the real gate
+  (the same trade the spec already makes for name uniqueness).
 
 ### Shared types — `packages/shared/src/types.ts`
 
@@ -156,8 +149,7 @@ If a new kind requires edits to any of these, the change is off the rails
 ## 4. Definition of done
 
 - [ ] Spec section written (shape, caps, merge rule, bundle form).
-- [ ] Migration, if the kind needs one, applies on a fresh DB and on one
-      carrying existing items.
+- [ ] Migration applies on a fresh DB and on one carrying existing items.
 - [ ] Unknown-field and wrong-kind payloads 422 in both directions.
 - [ ] Item round-trips through API, CLI, and the web editor.
 - [ ] Appears in the effective context with dedupe-by-name override

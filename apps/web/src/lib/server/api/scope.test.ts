@@ -21,6 +21,23 @@ describe('scopeLabel', () => {
 		expect(scopeLabel({ issueProjectName: 'Tines', issueNumber: 7 })).toBe('issue Tines/7');
 	});
 
+	it('qualifies an inherited state layer with its workflow', () => {
+		// Only inherited layers ask for this: a prompt can stitch a base state
+		// and the state that inherits it, and two same-named states must not
+		// collide under one `## Context: state X` heading.
+		const scope = { stateName: 'Merging', workflowId: 'wf_base', workflowName: 'Shared stages' };
+		expect(scopeLabel(scope, { qualifyState: true })).toBe('state Shared stages / Merging');
+		expect(scopeLabel(scope)).toBe('state Merging');
+	});
+
+	it('falls back to the workflow id when a qualified layer has no workflow name', () => {
+		expect(
+			scopeLabel({ stateName: 'Merging', workflowId: 'wf_base' }, { qualifyState: true })
+		).toBe('state wf_base / Merging');
+		// Nothing to qualify with: the short label rather than a stray slash.
+		expect(scopeLabel({ stateName: 'Merging' }, { qualifyState: true })).toBe('state Merging');
+	});
+
 	it('labels the empty scope "global"', () => {
 		expect(scopeLabel({})).toBe('global');
 	});
@@ -40,14 +57,19 @@ describe('toContextScope', () => {
 	const base: ResolvedScope = {
 		projectId: null,
 		workflowStateId: null,
+		labelId: null,
 		issueId: null,
 		projectName: null,
 		stateName: null,
+		labelName: null,
+		labelColor: null,
 		workflowId: null,
 		workflowName: null,
 		issueNumber: null,
 		issueProjectName: null,
-		issueProjectId: null
+		issueProjectId: null,
+		projectArchivedAt: null,
+		issueProjectArchivedAt: null
 	};
 
 	it('serializes the wire shape, including the issue ref and the label', () => {
@@ -60,6 +82,9 @@ describe('toContextScope', () => {
 				stateName: 'Review',
 				workflowId: 'wf_1',
 				workflowName: 'Engineering',
+				labelId: 'lbl_1',
+				labelName: 'design',
+				labelColor: 'violet',
 				issueId: 'iss_1',
 				issueNumber: 42,
 				issueProjectName: 'Tines',
@@ -72,9 +97,12 @@ describe('toContextScope', () => {
 			workflow_state_name: 'Review',
 			workflow_id: 'wf_1',
 			workflow_name: 'Engineering',
+			label_id: 'lbl_1',
+			label_name: 'design',
+			label_color: 'violet',
 			issue_id: 'iss_1',
 			issue_ref: { project_name: 'Tines', number: 42 },
-			label: 'project Tines · state Review · issue Tines/42'
+			label: 'project Tines · state Review · label design · issue Tines/42'
 		});
 	});
 
@@ -106,7 +134,7 @@ describe('resolveScope', () => {
 		return t;
 	}
 
-	const empty = { projectId: null, workflowStateId: null, issueId: null };
+	const empty = { projectId: null, workflowStateId: null, labelId: null, issueId: null };
 
 	it('accepts the empty scope', async () => {
 		const t = seed();
@@ -120,6 +148,7 @@ describe('resolveScope', () => {
 	it('denormalizes the names of every set dimension', async () => {
 		const t = seed();
 		const scope = await resolveScope(t.db, 'u1', {
+			...empty,
 			projectId: 'prj_alice',
 			workflowStateId: 'wfs_std_open',
 			issueId: 'iss_1'
@@ -231,7 +260,7 @@ describe('resolveScope', () => {
 		const scope = await resolveScope(
 			t.db,
 			'u1',
-			{ projectId: 'prj_alice', workflowStateId: null, issueId: 'iss_1' },
+			{ ...empty, projectId: 'prj_alice', workflowStateId: null, issueId: 'iss_1' },
 			{ issue: false, requireActiveState: true }
 		);
 		expect(scope).toMatchObject({ issueId: null, issueNumber: null, issueProjectName: null });

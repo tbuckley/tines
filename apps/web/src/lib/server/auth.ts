@@ -97,6 +97,10 @@ function createAuth(env: Env, requestOrigin: string) {
 			magicLink({
 				expiresIn: MAGIC_LINK_EXPIRY_MINUTES * 60,
 				storeToken: 'hashed',
+				// The isolated E2E worker can follow the exact link submitted through
+				// its simulated Email binding. Production builds omit this override.
+				generateToken:
+					import.meta.env.VITE_TINES_E2E === '1' ? (email) => `e2e-magic-link-${email}` : undefined,
 				sendMagicLink: async ({ email, url }) => {
 					await sendMagicLinkEmail(env, email, url);
 				}

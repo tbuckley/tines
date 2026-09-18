@@ -1,18 +1,44 @@
 <script lang="ts">
-	import type { ApiKeyCreated } from '@tines/shared';
-	import { ApiError } from '@tines/shared';
+	import type { ApiKey, ApiKeyCreated } from '@tines/shared';
+	import { ApiError, runRefLabel } from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconKey from '@tabler/icons-svelte/icons/key';
-	import { invalidateAll } from '$app/navigation';
+	import { untrack } from 'svelte';
+	import { goto, invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import { alertDialog, confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { formatDateTime, relativeTime } from '$lib/format';
 
 	let { data } = $props();
+
+	// Run keys are minted one per agent run and outnumber the user's own keys
+	// by orders of magnitude, so they live behind a disclosure rather than in
+	// the list the user manages.
+	const userKeys = $derived(data.keys.filter((k) => !k.run));
+	const runKeys = $derived(data.keys.filter((k) => k.run));
+	const hasRunKeys = $derived(data.runKeyCounts.active + data.runKeyCounts.revoked > 0);
+	// Bound, not a plain `open` attribute: "Show revoked" lives *inside* the
+	// disclosure and navigates, so the open state has to outlive the loader
+	// re-run rather than be re-derived from it (untrack: ?revoked=1 seeds the
+	// initial value, it does not drive it thereafter).
+	let runKeysOpen = $state(untrack(() => data.showRevoked));
+
+	function setRevoked(on: boolean) {
+		const params = new URLSearchParams(page.url.searchParams);
+		if (on) params.set('revoked', '1');
+		else params.delete('revoked');
+		goto(`/settings/api-keys${params.size ? `?${params}` : ''}`, {
+			keepFocus: true,
+			noScroll: true,
+			replaceState: true
+		});
+	}
 
 	let createOpen = $state(false);
 	let name = $state('');
@@ -51,14 +77,29 @@
 		errorMessage = null;
 	}
 
-	async function revoke(id: string, keyName: string) {
+	/**
+	 * A run key belongs to an agent that may still be working: name the run it
+	 * would cut off, and point at the clean way to stop it.
+	 */
+	async function revokeRunKey(key: ApiKey) {
+		if (!key.run) return;
+		const ref = key.run.issue_ref
+			? `${key.run.issue_ref.project_name}/${key.run.issue_ref.number}`
+			: key.run.run_id;
 		const ok = await confirmDialog({
-			title: `Revoke API key "${keyName}"?`,
-			body: 'Anything using it will immediately lose access.',
+			title: `Revoke the run key for ${ref}?`,
+			body:
+				`This key belongs to the agent run on ${ref} (runner ${key.run.runner_name}). ` +
+				'Revoking it cuts the agent off mid-run; the run keeps its slot until it fails or is ' +
+				'swept. To stop the run cleanly, cancel it from the Agents page instead.',
 			confirmLabel: 'Revoke key',
 			destructive: true
 		});
 		if (!ok) return;
+		await revokeById(key.id);
+	}
+
+	async function revokeById(id: string) {
 		try {
 			await api.revokeApiKey(id);
 			await invalidateAll();
@@ -68,6 +109,17 @@
 				body: err instanceof ApiError ? err.message : 'Failed to revoke the key.'
 			});
 		}
+	}
+
+	async function revoke(id: string, keyName: string) {
+		const ok = await confirmDialog({
+			title: `Revoke API key "${keyName}"?`,
+			body: 'Anything using it will immediately lose access.',
+			confirmLabel: 'Revoke key',
+			destructive: true
+		});
+		if (!ok) return;
+		await revokeById(id);
 	}
 </script>
 
@@ -85,13 +137,13 @@
 	or the <code class="bg-muted rounded px-1.5 py-0.5">Authorization: Bearer</code> header.
 </p>
 
-{#if data.keys.length === 0}
+{#if userKeys.length === 0}
 	<div class="text-muted-foreground rounded-lg border border-dashed p-10 text-center text-sm">
 		No API keys yet.
 	</div>
 {:else}
 	<ul class="divide-y rounded-lg border">
-		{#each data.keys as key (key.id)}
+		{#each userKeys as key (key.id)}
 			<li class="flex items-center gap-4 px-4 py-3 {key.revoked_at ? 'opacity-50' : ''}">
 				<div class="min-w-0 flex-1">
 					<p class="text-sm font-medium">
@@ -116,6 +168,80 @@
 			</li>
 		{/each}
 	</ul>
+{/if}
+
+{#if hasRunKeys}
+	<details class="group mt-6 border-t pt-3" bind:open={runKeysOpen} data-testid="run-keys">
+		<summary class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none">
+			Run keys
+			<span class="text-xs"
+				>— {data.runKeyCounts.active} active, {data.runKeyCounts.revoked} revoked</span
+			>
+		</summary>
+		<p class="text-muted-foreground mt-2 max-w-2xl text-xs">
+			Minted for each agent run and revoked when the run ends. Actions taken with one are attributed
+			to the runner and its run.
+		</p>
+		<label class="text-muted-foreground mt-3 flex items-center gap-2 text-xs">
+			<input
+				type="checkbox"
+				checked={data.showRevoked}
+				class="accent-primary"
+				onchange={(e) => setRevoked(e.currentTarget.checked)}
+			/>
+			Show revoked
+		</label>
+		{#if runKeys.length === 0}
+			<div
+				class="text-muted-foreground mt-3 rounded-lg border border-dashed p-6 text-center text-sm"
+			>
+				{data.showRevoked ? 'No run keys.' : 'No active run keys.'}
+			</div>
+		{:else}
+			<ul class="mt-3 divide-y rounded-lg border">
+				{#each runKeys as key (key.id)}
+					<li class="flex items-center gap-4 px-4 py-3 {key.revoked_at ? 'opacity-50' : ''}">
+						<div class="min-w-0 flex-1">
+							<p class="text-sm font-medium" title="run {key.run?.run_id} · {key.run?.runner_name}">
+								{#if key.run?.issue_ref}
+									<a
+										href="/issues/{key.run.issue_ref.project_name}/{key.run.issue_ref.number}"
+										class="hover:underline">{runRefLabel(key.run)}</a
+									>
+								{:else if key.run}
+									{runRefLabel(key.run)}
+								{/if}
+								{#if key.revoked_at}
+									<span class="text-destructive ml-2 text-xs font-normal"
+										>revoked {relativeTime(key.revoked_at)}</span
+									>
+								{/if}
+							</p>
+							<p class="text-muted-foreground truncate font-mono text-xs">
+								{key.run?.runner_name} · {key.key_prefix}…
+							</p>
+						</div>
+						<div class="text-muted-foreground hidden text-right text-xs sm:block">
+							<p>created {formatDateTime(key.created_at)}</p>
+							<p>
+								{key.last_used_at ? `last used ${relativeTime(key.last_used_at)}` : 'never used'}
+							</p>
+						</div>
+						{#if !key.revoked_at}
+							<Button size="sm" variant="outline" onclick={() => revokeRunKey(key)}>Revoke</Button>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+			{#if data.showRevoked && data.runKeyCounts.revoked > data.revokedRunKeyLimit}
+				<p class="text-muted-foreground mt-2 text-xs">
+					Showing the {data.revokedRunKeyLimit} most recently revoked of {data.runKeyCounts
+						.revoked}. Older runs are in the
+					<a href="/activity" class="hover:underline">Activity</a> feed.
+				</p>
+			{/if}
+		{/if}
+	</details>
 {/if}
 
 <Modal
@@ -160,11 +286,18 @@
 			{#if errorMessage}
 				<p class="text-destructive text-sm">{errorMessage}</p>
 			{/if}
-			<div class="flex justify-end gap-2">
-				<Button type="button" variant="ghost" onclick={closeCreate}>Cancel</Button>
-				<Button type="submit" disabled={creating || !name.trim()}>
-					{creating ? 'Creating…' : 'Create key'}
-				</Button>
+			<div class="flex flex-wrap justify-end gap-2">
+				<Button type="button" variant="ghost" disabled={creating} onclick={closeCreate}
+					>Cancel</Button
+				>
+				<PendingButton
+					type="submit"
+					pending={creating}
+					pendingLabel="Creating…"
+					disabled={!name.trim()}
+				>
+					Create key
+				</PendingButton>
 			</div>
 		</form>
 	{/if}

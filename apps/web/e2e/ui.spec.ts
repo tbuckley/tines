@@ -1,48 +1,64 @@
 import type { IssueDetail, Project } from '@tines/shared';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	clickToOpen,
+	clickUntil,
+	gotoHydrated,
+	readSettled,
+	resetFocus,
+	runId,
+	signIn
+} from './helpers';
 
 // Browser flows, signed in as the seeded user via a signed session cookie.
 // Names carry the per-run suffix so re-runs against a reused server stay
 // unambiguous.
 
-const projectName = `ui-${runId}`;
+let projectName: string;
 const issueTitle = `UI smoke ${runId}`;
 let project: Project;
+let longProject: Project;
 let issue: IssueDetail;
 
-test.beforeAll(async ({ playwright }) => {
-	const request = await playwright.request.newContext({
-		baseURL: test.info().project.use.baseURL
-	});
-	const api = apiClient(request, ALICE.apiKey);
+test.beforeAll(async ({ apiFor, uniqueName }) => {
+	projectName = uniqueName('ui');
+	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
+	longProject = await body<Project>(
+		await api.post('/api/v1/projects', {
+			name: `A deliberately long focused project name for chrome ${runId}`
+		})
+	);
 	issue = await body<IssueDetail>(
 		await api.post(`/api/v1/projects/${project.id}/issues`, {
 			title: issueTitle,
 			description: 'A **bold** claim.'
 		})
 	);
-	await request.dispose();
 });
 
-test.beforeEach(async ({ context }) => {
-	await signIn(context, ALICE.sessionToken);
-});
+test.use({ signedIn: ALICE });
 
-/**
- * Click that survives the SSR-to-hydration window: a click landing before
- * the listeners attach is swallowed, so retry until `done` holds.
- */
-async function clickUntil(button: Locator, done: () => Promise<void>): Promise<void> {
-	await expect(async () => {
-		if (await button.isVisible()) await button.click();
-		await done();
-	}).toPass({ timeout: 15_000 });
-}
+test.beforeEach(async ({ request }) => {
+	// Specs share one user: a focus left behind would scope this one's lists.
+	await resetFocus(request);
+});
 
 const stateBadge = (page: Page) => page.locator('.state-badge').first();
+
+test('the suite runs under reduced motion by default', async ({ page }) => {
+	// Guards playwright.config.ts's reducedMotion: 'reduce'. If this fails after
+	// a Playwright bump, the context option has stopped reaching the page again
+	// (it did not on 1.62.1) and the suite is silently exercising outros.
+	await page.goto('/');
+	expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(
+		true
+	);
+});
 
 test('a signed-in visit to / lands on the issues list', async ({ page }) => {
 	await page.goto('/');
@@ -54,7 +70,7 @@ test('a signed-in visit to / lands on the issues list', async ({ page }) => {
 test('an issue can be created from the issues list, picking project and starting state', async ({
 	page
 }) => {
-	await page.goto('/issues');
+	await gotoHydrated(page, '/issues');
 	const dialog = page.getByRole('dialog', { name: 'New issue' });
 	await clickUntil(page.getByRole('button', { name: /New issue/ }), async () => {
 		await expect(dialog).toBeVisible({ timeout: 2_000 });
@@ -71,7 +87,7 @@ test('an issue can be created from the issues list, picking project and starting
 });
 
 test('the issues list search box round-trips through the q URL param', async ({ page }) => {
-	await page.goto('/issues');
+	await gotoHydrated(page, '/issues');
 	const box = page.getByLabel('Search issues');
 
 	// The submit is a Svelte listener, so retry across the hydration window.
@@ -105,8 +121,96 @@ test('the mobile layout swaps the header tabs for a bottom bar', async ({ page }
 	await expect(page.locator('header').getByRole('link', { name: 'Workflows' })).toBeHidden();
 });
 
+test('the app chrome stays inside both responsive breakpoint boundaries', async ({ page }) => {
+	const api = apiClient(page.request, ALICE.apiKey);
+	await body(await api.patch('/api/v1/preferences', { focused_project_id: longProject.id }));
+	await page.setViewportSize({ width: 639, height: 844 });
+	await gotoHydrated(page, '/issues');
+
+	const header = page.locator('header');
+	const switcher = header.getByRole('button', { name: /^Project focus:/ });
+	const account = header.getByRole('button', { name: 'Account menu' });
+	const headerWorkflows = header.getByRole('link', { name: 'Workflows' });
+	const bottomNav = page.getByRole('navigation', { name: 'Primary' });
+	await expect(switcher).toBeVisible();
+
+	for (const width of [639, 640, 641, 767, 768, 769]) {
+		await page.setViewportSize({ width, height: 844 });
+		const geometry = await readSettled(() =>
+			page.evaluate(() => {
+				const switcher = document.querySelector<HTMLElement>(
+					'button[aria-label^="Project focus:"]'
+				)!;
+				const account = document.querySelector<HTMLElement>('button[aria-label="Account menu"]')!;
+				const headerNav = document.querySelector<HTMLElement>('header nav')!;
+				const box = (element: HTMLElement) => {
+					const bounds = element.getBoundingClientRect();
+					return { left: bounds.left, right: bounds.right };
+				};
+				return {
+					overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+					switcher: box(switcher),
+					switcherScrollWidth: switcher.scrollWidth,
+					switcherClientWidth: switcher.clientWidth,
+					account: box(account),
+					headerNav: getComputedStyle(headerNav).display === 'none' ? null : box(headerNav)
+				};
+			})
+		);
+
+		expect(geometry.overflow, `document overflow at ${width}px`).toBe(0);
+		expect(geometry.switcher.left, `switcher left edge at ${width}px`).toBeGreaterThanOrEqual(0);
+		expect(geometry.switcher.right, `switcher right edge at ${width}px`).toBeLessThanOrEqual(width);
+		expect(geometry.switcherScrollWidth, `switcher contents at ${width}px`).toBeLessThanOrEqual(
+			geometry.switcherClientWidth
+		);
+		expect(geometry.account.right, `account right edge at ${width}px`).toBeLessThanOrEqual(width);
+		expect(geometry.switcher.right, `switcher/account overlap at ${width}px`).toBeLessThanOrEqual(
+			geometry.account.left
+		);
+		if (width < 768) {
+			await expect(bottomNav).toBeVisible();
+			await expect(headerWorkflows).toBeHidden();
+			expect(geometry.headerNav).toBeNull();
+		} else {
+			await expect(bottomNav).toBeHidden();
+			await expect(headerWorkflows).toBeVisible();
+			expect(
+				geometry.headerNav!.left,
+				`switcher/navigation overlap at ${width}px`
+			).toBeGreaterThanOrEqual(geometry.switcher.right);
+			expect(
+				geometry.headerNav!.right,
+				`navigation/account overlap at ${width}px`
+			).toBeLessThanOrEqual(geometry.account.left);
+		}
+	}
+
+	for (const width of [640, 768]) {
+		await page.setViewportSize({ width, height: 844 });
+		const focusMenu = page.getByRole('menu', { name: 'Project focus' });
+		await clickToOpen(switcher, focusMenu);
+		await expect(focusMenu.getByRole('menuitemradio', { name: 'All projects' })).toBeVisible();
+		expect((await focusMenu.boundingBox())!.x).toBeGreaterThanOrEqual(0);
+		expect(
+			(await focusMenu.boundingBox())!.x + (await focusMenu.boundingBox())!.width
+		).toBeLessThanOrEqual(width);
+		await page.keyboard.press('Escape');
+
+		const accountMenu = page
+			.getByRole('menu')
+			.filter({ has: page.getByRole('menuitem', { name: 'Settings' }) });
+		await clickToOpen(account, accountMenu);
+		await expect(accountMenu.getByRole('menuitem', { name: 'Settings' })).toBeVisible();
+		const accountMenuBox = (await accountMenu.boundingBox())!;
+		expect(accountMenuBox.x).toBeGreaterThanOrEqual(0);
+		expect(accountMenuBox.x + accountMenuBox.width).toBeLessThanOrEqual(width);
+		await page.keyboard.press('Escape');
+	}
+});
+
 test('issue detail renders markdown, transitions, and comments', async ({ page }) => {
-	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
+	await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${issue.number}`);
 
 	await expect(page.getByRole('heading', { name: issueTitle })).toBeVisible();
 	// Markdown description rendered, not escaped.
@@ -187,7 +291,7 @@ test('a comment can be edited and deleted from the issue page', async ({ page })
 	const created = await body<{ id: string }>(
 		await api.post(`/api/v1/issues/${issue.id}/comments`, { body: 'Typpo here' })
 	);
-	await page.goto(`/issues/${encodeURIComponent(projectName)}/${issue.number}`);
+	await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${issue.number}`);
 	const comment = page.locator('article').filter({ hasText: 'Typpo here' }).first();
 	await expect(comment).toBeVisible();
 
@@ -228,7 +332,7 @@ test('a comment can be edited and deleted from the issue page', async ({ page })
 });
 
 test('workflow library shows the read-only standard workflow with its graph', async ({ page }) => {
-	await page.goto('/workflows');
+	await gotoHydrated(page, '/workflows');
 	const link = page.getByRole('link', { name: /Standard/ }).first();
 	await link.click();
 	await expect(page).toHaveURL(/\/workflows\/wf_/);
@@ -244,7 +348,7 @@ test('workflow library shows the read-only standard workflow with its graph', as
 });
 
 test('a duplicate project name surfaces the API error in the create modal', async ({ page }) => {
-	await page.goto('/projects');
+	await gotoHydrated(page, '/projects');
 	await clickUntil(page.getByRole('button', { name: /New project/ }), async () => {
 		await expect(page.getByLabel('Name')).toBeVisible({ timeout: 2_000 });
 	});
@@ -264,7 +368,7 @@ const backLink = (page: Page) => page.locator('main').getByRole('link').first();
 
 test('the Issues tab and an issue back link keep the list filters', async ({ page }) => {
 	const query = `q=${encodeURIComponent(issueTitle)}`;
-	await page.goto(`/issues?${query}`);
+	await gotoHydrated(page, `/issues?${query}`);
 
 	// The tab href picking up the query is also the proof that the page has
 	// hydrated and recorded itself.
@@ -291,15 +395,24 @@ test('the Issues tab and an issue back link keep the list filters', async ({ pag
 });
 
 test('an issue reached from a project page goes back to that project', async ({ page }) => {
-	await page.goto(`/projects/${project.id}`);
+	await gotoHydrated(page, `/projects/${project.id}`);
 
-	// The checkbox is a Svelte listener, so retry across the hydration window.
-	// Landing on `?done=1` also proves the page has recorded itself.
-	const showDone = page.getByLabel('Show done');
-	await expect(async () => {
-		await showDone.check();
-		await expect(page).toHaveURL(/done=1/, { timeout: 2_000 });
-	}).toPass({ timeout: 15_000 });
+	// The Done tab is a plain link, so it works before hydration too. Landing
+	// on `?category=done` also proves the page has recorded itself — and the
+	// list must still show the issue, so switch back to Open by the same route.
+	await page.getByRole('link', { name: /^Done\b/ }).click();
+	await expect(page).toHaveURL(/category=done/);
+	await page.getByRole('link', { name: /^Open\b/ }).click();
+	await expect(page).toHaveURL(new RegExp(`/projects/${project.id}$`));
+	// Now a filter that keeps the issue listed: Ready only, from the menu.
+	await clickUntil(page.getByRole('button', { name: /^Filter/ }), async () => {
+		await expect(page.getByRole('checkbox', { name: 'Ready only' })).toBeVisible({
+			timeout: 2_000
+		});
+	});
+	await page.getByRole('checkbox', { name: 'Ready only' }).check();
+	await expect(page).toHaveURL(/ready=1/);
+	await page.keyboard.press('Escape');
 
 	await page.getByRole('link', { name: new RegExp(issueTitle) }).click();
 	await expect(page).toHaveURL(new RegExp(`/issues/${projectName}/${issue.number}$`));
@@ -307,7 +420,7 @@ test('an issue reached from a project page goes back to that project', async ({ 
 	// The back link names the project, and returns to it still filtered.
 	await expect(backLink(page)).toHaveText(projectName);
 	await backLink(page).click();
-	await expect(page).toHaveURL(`/projects/${project.id}?done=1`);
+	await expect(page).toHaveURL(`/projects/${project.id}?ready=1`);
 });
 
 /** The resolved value of one CSS property, as the browser paints it. */
@@ -325,14 +438,16 @@ test.describe('with a dark system preference', () => {
 	test('filter checkboxes are painted from the app palette, not the browser default', async ({
 		page
 	}) => {
-		await page.goto('/issues');
+		await gotoHydrated(page, '/issues');
 		await expect(page.locator('html')).toHaveClass(/\bdark\b/);
 
 		// Named from `aria-label`: the visible text sits in the wrapping <label>,
-		// which does not name a button.
+		// which does not name a button. It lives in the Filter menu now.
 		const readyOnly = page.getByRole('checkbox', { name: 'Ready only' });
 		const searchField = page.getByRole('textbox', { name: 'Search issues' });
-		await expect(readyOnly).toBeVisible();
+		await clickUntil(page.getByRole('button', { name: /^Filter/ }), async () => {
+			await expect(readyOnly).toBeVisible({ timeout: 2_000 });
+		});
 
 		// Unchecked, it wears `--input` — the same border and fill as the search
 		// field standing next to it.

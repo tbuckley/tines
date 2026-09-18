@@ -184,13 +184,15 @@ A collapsed "Repeat" section at the bottom of the existing modal (title/descript
 
 A "Scheduled tasks" section on the project detail page (hidden when the project has none, with a small "add" affordance that opens the New Issue modal with Repeat expanded):
 
-- Rows: name, human-readable recurrence, next run (relative), last run, open-instance count, enabled toggle.
+- Rows: name, human-readable recurrence, next run (relative), last run, open-instance count, enabled toggle. Lifecycle details remain visible in a compact wrapping line at phone widths; paused schedules say `paused`, and archived projects take precedence with `paused · project archived`.
+- A gated schedule with open instances shows an amber clock cue, `Waiting for N open issues`, alongside (not instead of) its next/paused state. This describes eligibility only: blocked occurrences are still skipped, not queued.
 - Row actions: **edit** (modal reusing the Repeat form plus template fields), **run now**, **delete** (confirm dialog; notes that existing issues are kept).
 - Pause/resume is the inline toggle; state changes animate per the phase-one motion rules (toggle morph, row dims when paused).
+- **Run now** reports its outcome beside that schedule: success is a polite live status linking `Created project/#N` to the returned issue, while refusal or request failure is a local alert containing the actual error. A successful creation remains confirmed if the following list refresh fails, with a separate reload alert. Results persist until another attempt for that schedule or navigation; they never claim that an agent ran. Entry fades honor reduced-motion preferences, and icons plus text ensure color is not the only signal.
 
 ### Scheduled issues elsewhere
 
-- Issue rows and the issue detail page show a small repeat icon/badge on issues with a `scheduled_task_id`, linking to the schedule (the project page section, row highlighted).
+- Issue rows and the issue detail page show a small repeat icon/badge on issues with a `scheduled_task_id`, linking to the schedule (the project page section, row highlighted and — since Tines/146 moved the section below the issue list — scrolled into view).
 - The activity feed renders `scheduled_task.*` events and shows scheduled creations as "via schedule *name*".
 
 ## Acceptance criteria
@@ -201,6 +203,7 @@ A "Scheduled tasks" section on the project detail page (hidden when the project 
 4. Editing a schedule's recurrence updates `next_run_at`; pausing stops firing; resuming recomputes the next occurrence from now (no backfill of the paused span).
 5. Deleting a schedule keeps its issues (badge gone, history events intact); deleting a workflow referenced by a schedule is rejected with a clear error.
 6. Multiple missed occurrences collapse to at most one created issue per sweep.
+7. At phone and desktop widths, each schedule keeps its upcoming/paused state, last occurrence and open count visible. A gated row with blockers shows its waiting cue, and **Run now** leaves a linked creation receipt or exact local failure beside the action without moving focus or duplicating the project-level error banner.
 
 ## Resolved questions
 
@@ -213,4 +216,18 @@ A "Scheduled tasks" section on the project detail page (hidden when the project 
 - **Creation flow**: setting a recurrence during issue creation creates the first issue immediately *and* the schedule — the form's fields double as the templates.
 - **UI placement**: managed in a per-project "Scheduled tasks" section (no global schedules page yet); scheduled issues carry a badge.
 - **Attribution**: sweep-created issues/events are attributed to the owning user with the schedule identified in the payload, displayed as "via schedule *name*".
+- **Run-now presentation (Tines/458)**: keep persistent, accessible feedback inline with the schedule rather than introducing a global toast. The existing API response and error provide the receipt link and message; no polling or execution-status inference is needed.
 - **Flood guardrail**: recurrences firing more often than hourly are rejected at validation time.
+
+- **2026-09-10, Tines/392 — a moved instance keeps its schedule**: transferring an instance to another project does not detach it. It keeps `scheduled_task_id`, still blocks its schedule's closure gate until it is done, and links back to the schedule in the schedule's *own* project. Future instances continue to be created there, with a number taken from that project's address ledger — never a number a moved issue once held.
+
+### Workflow-package installation (Tines/435)
+
+Package installation is an explicit exception to create-with-first-issue. It shares
+ordinary recurrence/name/state validation and the `scheduleInsertQueries` builder,
+but creates optional schedules paused (`enabled=0`, `run_count=0`,
+`last_run_at=null`) with a normally calculated `next_run_at`. It creates no issue
+and does not dispatch or sweep. A package's null start follows the workflow's
+initial state; an explicit bundled start keeps its remapped ID even if currently
+initial. Ordinary issue-plus-schedule creation keeps its existing initial-run
+semantics. Resume computes the next future occurrence normally.

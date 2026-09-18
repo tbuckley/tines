@@ -1,9 +1,7 @@
 import type { IssueDetail, Project, WorkflowResponse } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, runId } from './helpers';
-
-type ErrorBody = { error: { code: string; message: string; details?: Record<string, unknown> } };
+import { apiClient, body, errorBody, runId } from './helpers';
 
 interface ArtifactShape {
 	name: string;
@@ -83,7 +81,7 @@ test.describe.serial('issue artifacts', () => {
 		const api = apiClient(request, ALICE.apiKey);
 		const res = await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'approve' });
 		expect(res.status()).toBe(422);
-		const err = await body<ErrorBody>(res);
+		const err = await errorBody(res);
 		expect(err.error.code).toBe('transition_requirements_unmet');
 		const unmet = err.error.details?.unmet as Record<string, unknown>[];
 		expect(unmet[0]).toMatchObject({ artifact: 'design-doc', status: 'missing' });
@@ -130,10 +128,7 @@ test.describe.serial('issue artifacts', () => {
 		expect(listed.items[0].fresh).toBe(false);
 		const blocked = await api.post(`/api/v1/issues/${issueId}/transition`, { action: 'approve' });
 		expect(blocked.status()).toBe(422);
-		const unmet = (await body<ErrorBody>(blocked)).error.details?.unmet as Record<
-			string,
-			unknown
-		>[];
+		const unmet = (await errorBody(blocked)).error.details?.unmet as Record<string, unknown>[];
 		expect(unmet[0]).toMatchObject({ status: 'stale', current_version: { version: 1 } });
 
 		// v2 unblocks; both versions stay downloadable with distinct contents.
@@ -202,7 +197,7 @@ test.describe.serial('issue artifacts', () => {
 		});
 		const noContent = await api.get(`/api/v1/issues/${issueId}/artifacts/impl-pr/content`);
 		expect(noContent.status()).toBe(422);
-		expect((await body<ErrorBody>(noContent)).error.code).toBe('no_content');
+		expect((await errorBody(noContent)).error.code).toBe('no_content');
 
 		const issue = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
 		expect(issue.context_summary.artifacts).toBe(3);
@@ -217,7 +212,7 @@ test.describe.serial('issue artifacts', () => {
 			content: 'x'.repeat(256 * 1024 + 1)
 		});
 		expect(big.status()).toBe(422);
-		expect((await body<ErrorBody>(big)).error.code).toBe('artifact_too_large');
+		expect((await errorBody(big)).error.code).toBe('artifact_too_large');
 
 		const bob = apiClient(request, BOB.apiKey);
 		expect((await bob.get(`/api/v1/issues/${issueId}/artifacts`)).status()).toBe(404);
@@ -234,7 +229,7 @@ test.describe.serial('issue artifacts', () => {
 			issue_id: issueId
 		});
 		expect(create.status()).toBe(422);
-		expect((await body<ErrorBody>(create)).error.code).toBe('use_artifact_endpoints');
+		expect((await errorBody(create)).error.code).toBe('use_artifact_endpoints');
 
 		const listed = await body<{ items: { kind: string; name: string; artifact_type?: string }[] }>(
 			await api.get(`/api/v1/context?issue=${issueId}`)
@@ -246,6 +241,54 @@ test.describe.serial('issue artifacts', () => {
 			'impl-pr'
 		]);
 		expect(artifactItems.every((i) => typeof i.artifact_type === 'string')).toBe(true);
+	});
+
+	test('a .json file uploads as a file, but a JSON body with no filename does not', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		// What the CLI sends for `artifacts attach <ref> <name> --file x.json`:
+		// the sniff table maps .json to application/json, and `?filename=` is
+		// what tells the endpoint this is an upload rather than a client that
+		// meant the JSON upsert next door (Tines/242).
+		const payload = JSON.stringify({ findings: [{ id: 1, note: 'caf\u00e9 \u2615' }] });
+		const upload = await request.put(
+			`/api/v1/issues/${issueId}/artifacts/scan-report/file?filename=report.json`,
+			{
+				headers: { authorization: `Bearer ${ALICE.apiKey}`, 'content-type': 'application/json' },
+				data: Buffer.from(payload)
+			}
+		);
+		expect(await body<ArtifactShape>(upload)).toMatchObject({
+			artifact_type: 'file',
+			current_version: { version: 1, filename: 'report.json', content_type: 'application/json' }
+		});
+
+		// `artifacts get` round-trips the bytes; JSON is off the inline
+		// allowlist, so it is served as an attachment either way.
+		const content = await api.get(`/api/v1/issues/${issueId}/artifacts/scan-report/content`);
+		expect(Buffer.from(await content.body()).equals(Buffer.from(payload))).toBe(true);
+		expect(content.headers()['content-type']).toBe('application/json');
+		expect(content.headers()['content-disposition']).toBe('attachment; filename="report.json"');
+		expect(
+			(await api.get(`/api/v1/issues/${issueId}/artifacts/scan-report/content?inline=1`)).headers()[
+				'content-disposition'
+			]
+		).toBe('attachment; filename="report.json"');
+
+		// The narrowed guard still catches the misdirected JSON client, and
+		// still says *why* rather than only asking for a filename.
+		const misdirected = await request.put(`/api/v1/issues/${issueId}/artifacts/scan-report/file`, {
+			headers: { authorization: `Bearer ${ALICE.apiKey}`, 'content-type': 'application/json' },
+			data: Buffer.from(JSON.stringify({ type: 'text', content: 'oops' }))
+		});
+		expect(misdirected.status()).toBe(422);
+		const err = await errorBody(misdirected);
+		expect(err.error.code).toBe('invalid_field');
+		expect(err.error.message).toContain('does not take JSON');
+		expect(err.error.details?.field).toBe('content_type');
+
+		await api.delete(`/api/v1/issues/${issueId}/artifacts/scan-report`);
 	});
 
 	test('folder snapshots upload whole (multipart) and serve per path', async ({ request }) => {
@@ -278,7 +321,7 @@ test.describe.serial('issue artifacts', () => {
 		expect(file.headers()['content-disposition']).toBe('attachment; filename="billing.png"');
 		const noPath = await api.get(`/api/v1/issues/${issueId}/artifacts/screenshots/content`);
 		expect(noPath.status()).toBe(422);
-		const noPathErr = await body<ErrorBody>(noPath);
+		const noPathErr = await errorBody(noPath);
 		expect(noPathErr.error.code).toBe('folder_path_required');
 		expect(noPathErr.error.details?.paths).toEqual([
 			'login.png',
@@ -289,7 +332,7 @@ test.describe.serial('issue artifacts', () => {
 		// The JSON upsert refuses folder payload writes, naming the endpoint.
 		const bad = await api.put(`/api/v1/issues/${issueId}/artifacts/screenshots`, { content: 'x' });
 		expect(bad.status()).toBe(422);
-		expect((await body<ErrorBody>(bad)).error.code).toBe('use_folder_endpoint');
+		expect((await errorBody(bad)).error.code).toBe('use_folder_endpoint');
 
 		// A new snapshot replaces the set wholesale; v1 stays addressable.
 		const v2 = await request.put(`/api/v1/issues/${issueId}/artifacts/screenshots/folder`, {

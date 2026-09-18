@@ -1,9 +1,51 @@
 import type { D1Result } from '@cloudflare/workers-types';
-import type { ApiErrorBody } from '@tines/shared';
+import type { ApiErrorBody, ArchivedFilter } from '@tines/shared';
 import { json, type RequestEvent } from '@sveltejs/kit';
 import type { CompiledQuery } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
 import { getDb } from '$lib/server/db';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
+
+interface DispatchCollector {
+	ownerId?: string;
+	pending: boolean;
+	closed: boolean;
+	effects?: DispatchEffects;
+}
+
+const dispatchCollectors = new WeakMap<RequestEvent, DispatchCollector>();
+
+export function requestDispatchEffects(
+	event: RequestEvent,
+	authenticatedUserId: string
+): DispatchEffects {
+	const collector = dispatchCollectors.get(event);
+	if (!collector) throw new Error('Dispatch effects requested outside api()');
+	if (collector.ownerId !== undefined && collector.ownerId !== authenticatedUserId) {
+		throw new Error('Dispatch effects owner mismatch');
+	}
+	collector.ownerId = authenticatedUserId;
+	return (collector.effects ??= {
+		signalDispatch() {
+			if (!collector.closed) collector.pending = true;
+		}
+	});
+}
+
+async function drainDispatchEffects(
+	event: RequestEvent,
+	collector: DispatchCollector
+): Promise<void> {
+	collector.closed = true;
+	dispatchCollectors.delete(event);
+	if (!collector.pending || !collector.ownerId) return;
+	try {
+		const { queueDispatchPass } = await import('$lib/server/supervisor/engine');
+		queueDispatchPass(event.platform, collector.ownerId);
+	} catch (error) {
+		console.error('Failed to schedule dispatch pass:', error);
+	}
+}
 
 /** Thrown by handlers/services; converted to a structured error response. */
 export class ApiFail extends Error {
@@ -61,6 +103,8 @@ export function api<E extends RequestEvent>(
 	handler: (event: E) => Promise<Response> | Response
 ): (event: E) => Promise<Response> {
 	return async (event) => {
+		const collector: DispatchCollector = { pending: false, closed: false };
+		dispatchCollectors.set(event, collector);
 		try {
 			return await handler(event);
 		} catch (e) {
@@ -75,6 +119,8 @@ export function api<E extends RequestEvent>(
 			}
 			console.error('API error:', e);
 			return errorResponse(new ApiFail(500, 'internal', 'Internal error'));
+		} finally {
+			await drainDispatchEffects(event, collector);
 		}
 	};
 }
@@ -160,34 +206,80 @@ export interface ActorContext {
 // authority but are fenced off the control plane — an agent must not be able
 // to raise its own budget, un-park itself, re-route work, or touch
 // credentials. Ordinary named keys keep their full authority.
+//
+// The fence is per method, not per path: a surface an agent must *understand*
+// to do its job can be readable while its writes stay fenced (the label
+// library is the one such surface today).
 
-const CONTROL_PLANE_PATTERNS = [
-	/^\/api\/v1\/runners(\/|$)/,
-	/^\/api\/v1\/routing-rules(\/|$)/,
-	/^\/api\/v1\/supervisor\/settings(\/|$)/,
-	/^\/api\/v1\/issues\/[^/]+\/resume$/,
-	/^\/api\/v1\/api-keys(\/|$)/,
+/**
+ * A fenced surface. Every method is fenced unless `readable` is set, in which
+ * case GET/HEAD pass: reading is classification, writing is control.
+ */
+type ControlPlaneRule = { pattern: RegExp; readable?: boolean };
+
+const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
+	// The fleet's shape is legible to a run (Tines/256): an agent already reads
+	// its own dispatch explainer, which names runners, their status and their
+	// caps, so the fleet reads behind `tines supervisor status` disclose nothing
+	// new. Only the GETs open — `register`, `rotate-token` and the PATCH/DELETE
+	// writes stay fenced (`poll` is runner-token auth, never a run key), and the
+	// settings GET nulls `github_pat_hint` for run keys.
+	{ pattern: /^\/api\/v1\/runners(\/|$)/, readable: true },
+	{ pattern: /^\/api\/v1\/routing-rules(\/|$)/ },
+	{ pattern: /^\/api\/v1\/supervisor\/settings(\/|$)/, readable: true },
+	{ pattern: /^\/api\/v1\/issues\/[^/]+\/resume$/ },
+	// Moving an issue between projects is an operator act: an agent may review
+	// the move (the preview is the argument it makes to its owner) but the POST
+	// is fenced, so a run cannot re-home itself into different guidance.
+	{ pattern: /^\/api\/v1\/issues\/[^/]+\/transfer$/, readable: true },
+	{ pattern: /^\/api\/v1\/api-keys(\/|$)/ },
+	{ pattern: /^\/api\/v1\/host\/workflow-moderation(\/|$)/ },
+	// The label library is vocabulary, not classification: run keys may read it
+	// (`tines labels list` — the launch prompt points at it) and may apply and
+	// remove existing labels (/issues/:id/labels stays open to them), but
+	// cannot mint, rename, or delete the terms themselves.
+	{ pattern: /^\/api\/v1\/labels(\/|$)/, readable: true },
 	// Bulk library writes: an agent must propose context changes, not apply
 	// a whole library over the top of them.
-	/^\/api\/v1\/import(\/|$)/
+	{ pattern: /^\/api\/v1\/import(\/|$)/ },
+	// Preparing/recovering is read-only; committing an installation is an
+	// operator action and is also denied again inside the install service.
+	{ pattern: /^\/api\/v1\/library\/install$/ },
+	// Agents may validate and prepare publication proofs, but only a human or
+	// named key may publish, withdraw, restore, or install the hosted snapshot.
+	{ pattern: /^\/api\/v1\/publications\/[^/]+\/(publish|withdraw|restore)$/ },
+	// Archiving is an operator act: an agent must not freeze (or thaw) the
+	// project it is working in, least of all the one draining around it.
+	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ },
+	// Per-user UI preferences (the project focus): an agent has no focus of its
+	// own and must not read or move its owner's. GET is fenced too.
+	{ pattern: /^\/api\/v1\/preferences(\/|$)/ }
 ];
 
-/** True for paths a run key must never reach (all methods). */
-export function isControlPlanePath(pathname: string): boolean {
-	return CONTROL_PLANE_PATTERNS.some((p) => p.test(pathname));
+/** SvelteKit answers HEAD from the GET handler, so both are reads. */
+const READ_METHODS = new Set(['GET', 'HEAD']);
+
+/** True when a run key must not make `method` requests to `pathname`. */
+export function isControlPlanePath(pathname: string, method: string): boolean {
+	const read = READ_METHODS.has(method.toUpperCase());
+	return CONTROL_PLANE_RULES.some((r) => r.pattern.test(pathname) && !(read && r.readable));
 }
 
 /**
  * The fence's 403, shared by the path fence and field-level guards (pins on
  * PATCH /issues/:id live on an otherwise run-key-legal route).
  */
-export function runKeyForbidden(): ApiFail {
+export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 	return new ApiFail(
 		403,
 		'run_key_forbidden',
-		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, API keys, or the library import. ' +
+		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys, ' +
+			'cannot import a library or install a workflow package, cannot archive or unarchive projects, cannot create, rename, or delete ' +
+			'labels, and cannot apply or remove a label a routing rule is scoped to (reading the library and ' +
+			'applying other existing labels is fine). ' +
 			'Propose the change instead: file an issue titled "Context change: <scope label>" describing ' +
-			'what should change and why; a human reviews and applies it.'
+			'what should change and why; a human reviews and applies it.',
+		details
 	);
 }
 
@@ -199,6 +291,7 @@ export function runKeyForbidden(): ApiFail {
 export function assertRunKeyAllowed(
 	key: { agentRunId: string | null; expiresAt: number | null },
 	pathname: string,
+	method: string,
 	now = Date.now()
 ): void {
 	if (key.expiresAt !== null && key.expiresAt <= now) {
@@ -208,7 +301,7 @@ export function assertRunKeyAllowed(
 			'This run key has expired; the run it belonged to is over'
 		);
 	}
-	if (key.agentRunId !== null && isControlPlanePath(pathname)) {
+	if (key.agentRunId !== null && isControlPlanePath(pathname, method)) {
 		throw runKeyForbidden();
 	}
 }
@@ -255,7 +348,8 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	}
 	assertRunKeyAllowed(
 		{ agentRunId: row.agent_run_id, expiresAt: row.expires_at },
-		event.url.pathname
+		event.url.pathname,
+		event.request.method
 	);
 
 	const touch = db
@@ -295,7 +389,25 @@ export { sha256Hex };
 export async function apiContext(event: RequestEvent, { sessionOnly = false } = {}) {
 	if (!event.platform) throw new ApiFail(500, 'no_platform', 'Platform bindings unavailable');
 	const actor = sessionOnly ? await requireSessionActor(event) : await requireActor(event);
-	return { db: getDb(event.platform.env), env: event.platform.env, actor };
+	return {
+		db: getDb(event.platform.env),
+		env: event.platform.env,
+		actor,
+		effects: requestDispatchEffects(event, actor.userId)
+	};
+}
+
+/**
+ * `?archived=` on the four lists that hide archived projects by default.
+ * Absent means `'false'` — the default every list shares.
+ */
+export function readArchived(params: URLSearchParams): ArchivedFilter {
+	const raw = params.get('archived');
+	if (raw === null || raw === '') return 'false';
+	if (raw === 'true' || raw === 'false' || raw === 'all') return raw;
+	throw new ApiFail(422, 'invalid_field', '"archived" must be one of true, false, all', {
+		field: 'archived'
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +418,20 @@ export interface Page {
 	limit: number;
 }
 
+export function decodeCursor(rawCursor: string): NonNullable<Page['cursor']> {
+	try {
+		const decoded = atob(rawCursor.replace(/-/g, '+').replace(/_/g, '/'));
+		const sep = decoded.indexOf(':');
+		if (sep < 1) throw new Error('bad cursor');
+		const createdAt = Number(decoded.slice(0, sep));
+		const id = decoded.slice(sep + 1);
+		if (!Number.isFinite(createdAt) || !id) throw new Error('bad cursor');
+		return { createdAt, id };
+	} catch {
+		throw new ApiFail(400, 'invalid_cursor', 'Malformed pagination cursor');
+	}
+}
+
 export function readPage(event: RequestEvent, { defaultLimit = 50, maxLimit = 100 } = {}): Page {
 	const rawLimit = event.url.searchParams.get('limit');
 	let limit = rawLimit ? Number.parseInt(rawLimit, 10) : defaultLimit;
@@ -313,19 +439,7 @@ export function readPage(event: RequestEvent, { defaultLimit = 50, maxLimit = 10
 	limit = Math.min(limit, maxLimit);
 
 	const rawCursor = event.url.searchParams.get('cursor');
-	let cursor: Page['cursor'] = null;
-	if (rawCursor) {
-		try {
-			const decoded = atob(rawCursor.replace(/-/g, '+').replace(/_/g, '/'));
-			const sep = decoded.indexOf(':');
-			const createdAt = Number(decoded.slice(0, sep));
-			const id = decoded.slice(sep + 1);
-			if (!Number.isFinite(createdAt) || !id) throw new Error('bad cursor');
-			cursor = { createdAt, id };
-		} catch {
-			throw new ApiFail(400, 'invalid_cursor', 'Malformed pagination cursor');
-		}
-	}
+	const cursor = rawCursor ? decodeCursor(rawCursor) : null;
 	return { cursor, limit };
 }
 
@@ -363,3 +477,11 @@ export async function runAtomic(env: Env, queries: CompiledQuery[]): Promise<D1R
 		queries.map((q) => env.DB.prepare(q.sql).bind(...(q.parameters as unknown[])))
 	);
 }
+
+/**
+ * Longest legal state-inheritance chain, counting the state itself: A → B → C
+ * is the maximum (Tines/238). Lives here because both the write path
+ * (`workflows.ts`, validating) and the read path (`context.ts`, bounding the
+ * chain CTE) need it and must not import each other.
+ */
+export const MAX_INHERITANCE_CHAIN = 3;

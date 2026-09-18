@@ -1,6 +1,7 @@
 import type { StateCategory } from '@tines/shared';
 import { Kysely, SqliteAdapter } from 'kysely';
 import { D1Dialect } from 'kysely-d1';
+import { traceUsageScaleDb } from './usage-scale-trace';
 
 export interface ProjectTable {
 	id: string;
@@ -8,6 +9,8 @@ export interface ProjectTable {
 	name: string;
 	description: string;
 	default_workflow_id: string | null;
+	/** Set (ms) while the project is archived; NULL = live. */
+	archived_at: number | null;
 	created_at: number;
 	updated_at: number;
 }
@@ -29,6 +32,8 @@ export interface WorkflowStateTable {
 	name: string;
 	category: StateCategory;
 	position: number;
+	/** The state this one inherits context from (Tines/238), or null. */
+	inherits_from_state_id: string | null;
 	created_at: number;
 }
 
@@ -68,6 +73,15 @@ export interface IssueTable {
 	state_entered_at: number | null;
 	created_at: number;
 	updated_at: number;
+	/** Opaque fence changed on every project transfer, including A -> B -> A. */
+	project_assignment_token: string;
+}
+
+export interface IssueAddressTable {
+	project_id: string;
+	number: number;
+	issue_id: string;
+	created_at: number;
 }
 
 export interface ScheduledTaskTable {
@@ -103,6 +117,23 @@ export interface IssueLinkTable {
 	created_at: number;
 }
 
+export interface LabelTable {
+	id: string;
+	user_id: string;
+	name: string;
+	/** A LABEL_COLORS palette key, not a hex value. */
+	color: string;
+	description: string;
+	created_at: number;
+	updated_at: number;
+}
+
+export interface IssueLabelTable {
+	issue_id: string;
+	label_id: string;
+	created_at: number;
+}
+
 export interface ContextItemTable {
 	id: string;
 	user_id: string;
@@ -114,6 +145,8 @@ export interface ContextItemTable {
 	project_id: string | null;
 	workflow_state_id: string | null;
 	issue_id: string | null;
+	/** Set-valued dimension: matches an issue that carries this label. */
+	label_id: string | null;
 	/** Prompt payload: Markdown body. */
 	body: string | null;
 	/** Repo payload: pointer fields (dir defaults at read time). */
@@ -232,6 +265,17 @@ export interface RunnerTable {
 	/** 'active' | 'paused'. */
 	status: string;
 	max_concurrent: number;
+	/** 'legacy' | 'local' | 'remote'. */
+	concurrency_mode: string;
+	concurrency_ceiling: number | null;
+	concurrency_requested: number | null;
+	concurrency_revision: number;
+	concurrency_instance_id: string | null;
+	concurrency_applied_revision: number | null;
+	concurrency_applied_cap: number | null;
+	concurrency_applied_instance_id: string | null;
+	concurrency_applied_at: number | null;
+	concurrency_unavailable_reason: string | null;
 	max_run_minutes: number;
 	default_tier: string;
 	/** JSON per-tier model overrides; NULL = built-ins only. */
@@ -244,9 +288,28 @@ export interface RunnerTable {
 	secret_enc: string | null;
 	/** Hashed daemon token (local type); never serialized. */
 	runner_token_hash: string | null;
+	/** Current local-daemon boot admitted to mutate this runner through poll. */
+	daemon_instance_id: string | null;
+	/** JSON exact-model support asserted by the admitted daemon boot. */
+	effort_capabilities: string | null;
+	/** Immediately preceding daemon boot, rejected if it polls again. */
+	fenced_instance_id: string | null;
 	last_seen_at: number | null;
 	launch_failures: number;
 	backoff_until: number | null;
+	/** 'rate_limit' when the hold is a usage limit; NULL for the failure backoff. */
+	backoff_reason: string | null;
+	/**
+	 * 0/1: the daemon is finishing its runs before restarting for a
+	 * self-update; set and cleared by its polls. Dispatch skips it while set.
+	 */
+	draining: number;
+	resume_enabled: number;
+	resume_window_hours: number;
+	resume_max_turns: number;
+	resume_max_tokens: number;
+	resume_max_cost_usd: number;
+	resume_config_revision: number;
 	created_at: number;
 	updated_at: number;
 }
@@ -267,12 +330,24 @@ export interface AgentRunTable {
 	tier: string;
 	/** Resolved at launch; NULL when the harness cannot vary its model. */
 	model: string | null;
+	requested_effort: string | null;
+	resolved_effort: string | null;
+	effort_source: string | null;
+	effort_application_status: string | null;
+	effort_application_evidence: string | null;
 	/** JSON usage record. */
 	usage: string | null;
 	state_id_at_start: string;
 	state_id_at_end: string | null;
 	provider_session_id: string | null;
 	provider_url: string | null;
+	turn_count: number | null;
+	conversation_turn_count: number | null;
+	workspace_path: string | null;
+	resume_fingerprint: string | null;
+	resumed_from_run_id: string | null;
+	resume_expires_at: number | null;
+	resume_fallback_reason: string | null;
 	api_key_id: string | null;
 	/**
 	 * JSON provider bookkeeping owned by the run's adapter (per-run vault id,
@@ -298,14 +373,18 @@ export interface AgentRunTable {
 	created_at: number;
 	started_at: number | null;
 	ended_at: number | null;
+	/** Assignment fence copied from the issue by the successful claim. */
+	project_assignment_token: string;
 }
 
 export interface RoutingRuleTable {
 	id: string;
 	user_id: string;
-	/** Scope: nullable dimensions with AND semantics; both NULL = global. */
+	/** Scope: nullable dimensions with AND semantics; all NULL = global. */
 	project_id: string | null;
 	workflow_state_id: string | null;
+	/** Set-valued dimension: matches an issue that carries this label. */
+	label_id: string | null;
 	/** JSON ordered target list: [ { runner_id, tier? } ]. */
 	targets: string;
 	created_at: number;
@@ -325,7 +404,7 @@ export interface SupervisorSweepStateTable {
 
 export interface SupervisorSettingsTable {
 	user_id: string;
-	/** 0/1: the kill switch. Off (0) by default for new users. */
+	/** 0/1: the kill switch. Missing rows and new rows default on; stored 0 stays stopped. */
 	enabled: number;
 	/** JSON typed quota policy. */
 	quota: string;
@@ -338,6 +417,31 @@ export interface SupervisorSettingsTable {
 	github_pat_enc: string | null;
 	/** Display hint for the stored PAT ("github_pat_…cdef"); never the value. */
 	github_pat_hint: string | null;
+	source_credentials_revision: number;
+	updated_at: number;
+}
+
+export interface RunResourceTable {
+	id: string;
+	user_id: string;
+	runner_id: string | null;
+	issue_id: string | null;
+	kind: 'local_claude' | 'claude_managed';
+	owner_run_id: string | null;
+	state: 'active' | 'pending_retention' | 'available' | 'claimed' | 'disposing' | 'disposed';
+	claim_run_id: string | null;
+	claim_token: string | null;
+	claim_started_at: number | null;
+	transfer_phase: 'preparing' | 'sending' | 'accepted' | null;
+	expires_at: number | null;
+	available_seen_at: number | null;
+	provider_session_id: string | null;
+	vault_id: string | null;
+	credential_id: string | null;
+	workspace_path: string | null;
+	resume_fingerprint: string;
+	transfer_data: string | null;
+	created_at: number;
 	updated_at: number;
 }
 
@@ -348,13 +452,168 @@ export interface UserTable {
 	email: string;
 }
 
+/** Per-user UI preferences (the project focus, Tines/259); created lazily. */
+export interface UserPreferenceTable {
+	user_id: string;
+	/** The focused project, or null for "All projects". */
+	focused_project_id: string | null;
+	/** The project New issue falls back to under "All projects". */
+	last_project_id: string | null;
+	updated_at: number;
+}
+
+/** Immutable proof that one signed workflow-package plan committed. */
+export interface LibraryInstallTable {
+	id: string;
+	user_id: string;
+	actor_key: string;
+	document_digest: string;
+	plan_digest: string;
+	request_digest: string;
+	execution_nonce: string;
+	receipt_json: string;
+	created_at: number;
+}
+
+export interface WorkflowPublicationTable {
+	id: string;
+	user_id: string;
+	actor_key: string;
+	prepare_request_id: string;
+	prepare_request_hash: string;
+	source_workflow_id: string | null;
+	source_kind: 'owned_workflow' | 'file';
+	source_provenance_json: string;
+	document_json: string;
+	document_digest: string;
+	bytes_sha256: string;
+	byte_length: number;
+	metadata_json: string;
+	review_digest: string;
+	policy_version: number;
+	created_at: number;
+	expires_at: number;
+	snapshot_id: string | null;
+	published_at: number | null;
+	owner_state: 'candidate' | 'published' | 'withdrawn';
+	host_state: 'active' | 'removed';
+	status_version: number;
+	confirmed_at: number | null;
+	confirmed_actor_key: string | null;
+	publication_receipt_json: string | null;
+	attempt_nonce: string | null;
+	host_decision_reason: string | null;
+	host_decision_reference: string | null;
+}
+
+export interface WorkflowPublicationSourceTable {
+	publication_id: string;
+	source_witness_json: string;
+	source_fingerprint: string;
+}
+
+export interface WorkflowPublisherStatusTable {
+	user_id: string;
+	suspended: number;
+	status_version: number;
+	decision_reference: string | null;
+	decision_reason: string | null;
+}
+
+export interface WorkflowPublicationQuotaFenceTable {
+	user_id: string;
+	version: number;
+	attempt_nonce: string;
+}
+
+export interface WorkflowPublicationEventTable {
+	id: string;
+	publication_id: string;
+	snapshot_id: string | null;
+	user_id: string;
+	actor_key: string;
+	action:
+		| 'published'
+		| 'withdrawn'
+		| 'restored'
+		| 'host_removed'
+		| 'publisher_suspended'
+		| 'publisher_restored';
+	publication_status_version: number;
+	publisher_status_version: number;
+	reason: string | null;
+	reference: string | null;
+	created_at: number;
+}
+
+export interface WorkflowReportCaseTable {
+	snapshot_id: string;
+	version: number;
+	read_through_version: number;
+	resolved_through_version: number;
+	latest_report_at: number;
+	updated_at: number;
+}
+
+export interface WorkflowReportTable {
+	id: string;
+	snapshot_id: string;
+	case_version: number;
+	reason: 'harmful_abusive' | 'malicious_phishing' | 'private_information' | 'rights' | 'other';
+	note: string;
+	note_hash: string;
+	created_at: number;
+	resolved_at: number | null;
+}
+
+export interface WorkflowReportRequestTable {
+	request_token: string;
+	body_hash: string;
+	receipt_id: string;
+	created_at: number;
+	expires_at: number;
+	attempt_nonce: string;
+}
+
+export interface WorkflowReportRateEventTable {
+	receipt_id: string;
+	subject_kind: 'network' | 'account';
+	subject_token: string;
+	accepted_at: number;
+	expires_at: number;
+}
+
+export interface WorkflowModerationAuditTable {
+	id: string;
+	request_id: string;
+	request_hash: string;
+	actor_user_id: string;
+	actor_name: string;
+	action: 'dismiss' | 'disable' | 'restore' | 'suspend' | 'unsuspend';
+	target_kind: 'snapshot' | 'publisher';
+	target_id: string;
+	snapshot_id: string | null;
+	document_digest: string | null;
+	bytes_sha256: string | null;
+	publisher_user_id: string | null;
+	before_json: string;
+	after_json: string;
+	case_cutoff: number | null;
+	reason: string;
+	created_at: number;
+	expires_at: number;
+}
+
 export interface Database {
 	project: ProjectTable;
 	workflow: WorkflowTable;
 	workflow_state: WorkflowStateTable;
 	workflow_transition: WorkflowTransitionTable;
 	issue: IssueTable;
+	issue_address: IssueAddressTable;
 	issue_link: IssueLinkTable;
+	label: LabelTable;
+	issue_label: IssueLabelTable;
 	scheduled_task: ScheduledTaskTable;
 	context_item: ContextItemTable;
 	context_item_file: ContextItemFileTable;
@@ -365,9 +624,22 @@ export interface Database {
 	api_key: ApiKeyTable;
 	runner: RunnerTable;
 	agent_run: AgentRunTable;
+	run_resource: RunResourceTable;
 	routing_rule: RoutingRuleTable;
 	supervisor_settings: SupervisorSettingsTable;
 	supervisor_sweep_state: SupervisorSweepStateTable;
+	user_preference: UserPreferenceTable;
+	library_install: LibraryInstallTable;
+	workflow_publication: WorkflowPublicationTable;
+	workflow_publication_source: WorkflowPublicationSourceTable;
+	workflow_publisher_status: WorkflowPublisherStatusTable;
+	workflow_publication_quota_fence: WorkflowPublicationQuotaFenceTable;
+	workflow_publication_event: WorkflowPublicationEventTable;
+	workflow_report_case: WorkflowReportCaseTable;
+	workflow_report: WorkflowReportTable;
+	workflow_report_request: WorkflowReportRequestTable;
+	workflow_report_rate_event: WorkflowReportRateEventTable;
+	workflow_moderation_audit: WorkflowModerationAuditTable;
 	user: UserTable;
 }
 
@@ -412,7 +684,11 @@ const dbs = new WeakMap<object, Kysely<Database>>();
 export function getDb(env: Env): Kysely<Database> {
 	let db = dbs.get(env.DB);
 	if (!db) {
-		db = new Kysely<Database>({ dialect: new ConcurrentD1Dialect({ database: env.DB }) });
+		db = new Kysely<Database>({
+			dialect: new ConcurrentD1Dialect({
+				database: env.USAGE_SCALE_SQL_TRACE === '1' ? traceUsageScaleDb(env.DB) : env.DB
+			})
+		});
 		dbs.set(env.DB, db);
 	}
 	return db;
@@ -427,8 +703,17 @@ export function getDb(env: Env): Kysely<Database> {
 export const IN_LIST_CHUNK = 90;
 
 export function idChunks(ids: string[]): string[][] {
-	const chunks: string[][] = [];
-	for (let i = 0; i < ids.length; i += IN_LIST_CHUNK) chunks.push(ids.slice(i, i + IN_LIST_CHUNK));
+	return chunked(ids, IN_LIST_CHUNK);
+}
+
+/**
+ * `items` in slices of at most `size`. For a statement that binds more than
+ * one parameter per item, pass `IN_LIST_CHUNK / perItem` (floored) so a full
+ * chunk still fits under D1's cap.
+ */
+export function chunked<T>(items: T[], size: number): T[][] {
+	const chunks: T[][] = [];
+	for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
 	return chunks;
 }
 

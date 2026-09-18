@@ -1,8 +1,9 @@
 <script lang="ts">
-	import type { RoutingRule } from '@tines/shared';
+	import type { RoutingRuleWithWarnings, ShadowWarning } from '@tines/shared';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import ContextScopeChips from '$lib/components/ContextScopeChips.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { queueAge } from '$lib/format';
 
 	/**
 	 * The one routing-rule row, shared by every surface that lists rules (the
@@ -15,30 +16,83 @@
 	let {
 		rule,
 		activeStateIds,
+		projectArchived = false,
+		waiting,
 		onedit,
 		ondelete
 	}: {
-		rule: RoutingRule;
+		rule: RoutingRuleWithWarnings;
 		/**
 		 * Ids of active-category states. Required rather than optional: every
 		 * surface has the workflows to hand, and a default would silently drop
 		 * the "never dispatches" warning.
 		 */
 		activeStateIds: Set<string>;
+		/** The rule is scoped to a project that is archived — kept, editable, never matching. */
+		projectArchived?: boolean;
+		/**
+		 * Eligible issues this rule matches that are waiting for an agent, from
+		 * the Now row's queue (Tines/256). Omitted → nothing renders, so the
+		 * read-only surfaces are unaffected. `now` is the queue's own clock, so
+		 * the age here and the Now row's cannot drift on a page left open.
+		 */
+		waiting?: { count: number; oldest: number; href: string; now: number };
 		/** Omitted → read-only row (no Edit button). */
-		onedit?: (rule: RoutingRule) => void;
+		onedit?: (rule: RoutingRuleWithWarnings) => void;
 		/** Omitted → read-only row (no Delete button). */
-		ondelete?: (rule: RoutingRule) => void;
+		ondelete?: (rule: RoutingRuleWithWarnings) => void;
 	} = $props();
 
 	/** Scoped to a state that is no longer active — the rule can never match. */
 	const dead = $derived(
 		rule.scope.workflow_state_id !== null && !activeStateIds.has(rule.scope.workflow_state_id)
 	);
+
+	/**
+	 * One pill per warning *kind*, not per warning: a broad rule can be
+	 * shadowed by every rule above it, and four amber pills on one row is
+	 * worse to read than the unsorted list this replaced. The names go in the
+	 * pill while there is one of them, the count when there are more, and the
+	 * server's full sentences always go in the tooltip.
+	 */
+	function pill(warnings: ShadowWarning[], verb: string) {
+		if (warnings.length === 0) return null;
+		return {
+			text:
+				warnings.length === 1
+					? `${verb} ${warnings[0].scope_label}`
+					: `${verb} ${warnings.length} rules`,
+			title: warnings.map((w) => w.message).join('\n')
+		};
+	}
+
+	const shadowed = $derived(
+		pill(
+			rule.warnings.filter((w) => w.kind === 'shadowed'),
+			'lower priority than'
+		)
+	);
+	const ties = $derived(
+		pill(
+			rule.warnings.filter((w) => w.kind === 'ambiguous'),
+			'ties with'
+		)
+	);
 </script>
 
 <li class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
 	<ContextScopeChips scope={rule.scope} />
+	{#if waiting}
+		<a
+			class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+			href={waiting.href}
+			title="{waiting.count} eligible {waiting.count === 1
+				? 'issue matches'
+				: 'issues match'} this rule and are waiting for an agent"
+		>
+			{waiting.count} waiting · oldest {queueAge(waiting.oldest, waiting.now)}
+		</a>
+	{/if}
 	{#if dead}
 		<span
 			class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
@@ -47,12 +101,36 @@
 			never dispatches
 		</span>
 	{/if}
+	{#if projectArchived}
+		<span
+			class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+			title="This project is archived — nothing dispatches on it. The rule is kept and matches again after unarchive."
+		>
+			project archived
+		</span>
+	{/if}
+	{#each [ties, shadowed].filter((p) => p !== null) as p (p.text)}
+		<span
+			class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+			title={p.title}
+		>
+			{p.text}
+		</span>
+	{/each}
 	{#if rule.targets.length === 0}
 		<span
 			class="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
 			title="A forced runner removal emptied this rule; add targets or delete it"
 		>
 			no targets
+		</span>
+	{:else if rule.targets.length === 1 && rule.targets[0].runner_id === '*'}
+		<span
+			class="bg-muted rounded-full px-2 py-0.5 text-xs"
+			title="Uses the next lower-priority matching rule's runners"
+		>
+			*:{rule.targets[0].tier}{rule.targets[0].effort ? ` · effort ${rule.targets[0].effort}` : ''} ·
+			inherited runners
 		</span>
 	{:else}
 		<span class="flex flex-wrap items-center gap-1">
@@ -66,7 +144,9 @@
 						: ''}"
 					title={target.runner_status === 'paused' ? 'paused' : undefined}
 				>
-					{target.runner_name}{target.tier ? `:${target.tier}` : ''}
+					{target.runner_name}{target.tier ? `:${target.tier}` : ''}{target.effort
+						? ` · effort ${target.effort}`
+						: ''}
 				</span>
 			{/each}
 		</span>

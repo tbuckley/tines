@@ -11,6 +11,7 @@
 	import RunRow from '$lib/components/RunRow.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
+	import type { Snippet } from 'svelte';
 	import { prefersReducedMotion } from '$lib/format';
 
 	let {
@@ -18,14 +19,27 @@
 		dispatch,
 		runs,
 		runners,
+		disabledReason = null,
+		checklist,
 		onerror
 	}: {
 		issue: IssueDetail;
 		dispatch: DispatchExplainer | null;
 		runs: AgentRun[];
 		runners: Runner[];
+		/** When set, the pin controls render disabled with this as their tooltip. Cancel run stays live. */
+		disabledReason?: string | null;
+		/**
+		 * The first-run checklist, before the account's first run. It replaces
+		 * both the verdict-and-checks and the Runs list — its last item *is* the
+		 * first run, and a second copy of that row would double the log fetches.
+		 * The page owns every handler; this card stays dumb.
+		 */
+		checklist?: Snippet;
 		onerror: (e: unknown) => void;
 	} = $props();
+
+	const readOnly = $derived(disabledReason != null);
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -66,7 +80,9 @@
 		<IconRobot size={16} stroke={1.75} /> Agent activity
 	</h2>
 
-	{#if dispatch}
+	{#if checklist}
+		{@render checklist()}
+	{:else if dispatch}
 		<!-- the one-line verdict -->
 		<p class="text-sm {dispatch.parked ? 'font-medium text-amber-700 dark:text-amber-400' : ''}">
 			{dispatch.verdict}
@@ -91,7 +107,18 @@
 							{:else}
 								<IconX size={14} class="mt-px shrink-0 text-amber-700 dark:text-amber-400" />
 							{/if}
-							<span class={check.ok ? 'text-muted-foreground' : ''}>{check.detail}</span>
+							<span class={check.ok ? 'text-muted-foreground' : ''}>
+								{check.detail}
+								{#if check.action}
+									{#if check.action.href}
+										<a href={check.action.href} class="ml-1 underline underline-offset-2"
+											>{check.action.label}</a
+										>
+									{:else if check.action.cli}
+										<code class="bg-muted ml-1 rounded px-1 py-0.5">{check.action.cli}</code>
+									{/if}
+								{/if}
+							</span>
 						</li>
 					{/each}
 				</ul>
@@ -100,6 +127,15 @@
 						Matched rule: <span class="text-foreground font-medium"
 							>{dispatch.matched_rule.scope_label}</span
 						>
+					</p>
+				{/if}
+				{#if dispatch.tier_override}
+					<p class="text-muted-foreground">
+						Tier override: <span class="text-foreground font-medium">{dispatch.tier_override}</span>
+						{#if dispatch.runner_rule}
+							· runners from <span class="text-foreground font-medium"
+								>{dispatch.runner_rule.scope_label}</span
+							>{/if}
 					</p>
 				{/if}
 				{#if dispatch.targets.length > 0}
@@ -147,35 +183,44 @@
 		{#if runners.length === 0}
 			<p class="text-muted-foreground text-xs italic">No runners registered yet.</p>
 		{:else}
-			<div class="flex items-center gap-1.5">
-				<Select class="h-8 flex-1 text-xs" bind:value={pinRunnerId} aria-label="Pinned runner">
-					<option value="">No pin — routing rules apply</option>
+			<p class="text-muted-foreground mb-1.5 text-xs">No pin uses routing rules.</p>
+			<div class="grid min-w-0 gap-1.5">
+				<Select
+					class="h-8 w-full min-w-0 text-xs"
+					bind:value={pinRunnerId}
+					aria-label="Pinned runner"
+				>
+					<option value="">No pin</option>
 					{#each runners as runner (runner.id)}
 						<option value={runner.id}
 							>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
 						>
 					{/each}
 				</Select>
-				<Select
-					class="h-8 w-28 text-xs"
-					bind:value={pinTier}
-					aria-label="Pinned tier"
-					disabled={!pinRunnerId}
-				>
-					<option value="">default tier</option>
-					{#each MODEL_TIERS as tier (tier)}
-						<option value={tier}>{tier}</option>
-					{/each}
-				</Select>
-				<Button
-					size="sm"
-					variant="outline"
-					class="h-8"
-					disabled={!pinDirty || savingPin}
-					onclick={savePin}
-				>
-					{savingPin ? '…' : 'Save'}
-				</Button>
+				<div class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5">
+					<Select
+						class="h-8 w-full min-w-0 text-xs"
+						bind:value={pinTier}
+						aria-label="Pinned tier"
+						disabled={!pinRunnerId || readOnly}
+						title={disabledReason}
+					>
+						<option value="">Default tier</option>
+						{#each MODEL_TIERS as tier (tier)}
+							<option value={tier}>{tier}</option>
+						{/each}
+					</Select>
+					<Button
+						size="sm"
+						variant="outline"
+						class="h-8"
+						disabled={!pinDirty || savingPin || readOnly}
+						title={disabledReason}
+						onclick={savePin}
+					>
+						{savingPin ? '…' : 'Save'}
+					</Button>
+				</div>
 			</div>
 			{#if issue.pinned_runner_id}
 				<p
@@ -189,17 +234,19 @@
 		{/if}
 	</div>
 
-	<!-- this issue's runs -->
-	<div class="mt-4 border-t pt-3">
-		<p class="text-muted-foreground mb-1.5 text-xs font-medium">Runs</p>
-		{#if runs.length === 0}
-			<p class="text-muted-foreground text-xs italic">No runs yet.</p>
-		{:else}
-			<ul class="divide-y rounded-lg border">
-				{#each runs as run (run.id)}
-					<RunRow {run} />
-				{/each}
-			</ul>
-		{/if}
-	</div>
+	<!-- this issue's runs (the checklist's last item shows them instead) -->
+	{#if !checklist}
+		<div class="mt-4 border-t pt-3">
+			<p class="text-muted-foreground mb-1.5 text-xs font-medium">Runs</p>
+			{#if runs.length === 0}
+				<p class="text-muted-foreground text-xs italic">No runs yet.</p>
+			{:else}
+				<ul class="divide-y rounded-lg border">
+					{#each runs as run (run.id)}
+						<RunRow {run} />
+					{/each}
+				</ul>
+			{/if}
+		</div>
+	{/if}
 </section>

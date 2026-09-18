@@ -1,7 +1,7 @@
 name: CI
 
 # The gate every pull request gets, secrets or not: typecheck, formatting,
-# unit tests, and the Playwright suite. Deploy, Preview, and Publish each run the unit
+# unit tests, and the Playwright suite. Deploy and Publish each run unit
 # tests as well, but none of them typechecks, and nothing else runs e2e — so
 # without this job an e2e regression only surfaces when someone runs the
 # suite by hand (the magic-link specs stayed red for a week that way).
@@ -21,16 +21,26 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4 # version comes from "packageManager" in package.json
+      - uses: pnpm/action-setup@v6 # version comes from "packageManager" in package.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      # Prettier's own cache (`--cache` in the format:check script) keys each
+      # entry on file content, options and plugin versions, so a restored
+      # cache from any earlier run is safe and skips every file that has not
+      # changed. Restored after install: the cache lives under node_modules.
+      - uses: actions/cache@v6
+        with:
+          path: node_modules/.cache/prettier
+          key: prettier-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+          restore-keys: prettier-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
 
       - run: pnpm check
 
@@ -38,36 +48,87 @@ jobs:
 
       - run: pnpm test
 
-  e2e:
+      # The navigation probe (docs/PERFORMANCE.md) is opt-in for `pnpm test`;
+      # run it here so a `load` signature change or a duplicated statement is
+      # caught on the PR, not by the next person who reads the docs. ~1 s.
+      # It gates execution and the zero-duplicates rule, never timings.
+      - run: pnpm --filter web perf:nav
+
+      # Independent persisted accounting oracle against local D1, HTTP, and
+      # TypeScript-source CLI (including complete finalized/pending paging).
+      - run: pnpm --filter web test:usage-mixed
+
+      # Actual bound-query rows read, including a 100k single-timestamp seek.
+      - run: pnpm --filter web perf:usage --size=100000 --equal-time --no-priced --skip-build
+
+  e2e-shard:
     name: Playwright e2e
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Install Chromium
+      # Only the headless shell: nothing in the suite is headed, records
+      # video or picks a channel, so the full Chromium and the ffmpeg that
+      # `install chromium` adds are dead weight. Cached by Playwright version,
+      # which is what pins the browser build. No `--with-deps`: the shell's
+      # shared libraries are already on the ubuntu-latest image (it ships
+      # Chrome), and the apt round was most of the install step's time.
+      - name: Resolve the Playwright version
+        id: playwright
         working-directory: apps/web
-        run: pnpm exec playwright install --with-deps chromium
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v6
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install Chromium headless shell
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        working-directory: apps/web
+        run: pnpm exec playwright install --only-shell chromium
 
       # Builds the worker, migrates and seeds a throwaway local D1, boots it
-      # under `wrangler dev`, and runs the suite against it (apps/web/e2e/
-      # server.sh). Everything is local: no Cloudflare credentials involved.
-      - run: pnpm test:e2e
+      # under `wrangler dev`, and runs this shard of the suite against it
+      # (apps/web/e2e/server.sh). Everything is local: no Cloudflare
+      # credentials involved. Each shard gets its own server and database, so
+      # the suite's one-worker, one-D1 rule (playwright.config.ts) still
+      # holds; Playwright splits shards at file granularity, so a spec's
+      # in-file ordering is untouched.
+      - run: pnpm test:e2e --shard=${{ matrix.shard }}/3
 
       - name: Upload Playwright failure output
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: playwright-test-results
+          name: playwright-test-results-${{ matrix.shard }}
           path: apps/web/test-results
           if-no-files-found: ignore
+
+  # One check with the pre-sharding name, so anything keyed on "Playwright
+  # e2e" (a required status check, a badge) keeps working. Fails when any
+  # shard did; `always()` so a failed shard is reported rather than skipped.
+  e2e:
+    name: Playwright e2e
+    needs: e2e-shard
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - run: test "${{ needs.e2e-shard.result }}" = success

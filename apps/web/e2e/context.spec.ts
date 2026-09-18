@@ -11,9 +11,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, runId } from './helpers';
-
-type ErrorBody = { error: { code: string; message: string; details?: Record<string, unknown> } };
+import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
 
 /**
  * The context-attachments acceptance loop (specs/context/SPEC.md): scoped
@@ -110,14 +108,14 @@ test.describe.serial('context attachments', () => {
 		// Strictness: unknown kind, foreign payload, missing scope, bad paths.
 		expect(
 			(
-				await body<ErrorBody>(
+				await errorBody(
 					await api.post('/api/v1/context', { kind: 'widget', name: 'x', project_id: projectId })
 				)
 			).error.code
 		).toBe('unknown_kind');
 		expect(
 			(
-				await body<ErrorBody>(
+				await errorBody(
 					await api.post('/api/v1/context', {
 						kind: 'prompt',
 						name: 'x',
@@ -141,7 +139,7 @@ test.describe.serial('context attachments', () => {
 		await api.delete(`/api/v1/context/${globalItem.id}`);
 		expect(
 			(
-				await body<ErrorBody>(
+				await errorBody(
 					await api.post('/api/v1/context', {
 						kind: 'skill',
 						name: 'esc',
@@ -153,7 +151,7 @@ test.describe.serial('context attachments', () => {
 		).toBe('invalid_path');
 		expect(
 			(
-				await body<ErrorBody>(
+				await errorBody(
 					await api.post('/api/v1/context', {
 						kind: 'prompt',
 						name: 'house-conventions',
@@ -293,7 +291,7 @@ test.describe.serial('context attachments', () => {
 		const patch = { states: keep, transitions: [] };
 		const rejected = await api.patch(`/api/v1/workflows/${workflow.id}`, patch);
 		expect(rejected.status()).toBe(422);
-		const err = (await body<ErrorBody>(rejected)).error;
+		const err = (await errorBody(rejected)).error;
 		expect(err.code).toBe('context_attached');
 		expect(err.details?.context_items).toEqual([
 			expect.objectContaining({ kind: 'skill', name: 'review-checklist' })
@@ -372,7 +370,7 @@ test.describe.serial('agent-maintained context', () => {
 			}))
 		});
 		expect(rejected.status()).toBe(422);
-		expect((await body<ErrorBody>(rejected)).error.code).toBe('prompt_on_existing_state');
+		expect((await errorBody(rejected)).error.code).toBe('prompt_on_existing_state');
 	});
 
 	test('project creation seeds its conventions atomically', async ({ request }) => {
@@ -444,7 +442,7 @@ test.describe.serial('agent-maintained context', () => {
 			expected_version: 1
 		});
 		expect(stale.status()).toBe(409);
-		const conflict = (await body<ErrorBody>(stale)).error;
+		const conflict = (await errorBody(stale)).error;
 		expect(conflict.code).toBe('version_conflict');
 		expect((conflict.details?.current as ContextItem).version).toBe(2);
 		const rewritten = await body<ContextItem>(
@@ -457,6 +455,7 @@ test.describe.serial('agent-maintained context', () => {
 			await api.post('/api/v1/context', {
 				kind: 'skill',
 				name: `sk-${runId}`,
+				description: 'Use this when the issue needs the synthetic review procedure.',
 				issue_id: issueId,
 				files: [{ path: 'SKILL.md', content: 'x' }]
 			})
@@ -471,6 +470,10 @@ test.describe.serial('agent-maintained context', () => {
 		);
 		const part = ctx.prompt.parts.find((p) => p.is_journal)!;
 		expect(part.version).toBe(3);
+		expect(ctx.skills[0].description).toBe(
+			'Use this when the issue needs the synthetic review procedure.'
+		);
+		expect(ctx.skills[0].files).toEqual([{ path: 'SKILL.md', content: 'x' }]);
 	});
 
 	test('the journal endpoint names the scope a caller owns, and is per-user', async ({
@@ -492,7 +495,7 @@ test.describe.serial('agent-maintained context', () => {
 		expect((await bob.get(`/api/v1/issues/${issueId}/journal`)).status()).toBe(404);
 	});
 
-	test('the launch prompt is id-free with the journal as its one write affordance', async ({
+	test('the launch prompt keeps context IDs private and describes readable skills', async ({
 		request
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
@@ -506,11 +509,194 @@ test.describe.serial('agent-maintained context', () => {
 		);
 		expect(prompt.text).toContain(`\`tines journal append ${issueRef} "- <date>: <lesson>"\``);
 		expect(prompt.text).toContain(`--expect-version 3`);
-		expect(prompt.text).toContain(`Attached to this issue: skill "sk-${runId}" (1 file)`);
+		expect(prompt.text).toContain(
+			`Skill "sk-${runId}" (issue ${issueRef}): read \`skills/sk-${runId}/SKILL.md\` when this applies: Use this when the issue needs the synthetic review procedure.`
+		);
+		expect(prompt.text).toContain(`tines issues context ${issueRef} --json`);
 		expect(prompt.text).toContain(`Also in effect: prompt "guidance-${runId}" (global)`);
 		expect(prompt.text).toContain('file an issue titled `Context change: <scope label>`');
 
 		// Keep later suites clean: the global item affects every launch prompt.
 		await api.delete(`/api/v1/context/${globalId}`);
+	});
+});
+
+/**
+ * The Context page's state chips. A real library has an `instructions` prompt
+ * for every state of every workflow, so "Review" alone names dozens of rows —
+ * the chip has to carry the workflow, and the filter row has to narrow by it.
+ */
+test.describe.serial('context list state chips', () => {
+	const engName = `Chip Eng ${runId}`;
+	const qaName = `Chip QA ${runId}`;
+	let eng: WorkflowResponse;
+	let qa: WorkflowResponse;
+
+	const flow = (name: string) => ({
+		name,
+		initial_state: 'Review',
+		states: [
+			{ name: 'Review', category: 'active', prompt: `Instructions for ${name}.` },
+			{ name: 'Done', category: 'done' }
+		],
+		transitions: [{ name: 'finish', from: 'Review', to: 'Done' }]
+	});
+
+	test('sets up two workflows that share a state name', async ({ request }) => {
+		const api = apiClient(request, ALICE.apiKey);
+		eng = await body<WorkflowResponse>(await api.post('/api/v1/workflows', flow(engName)));
+		qa = await body<WorkflowResponse>(await api.post('/api/v1/workflows', flow(qaName)));
+		// One seeded item each: the Review state's instructions.
+		for (const wf of [eng, qa]) {
+			const reviewId = wf.states.find((s) => s.name === 'Review')!.id;
+			const items = await body<ListResponse<ContextItem>>(
+				await api.get(`/api/v1/context?state=${reviewId}`)
+			);
+			expect(items.items.map((i) => i.name)).toEqual(['instructions']);
+		}
+	});
+
+	test('the chip names the workflow, and the Workflow filter narrows to it', async ({
+		page,
+		context
+	}) => {
+		await signIn(context, ALICE.sessionToken);
+		await gotoHydrated(page, `/context?workflow=${eng.id}`);
+		// `li:not([inert])`: the old row outros for 180 ms after a filter change
+		// (`transition:slide` in ContextItemList.svelte), and Svelte 5 marks an
+		// outroing element `inert` while it is still a sibling of the new row inside
+		// the same live <ul>. Excluding it keeps this locator at exactly one element
+		// at every instant, so each assertion below auto-retries against the live row
+		// instead of tripping strict mode on the stale one (Tines/154).
+		const row = page.locator('li:not([inert])').filter({ hasText: 'instructions' });
+		await expect(row).toHaveCount(1);
+		await expect(row).toContainText(`${engName} / Review`);
+
+		// Switching the filter re-runs the load and swaps in the other workflow's
+		// item — same name, different chip.
+		const select = page.getByLabel('Filter by workflow');
+		await expect(async () => {
+			await select.selectOption(qa.id);
+			await expect(page).toHaveURL(new RegExp(`workflow=${qa.id}`));
+		}).toPass({ timeout: 15_000 });
+		await expect(row).toHaveCount(1);
+		await expect(row).toContainText(`${qaName} / Review`);
+		await expect(row).not.toContainText(engName);
+	});
+
+	test('a chip too long for its cap truncates with an ellipsis, not mid-glyph', async ({
+		page,
+		context,
+		request
+	}) => {
+		// The chip is `inline-flex`, and `text-overflow` only applies to a block
+		// container's own inline text — so `truncate` on the chip itself kept the
+		// `overflow: hidden` half and dropped the ellipsis, clipping names
+		// mid-glyph (Tines/221). Assert on the mechanism rather than the glyph,
+		// which the DOM cannot see: inside a chip that overflows, the element
+		// carrying `text-overflow: ellipsis` has to be a block container.
+		const api = apiClient(request, ALICE.apiKey);
+		const longName = `Chip Overflowing Engineering Workflow ${runId}`;
+		const long = await body<WorkflowResponse>(await api.post('/api/v1/workflows', flow(longName)));
+
+		await signIn(context, ALICE.sessionToken);
+		await page.goto(`/context?workflow=${long.id}`);
+		const row = page.locator('li:not([inert])').filter({ hasText: 'instructions' });
+		await expect(row).toHaveCount(1);
+		const chip = row.getByTitle(`state Review (workflow \u201C${longName}\u201D)`);
+		await expect(chip).toContainText(`${longName} / Review`);
+
+		const measured = await chip.evaluate((el) => {
+			const ellipsised = [el, ...el.querySelectorAll('*')]
+				.filter((n): n is HTMLElement => n instanceof HTMLElement)
+				.filter((n) => getComputedStyle(n).textOverflow === 'ellipsis')
+				.map((n) => ({
+					display: getComputedStyle(n).display,
+					whiteSpace: getComputedStyle(n).whiteSpace,
+					overflowX: getComputedStyle(n).overflowX,
+					overflows: n.scrollWidth > n.clientWidth
+				}));
+			return { width: el.getBoundingClientRect().width, ellipsised };
+		});
+
+		// The name does not fit: the chip is pinned to its `max-w-56` cap.
+		expect(measured.width).toBeGreaterThan(200);
+		expect(measured.width).toBeLessThanOrEqual(225);
+		// …and exactly the clipped element renders an ellipsis. `display` is the
+		// crux: a flex item's text lives in an anonymous box that `text-overflow`
+		// never reaches, so a flex value here means the glyph is cut in half.
+		const clipped = measured.ellipsised.filter((n) => n.overflows);
+		expect(clipped).toHaveLength(1);
+		expect(clipped[0].display).toBe('block');
+		expect(clipped[0].whiteSpace).toBe('nowrap');
+		expect(clipped[0].overflowX).toBe('hidden');
+	});
+
+	test('on a phone the cap narrows so the item name keeps its own room', async ({
+		page,
+		context,
+		request
+	}) => {
+		// The chips wrapper never shrinks below the chip's cap and `ContextItemList`
+		// puts the item name and the chips on one non-wrapping row, so the cap comes
+		// straight out of the name. At the wide (`sm`) cap a 390px phone left the
+		// name a glyph or two, so the cap is `max-w-48 sm:max-w-56` (Tines/221
+		// review). Both halves have to stay legible here — and the chip has to keep
+		// truncating on a block child, i.e. the original bug stays fixed.
+		const api = apiClient(request, ALICE.apiKey);
+		const longName = `Chip Phone Engineering Workflow ${runId}`;
+		const long = await body<WorkflowResponse>(await api.post('/api/v1/workflows', flow(longName)));
+
+		await signIn(context, ALICE.sessionToken);
+		await page.setViewportSize({ width: 390, height: 844 });
+		await page.goto(`/context?workflow=${long.id}`);
+		const row = page.locator('li:not([inert])').filter({ hasText: 'instructions' });
+		await expect(row).toHaveCount(1);
+		const chip = row.getByTitle(`state Review (workflow \u201C${longName}\u201D)`);
+		await expect(chip).toBeVisible();
+
+		const measured = await chip.evaluate((el) => {
+			const name = el.closest('li')!.querySelector<HTMLElement>('span.truncate.font-medium')!;
+			const ellipsised = [el, ...el.querySelectorAll('*')]
+				.filter((n): n is HTMLElement => n instanceof HTMLElement)
+				.filter((n) => getComputedStyle(n).textOverflow === 'ellipsis')
+				.map((n) => ({
+					display: getComputedStyle(n).display,
+					overflows: n.scrollWidth > n.clientWidth
+				}));
+			return {
+				chipWidth: el.getBoundingClientRect().width,
+				nameWidth: name.getBoundingClientRect().width,
+				ellipsised
+			};
+		});
+
+		// The chip is pinned to the narrow cap, not the `sm` one…
+		expect(measured.chipWidth).toBeGreaterThan(150);
+		expect(measured.chipWidth).toBeLessThanOrEqual(200);
+		// …which leaves the item's own name a readable amount of room. (At the wide
+		// cap this measured 13-22px on this viewport, and 0px at 375px.)
+		expect(measured.nameWidth).toBeGreaterThan(30);
+		// The ellipsis still renders on a block child: the fix is not viewport-bound.
+		const clipped = measured.ellipsised.filter((n) => n.overflows);
+		expect(clipped).toHaveLength(1);
+		expect(clipped[0].display).toBe('block');
+	});
+
+	test('the workflow page keeps its own chips short', async ({ page, context }) => {
+		await signIn(context, ALICE.sessionToken);
+		await gotoHydrated(page, `/workflows/${eng.id}`);
+		const section = page.getByRole('heading', { name: 'Context by state' }).locator('..');
+		const expander = section.getByRole('button', { name: /^Review/ });
+		// Same live-row scoping as above; this path has no swap, so it is consistency,
+		// not a fix.
+		const row = section.locator('li:not([inert])').filter({ hasText: 'instructions' });
+		await expect(async () => {
+			await expander.click();
+			await expect(row).toBeVisible();
+		}).toPass({ timeout: 15_000 });
+		// The section groups by state, so the chip stays the bare state name.
+		await expect(row).toContainText('Review');
+		await expect(row).not.toContainText(engName);
 	});
 });

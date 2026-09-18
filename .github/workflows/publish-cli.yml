@@ -28,13 +28,13 @@ jobs:
       id-token: write
     steps:
       # Full history: the patch number is the commit count (see below).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4 # version comes from "packageManager" in package.json
+      - uses: pnpm/action-setup@v6 # version comes from "packageManager" in package.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -81,10 +81,14 @@ jobs:
         if: steps.version.outputs.skip == 'false'
         run: npm pkg set "version=${{ steps.version.outputs.version }}" --prefix packages/cli
 
-      - run: pnpm build
+      # Only the CLI ships from here: build it, and test it and the shared
+      # package it bundles (`tines...` selects the package and its workspace
+      # dependencies). The web app's build and tests are ci.yml's, on this
+      # same commit.
+      - run: pnpm --filter tines build
         if: steps.version.outputs.skip == 'false'
 
-      - run: pnpm test
+      - run: pnpm --filter 'tines...' test
         if: steps.version.outputs.skip == 'false'
 
       # No explicit auth step: with no token in the environment, pnpm publish

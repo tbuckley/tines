@@ -48,6 +48,13 @@ function str(v: unknown): string {
 	return v === null || v === undefined ? '' : String(v);
 }
 
+/** An epoch-ms payload field as an ISO string; the surfaces reformat if they wish. */
+function isoTime(v: unknown): string {
+	return typeof v === 'number' && Number.isFinite(v)
+		? new Date(v).toISOString()
+		: 'an unknown time';
+}
+
 /** Comma/`and` joins over a payload's `changed` array, which may be absent. */
 function joinChanged(v: unknown, sep: string): string {
 	return Array.isArray(v) ? v.join(sep) : '';
@@ -113,6 +120,14 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 		}
 		return segs;
 	},
+	'issue.transferred': (_ev, p) => [
+		text('transferred'),
+		selfRef(),
+		text('from'),
+		name(p.old_ref),
+		text('to'),
+		name(p.new_ref)
+	],
 	'issue.transitioned': (_ev, p) => {
 		const segs = [text('moved'), selfRef()];
 		if (p.action) segs.push(text('via'), name(p.action));
@@ -129,6 +144,11 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'issue.comment_deleted': () => [text('deleted a comment on'), selfRef()],
 	'issue.link_added': linkSegments,
 	'issue.link_removed': linkSegments,
+	'issue.labeled': (_ev, p) => [text('labeled'), selfRef(), name(p.name)],
+	'issue.unlabeled': (_ev, p) => [text('removed label'), name(p.name), text('from'), selfRef()],
+	'label.created': (ev, p) => [text(`${action(ev.type)} label`), name(p.name)],
+	'label.updated': (ev, p) => [text(`${action(ev.type)} label`), name(p.name)],
+	'label.deleted': (ev, p) => [text(`${action(ev.type)} label`), name(p.name)],
 	'issue.parked': (_ev, p) => [
 		text('parked'),
 		selfRef(),
@@ -138,6 +158,8 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'project.created': (ev, p) => projectSegments(ev, p),
 	'project.updated': (ev, p) => projectSegments(ev, p),
 	'project.deleted': (ev, p) => projectSegments(ev, p),
+	'project.archived': (ev, p) => projectSegments(ev, p),
+	'project.unarchived': (ev, p) => projectSegments(ev, p),
 	'workflow.created': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
 	'workflow.updated': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
 	'workflow.deleted': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
@@ -159,6 +181,7 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'context.deleted': (ev, p) => contextSegments(ev, p),
 	'runner.registered': (ev, p) => [text(`${action(ev.type)} runner`), name(p.name)],
 	'runner.updated': (ev, p) => [text(`${action(ev.type)} runner`), name(p.name)],
+	'runner.daemon_replaced': (_ev, p) => [text('replaced daemon for runner'), name(p.name)],
 	'runner.removed': (ev, p) => [text(`${action(ev.type)} runner`), name(p.name)],
 	'runner.errored': (_ev, p) => [
 		text('saw runner'),
@@ -166,6 +189,13 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 		// Not "fail to launch": the same counter now also carries runs a
 		// runner dropped after launch. The cause is in the error text.
 		text(`fail (${str(p.consecutive_failures)} consecutive): ${str(p.error)}`)
+	],
+	'runner.rate_limited': (_ev, p) => [
+		text('saw runner'),
+		name(p.runner_name),
+		// A provider condition, not a failure: the runner holds itself until the
+		// reported reset and resumes with nobody in the loop.
+		text(`hit its usage limit — resumes ${isoTime(p.resets_at)}: ${str(p.error)}`)
 	],
 	'routing_rule.created': (ev, p) => [
 		text(`${action(ev.type)} the ${str(p.scope_label)} routing rule`)

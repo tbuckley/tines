@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -36,6 +36,17 @@ describe('the config file', () => {
 	it('is written owner-only, since it holds a credential', () => {
 		saveCliConfig(dir, { api_key: 'tines_k' });
 		expect(statSync(configPath(dir)).mode & 0o777).toBe(0o600);
+	});
+
+	it('is written atomically: a reader sees the old file or the new one, never a half', () => {
+		// The marker a kept workspace wears is written the same way, and the
+		// sweep that reads it polls — a half-written file read as empty JSON
+		// is what made keep-workspaces flake on CI. The temp file is renamed
+		// over the target, so it must never be left lying about either.
+		saveCliConfig(dir, { url: 'https://one.test' });
+		saveCliConfig(dir, { api_key: 'usr_key' });
+		expect(loadCliConfig(dir)).toEqual({ url: 'https://one.test', api_key: 'usr_key' });
+		expect(readdirSync(dir).filter((f) => f.includes('.tmp-'))).toEqual([]);
 	});
 
 	it('treats a corrupt or ill-typed file as empty rather than throwing', () => {

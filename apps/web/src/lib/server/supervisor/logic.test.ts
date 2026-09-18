@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
+	builtinTierModels,
+	rateLimitHoldUntil,
+	RATE_LIMIT_HOLD_DEFAULT_MS,
+	RATE_LIMIT_HOLD_GRACE_MS,
+	RATE_LIMIT_HOLD_MAX_MS,
 	launchBackoffMs,
 	matchRule,
+	resolveRule,
+	resolveRoute,
+	resolveEffort,
+	isRoutedCandidate,
+	queueVerdict,
+	speakingTarget,
 	quotaHasRoom,
 	resolveTier,
 	targetVerdict,
@@ -13,27 +24,179 @@ const NOW = 1_723_000_000_000;
 
 describe('matchRule', () => {
 	const rules = [
-		{ id: 'global', project_id: null, workflow_state_id: null, targets: [] },
-		{ id: 'state', project_id: null, workflow_state_id: 's1', targets: [] },
-		{ id: 'project', project_id: 'p1', workflow_state_id: null, targets: [] },
-		{ id: 'both', project_id: 'p1', workflow_state_id: 's1', targets: [] }
+		{ id: 'global', project_id: null, workflow_state_id: null, label_id: null, targets: [] },
+		{ id: 'state', project_id: null, workflow_state_id: 's1', label_id: null, targets: [] },
+		{ id: 'project', project_id: 'p1', workflow_state_id: null, label_id: null, targets: [] },
+		{ id: 'both', project_id: 'p1', workflow_state_id: 's1', label_id: null, targets: [] }
 	];
+	/** An issue carrying no labels — the shape every pre-label rule sees. */
+	const at = (project_id: string, state_id: string, label_ids: string[] = []) => ({
+		project_id,
+		state_id,
+		label_ids
+	});
 
 	it('picks the most specific match: project ∧ state > project > state > global', () => {
-		expect(matchRule({ project_id: 'p1', state_id: 's1' }, rules)?.id).toBe('both');
-		expect(matchRule({ project_id: 'p1', state_id: 's2' }, rules)?.id).toBe('project');
-		expect(matchRule({ project_id: 'p2', state_id: 's1' }, rules)?.id).toBe('state');
-		expect(matchRule({ project_id: 'p2', state_id: 's2' }, rules)?.id).toBe('global');
+		expect(matchRule(at('p1', 's1'), rules)?.id).toBe('both');
+		expect(matchRule(at('p1', 's2'), rules)?.id).toBe('project');
+		expect(matchRule(at('p2', 's1'), rules)?.id).toBe('state');
+		expect(matchRule(at('p2', 's2'), rules)?.id).toBe('global');
 	});
 
 	it('project beats state (routing is ownership-shaped, unlike context ordering)', () => {
 		const projectVsState = rules.filter((r) => r.id === 'state' || r.id === 'project');
-		expect(matchRule({ project_id: 'p1', state_id: 's1' }, projectVsState)?.id).toBe('project');
+		expect(matchRule(at('p1', 's1'), projectVsState)?.id).toBe('project');
 	});
 
 	it('returns null when nothing matches', () => {
 		const scoped = rules.filter((r) => r.id !== 'global');
-		expect(matchRule({ project_id: 'p9', state_id: 's9' }, scoped)).toBeNull();
+		expect(matchRule(at('p9', 's9'), scoped)).toBeNull();
+	});
+
+	it('a label rule does not match an issue without the label', () => {
+		const labelled = [{ ...rules[0], id: 'design', label_id: 'l_design' }];
+		expect(matchRule(at('p1', 's1'), labelled)).toBeNull();
+		expect(matchRule(at('p1', 's1', ['l_design']), labelled)?.id).toBe('design');
+	});
+});
+
+describe('resolveRoute', () => {
+	const issue = { project_id: 'p1', state_id: 's1', label_ids: ['l1', 'l2'] };
+	const rule = (
+		id: string,
+		targets: {
+			runner_id: string;
+			tier?: 'smartest' | 'balanced' | 'cheapest' | null;
+			effort?: string;
+		}[],
+		scope: Partial<{ project_id: string; workflow_state_id: string; label_id: string }> = {}
+	) => ({
+		id,
+		project_id: scope.project_id ?? null,
+		workflow_state_id: scope.workflow_state_id ?? null,
+		label_id: scope.label_id ?? null,
+		targets
+	});
+
+	it('resolves effort independently and preserves inherited target effort when a tier-only rule omits it', () => {
+		const global = rule('global', [{ runner_id: 'codex', tier: 'balanced', effort: 'low' }]);
+		const project = rule('project', [{ runner_id: '*', tier: 'smartest' }], {
+			project_id: 'p1'
+		});
+		expect(resolveRoute(issue, [global, project]).targets).toEqual([
+			{ runner_id: 'codex', tier: 'smartest', effort: 'low' }
+		]);
+
+		const state = rule('state', [{ runner_id: '*', tier: 'balanced', effort: 'high' }], {
+			workflow_state_id: 's1'
+		});
+		const resolved = resolveRoute(issue, [global, project, state]);
+		expect(resolved.effortOverride).toBe('high');
+		expect(resolved.effortRule).toBe(state);
+		expect(resolved.targets[0]).toEqual({ runner_id: 'codex', tier: 'smartest', effort: 'high' });
+	});
+
+	it('inherits the first lower-priority concrete list list and overrides every tier', () => {
+		const state = rule('state', [{ runner_id: '*', tier: 'smartest' }], {
+			workflow_state_id: 's1'
+		});
+		const global = rule('global', [
+			{ runner_id: 'claude', tier: 'balanced' },
+			{ runner_id: 'codex' }
+		]);
+		const resolved = resolveRoute(issue, [global, state]);
+		expect(resolved.rule).toBe(state);
+		expect(resolved.runnerRule).toBe(global);
+		expect(resolved.tierOverride).toBe('smartest');
+		expect(resolved.targets).toEqual([
+			{ runner_id: 'claude', tier: 'smartest' },
+			{ runner_id: 'codex', tier: 'smartest' }
+		]);
+		expect(global.targets[0]!.tier).toBe('balanced');
+	});
+
+	it('stops at an empty source instead of falling through', () => {
+		const result = resolveRoute(issue, [
+			rule('tier', [{ runner_id: '*', tier: 'cheapest' }], { label_id: 'l1' }),
+			rule('empty', [], { project_id: 'p1' }),
+			rule('global', [{ runner_id: 'r1' }])
+		]);
+		expect(result.runnerRule?.id).toBe('empty');
+		expect(result.failure).toBe('no_targets');
+		expect(result.targets).toEqual([]);
+	});
+
+	it('fails closed on a tied inherited source while retaining the tier winner', () => {
+		const winner = rule('winner', [{ runner_id: '*', tier: 'smartest' }], {
+			project_id: 'p1',
+			workflow_state_id: 's1',
+			label_id: 'l1'
+		});
+		const result = resolveRoute(issue, [
+			winner,
+			rule('l1', [{ runner_id: 'r1' }], { label_id: 'l1' }),
+			rule('l2', [{ runner_id: 'r2' }], { label_id: 'l2' })
+		]);
+		expect(result.rule).toBe(winner);
+		expect(result.ambiguous.map((r) => r.id).sort()).toEqual(['l1', 'l2']);
+		expect(result.failure).toBe('ambiguous_rule');
+	});
+
+	it('reports a missing runner source', () => {
+		const result = resolveRoute(issue, [
+			rule('tier', [{ runner_id: '*', tier: 'smartest' }], { workflow_state_id: 's1' })
+		]);
+		expect(result.failure).toBe('no_runner_rule');
+	});
+});
+
+describe('resolveRule', () => {
+	const design = {
+		id: 'design',
+		project_id: null,
+		workflow_state_id: null,
+		label_id: 'l_design',
+		targets: []
+	};
+	const security = { ...design, id: 'security', label_id: 'l_security' };
+	const at = (label_ids: string[]) => ({ project_id: 'p1', state_id: 's1', label_ids });
+
+	it('a bare label rule beats project ∧ state', () => {
+		const both = {
+			id: 'both',
+			project_id: 'p1',
+			workflow_state_id: 's1',
+			label_id: null,
+			targets: []
+		};
+		expect(resolveRule(at(['l_design']), [both, design]).rule?.id).toBe('design');
+	});
+
+	it('label ∧ state beats a bare label', () => {
+		const designReview = { ...design, id: 'design_review', workflow_state_id: 's1' };
+		expect(resolveRule(at(['l_design']), [design, designReview]).rule?.id).toBe('design_review');
+	});
+
+	it('two label rules an issue matches equally fail closed and name both', () => {
+		const resolved = resolveRule(at(['l_design', 'l_security']), [design, security]);
+		expect(resolved.rule).toBeNull();
+		expect(resolved.ambiguous.map((r) => r.id).sort()).toEqual(['design', 'security']);
+		// matchRule is the same resolution, so every existing caller skips the
+		// issue rather than routing it on an arbitrary winner.
+		expect(matchRule(at(['l_design', 'l_security']), [design, security])).toBeNull();
+	});
+
+	it('a tie is broken by any rule that is more specific', () => {
+		const designHere = { ...design, id: 'design_here', project_id: 'p1' };
+		const resolved = resolveRule(at(['l_design', 'l_security']), [design, security, designHere]);
+		expect(resolved.rule?.id).toBe('design_here');
+		expect(resolved.ambiguous).toEqual([]);
+	});
+
+	it('reports no ambiguity when nothing matches at all', () => {
+		const resolved = resolveRule(at([]), [design, security]);
+		expect(resolved.rule).toBeNull();
+		expect(resolved.ambiguous).toEqual([]);
 	});
 });
 
@@ -46,12 +209,39 @@ describe('resolveTier', () => {
 		...extras
 	});
 
-	it('falls back to the runner default tier, itself defaulting to balanced', () => {
-		const runner = local({ harness: 'claude_code' }, { default_tier: 'cheapest' });
-		expect(resolveTier(runner, null).tier).toBe('cheapest');
-		expect(resolveTier(local({ harness: 'claude_code' }, { default_tier: '' }), null).tier).toBe(
-			'balanced'
-		);
+	it('exposes and resolves the exact Codex built-in table', () => {
+		const runner = local({ harness: 'codex' });
+		const models = {
+			smartest: 'gpt-6-astra',
+			balanced: 'gpt-5.6-sol',
+			cheapest: 'gpt-5.6-luna'
+		} as const;
+		expect(builtinTierModels(runner)).toEqual(models);
+		for (const [tier, model] of Object.entries(models)) {
+			expect(resolveTier(runner, tier as keyof typeof models)).toEqual({
+				tier,
+				model,
+				effort: null
+			});
+		}
+	});
+
+	it('falls back to the runner default tier, itself defaulting to balanced Codex', () => {
+		expect(resolveTier(local({ harness: 'codex' }), null)).toEqual({
+			tier: 'balanced',
+			model: 'gpt-5.6-sol',
+			effort: null
+		});
+		expect(resolveTier(local({ harness: 'codex' }, { default_tier: 'cheapest' }), null)).toEqual({
+			tier: 'cheapest',
+			model: 'gpt-5.6-luna',
+			effort: null
+		});
+		expect(resolveTier(local({ harness: 'codex' }, { default_tier: '' }), null)).toEqual({
+			tier: 'balanced',
+			model: 'gpt-5.6-sol',
+			effort: null
+		});
 	});
 
 	it('an explicit tier wins over the default', () => {
@@ -74,7 +264,34 @@ describe('resolveTier', () => {
 			local({ harness: 'custom', command: 'run {prompt_file}' }),
 			'smartest'
 		);
-		expect(resolved).toEqual({ tier: 'smartest', model: null });
+		expect(resolved).toEqual({ tier: 'smartest', model: null, effort: null });
+	});
+
+	it('keeps Codex object and legacy string overrides exact while unlisted tiers improve', () => {
+		const runner = local(
+			{ harness: 'codex' },
+			{
+				tiers: JSON.stringify({
+					balanced: { model: 'gpt-5-codex', effort: 'ultra' },
+					cheapest: 'legacy-exact-model'
+				})
+			}
+		);
+		expect(resolveTier(runner, 'balanced')).toEqual({
+			tier: 'balanced',
+			model: 'gpt-5-codex',
+			effort: 'ultra'
+		});
+		expect(resolveTier(runner, 'cheapest')).toEqual({
+			tier: 'cheapest',
+			model: 'legacy-exact-model',
+			effort: null
+		});
+		expect(resolveTier(runner, 'smartest')).toEqual({
+			tier: 'smartest',
+			model: 'gpt-6-astra',
+			effort: null
+		});
 	});
 
 	it('per-runner overrides freeze a tier to an exact model; unlisted tiers keep the built-ins', () => {
@@ -95,6 +312,48 @@ describe('resolveTier', () => {
 	});
 });
 
+describe('resolveEffort', () => {
+	const tier = { tier: 'balanced' as const, model: 'gpt-5.6', effort: 'medium' };
+	const local = (effort_capabilities: string | null) => ({
+		type: 'local',
+		default_tier: 'balanced',
+		tiers: null,
+		config: JSON.stringify({ harness: 'codex' }),
+		effort_capabilities
+	});
+	const capabilities = JSON.stringify({
+		version: 1,
+		models: [{ model: 'gpt-5.6', efforts: ['low', 'medium', 'ultra'] }]
+	});
+
+	it('prefers routed effort and checks the exact final model', () => {
+		expect(resolveEffort(local(capabilities), tier, 'ultra')).toMatchObject({
+			requested: 'ultra',
+			resolved: 'ultra',
+			deliveryMode: 'enforce',
+			compatible: true
+		});
+		expect(
+			resolveEffort(local(capabilities), { ...tier, model: 'gpt-other' }, 'ultra')
+		).toMatchObject({
+			compatible: false,
+			deliveryMode: 'none'
+		});
+	});
+
+	it('permits only tier fallback through the legacy-daemon grace', () => {
+		expect(resolveEffort(local(null), tier, null)).toMatchObject({
+			resolved: 'medium',
+			deliveryMode: 'legacy_tier',
+			compatible: true
+		});
+		expect(resolveEffort(local(null), tier, 'low')).toMatchObject({
+			compatible: false,
+			reason: expect.stringContaining('daemon_upgrade_required')
+		});
+	});
+});
+
 describe('launchBackoffMs', () => {
 	it('doubles per consecutive failure, capped at one hour', () => {
 		expect(launchBackoffMs(0)).toBe(0);
@@ -105,6 +364,28 @@ describe('launchBackoffMs', () => {
 	});
 });
 
+describe('rateLimitHoldUntil', () => {
+	it('holds for the default when the provider gave no usable reset', () => {
+		expect(rateLimitHoldUntil(null, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+		expect(rateLimitHoldUntil(undefined, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+	});
+
+	it('treats a reset already in the past as unknown', () => {
+		expect(rateLimitHoldUntil(NOW - 1, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+		expect(rateLimitHoldUntil(NOW, NOW)).toBe(NOW + RATE_LIMIT_HOLD_DEFAULT_MS);
+	});
+
+	it('holds to the reported reset plus a grace', () => {
+		expect(rateLimitHoldUntil(NOW + 3_600_000, NOW)).toBe(
+			NOW + 3_600_000 + RATE_LIMIT_HOLD_GRACE_MS
+		);
+	});
+
+	it('clamps a far-out reset so a weekly limit re-probes daily', () => {
+		expect(rateLimitHoldUntil(NOW + 7 * 86_400_000, NOW)).toBe(NOW + RATE_LIMIT_HOLD_MAX_MS);
+	});
+});
+
 describe('targetVerdict', () => {
 	const runner = (over: Partial<VerdictRunner> = {}): VerdictRunner => ({
 		id: 'rnr_1',
@@ -112,7 +393,9 @@ describe('targetVerdict', () => {
 		status: 'active',
 		max_concurrent: 2,
 		last_seen_at: NOW,
+		draining: 0,
 		backoff_until: null,
+		backoff_reason: null,
 		...over
 	});
 	const counts = (over: Partial<ActiveCounts> = {}): ActiveCounts => ({
@@ -152,6 +435,30 @@ describe('targetVerdict', () => {
 		).toBe('ok');
 	});
 
+	it('a draining local daemon takes nothing new; offline outranks it, and managed runners never drain', () => {
+		expect(targetVerdict(runner({ draining: 1 }), counts(), globalCap, 's1', NOW).verdict).toBe(
+			'draining'
+		);
+		expect(
+			targetVerdict(
+				runner({ draining: 1, last_seen_at: NOW - 3 * 60_000 }),
+				counts(),
+				globalCap,
+				's1',
+				NOW
+			).verdict
+		).toBe('offline');
+		expect(
+			targetVerdict(
+				runner({ type: 'claude_managed', last_seen_at: null, draining: 1 }),
+				counts(),
+				globalCap,
+				's1',
+				NOW
+			).verdict
+		).toBe('ok');
+	});
+
 	it('backing off until the backoff expires', () => {
 		expect(
 			targetVerdict(runner({ backoff_until: NOW + 1 }), counts(), globalCap, 's1', NOW).verdict
@@ -159,6 +466,31 @@ describe('targetVerdict', () => {
 		expect(
 			targetVerdict(runner({ backoff_until: NOW }), counts(), globalCap, 's1', NOW).verdict
 		).toBe('ok');
+	});
+
+	it('a usage-limit hold reads as rate limited, and says when it resumes', () => {
+		const held = targetVerdict(
+			runner({ backoff_until: NOW + 60_000, backoff_reason: 'rate_limit' }),
+			counts(),
+			globalCap,
+			's1',
+			NOW
+		);
+		expect(held.verdict).toBe('rate_limited');
+		expect(held.detail).toContain(new Date(NOW + 60_000).toISOString());
+		// Expired, and the failure backoff with the same window, are unchanged.
+		expect(
+			targetVerdict(
+				runner({ backoff_until: NOW, backoff_reason: 'rate_limit' }),
+				counts(),
+				globalCap,
+				's1',
+				NOW
+			).verdict
+		).toBe('ok');
+		expect(
+			targetVerdict(runner({ backoff_until: NOW + 60_000 }), counts(), globalCap, 's1', NOW).verdict
+		).toBe('backing_off');
 	});
 
 	it('at max_concurrent', () => {
@@ -191,5 +523,114 @@ describe('quotaHasRoom', () => {
 		const counts: ActiveCounts = { total: 0, byRunner: new Map(), byStartState: new Map() };
 		expect(quotaHasRoom(roster, counts, 's1')).toBe(false);
 		expect(quotaHasRoom(roster, counts, 's2')).toBe(true);
+	});
+});
+
+describe('speakingTarget', () => {
+	it('prefers the first ok target — where dispatch would actually send it', () => {
+		const targets = [
+			{ id: 'a', verdict: 'offline' as const },
+			{ id: 'b', verdict: 'ok' as const },
+			{ id: 'c', verdict: 'ok' as const }
+		];
+		expect(speakingTarget(targets)?.id).toBe('b');
+	});
+
+	it('falls back to the first target in preference order', () => {
+		const targets = [
+			{ id: 'a', verdict: 'at_capacity' as const },
+			{ id: 'b', verdict: 'offline' as const }
+		];
+		expect(speakingTarget(targets)?.id).toBe('a');
+	});
+
+	it('is null for no targets', () => {
+		expect(speakingTarget([])).toBeNull();
+	});
+});
+
+describe('queueVerdict', () => {
+	const base = {
+		enabled: true,
+		parked: false,
+		pinned: false,
+		hasRule: true,
+		ambiguous: false,
+		targets: [{ verdict: 'ok' as const }]
+	};
+
+	it('reports the kill switch above everything else', () => {
+		expect(queueVerdict({ ...base, enabled: false, parked: true, targets: [] })).toBe(
+			'automation_off'
+		);
+	});
+
+	it('reports parked above the routing failures', () => {
+		expect(queueVerdict({ ...base, parked: true, hasRule: false, targets: [] })).toBe('parked');
+	});
+
+	it('distinguishes the four ways an issue reaches no targets', () => {
+		const none = { ...base, targets: [] };
+		expect(queueVerdict({ ...none, pinned: true })).toBe('pin_missing');
+		expect(queueVerdict({ ...none, ambiguous: true, hasRule: false })).toBe('ambiguous_rule');
+		expect(queueVerdict({ ...none, hasRule: true })).toBe('no_targets');
+		expect(queueVerdict({ ...none, hasRule: false })).toBe('no_rule');
+	});
+
+	it('otherwise speaks for the speaking target', () => {
+		expect(queueVerdict(base)).toBe('ok');
+		expect(
+			queueVerdict({ ...base, targets: [{ verdict: 'offline' }, { verdict: 'at_capacity' }] })
+		).toBe('offline');
+		expect(queueVerdict({ ...base, targets: [{ verdict: 'offline' }, { verdict: 'ok' }] })).toBe(
+			'ok'
+		);
+	});
+});
+
+describe('isRoutedCandidate', () => {
+	const rules = [
+		{
+			id: 'r1',
+			project_id: 'p1',
+			workflow_state_id: null,
+			label_id: null,
+			targets: [{ runner_id: 'rnr_1', tier: null }]
+		},
+		{ id: 'empty', project_id: 'p2', workflow_state_id: null, label_id: null, targets: [] },
+		{
+			id: 'lab_a',
+			project_id: null,
+			workflow_state_id: null,
+			label_id: 'l_a',
+			targets: [{ runner_id: 'rnr_1', tier: null }]
+		},
+		{
+			id: 'lab_b',
+			project_id: null,
+			workflow_state_id: null,
+			label_id: 'l_b',
+			targets: [{ runner_id: 'rnr_2', tier: null }]
+		}
+	];
+	const issue = (project_id: string, label_ids: string[] = [], pin: string | null = null) => ({
+		project_id,
+		state_id: 's1',
+		label_ids,
+		pinned_runner_id: pin
+	});
+
+	it('routes a pinned issue regardless of the rules', () => {
+		expect(isRoutedCandidate(issue('p9', [], 'rnr_9'), rules)).toBe(true);
+	});
+
+	it('routes an issue whose winning rule has targets', () => {
+		expect(isRoutedCandidate(issue('p1'), rules)).toBe(true);
+	});
+
+	it('excludes a rule with no targets, no rule at all, and a tie', () => {
+		expect(isRoutedCandidate(issue('p2'), rules)).toBe(false);
+		expect(isRoutedCandidate(issue('p9'), rules)).toBe(false);
+		expect(isRoutedCandidate(issue('p9', ['l_a', 'l_b']), rules)).toBe(false);
 	});
 });

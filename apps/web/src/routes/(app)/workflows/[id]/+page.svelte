@@ -1,13 +1,20 @@
 <script lang="ts">
 	import type { ContextItem, UpdateWorkflowRequest } from '@tines/shared';
-	import { activeStateIds as deriveActiveStateIds, ApiError } from '@tines/shared';
+	import {
+		activeStateIds as deriveActiveStateIds,
+		ApiError,
+		workflowStateAnchorId
+	} from '@tines/shared';
 	import IconBooks from '@tabler/icons-svelte/icons/books';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
+	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconLock from '@tabler/icons-svelte/icons/lock';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
+	import IconWorldUpload from '@tabler/icons-svelte/icons/world-upload';
 	import { slide } from 'svelte/transition';
 	import { goto, invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
@@ -20,6 +27,11 @@
 	import { prefersReducedMotion } from '$lib/format';
 
 	let { data } = $props();
+	const isProjectDefault = $derived(
+		data.focus &&
+			(data.workflow.id === data.focus.default_workflow_id ||
+				(data.focus.default_workflow_id === null && data.workflow.is_system))
+	);
 
 	/** Active-category states, so dead routing rules are flagged as such. */
 	const activeStateIds = $derived(deriveActiveStateIds(data.workflows));
@@ -42,6 +54,12 @@
 	});
 
 	let selectedStateId = $state<string | null>(null);
+	$effect(() => {
+		const stateId = page.url.searchParams.get('state');
+		if (stateId && data.workflow.states.some((state) => state.id === stateId)) {
+			selectedStateId = stateId;
+		}
+	});
 	let contextEditorOpen = $state(false);
 	let editingContextItem = $state<ContextItem | null>(null);
 
@@ -94,7 +112,22 @@
 				name: `${wf.name} (copy)`,
 				description: wf.description,
 				initial_state: nameOf(wf.initial_state_id),
-				states: wf.states.map((s) => ({ name: s.name, category: s.category })),
+				// Inheritance pointers come along: a copy that silently resolved a
+				// different context would not be a copy. Pointers inside this
+				// workflow remap by name (the API resolves a ref against the
+				// request's own states first); pointers at another workflow's
+				// state copy verbatim.
+				states: wf.states.map((s) => ({
+					name: s.name,
+					category: s.category,
+					...(s.inherits_from
+						? {
+								inherits_from: wf.states.some((o) => o.id === s.inherits_from)
+									? nameOf(s.inherits_from)
+									: s.inherits_from
+							}
+						: {})
+				})),
 				transitions: wf.transitions.map((t) => ({
 					name: t.name,
 					from: nameOf(t.from_state_id),
@@ -143,6 +176,11 @@
 	<div class="min-w-0">
 		<h1 class="flex items-center gap-2 text-2xl font-semibold tracking-tight">
 			{data.workflow.name}
+			{#if isProjectDefault}
+				<span class="bg-primary/10 text-primary rounded-full px-2.5 py-1 text-xs font-medium"
+					>Project default</span
+				>
+			{/if}
 			{#if data.workflow.is_system}
 				<span
 					class="text-muted-foreground bg-muted inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium"
@@ -151,29 +189,35 @@
 				</span>
 			{/if}
 		</h1>
-		{#if data.workflow.description}
+		<!-- The editable page repeats the description in its Description field, so
+		     the header only carries it where that form is absent. -->
+		{#if data.workflow.is_system && data.workflow.description}
 			<p class="text-muted-foreground mt-1 max-w-xl text-sm">{data.workflow.description}</p>
 		{/if}
-		<p class="text-muted-foreground mt-1 text-xs">
-			{data.workflow.issue_count} issue{data.workflow.issue_count === 1 ? ' uses' : 's use'} this workflow
-		</p>
+		{#if data.focusedOpenCount !== null && data.focus}
+			<p class="text-muted-foreground mt-1 text-xs">
+				{data.focusedOpenCount} open issue{data.focusedOpenCount === 1 ? '' : 's'} in {data.focus
+					.name}
+				{data.focusedOpenCount === 1 ? 'uses' : 'use'} this workflow
+			</p>
+		{:else}
+			<p class="text-muted-foreground mt-1 text-xs">
+				{data.workflow.issue_count} issue{data.workflow.issue_count === 1 ? ' uses' : 's use'} this workflow
+			</p>
+		{/if}
 	</div>
 	<div class="flex gap-2">
+		{#if !data.workflow.is_system}
+			<Button variant="outline" href="/workflows/{data.workflow.id}/export">
+				<IconWorldUpload size={16} /> Publish workflow
+			</Button>
+		{/if}
+		<Button variant="outline" href="/workflows/{data.workflow.id}/export?download=1">
+			<IconDownload size={16} /> Export package
+		</Button>
 		{#if data.workflow.is_system}
 			<Button variant="outline" onclick={copyToLibrary}>
 				<IconCopy size={16} /> Copy to library
-			</Button>
-		{:else}
-			<Button
-				variant="outline"
-				class="text-destructive"
-				disabled={data.workflow.issue_count > 0}
-				title={data.workflow.issue_count > 0
-					? 'Workflows with issues cannot be deleted'
-					: undefined}
-				onclick={deleteWorkflow}
-			>
-				Delete
 			</Button>
 		{/if}
 	</div>
@@ -219,7 +263,24 @@
 	</div>
 {:else}
 	{#key data.workflow.updated_at}
-		<WorkflowEditor workflow={data.workflow} onsave={saveWorkflow} />
+		<WorkflowEditor workflow={data.workflow} onsave={saveWorkflow}>
+			<!-- Delete sits with Save rather than in the header, so the page opens on
+			     the form and no destructive action shares the title row. -->
+			{#snippet footerActions()}
+				<Button
+					type="button"
+					variant="outline"
+					class="text-destructive"
+					disabled={data.workflow.issue_count > 0}
+					title={data.workflow.issue_count > 0
+						? 'Workflows with issues cannot be deleted'
+						: undefined}
+					onclick={deleteWorkflow}
+				>
+					Delete
+				</Button>
+			{/snippet}
+		</WorkflowEditor>
 	{/key}
 {/if}
 
@@ -236,7 +297,7 @@
 		{#each data.workflow.states as state (state.id)}
 			{@const items = itemsByState.get(state.id) ?? []}
 			{@const open = selectedStateId === state.id}
-			<div class="border-b last:border-0">
+			<div class="border-b last:border-0" id={workflowStateAnchorId(state.id)}>
 				<button
 					type="button"
 					class="hover:bg-muted/50 flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm"
@@ -259,6 +320,7 @@
 					>
 						<ContextItemList
 							{items}
+							shortScope
 							onselect={openContextEdit}
 							emptyMessage="Nothing scoped to this state yet."
 						/>

@@ -1,13 +1,8 @@
 import { execFile } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const tsx = join(here, '..', 'node_modules', '.bin', 'tsx');
-const entry = join(here, 'index.ts');
+import { CLI_BIN, NODE } from './test-bin.js';
 
 /** One issue row, shaped as far as the table renderer reads it. */
 function row(n: number): Record<string, unknown> {
@@ -20,6 +15,7 @@ function row(n: number): Record<string, unknown> {
 		effective_state: { name: 'Backlog', category: 'active' },
 		last_activity_at: 0,
 		open_blockers: [],
+		labels: [],
 		duplicate_of: null
 	};
 }
@@ -53,12 +49,12 @@ beforeAll(async () => {
 
 afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
 
-/** Runs the CLI from source against the stub; never rejects. */
+/** Runs the built CLI against the stub; never rejects. */
 function cli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
 	return new Promise((resolve) => {
 		const child = execFile(
-			tsx,
-			[entry, ...args],
+			NODE,
+			[CLI_BIN, ...args],
 			{ env: { ...process.env, TINES_API_URL: baseUrl, TINES_API_KEY: 'k' }, timeout: 60_000 },
 			(err, stdout, stderr) => {
 				const code = (err as { code?: number } | null)?.code ?? 0;

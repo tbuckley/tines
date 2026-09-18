@@ -1,36 +1,96 @@
 <script lang="ts">
-	import type { ContextItem } from '@tines/shared';
+	import type { ContextItem, ContextKind } from '@tines/shared';
 	import { activeStateIds as deriveActiveStateIds, ApiError } from '@tines/shared';
+	import IconArchive from '@tabler/icons-svelte/icons/archive';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconSettings from '@tabler/icons-svelte/icons/settings';
 	import { slide } from 'svelte/transition';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { afterNavigate, goto, invalidateAll, replaceState } from '$app/navigation';
+	import { focusHint } from '$lib/focus.svelte';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentRoutingCard from '$lib/components/AgentRoutingCard.svelte';
-	import CheckboxField from '$lib/components/CheckboxField.svelte';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
+	import IssueFilterBar from '$lib/components/IssueFilterBar.svelte';
 	import IssueList from '$lib/components/IssueList.svelte';
+	import IssuePagination from '$lib/components/IssuePagination.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import ScheduleList from '$lib/components/ScheduleList.svelte';
+	import StateBadge from '$lib/components/StateBadge.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
-	import { prefersReducedMotion } from '$lib/format';
+	import { PROJECT_ARCHIVED_TOOLTIP } from '$lib/archived';
+	import { groupContextByWorkflow } from '$lib/context-groups';
+	import { formatDate, prefersReducedMotion } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
+	import { eligibleStarterIssue, type StarterLandingMarker } from '$lib/starter-landing';
 
 	let { data } = $props();
+
+	let starterLanding = $state<StarterLandingMarker | undefined>();
+	afterNavigate(() => {
+		starterLanding = page.state.starterLanding;
+		if (page.state.starterLanding) {
+			const { starterLanding: _consumed, ...remaining } = page.state;
+			replaceState('', remaining);
+		}
+	});
+	const starterIssue = $derived(
+		eligibleStarterIssue(starterLanding, data.project, data.issues, {
+			hasQuery: page.url.search !== '',
+			bounded: data.pagination.bounded
+		})
+	);
+	let starterWasEligible = $state(false);
+	$effect(() => {
+		if (starterIssue) starterWasEligible = true;
+		else if (starterWasEligible) starterLanding = undefined;
+	});
 
 	// Remember this list (filters and all) so an issue opened from here gets a
 	// back link that returns to it.
 	$effect(() => {
 		navMemory.recordProject(data.project.id, page.url.search, data.project.name);
 	});
+
+	// Opening a project focuses it (Tines/259). Client-side on purpose: doing it
+	// in the load would fire on hover, because the app preloads links on hover.
+	// The chrome is told optimistically. The write is tracked so subsequent
+	// same-origin reads wait for the server to agree before they begin.
+	//
+	// Announced once per project, tracked in a plain `let` that no rerender
+	// resets. A guard reading `focusHint` instead would make the hint a
+	// dependency of this effect, so the switcher could never move the focus
+	// off this page: `chooseFocus` clears the hint and invalidates, both
+	// of which re-run this effect, which would then PATCH this project
+	// straight back over the user's choice.
+	let announced: string | null = null;
+	let announcement = 0;
+	$effect(() => {
+		if (data.project.archived_at !== null) return;
+		if (announced === data.project.id) return;
+		const projectId = data.project.id;
+		const operation = ++announcement;
+		announced = projectId;
+		const hintOwner = focusHint.set(data.project);
+		const settlement = api.updatePreferences({ focused_project_id: projectId }).catch(() => {
+			// Roll back before tracked reads resume, but never erase a newer choice.
+			focusHint.clearIfCurrent(hintOwner);
+			if (announcement === operation) announced = null;
+		});
+		focusHint.track(settlement);
+	});
+
+	/** An archived project reads normally and writes nowhere. */
+	const archived = $derived(data.project.archived_at !== null);
+	const reason = $derived(archived ? PROJECT_ARCHIVED_TOOLTIP : null);
 
 	/** Active-category states, so dead routing rules are flagged as such. */
 	const activeStateIds = $derived(deriveActiveStateIds(data.workflows));
@@ -41,6 +101,56 @@
 	function showError(e: unknown) {
 		errorMessage = e instanceof ApiError ? e.message : 'Something went wrong — try again.';
 		setTimeout(() => (errorMessage = null), 6000);
+	}
+
+	// --- archive -----------------------------------------------------------------
+
+	/** Named runs still finishing on their own issue, after an archive. */
+	let archiveNotice = $state<string | null>(null);
+
+	function plural(n: number, noun: string): string {
+		return `${n} ${noun}${n === 1 ? '' : 's'}`;
+	}
+
+	async function archive() {
+		const name = data.project.name;
+		const ok = await confirmDialog({
+			title: `Archive "${name}"?`,
+			body:
+				`Archiving hides ${name} from lists and pickers, pauses its ` +
+				`${plural(data.schedules.length, 'scheduled task')}, stops agents dispatching on it, and ` +
+				`makes its ${plural(data.project.issue_count, 'issue')} read-only. Runs already under way ` +
+				`are allowed to finish. Links and refs keep working. You can unarchive at any time.`,
+			confirmLabel: 'Archive project'
+		});
+		if (!ok) return;
+		try {
+			const res = await api.archiveProject(data.project.id);
+			settingsOpen = false;
+			archiveNotice = res.draining_runs.length
+				? `${plural(res.draining_runs.length, 'run')} still finishing: ` +
+					res.draining_runs.map((r) => `${r.runner_name} on #${r.issue_number}`).join(', ') +
+					'. They keep their own issue writable until they end.'
+				: null;
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		}
+	}
+
+	let unarchiving = $state(false);
+	async function unarchive() {
+		unarchiving = true;
+		try {
+			await api.unarchiveProject(data.project.id);
+			archiveNotice = null;
+			settingsOpen = false;
+			await invalidateAll();
+		} catch (err) {
+			showError(err);
+		} finally {
+			unarchiving = false;
+		}
 	}
 
 	let newIssueOpen = $state(false);
@@ -55,9 +165,11 @@
 
 	let contextEditorOpen = $state(false);
 	let editingContextItem = $state<ContextItem | null>(null);
+	let contextDefaultKind = $state<ContextKind>('prompt');
 
-	function openContextCreate() {
+	function openContextCreate(kind: ContextKind = 'prompt') {
 		editingContextItem = null;
+		contextDefaultKind = kind;
 		contextEditorOpen = true;
 	}
 	function openContextEdit(item: ContextItem) {
@@ -65,23 +177,12 @@
 		contextEditorOpen = true;
 	}
 
-	// Project-only items first, then project ∧ state grouped under their
-	// state names (issue-anchored items are excluded server-side).
+	// Project-only items stay expanded; project ∧ state items collapse into one
+	// accordion row per workflow (issue-anchored items are excluded server-side).
 	const projectOnlyItems = $derived(data.contextItems.filter((i) => !i.scope.workflow_state_id));
-	const stateGroups = $derived.by(() => {
-		const groups = new Map<string, { label: string; items: ContextItem[] }>();
-		for (const item of data.contextItems) {
-			if (!item.scope.workflow_state_id) continue;
-			const key = item.scope.workflow_state_id;
-			const group = groups.get(key) ?? {
-				label: `${item.scope.workflow_name} / ${item.scope.workflow_state_name}`,
-				items: []
-			};
-			group.items.push(item);
-			groups.set(key, group);
-		}
-		return [...groups.values()];
-	});
+	const workflowGroups = $derived(groupContextByWorkflow(data.contextItems, data.workflows));
+	/** The one open accordion row, or null — closed by default. */
+	let openWorkflowId = $state<string | null>(null);
 
 	// --- settings ----------------------------------------------------------------
 
@@ -160,22 +261,15 @@
 			showError(err);
 		}
 	}
-
-	function setFilter(key: string, on: boolean) {
-		const params = new URLSearchParams(page.url.searchParams);
-		if (on) params.set(key, '1');
-		else params.delete(key);
-		goto(`/projects/${data.project.id}?${params}`, { keepFocus: true, noScroll: true });
-	}
 </script>
 
 <svelte:head><title>{data.project.name} · Tines</title></svelte:head>
 
 <a
-	href="/projects"
+	href={navMemory.projectsHref}
 	class="text-muted-foreground hover:text-foreground mb-3 inline-flex items-center gap-1 text-sm"
 >
-	<IconChevronLeft size={16} /> Projects
+	<IconChevronLeft size={16} /> Manage projects
 </a>
 
 <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
@@ -189,11 +283,42 @@
 		<Button variant="outline" onclick={() => (settingsOpen = true)}>
 			<IconSettings size={16} /> Settings
 		</Button>
-		<Button onclick={() => (newIssueOpen = true)}>
-			<IconPlus size={16} /> New issue
-		</Button>
+		{#if !archived}
+			<Button onclick={() => (newIssueOpen = true)}>
+				<IconPlus size={16} /> New issue
+			</Button>
+		{/if}
 	</div>
 </div>
+
+{#if archived}
+	<div
+		class="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-800 dark:text-amber-300"
+		transition:slide={{ duration: dur() }}
+	>
+		<IconArchive size={16} />
+		<span>Archived {formatDate(data.project.archived_at!)}</span>
+		<span aria-hidden="true">·</span>
+		<PendingButton
+			size="sm"
+			variant="outline"
+			pending={unarchiving}
+			pendingLabel="Unarchiving…"
+			onclick={unarchive}
+		>
+			Unarchive
+		</PendingButton>
+	</div>
+{/if}
+
+{#if archiveNotice}
+	<div
+		class="bg-muted/40 mb-4 flex flex-wrap items-center gap-2 rounded-md border px-4 py-2.5 text-sm"
+	>
+		<span class="min-w-0">{archiveNotice}</span>
+		<Button size="sm" variant="ghost" onclick={() => (archiveNotice = null)}>Dismiss</Button>
+	</div>
+{/if}
 
 {#if errorMessage}
 	<div
@@ -204,84 +329,188 @@
 	</div>
 {/if}
 
+<div class="mb-8">
+	<h2 class="mb-3 text-sm font-semibold">Issues</h2>
+	{#if starterIssue}
+		<div class="bg-muted/40 mb-3 min-w-0 rounded-md border p-3 text-sm">
+			<p class="text-muted-foreground mb-1 text-xs font-semibold">First issue</p>
+			<a
+				href="/issues/{encodeURIComponent(data.project.name)}/{starterIssue.number}"
+				class="hover:text-primary flex min-w-0 items-start gap-2 font-medium"
+			>
+				<StateBadge state={starterIssue.effective_state} />
+				<span class="line-clamp-2 min-w-0 break-words"
+					>{data.project.name}/#{starterIssue.number} — {starterIssue.title}</span
+				>
+			</a>
+			<a href="/agents" class="text-primary mt-2 inline-block underline-offset-4 hover:underline">
+				Next: get an agent running
+			</a>
+		</div>
+	{/if}
+	<!-- The same bar as the all-issues list, minus the project scope. -->
+	<IssueFilterBar
+		filters={data.filters}
+		counts={data.counts}
+		labels={data.labels}
+		workflows={data.workflows}
+	/>
+
+	<IssuePagination
+		pagination={data.pagination}
+		itemCount={data.issues.length}
+		label="Issue pagination above results"
+		class="mb-4"
+	/>
+	<IssueList
+		issues={data.issues}
+		showProject={false}
+		emptyMessage={data.pagination.bounded
+			? 'No issues on this page. Results may have changed.'
+			: data.filters.ready
+				? 'No ready issues in this project.'
+				: data.filters.workflow ||
+					  data.filters.state ||
+					  data.filters.category ||
+					  data.filters.q ||
+					  data.filters.labels.length > 0
+					? 'No issues match these filters.'
+					: 'No issues in this project yet.'}
+	/>
+	<IssuePagination
+		pagination={data.pagination}
+		itemCount={data.issues.length}
+		label="Issue pagination below results"
+		announceCount={false}
+	/>
+</div>
+
 {#if data.schedules.length > 0}
 	<div class="mb-8">
 		<div class="mb-3 flex items-center justify-between">
 			<h2 class="text-sm font-semibold">Scheduled tasks</h2>
-			<Button size="sm" variant="ghost" onclick={openNewSchedule} aria-label="Add scheduled task">
-				<IconPlus size={14} /> Add
-			</Button>
+			{#if !archived}
+				<Button size="sm" variant="ghost" onclick={openNewSchedule} aria-label="Add scheduled task">
+					<IconPlus size={14} /> Add
+				</Button>
+			{/if}
 		</div>
 		<ScheduleList
 			schedules={data.schedules}
 			workflows={data.workflows}
 			highlightId={page.url.searchParams.get('schedule')}
+			disabledReason={reason}
 			onerror={showError}
 		/>
 	</div>
 {/if}
 
+<AgentRoutingCard
+	rules={data.routingRules}
+	{activeStateIds}
+	editable={!archived}
+	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
+	emptyAction={{
+		label: 'Edit routing',
+		href: `/agents?new=rule&project=${encodeURIComponent(data.project.id)}#routing`
+	}}
+	editAction={{
+		label: 'Edit routing',
+		href: `/agents?new=rule&project=${encodeURIComponent(data.project.id)}#routing`
+	}}
+/>
+
 <div class="mb-8">
 	<div class="mb-3 flex items-center justify-between">
 		<h2 class="text-sm font-semibold">Context</h2>
-		<Button size="sm" variant="ghost" onclick={openContextCreate} aria-label="Add context">
-			<IconPlus size={14} /> Add
-		</Button>
+		<div class="flex items-center gap-3">
+			<a href="/context" class="text-muted-foreground hover:text-foreground text-xs">
+				View all in Context
+			</a>
+			{#if !archived}
+				<Button
+					size="sm"
+					variant="ghost"
+					onclick={() => openContextCreate()}
+					aria-label="Add context"
+				>
+					<IconPlus size={14} /> Add
+				</Button>
+			{/if}
+		</div>
 	</div>
 	{#if data.contextItems.length === 0}
 		<div class="text-muted-foreground rounded-lg border border-dashed p-6 text-center text-sm">
 			No context for this project yet — attach conventions, skills, or repos that every issue here
 			should carry.
+			{#if !archived}
+				<div class="mt-3">
+					<Button size="sm" variant="outline" onclick={() => openContextCreate('repo')}>
+						<IconPlus size={14} /> Add a repo
+					</Button>
+				</div>
+			{/if}
 		</div>
 	{:else}
 		<div class="space-y-4">
 			{#if projectOnlyItems.length > 0}
-				<ContextItemList items={projectOnlyItems} showScope={false} onselect={openContextEdit} />
+				<ContextItemList
+					items={projectOnlyItems}
+					showScope={false}
+					onselect={archived ? undefined : openContextEdit}
+				/>
 			{/if}
-			{#each stateGroups as group (group.label)}
+			{#if workflowGroups.length > 0}
 				<div>
 					<h3 class="text-muted-foreground mb-1.5 text-xs font-semibold">
-						Only in state <span class="text-foreground">{group.label}</span>
+						Only in a workflow state
 					</h3>
-					<ContextItemList items={group.items} showScope={false} onselect={openContextEdit} />
+					<div class="rounded-lg border">
+						{#each workflowGroups as group (group.workflowId)}
+							{@const open = openWorkflowId === group.workflowId}
+							{@const panelId = `project-context-${group.workflowId}`}
+							<div class="border-b last:border-0">
+								<button
+									type="button"
+									class="hover:bg-muted/50 flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm"
+									onclick={() => (openWorkflowId = open ? null : group.workflowId)}
+									aria-expanded={open}
+									aria-controls={panelId}
+								>
+									<span class="font-medium">{group.workflowName}</span>
+									<span
+										class="bg-primary/10 text-primary rounded-full px-2 py-0.5 text-xs font-medium"
+									>
+										{group.states.length} state{group.states.length === 1 ? '' : 's'} ·
+										{group.itemCount} item{group.itemCount === 1 ? '' : 's'}
+									</span>
+								</button>
+								{#if open}
+									<div
+										id={panelId}
+										class="space-y-3 px-3 pb-3"
+										transition:slide={{ duration: dur() }}
+									>
+										{#each group.states as stateGroup (stateGroup.stateId)}
+											<div>
+												<h4 class="mb-1.5"><StateBadge state={stateGroup.state} /></h4>
+												<ContextItemList
+													items={stateGroup.items}
+													showScope={false}
+													onselect={archived ? undefined : openContextEdit}
+												/>
+											</div>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
 				</div>
-			{/each}
+			{/if}
 		</div>
 	{/if}
 </div>
-
-<AgentRoutingCard
-	rules={data.routingRules}
-	{activeStateIds}
-	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
-/>
-
-<div class="mb-3 flex items-center justify-between">
-	<h2 class="text-sm font-semibold">Issues</h2>
-	<div class="flex items-center gap-4">
-		<!-- Ready implies not-done, so "Show done" parks while it is on. -->
-		<CheckboxField
-			label="Show done"
-			class="text-muted-foreground text-sm {data.ready ? 'opacity-50' : ''}"
-			title={data.ready ? 'Ready issues are never done' : undefined}
-			checked={data.showDone && !data.ready}
-			disabled={data.ready}
-			onCheckedChange={(checked) => setFilter('done', checked)}
-		/>
-		<CheckboxField
-			label="Ready only"
-			class="text-muted-foreground text-sm"
-			checked={data.ready}
-			onCheckedChange={(checked) => setFilter('ready', checked)}
-		/>
-	</div>
-</div>
-
-<IssueList
-	issues={data.issues}
-	showProject={false}
-	emptyMessage={data.ready ? 'No ready issues in this project.' : 'No issues in this project yet.'}
-/>
 
 <!-- new issue -->
 <NewIssueModal
@@ -297,6 +526,7 @@
 	bind:open={contextEditorOpen}
 	item={editingContextItem}
 	defaults={{ project_id: data.project.id }}
+	defaultKind={contextDefaultKind}
 	projects={[data.project]}
 	workflows={data.workflows}
 	onsaved={invalidateAll}
@@ -307,15 +537,20 @@
 	<form onsubmit={saveSettings} class="space-y-4">
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="settings-name">Name</label>
-			<Input id="settings-name" bind:value={settingsName} required />
+			<Input id="settings-name" bind:value={settingsName} required disabled={archived} />
 		</div>
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="settings-description">Description</label>
-			<Textarea id="settings-description" bind:value={settingsDescription} rows={3} />
+			<Textarea
+				id="settings-description"
+				bind:value={settingsDescription}
+				rows={3}
+				disabled={archived}
+			/>
 		</div>
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="settings-workflow">Default workflow</label>
-			<Select id="settings-workflow" bind:value={settingsDefaultWorkflow}>
+			<Select id="settings-workflow" bind:value={settingsDefaultWorkflow} disabled={archived}>
 				<option value="">Standard (built-in)</option>
 				{#each data.workflows.filter((w) => !w.is_system) as workflow (workflow.id)}
 					<option value={workflow.id}>{workflow.name}</option>
@@ -323,20 +558,51 @@
 			</Select>
 		</div>
 		<div class="flex items-center justify-between gap-2 pt-2">
-			<Button
-				type="button"
-				variant="destructive"
-				disabled={data.project.issue_count > 0}
-				title={data.project.issue_count > 0 ? 'Projects with issues cannot be deleted' : undefined}
-				onclick={deleteProject}
-			>
-				Delete project
-			</Button>
-			<div class="flex gap-2">
-				<Button type="button" variant="ghost" onclick={() => (settingsOpen = false)}>Cancel</Button>
-				<Button type="submit" disabled={savingSettings || !settingsName.trim()}>
-					{savingSettings ? 'Saving…' : 'Save'}
+			<div class="flex flex-wrap gap-2">
+				{#if archived}
+					<PendingButton
+						type="button"
+						variant="outline"
+						pending={unarchiving}
+						pendingLabel="Unarchiving…"
+						onclick={unarchive}
+					>
+						Unarchive
+					</PendingButton>
+				{:else}
+					<Button type="button" variant="outline" onclick={archive}>Archive project</Button>
+				{/if}
+				<Button
+					type="button"
+					variant="destructive"
+					disabled={data.project.issue_count > 0}
+					title={data.project.issue_count > 0
+						? 'Projects with issues cannot be deleted'
+						: undefined}
+					onclick={deleteProject}
+				>
+					Delete project
 				</Button>
+			</div>
+			<div class="flex flex-wrap gap-2">
+				<Button
+					type="button"
+					variant="ghost"
+					disabled={savingSettings}
+					onclick={() => (settingsOpen = false)}
+				>
+					Cancel
+				</Button>
+				{#if !archived}
+					<PendingButton
+						type="submit"
+						pending={savingSettings}
+						pendingLabel="Saving…"
+						disabled={!settingsName.trim()}
+					>
+						Save
+					</PendingButton>
+				{/if}
 			</div>
 		</div>
 	</form>

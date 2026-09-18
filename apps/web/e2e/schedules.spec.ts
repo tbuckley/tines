@@ -8,11 +8,24 @@ import type {
 	TinesEvent,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test, type Locator } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BOB, SCHED } from './constants.mjs';
-import { apiClient, body, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	clickUntil,
+	errorBody,
+	fireSweep,
+	gotoHydrated,
+	resetFocus,
+	signIn
+} from './helpers';
 
-type ErrorBody = { error: { code: string; message: string; details?: Record<string, unknown> } };
+// Specs share one user: a project page sets the focus (Tines/259), so clear it
+// before each test rather than letting it scope a later spec's lists.
+test.beforeEach(async ({ request }) => {
+	await resetFocus(request);
+});
 
 /** Today's ISO date in UTC — the seeded schedules render {{date}} in UTC. */
 const todayUtc = () => new Date().toISOString().slice(0, 10);
@@ -24,12 +37,6 @@ const todayIn = (timeZone: string) =>
 		month: '2-digit',
 		day: '2-digit'
 	}).format(new Date());
-
-const fireSweep = async (request: import('@playwright/test').APIRequestContext) => {
-	// wrangler dev --test-scheduled exposes the scheduled() handler here.
-	const res = await request.get('/__scheduled?cron=*+*+*+*+*');
-	expect(res.ok()).toBe(true);
-};
 
 test.describe.serial('scheduled-task sweep (seeded due schedules)', () => {
 	test('creates an instance for a due schedule with rendered placeholders', async ({ request }) => {
@@ -82,7 +89,14 @@ test.describe.serial('scheduled-task sweep (seeded due schedules)', () => {
 		expect(events.items.length).toBeGreaterThanOrEqual(1);
 		const skipped = events.items[0];
 		expect(skipped.payload.name).toBe(SCHED.gatedName);
-		expect(skipped.payload.blocking).toEqual([{ issue_id: SCHED.gatedIssueId, number: 1 }]);
+		expect(skipped.payload.blocking).toEqual([
+			{
+				issue_id: SCHED.gatedIssueId,
+				number: 1,
+				project_id: SCHED.projectId,
+				project_name: SCHED.projectName
+			}
+		]);
 
 		// Skips are terminal: next_run_at advanced past the missed occurrence.
 		const schedule = await body<Schedule>(await api.get(`/api/v1/schedules/${SCHED.gatedId}`));
@@ -103,15 +117,17 @@ test.describe.serial('scheduled-task sweep (seeded due schedules)', () => {
 });
 
 test.describe.serial('schedule lifecycle over the API', () => {
-	const projectName = `sched-${runId}`;
+	let projectName: string;
 	let projectId: string;
 	let scheduleId: string;
 	let firstIssue: IssueDetail;
 
 	test('creating an issue with a recurrence creates it immediately plus the schedule', async ({
-		request
+		request,
+		uniqueName
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
+		projectName = uniqueName('sched');
 		projectId = (await body<Project>(await api.post('/api/v1/projects', { name: projectName }))).id;
 
 		const res = await api.post(`/api/v1/projects/${projectId}/issues`, {
@@ -152,10 +168,16 @@ test.describe.serial('schedule lifecycle over the API', () => {
 		const api = apiClient(request, ALICE.apiKey);
 		const res = await api.post(`/api/v1/schedules/${scheduleId}/run`);
 		expect(res.status()).toBe(422);
-		const err = (await body<ErrorBody>(res)).error;
+		const err = (await errorBody(res)).error;
 		expect(err.code).toBe('schedule_blocked');
 		expect(err.details?.open_instances).toEqual([
-			{ issue_id: firstIssue.id, number: firstIssue.number, title: firstIssue.title }
+			{
+				issue_id: firstIssue.id,
+				number: firstIssue.number,
+				title: firstIssue.title,
+				project_id: projectId,
+				project_name: projectName
+			}
 		]);
 	});
 
@@ -245,10 +267,10 @@ test.describe.serial('schedule lifecycle over the API', () => {
 test.describe('schedule validation', () => {
 	let projectId: string;
 
-	test.beforeAll(async ({ request }) => {
+	test.beforeAll(async ({ request, uniqueName }) => {
 		const api = apiClient(request, ALICE.apiKey);
 		projectId = (
-			await body<Project>(await api.post('/api/v1/projects', { name: `sched-val-${runId}` }))
+			await body<Project>(await api.post('/api/v1/projects', { name: uniqueName('sched-val') }))
 		).id;
 	});
 
@@ -265,13 +287,13 @@ test.describe('schedule validation', () => {
 	test('rejects an invalid cron expression', async ({ request }) => {
 		const res = await create(request, { cron: 'not a cron' });
 		expect(res.status()).toBe(422);
-		expect((await body<ErrorBody>(res)).error.code).toBe('invalid_cron');
+		expect((await errorBody(res)).error.code).toBe('invalid_cron');
 	});
 
 	test('rejects sub-hourly recurrences', async ({ request }) => {
 		const res = await create(request, { cron: '*/15 * * * *' });
 		expect(res.status()).toBe(422);
-		const err = (await body<ErrorBody>(res)).error;
+		const err = (await errorBody(res)).error;
 		expect(err.code).toBe('invalid_cron');
 		expect(err.message).toContain('more often than once per hour');
 	});
@@ -279,7 +301,7 @@ test.describe('schedule validation', () => {
 	test('rejects an unknown timezone', async ({ request }) => {
 		const res = await create(request, { cron: '0 9 * * *', timezone: 'Mars/Olympus' });
 		expect(res.status()).toBe(422);
-		expect((await body<ErrorBody>(res)).error.code).toBe('invalid_timezone');
+		expect((await errorBody(res)).error.code).toBe('invalid_timezone');
 	});
 
 	test('rejects both preset and cron, and neither', async ({ request }) => {
@@ -288,11 +310,11 @@ test.describe('schedule validation', () => {
 			preset: { kind: 'daily', time: '09:00' }
 		});
 		expect(both.status()).toBe(422);
-		expect((await body<ErrorBody>(both)).error.code).toBe('invalid_recurrence');
+		expect((await errorBody(both)).error.code).toBe('invalid_recurrence');
 
 		const neither = await create(request, {});
 		expect(neither.status()).toBe(422);
-		expect((await body<ErrorBody>(neither)).error.code).toBe('invalid_recurrence');
+		expect((await errorBody(neither)).error.code).toBe('invalid_recurrence');
 	});
 
 	test('accepts an hourly preset, compiling it to every-N-hours cron', async ({ request }) => {
@@ -316,7 +338,7 @@ test.describe('schedule validation', () => {
 		for (const every_hours of [0, 24]) {
 			const res = await create(request, { preset: { kind: 'hourly', every_hours } });
 			expect(res.status()).toBe(422);
-			const err = (await body<ErrorBody>(res)).error;
+			const err = (await errorBody(res)).error;
 			expect(err.code).toBe('invalid_recurrence');
 			expect(err.message).toContain('every_hours');
 		}
@@ -327,19 +349,18 @@ test.describe('schedule validation', () => {
 		expect(first.status()).toBe(201);
 		const dup = await create(request, { preset: { kind: 'daily', time: '10:00' } }, 'Same name');
 		expect(dup.status()).toBe(422);
-		expect((await body<ErrorBody>(dup)).error.code).toBe('duplicate_schedule_name');
+		expect((await errorBody(dup)).error.code).toBe('duplicate_schedule_name');
 	});
 });
 
 test.describe.serial('workflow deletion guard', () => {
-	test('a workflow referenced by a schedule cannot be deleted', async ({ request }) => {
+	test('a workflow referenced by a schedule cannot be deleted', async ({ request, uniqueName }) => {
 		const api = apiClient(request, ALICE.apiKey);
-		const project = await body<Project>(
-			await api.post('/api/v1/projects', { name: `sched-wf-${runId}` })
-		);
+		const fixtureName = uniqueName('sched-wf');
+		const project = await body<Project>(await api.post('/api/v1/projects', { name: fixtureName }));
 		const workflow = await body<WorkflowResponse>(
 			await api.post('/api/v1/workflows', {
-				name: `sched-wf-${runId}`,
+				name: fixtureName,
 				initial_state: 'Open',
 				states: [
 					{ name: 'Open', category: 'active' },
@@ -360,7 +381,7 @@ test.describe.serial('workflow deletion guard', () => {
 
 		const res = await api.delete(`/api/v1/workflows/${workflow.id}`);
 		expect(res.status()).toBe(422);
-		const err = (await body<ErrorBody>(res)).error;
+		const err = (await errorBody(res)).error;
 		expect(err.code).toBe('workflow_in_use');
 		expect(err.message).toContain('scheduled task');
 		expect(err.details?.schedules).toEqual([
@@ -405,21 +426,191 @@ test.describe('schedules in the web UI', () => {
 		await context.close();
 	});
 
+	test('keeps lifecycle and Run now outcomes beside each schedule on phones', async ({
+		browser
+	}) => {
+		const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+		await signIn(context, ALICE.sessionToken);
+		const page = await context.newPage();
+		const api = apiClient(page.request, ALICE.apiKey);
+		const before = await body<Schedule>(await api.get(`/api/v1/schedules/${SCHED.plainId}`));
+
+		await gotoHydrated(page, `/projects/${SCHED.projectId}`);
+		const plainRow = page.locator(`#schedule-${SCHED.plainId}`);
+		const gatedRow = page.locator(`#schedule-${SCHED.gatedId}`);
+		await plainRow.scrollIntoViewIfNeeded();
+		await expect(
+			plainRow.locator('p').filter({ hasText: new RegExp(`${before.open_instances} open$`) })
+		).toBeVisible();
+		await expect(plainRow.locator('p', { hasText: /overdue|due now|^next in/ })).toBeVisible();
+		await expect(gatedRow.getByText('Waiting for 1 open issue', { exact: true })).toBeVisible();
+		await expect(plainRow.getByText(/Waiting for \d+ open issues?/)).toHaveCount(0);
+		expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+			390
+		);
+
+		const [createdResponse] = await Promise.all([
+			page.waitForResponse(
+				(response) =>
+					response.request().method() === 'POST' &&
+					new URL(response.url()).pathname === `/api/v1/schedules/${SCHED.plainId}/run`
+			),
+			plainRow.getByRole('button', { name: `Run schedule ${SCHED.plainName} now` }).click()
+		]);
+		expect(createdResponse.status()).toBe(201);
+		const created = (await createdResponse.json()) as IssueDetail;
+		const receipt = plainRow.getByRole('status');
+		const link = receipt.getByRole('link', {
+			name: `Created ${created.project_name}/#${created.number}`
+		});
+		await expect(link).toBeVisible();
+		await expect(link).toHaveAttribute(
+			'href',
+			`/issues/${encodeURIComponent(created.project_name)}/${created.number}`
+		);
+		await expect(
+			plainRow.locator('p').filter({ hasText: new RegExp(`${before.open_instances + 1} open$`) })
+		).toBeVisible();
+		await expect(plainRow.getByText(/^last /)).toBeVisible();
+		await expect(gatedRow.getByRole('status')).toBeEmpty();
+		await page.setViewportSize({ width: 1440, height: 900 });
+		await expect(link).toBeVisible();
+		await page.setViewportSize({ width: 390, height: 844 });
+
+		const [blockedResponse] = await Promise.all([
+			page.waitForResponse(
+				(response) =>
+					response.request().method() === 'POST' &&
+					new URL(response.url()).pathname === `/api/v1/schedules/${SCHED.gatedId}/run`
+			),
+			gatedRow.getByRole('button', { name: `Run schedule ${SCHED.gatedName} now` }).click()
+		]);
+		expect(blockedResponse.status()).toBe(422);
+		const blocked = (await blockedResponse.json()) as { error: { message: string } };
+		await expect(gatedRow.getByRole('alert')).toHaveText(blocked.error.message);
+		await expect(link).toBeVisible();
+		await expect(page.getByText(blocked.error.message, { exact: true })).toHaveCount(1);
+		await expect(
+			gatedRow.getByRole('button', { name: `Run schedule ${SCHED.gatedName} now` })
+		).toBeEnabled();
+
+		const toggle = plainRow.getByRole('switch', { name: `Pause schedule ${SCHED.plainName}` });
+		await toggle.click();
+		await expect(plainRow.getByText('paused', { exact: true })).toBeVisible();
+		const [secondResponse] = await Promise.all([
+			page.waitForResponse(
+				(response) =>
+					response.request().method() === 'POST' &&
+					new URL(response.url()).pathname === `/api/v1/schedules/${SCHED.plainId}/run`
+			),
+			plainRow.getByRole('button', { name: `Run schedule ${SCHED.plainName} now` }).click()
+		]);
+		const secondCreated = (await secondResponse.json()) as IssueDetail;
+		const secondLink = receipt.getByRole('link', {
+			name: `Created ${secondCreated.project_name}/#${secondCreated.number}`
+		});
+		await expect(secondLink).toBeVisible();
+		await expect(link).toHaveCount(0);
+		await plainRow.getByRole('switch', { name: `Resume schedule ${SCHED.plainName}` }).click();
+		await expect(plainRow.getByText('paused', { exact: true })).toHaveCount(0);
+
+		await secondLink.click();
+		await expect(page).toHaveURL(
+			new RegExp(
+				`/issues/${encodeURIComponent(secondCreated.project_name)}/${secondCreated.number}$`
+			)
+		);
+		await expect(page.getByRole('heading', { name: secondCreated.title })).toBeVisible();
+		await gotoHydrated(page, `/projects/${SCHED.projectId}`);
+		await expect(page.locator(`#schedule-${SCHED.plainId}`).getByRole('status')).toBeEmpty();
+
+		await context.close();
+	});
+
+	test('keeps a Run now network failure local to its schedule', async ({ browser }) => {
+		const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+		await signIn(context, ALICE.sessionToken);
+		const page = await context.newPage();
+		await gotoHydrated(page, `/projects/${SCHED.projectId}`);
+		const row = page.locator(`#schedule-${SCHED.plainId}`);
+		const runButton = row.getByRole('button', { name: `Run schedule ${SCHED.plainName} now` });
+		const runPattern = `**/api/v1/schedules/${SCHED.plainId}/run`;
+
+		await page.route(runPattern, (route) => route.abort('failed'));
+		await runButton.click();
+		await expect(row.getByRole('alert')).toHaveText('Something went wrong — try again.');
+		await expect(page.getByText('Something went wrong — try again.', { exact: true })).toHaveCount(
+			1
+		);
+		await expect(runButton).toBeEnabled();
+
+		await context.close();
+	});
+
+	for (const refreshFailure of ['transport abort', 'HTTP error'] as const) {
+		test(`keeps the created issue receipt when refresh has a ${refreshFailure}`, async ({
+			browser
+		}) => {
+			const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+			await signIn(context, ALICE.sessionToken);
+			const page = await context.newPage();
+			await gotoHydrated(page, `/projects/${SCHED.projectId}`);
+
+			let postCount = 0;
+			page.on('request', (request) => {
+				if (
+					request.method() === 'POST' &&
+					new URL(request.url()).pathname === `/api/v1/schedules/${SCHED.plainId}/run`
+				)
+					postCount += 1;
+			});
+
+			let dataRequestCount = 0;
+			await page.route(`**/projects/${SCHED.projectId}/__data.json*`, async (route) => {
+				dataRequestCount += 1;
+				if (dataRequestCount > 1) return route.continue();
+				if (refreshFailure === 'transport abort') return route.abort('failed');
+				return route.fulfill({ status: 500, contentType: 'text/plain', body: 'refresh failed' });
+			});
+
+			const [createdResponse] = await Promise.all([
+				page.waitForResponse(
+					(response) =>
+						response.request().method() === 'POST' &&
+						new URL(response.url()).pathname === `/api/v1/schedules/${SCHED.plainId}/run`
+				),
+				page
+					.locator(`#schedule-${SCHED.plainId}`)
+					.getByRole('button', { name: `Run schedule ${SCHED.plainName} now` })
+					.click()
+			]);
+			expect(createdResponse.status()).toBe(201);
+			const created = (await createdResponse.json()) as IssueDetail;
+
+			const row = page.locator(`#schedule-${SCHED.plainId}`);
+			await expect(
+				row.getByRole('link', { name: `Created ${created.project_name}/#${created.number}` })
+			).toBeVisible();
+			await expect(row.getByRole('alert')).toHaveText(
+				'Issue created, but the list could not refresh. Reload the page to update it.'
+			);
+			expect(postCount).toBe(1);
+			expect(dataRequestCount).toBeGreaterThanOrEqual(1);
+			await gotoHydrated(page, `/projects/${SCHED.projectId}`);
+			await expect(page.locator(`#schedule-${SCHED.plainId}`).getByRole('status')).toBeEmpty();
+			await expect(page.locator(`#schedule-${SCHED.plainId}`).getByRole('alert')).toHaveCount(0);
+			expect(postCount).toBe(1);
+
+			await context.close();
+		});
+	}
+
 	test('the New Issue modal shows the Repeat section with a live summary', async ({ browser }) => {
 		const context = await browser.newContext();
 		await signIn(context, ALICE.sessionToken);
 		const page = await context.newPage();
 
-		// Clicks landing before hydration attaches listeners are swallowed, so
-		// retry until the expected state holds (same pattern as ui.spec.ts).
-		const clickUntil = async (button: Locator, done: () => Promise<void>) => {
-			await expect(async () => {
-				if (await button.isVisible()) await button.click();
-				await done();
-			}).toPass({ timeout: 15_000 });
-		};
-
-		await page.goto(`/projects/${SCHED.projectId}`);
+		await gotoHydrated(page, `/projects/${SCHED.projectId}`);
 		const dialog = page.getByRole('dialog', { name: /New issue/ });
 		await clickUntil(page.getByRole('button', { name: 'New issue' }), async () => {
 			await expect(dialog).toBeVisible({ timeout: 2_000 });
