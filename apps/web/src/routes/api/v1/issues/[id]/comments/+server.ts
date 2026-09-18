@@ -8,7 +8,10 @@ export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	const issue = await getIssueDetail(db, actor.userId, { id: event.params.id });
 	// Comment threads are small in phase one; return them all, oldest first.
-	const body: ListResponse<Comment> = { items: await loadComments(db, issue.id), next_cursor: null };
+	const body: ListResponse<Comment> = {
+		items: await loadComments(db, issue.id),
+		next_cursor: null
+	};
 	return json(body);
 });
 

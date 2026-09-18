@@ -16,20 +16,21 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4 # version comes from "packageManager" in package.json
+      - uses: pnpm/action-setup@v6 # version comes from "packageManager" in package.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm build
-
-      - run: pnpm test
+      # Only the worker is uploaded, so only the web app is built. No unit
+      # tests here: ci.yml runs them (and the e2e suite) on this same commit,
+      # and a preview is not a gate — the sooner the URL is up, the better.
+      - run: pnpm --filter @tines/web build
 
       # Previews use the "preview" wrangler environment: a separate worker
       # (tines-web-preview) bound to its own D1 database (tines-preview), so
@@ -70,7 +71,7 @@ jobs:
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Comment preview URL on the PR
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           PREVIEW_URL: ${{ steps.upload.outputs.url }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

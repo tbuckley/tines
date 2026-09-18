@@ -57,7 +57,11 @@ export function repeatToScheduleInput(state: RepeatFormState): CreateScheduleInp
 		case 'never':
 			return null;
 		case 'cron':
-			return { cron: state.cron, timezone: state.timezone, require_all_closed: state.requireAllClosed };
+			return {
+				cron: state.cron,
+				timezone: state.timezone,
+				require_all_closed: state.requireAllClosed
+			};
 		default: {
 			const preset: SchedulePreset =
 				state.kind === 'hourly'

@@ -1,0 +1,179 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import {
+	canonicalizeLibraryValue,
+	publicationBytesSha256,
+	publicationReviewDigest,
+	withLibraryDocumentDigest
+} from '@tines/shared';
+import { inheritedPackage } from '../../../../../../../../../packages/shared/src/library/fixtures';
+import { createTestDb, type TestDb } from '$lib/server/api/test-db';
+import { sha256Hex } from '$lib/server/api/core';
+import {
+	addIssue,
+	addRun,
+	addRunKey,
+	addRunner,
+	seedBase,
+	USER
+} from '$lib/server/supervisor/test-fixtures';
+import { GET as detail } from './+server';
+import { GET as download } from './download/+server';
+import { POST as prepareInstall } from './prepare-install/+server';
+import { GET as reuse } from './reuse.txt/+server';
+import { GET as status } from './status/+server';
+
+const SNAPSHOT = 'snapshot_12345678901234567890';
+const MARKER = 'unique-private-publication-marker';
+let t: TestDb;
+
+async function seedPublication() {
+	const document = inheritedPackage();
+	document.workflows[0].description += ` ${MARKER}`;
+	const sealed = await withLibraryDocumentDigest(document);
+	const documentJson = canonicalizeLibraryValue(sealed);
+	const bytesSha256 = await publicationBytesSha256(documentJson);
+	const metadata = { display_name: 'Example Team', license: 'MIT' as const, license_year: 2026 };
+	const reviewDigest = await publicationReviewDigest({
+		candidate_id: 'pub_candidate',
+		bytes_sha256: bytesSha256,
+		metadata,
+		source_witness_sha256: `sha256:${'0'.repeat(64)}`,
+		selection: {}
+	});
+	await t.db
+		.insertInto('workflow_publication')
+		.values({
+			id: 'pub_candidate',
+			user_id: USER,
+			actor_key: 'session:test',
+			prepare_request_id: 'prepare:1',
+			prepare_request_hash: `sha256:${'3'.repeat(64)}`,
+			source_workflow_id: null,
+			source_kind: 'file',
+			source_provenance_json: '{}',
+			document_json: documentJson,
+			document_digest: sealed.digest,
+			bytes_sha256: bytesSha256,
+			byte_length: new TextEncoder().encode(documentJson).byteLength,
+			metadata_json: JSON.stringify(metadata),
+			review_digest: reviewDigest,
+			policy_version: 1,
+			created_at: 1,
+			expires_at: 2,
+			snapshot_id: SNAPSHOT,
+			published_at: 1,
+			owner_state: 'published',
+			host_state: 'active',
+			status_version: 1,
+			confirmed_at: 1,
+			confirmed_actor_key: 'session:test',
+			publication_receipt_json: '{}',
+			attempt_nonce: 'attempt',
+			host_decision_reason: null,
+			host_decision_reference: null
+		})
+		.execute();
+	return { documentJson };
+}
+
+function event(path = '') {
+	return {
+		platform: { env: t.env, ctx: { waitUntil: () => {} } },
+		params: { snapshotId: SNAPSHOT },
+		url: new URL(`http://test/api/v1/publications/public/${SNAPSHOT}${path}`),
+		request: new Request(`http://test/api/v1/publications/public/${SNAPSHOT}${path}`)
+	};
+}
+
+beforeEach(() => {
+	t = createTestDb();
+	seedBase(t);
+});
+
+describe('anonymous publication reads', () => {
+	it('allows an authenticated run key to prepare the read-only hosted install plan', async () => {
+		await seedPublication();
+		const runnerId = addRunner(t);
+		const issueId = addIssue(t);
+		const runId = addRun(t, { issueId, runnerId, status: 'running' });
+		const keyId = addRunKey(t, runId);
+		const secret = 'run-key-secret';
+		t.sqlite
+			.prepare('UPDATE api_key SET key_hash=? WHERE id=?')
+			.run(await sha256Hex(secret), keyId);
+		const url = `http://test/api/v1/publications/public/${SNAPSHOT}/prepare-install`;
+		const response = await prepareInstall({
+			locals: {},
+			platform: {
+				env: { ...t.env, BETTER_AUTH_SECRET: 'test-signing-secret' },
+				ctx: { waitUntil: () => {} }
+			},
+			params: { snapshotId: SNAPSHOT },
+			url: new URL(url),
+			request: new Request(url, {
+				method: 'POST',
+				headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+				body: JSON.stringify({
+					choices: { inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } } }
+				})
+			})
+		} as unknown as Parameters<typeof prepareInstall>[0]);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ source: { snapshot_id: SNAPSHOT } });
+	});
+
+	it('returns only the selected DTO and byte-exact package with no caching', async () => {
+		const { documentJson } = await seedPublication();
+		const shown = await detail(event() as unknown as Parameters<typeof detail>[0]);
+		expect(shown.status).toBe(200);
+		expect(shown.headers.get('cache-control')).toBe('no-store, max-age=0');
+		const dto = await shown.json();
+		expect(dto).toMatchObject({
+			snapshot_id: SNAPSHOT,
+			metadata: { display_name: 'Example Team' }
+		});
+		expect(JSON.stringify(dto)).not.toContain(USER);
+		expect(dto).not.toHaveProperty('source_workflow_id');
+
+		const file = await download(event('/download') as unknown as Parameters<typeof download>[0]);
+		expect(await file.text()).toBe(documentJson);
+		expect(file.headers.get('etag')).toBeNull();
+		const notice = await reuse(event('/reuse.txt') as unknown as Parameters<typeof reuse>[0]);
+		expect(await notice.text()).toContain('Copyright (c) 2026 Example Team');
+		const current = await status(event('/status') as unknown as Parameters<typeof status>[0]);
+		expect(await current.json()).toEqual({
+			available: true,
+			status_version: 1,
+			publisher_status_version: 0
+		});
+	});
+
+	it.each(['withdrawn', 'host_removed', 'publisher_suspended'] as const)(
+		'uses the same neutral no-store response when %s',
+		async (restriction) => {
+			await seedPublication();
+			if (restriction === 'publisher_suspended') {
+				await t.db
+					.insertInto('workflow_publisher_status')
+					.values({ user_id: USER, suspended: 1, status_version: 1 })
+					.execute();
+			} else {
+				await t.db
+					.updateTable('workflow_publication')
+					.set(
+						restriction === 'withdrawn'
+							? { owner_state: 'withdrawn', status_version: 2 }
+							: { host_state: 'removed', status_version: 2 }
+					)
+					.where('snapshot_id', '=', SNAPSHOT)
+					.execute();
+			}
+			for (const handler of [detail, download, reuse, status]) {
+				const response = await handler(event() as never);
+				expect(response.status).toBe(404);
+				expect(response.headers.get('cache-control')).toBe('no-store, max-age=0');
+				expect(await response.text()).not.toContain(MARKER);
+			}
+		}
+	);
+});

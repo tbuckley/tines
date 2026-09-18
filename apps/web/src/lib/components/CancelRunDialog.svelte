@@ -2,6 +2,7 @@
 	import type { AgentRun } from '@tines/shared';
 	import { api } from '$lib/api';
 	import Modal from '$lib/components/Modal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 
@@ -96,11 +97,17 @@
 				Posted before the cancellation, so the very next run's prompt already contains it.
 			</p>
 		</div>
-		<div class="flex justify-end gap-2">
-			<Button variant="ghost" onclick={onclose}>Keep running</Button>
-			<Button variant="destructive" disabled={canceling || advanced === null} onclick={confirmCancel}>
-				{canceling ? 'Canceling…' : 'Cancel run'}
-			</Button>
+		<div class="flex flex-wrap justify-end gap-2">
+			<Button variant="ghost" disabled={canceling} onclick={onclose}>Keep running</Button>
+			<PendingButton
+				variant="destructive"
+				pending={canceling}
+				pendingLabel="Canceling…"
+				disabled={advanced === null}
+				onclick={confirmCancel}
+			>
+				Cancel run
+			</PendingButton>
 		</div>
 	</div>
 </Modal>

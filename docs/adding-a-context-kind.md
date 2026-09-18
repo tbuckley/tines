@@ -106,14 +106,14 @@ Nothing else in the server changes: `requireKind`, scope resolution,
 name-uniqueness, positions, events, and the deletion guards are all
 payload-agnostic.
 
-### CLI — `packages/cli/src/index.ts`
+### CLI — `packages/cli/src/`
 
-- Payload flags on `context create` / `context edit` (watch for flag
-  collisions with the global `-u, --url`; see how the repo kind handles
-  it).
-- A line in `contextItemSummary` (list rendering) and `printContextItem`
-  (show rendering).
-- The `--out` bundle file in `issues context`.
+- `commands/context.ts`: payload flags on `context create` / `context edit`
+  (never take `--url` for a payload — that is the API base URL on every
+  command; name the flag for what it holds, as the repo kind does with
+  `--repo-url`), plus a line in `printContextItem` (show rendering).
+- `format.ts`: a line in `contextItemSummary` (list rendering).
+- `commands/issues.ts`: the `--out` bundle file in `issues context`.
 
 ### Web UI — `apps/web/src/lib/components/`
 
@@ -168,4 +168,9 @@ If a new kind requires edits to any of these, the change is off the rails
 - [ ] Appears in the effective context with dedupe-by-name override
       behavior and in `context_summary`.
 - [ ] `tines issues context --out` writes the agreed bundle form.
+- [ ] Library export/import handles the kind: a serializer in
+      `buildLibraryDocument` and the matching payload mapping in
+      `writeContextEntry` (`apps/web/src/lib/server/api/library.ts`).
+      Without both, items of the new kind silently fail to travel between
+      deployments.
 - [ ] `pnpm check`, `pnpm test`, and the e2e suite pass.

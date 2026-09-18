@@ -1,0 +1,812 @@
+{
+	"generated_at": "2026-09-12T16:56:49.676Z",
+	"wrangler": "4.130.0",
+	"dataset": {
+		"finalized": 100000,
+		"all_priced": false,
+		"no_priced": true,
+		"groups": 3,
+		"pending": 100,
+		"retained_rates": 0,
+		"equal_time_fanout": 100000
+	},
+	"authenticated_worker": {
+		"status": 200,
+		"elapsed_ms": 694.1,
+		"evidence_elapsed_ms": [264],
+		"native_scan": {
+			"aggregate": {
+				"total_rows_read": 700152,
+				"first_page_rows_read": 35007,
+				"last_page_rows_read": 35001,
+				"max_response_bytes": 2116691,
+				"pages": [
+					{
+						"rows_read": 35007,
+						"ids_sha256": "569e144c131483ab2508be524c47c0ce67bf235df0ca20c8d1ae0a121a8781ec",
+						"duration_ms": 15,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and \"agent_run\".\"ended_at\" < ? order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000001,
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "7a0ccb7833b8712853963d54acc26ac5784ea99e2790ee4fc86da2b03c4df95e",
+						"duration_ms": 11,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_095001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "3ba1d77dbf8b07ec63389412c337b37c41fb1278c0e544ef4cf31293474ee9e9",
+						"duration_ms": 11,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_090001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "6a4b25f50dfa8ec5d3285208a9892cd854ea4e40ea845264fd387ef270a8f5d8",
+						"duration_ms": 11,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_085001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "8047fd5ebd3de44200a9058b4513e607b2757e0662ad69959ac6d159d2ce6668",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_080001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "b0dff8841b73d6ef99dcc48295f85c7b36b4170c37002d16f7a20201c0cce7f1",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_075001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "0e602e484eab5b8e590e3bf2ff1305092cc3b25d62ce75dd04f5d4922916b0ea",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_070001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "e56f118a40a7821eea62d2278e27a622eba15f9281762beee155505f09893d37",
+						"duration_ms": 11,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_065001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "c1ed4e12eb6dd1f67976693c331c134b66aec50c8ddb98593b28088f0f1ce33a",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_060001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "10410fbe8f8ac6aca8e8d01a6d29c8156ddf7b4961d0461ec5feb73502c90c1a",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_055001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "fc4dd2591464f43988b77cdd42504f31a37e2e0a50009a4b92d4eb990e9b7474",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_050001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "407d5b0d38bcbbd3ab7b4b9af2502a756f771a6f006b0952a2716f8369c66591",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_045001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "8d6d56a8626e59faf1fa5243654e8f3847cea947b127fe95e7b75b21cb94cf8a",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_040001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "7ddfaeeb0ea5b3224d1c9a41fe5693bc11110e7556432a63a2caf61e8ad0a7a3",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_035001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "43a4cf3c114bbc892d56717c0ac4247bd354f7719b28d6b1fadbd6abf8326644",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_030001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "4ca66eccc29851f133cc0219a45e9c887554ba6ad1d430e5bd0efe0c70224b7c",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_025001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "9aff13e2d17a8c215e74106e3f5974f1b6bd9953f3d864d8aa8dd05aa39fa55f",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_020001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "141ca84c4bd957b40e4ab308e8b3ecf7ae9b46d198d859a5d0ad2f44f7801823",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_015001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35008,
+						"ids_sha256": "267b67bb51906ece6e5bb15d84ff7f5077499fe3128bd34b86476b09f0474159",
+						"duration_ms": 10,
+						"returned_rows": 5001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_010001",
+							5001
+						],
+						"response_bytes": 2116691
+					},
+					{
+						"rows_read": 35001,
+						"ids_sha256": "a50f013136bdd10745aa989447872307f585573d51e1f77d70b72073cc91fa8f",
+						"duration_ms": 10,
+						"returned_rows": 5000,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"outcome\", \"agent_run\".\"tier\", \"agent_run\".\"runner_id\", \"agent_run\".\"state_id_at_start\", \"agent_run\".\"created_at\", \"agent_run\".\"ended_at\", \"runner\".\"name\" as \"runner_name\", \"issue\".\"project_id\" as \"project_id\", \"project\".\"name\" as \"project_name\", CASE WHEN start_workflow.id IS NOT NULL THEN start_state.name END as \"start_state_name\", CASE\n WHEN start_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = start_state.workflow_id)\n THEN start_state.workflow_id ELSE NULL END as \"start_workflow_id\", \"start_workflow\".\"name\" as \"start_workflow_name\", CASE\n WHEN issue_workflow.id IS NOT NULL OR NOT EXISTS\n (SELECT 1 FROM workflow WHERE workflow.id = issue.workflow_id)\n THEN issue.workflow_id ELSE NULL END as \"issue_workflow_id\", \"issue_workflow\".\"name\" as \"issue_workflow_name\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_005001",
+							5001
+						],
+						"response_bytes": 2116251
+					}
+				],
+				"bound_query_plans": [
+					[
+						{
+							"id": 19,
+							"parent": 0,
+							"notused": 48,
+							"detail": "SEARCH agent_run USING INDEX agent_run_user_ended_idx (user_id=? AND ended_at>? AND ended_at<?)"
+						},
+						{
+							"id": 31,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH runner USING INDEX sqlite_autoindex_runner_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 41,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH issue USING INDEX sqlite_autoindex_issue_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 48,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH project USING INDEX sqlite_autoindex_project_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 59,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH start_state USING INDEX sqlite_autoindex_workflow_state_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 66,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH start_workflow USING INDEX sqlite_autoindex_workflow_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 79,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH issue_workflow USING INDEX sqlite_autoindex_workflow_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 111,
+							"parent": 0,
+							"notused": 0,
+							"detail": "CORRELATED SCALAR SUBQUERY 1"
+						},
+						{
+							"id": 115,
+							"parent": 111,
+							"notused": 39,
+							"detail": "SEARCH workflow USING COVERING INDEX sqlite_autoindex_workflow_1 (id=?)"
+						},
+						{
+							"id": 131,
+							"parent": 0,
+							"notused": 0,
+							"detail": "CORRELATED SCALAR SUBQUERY 2"
+						},
+						{
+							"id": 135,
+							"parent": 131,
+							"notused": 39,
+							"detail": "SEARCH workflow USING COVERING INDEX sqlite_autoindex_workflow_1 (id=?)"
+						}
+					],
+					[
+						{
+							"id": 19,
+							"parent": 0,
+							"notused": 48,
+							"detail": "SEARCH agent_run USING INDEX agent_run_user_ended_idx (user_id=? AND ended_at>? AND (ended_at,id)<(?,?))"
+						},
+						{
+							"id": 42,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH runner USING INDEX sqlite_autoindex_runner_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 52,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH issue USING INDEX sqlite_autoindex_issue_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 59,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH project USING INDEX sqlite_autoindex_project_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 70,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH start_state USING INDEX sqlite_autoindex_workflow_state_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 77,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH start_workflow USING INDEX sqlite_autoindex_workflow_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 90,
+							"parent": 0,
+							"notused": 46,
+							"detail": "SEARCH issue_workflow USING INDEX sqlite_autoindex_workflow_1 (id=?) LEFT-JOIN"
+						},
+						{
+							"id": 122,
+							"parent": 0,
+							"notused": 0,
+							"detail": "CORRELATED SCALAR SUBQUERY 1"
+						},
+						{
+							"id": 126,
+							"parent": 122,
+							"notused": 39,
+							"detail": "SEARCH workflow USING COVERING INDEX sqlite_autoindex_workflow_1 (id=?)"
+						},
+						{
+							"id": 142,
+							"parent": 0,
+							"notused": 0,
+							"detail": "CORRELATED SCALAR SUBQUERY 2"
+						},
+						{
+							"id": 146,
+							"parent": 142,
+							"notused": 39,
+							"detail": "SEARCH workflow USING COVERING INDEX sqlite_autoindex_workflow_1 (id=?)"
+						}
+					]
+				]
+			},
+			"evidence": {
+				"total_rows_read": 100018,
+				"first_page_rows_read": 10001,
+				"last_page_rows_read": 10001,
+				"max_response_bytes": 915106,
+				"pages": [
+					{
+						"rows_read": 10001,
+						"ids_sha256": "39cba58dd6f27d3386d171da6b5b4529237e1f83a57945498e0e764faaa4ae09",
+						"duration_ms": 7,
+						"returned_rows": 10001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"ended_at\", \"agent_run\".\"created_at\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) left join \"workflow_state\" as \"end_state\" on \"end_state\".\"id\" = \"agent_run\".\"state_id_at_end\" where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" is not null and \"agent_run\".\"ended_at\" >= ? and \"agent_run\".\"ended_at\" < ? order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000001,
+							10001
+						],
+						"response_bytes": 915106
+					},
+					{
+						"rows_read": 10002,
+						"ids_sha256": "297feeb9f853b35238a5b68092ed27b7262af8122a3703e9f3e5f8b72229c79f",
+						"duration_ms": 8,
+						"returned_rows": 10001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"ended_at\", \"agent_run\".\"created_at\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) left join \"workflow_state\" as \"end_state\" on \"end_state\".\"id\" = \"agent_run\".\"state_id_at_end\" where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" is not null and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_090001",
+							10001
+						],
+						"response_bytes": 915106
+					},
+					{
+						"rows_read": 10002,
+						"ids_sha256": "65d932d34928d9ee77f3b1aa6a4563669ef20efdd5da824549a6fff7cd4a1107",
+						"duration_ms": 8,
+						"returned_rows": 10001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"ended_at\", \"agent_run\".\"created_at\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) left join \"workflow_state\" as \"end_state\" on \"end_state\".\"id\" = \"agent_run\".\"state_id_at_end\" where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" is not null and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_080001",
+							10001
+						],
+						"response_bytes": 915106
+					},
+					{
+						"rows_read": 10002,
+						"ids_sha256": "85b95e4dffcffeaa6e89884b3282ebe8a34c13f0f1820faa57ab75abd1552b16",
+						"duration_ms": 7,
+						"returned_rows": 10001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"ended_at\", \"agent_run\".\"created_at\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) left join \"workflow_state\" as \"end_state\" on \"end_state\".\"id\" = \"agent_run\".\"state_id_at_end\" where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" is not null and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_070001",
+							10001
+						],
+						"response_bytes": 915106
+					},
+					{
+						"rows_read": 10002,
+						"ids_sha256": "0001c9820faa19415d53a61b042c089033acacb1d791dcba9977c309987fc955",
+						"duration_ms": 7,
+						"returned_rows": 10001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"ended_at\", \"agent_run\".\"created_at\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) left join \"workflow_state\" as \"end_state\" on \"end_state\".\"id\" = \"agent_run\".\"state_id_at_end\" where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" is not null and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_060001",
+							10001
+						],
+						"response_bytes": 915106
+					},
+					{
+						"rows_read": 10002,
+						"ids_sha256": "7896ca3427ec4aae3bd4cdabe1fcbfc9decbaf07f5b89945bf6052cc52197773",
+						"duration_ms": 7,
+						"returned_rows": 10001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"ended_at\", \"agent_run\".\"created_at\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) left join \"workflow_state\" as \"end_state\" on \"end_state\".\"id\" = \"agent_run\".\"state_id_at_end\" where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" is not null and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_050001",
+							10001
+						],
+						"response_bytes": 915106
+					},
+					{
+						"rows_read": 10002,
+						"ids_sha256": "9ea325b0371a408aa9d5ffe5e8dadbd91ab7fc72e8622e96642960ce804b1125",
+						"duration_ms": 7,
+						"returned_rows": 10001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"ended_at\", \"agent_run\".\"created_at\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) left join \"workflow_state\" as \"end_state\" on \"end_state\".\"id\" = \"agent_run\".\"state_id_at_end\" where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" is not null and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_040001",
+							10001
+						],
+						"response_bytes": 915106
+					},
+					{
+						"rows_read": 10002,
+						"ids_sha256": "6ac2db266433b1aee635cc93bbbbe447ea6d3ba18ca380faf66bf9f01506a039",
+						"duration_ms": 7,
+						"returned_rows": 10001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"ended_at\", \"agent_run\".\"created_at\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) left join \"workflow_state\" as \"end_state\" on \"end_state\".\"id\" = \"agent_run\".\"state_id_at_end\" where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" is not null and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_030001",
+							10001
+						],
+						"response_bytes": 915106
+					},
+					{
+						"rows_read": 10002,
+						"ids_sha256": "10435edd49152e41b548b936d016fcdf6f37b43d901ad88acd2ca619fb4b1be8",
+						"duration_ms": 7,
+						"returned_rows": 10001,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"ended_at\", \"agent_run\".\"created_at\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) left join \"workflow_state\" as \"end_state\" on \"end_state\".\"id\" = \"agent_run\".\"state_id_at_end\" where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" is not null and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_020001",
+							10001
+						],
+						"response_bytes": 915106
+					},
+					{
+						"rows_read": 10001,
+						"ids_sha256": "28ec6ba143d961d5501734898885200367ba1f845968b29f5b10e72f8f2db1ab",
+						"duration_ms": 7,
+						"returned_rows": 10000,
+						"sql": "select \"agent_run\".\"id\", \"agent_run\".\"usage\", \"agent_run\".\"ended_at\", \"agent_run\".\"created_at\" from \"agent_run\" left join \"runner\" on \"runner\".\"id\" = \"agent_run\".\"runner_id\" and \"runner\".\"user_id\" = ? left join \"issue\" on \"issue\".\"id\" = \"agent_run\".\"issue_id\" left join \"project\" on \"project\".\"id\" = \"issue\".\"project_id\" and \"project\".\"user_id\" = ? left join \"workflow_state\" as \"start_state\" on \"start_state\".\"id\" = \"agent_run\".\"state_id_at_start\" left join \"workflow\" as \"start_workflow\" on \"start_workflow\".\"id\" = \"start_state\".\"workflow_id\" and (\"start_workflow\".\"user_id\" = ? or \"start_workflow\".\"user_id\" is null) left join \"workflow\" as \"issue_workflow\" on \"issue_workflow\".\"id\" = \"issue\".\"workflow_id\" and (\"issue_workflow\".\"user_id\" = ? or \"issue_workflow\".\"user_id\" is null) left join \"workflow_state\" as \"end_state\" on \"end_state\".\"id\" = \"agent_run\".\"state_id_at_end\" where \"agent_run\".\"user_id\" = ? and \"agent_run\".\"ended_at\" is not null and \"agent_run\".\"ended_at\" >= ? and (\"agent_run\".\"ended_at\", agent_run.id) < (?, ?) order by \"agent_run\".\"ended_at\" desc, \"agent_run\".\"id\" desc limit ?",
+						"parameters": [
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							"scale_user",
+							1700000000000,
+							1701000000000,
+							"scale_010001",
+							10001
+						],
+						"response_bytes": 915001
+					}
+				],
+				"bound_query_plans": [
+					[
+						{
+							"id": 7,
+							"parent": 0,
+							"notused": 48,
+							"detail": "SEARCH agent_run USING INDEX agent_run_user_ended_idx (user_id=? AND ended_at>? AND ended_at<?)"
+						}
+					],
+					[
+						{
+							"id": 7,
+							"parent": 0,
+							"notused": 48,
+							"detail": "SEARCH agent_run USING INDEX agent_run_user_ended_idx (user_id=? AND ended_at>? AND (ended_at,id)<(?,?))"
+						}
+					]
+				]
+			}
+		},
+		"total_request_rows_read": {
+			"aggregate": 800855,
+			"evidence": [100021]
+		},
+		"response_bytes": 7242,
+		"finalized": 100000,
+		"priced": 0,
+		"pending": 100,
+		"groups": 3,
+		"evidence_pages": [
+			{
+				"items": [],
+				"scan_complete": true,
+				"has_cursor": false
+			}
+		],
+		"independent_oracle": {
+			"finalized_run_count": 100000,
+			"priced_run_count": 0,
+			"unpriced_run_count": 25000,
+			"unreported_run_count": 75000,
+			"cost_usd": null
+		},
+		"distribution_oracle": {
+			"median_cost_usd": null,
+			"p95_cost_usd": null,
+			"max_cost_usd": null
+		},
+		"groups_reconciled": true,
+		"measured_worker_queries": {
+			"aggregate": 24,
+			"evidence_pages": [13]
+		},
+		"source_cli_exact_match": true,
+		"source_cli_evidence_items": 0,
+		"source_cli_evidence_resummed_cost": 0,
+		"source_cli_text_disclosure": true
+	},
+	"bounds": {
+		"service_queries_at_100k": 27,
+		"invocation_queries_with_bearer_auth_at_100k": 29,
+		"sparse_invocation_queries_max": 30,
+		"free_query_limit": 50,
+		"worker_isolate_limit_mb": 128,
+		"priced_sample_capacity_mb_at_100k": 3.2,
+		"all_growth_allocations_mb_at_100k": 6.4
+	},
+	"limitations": [
+		"Wrangler CLI elapsed time includes process startup; D1 meta is emitted by the local emulator.",
+		"Native rows_read includes joined metadata reads; telemetry uses actual parameterized shipping statements, not literal replays.",
+		"Worker heap is a conservative bound, not an isolate inspector measurement; whole-process RSS is intentionally not presented as isolate heap.",
+		"Run with --size=120001 to place the unique priced evidence match beyond 100k candidates."
+	]
+}

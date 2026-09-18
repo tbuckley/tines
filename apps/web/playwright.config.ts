@@ -13,11 +13,17 @@ export default defineConfig({
 	testDir: 'e2e',
 	timeout: 30_000,
 	// The suite shares one local D1 database; a single worker keeps state
-	// deterministic (specs still use per-run unique names).
+	// deterministic (fixtures.ts allocates worker-namespaced runtime names).
 	workers: 1,
 	reporter: [['list']],
 	use: {
 		baseURL: BASE_URL,
+		// Reduced motion is the suite default. Every Svelte transition in the app
+		// consults prefersReducedMotion() (dur() → 0) and app.css does the same
+		// for view transitions and the AlertDialog, so specs assert state, not
+		// motion. The two specs that exercise animation opt out at file level
+		// with test.use({ reducedMotion: 'no-preference' }). See e2e/README.md.
+		reducedMotion: 'reduce',
 		...(chromiumPath ? { launchOptions: { executablePath: chromiumPath } } : {})
 	},
 	webServer: {

@@ -1,3 +1,4 @@
+import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import type { ActorContext } from '../api/core';
 import { listIssues, resumeIssue, transitionIssue } from '../api/issues';
@@ -5,19 +6,28 @@ import { createTestDb, type TestDb } from '../api/test-db';
 import { localAdapter } from './adapter';
 import {
 	cancelRun,
+	cancelAssignedRuns,
 	claimRun,
 	endRun,
 	launchClaimedRun,
 	loadEligibleIssues,
 	loadEndableRun,
 	loadEngineRunners,
+	noteRateLimit,
+	releaseDeclinedAssignments,
+	releaseSurplusAssigned,
 	runDispatchPass,
-	sweepSupervisor
+	sweepSupervisor,
+	targetsForIssue,
+	loadEngineRules
 } from './engine';
 import { createFakeAdapter, type FakeAdapter } from './fake-adapter';
 import {
 	addIssue,
+	addLabel,
 	addRule,
+	addRun,
+	addRunKey,
 	addRunner,
 	addTransitionEvent,
 	addTwoStageWorkflow,
@@ -72,11 +82,15 @@ describe('eligibility', () => {
 		const blocked = addIssue(t);
 		const blocker = addIssue(t, { state: REVIEW });
 		t.sqlite
-			.prepare(`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES (?, ?, ?, 'blocks', ${NOW})`)
+			.prepare(
+				`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES (?, ?, ?, 'blocks', ${NOW})`
+			)
 			.run('lnk_1', blocker, blocked);
 		const dup = addIssue(t);
 		t.sqlite
-			.prepare(`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES (?, ?, ?, 'duplicate_of', ${NOW})`)
+			.prepare(
+				`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES (?, ?, ?, 'duplicate_of', ${NOW})`
+			)
 			.run('lnk_2', dup, eligible);
 
 		const candidates = await loadEligibleIssues(t.db, USER);
@@ -103,6 +117,60 @@ describe('eligibility', () => {
 		`);
 		const candidates = await loadEligibleIssues(t.db, USER);
 		expect(candidates.map((c) => c.id)).toContain(issue);
+	});
+
+	it("carries each candidate's labels, so a label rule can match", async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const docs = addLabel(t, 'docs');
+		addRule(t, { label: docs, targets: [{ runner_id: runner }] });
+		const labelled = addIssue(t, { labels: [docs] });
+		const plain = addIssue(t);
+
+		const candidates = await loadEligibleIssues(t.db, USER);
+		const byId = new Map(candidates.map((c) => [c.id, c.label_ids]));
+		expect(byId.get(labelled)).toEqual([docs]);
+		expect(byId.get(plain)).toEqual([]);
+
+		const rules = await loadEngineRules(t.db, USER);
+		expect(
+			targetsForIssue(
+				candidates.find((c) => c.id === labelled)!,
+				rules
+			).targets
+		).toEqual([{ runner_id: runner }]);
+		expect(
+			targetsForIssue(
+				candidates.find((c) => c.id === plain)!,
+				rules
+			).targets
+		).toEqual([]);
+
+		const result = await pass(t);
+		expect(result.claimed).toBe(1);
+		expect(runs(t)[0].issue_id).toBe(labelled);
+	});
+
+	it('skips — without a strike — an issue two label rules match equally', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const docs = addLabel(t, 'docs');
+		const security = addLabel(t, 'security');
+		const a = addRule(t, { label: docs, targets: [{ runner_id: runner }] });
+		const b = addRule(t, { label: security, targets: [{ runner_id: runner }] });
+		const issue = addIssue(t, { labels: [docs, security] });
+
+		const candidates = await loadEligibleIssues(t.db, USER);
+		const rules = await loadEngineRules(t.db, USER);
+		const resolved = targetsForIssue(candidates[0], rules);
+		expect(resolved.rule).toBeNull();
+		expect(resolved.targets).toEqual([]);
+		expect(resolved.ambiguous.map((r) => r.id).sort()).toEqual([a, b].sort());
+
+		const result = await pass(t);
+		expect(result.claimed).toBe(0);
+		expect(runs(t)).toHaveLength(0);
+		expect(issueById(t, issue).attempt_count).toBe(0);
 	});
 
 	it('dispatches nothing while the kill switch is off', async () => {
@@ -138,6 +206,126 @@ describe('eligibility', () => {
 		const result = await pass(t);
 		expect(result.claimed).toBe(1);
 		expect(runs(t)[0].issue_id).toBe('iss_stale');
+	});
+});
+
+describe('local concurrency release', () => {
+	it('keeps running work and releases newest surplus assigned claims', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 3 });
+		t.sqlite
+			.prepare(
+				`UPDATE runner SET daemon_instance_id = 'boot_1', concurrency_instance_id = 'boot_1',
+				 concurrency_mode = 'remote', concurrency_ceiling = 1 WHERE id = ?`
+			)
+			.run(runnerId);
+		const runningIssue = addIssue(t, { title: 'running' });
+		const oldIssue = addIssue(t, { title: 'old assignment' });
+		const newIssue = addIssue(t, { title: 'new assignment' });
+		const running = addRun(t, {
+			issueId: runningIssue,
+			runnerId,
+			status: 'running',
+			startedAt: NOW - 100,
+			createdAt: NOW - 300
+		});
+		const oldAssigned = addRun(t, {
+			issueId: oldIssue,
+			runnerId,
+			createdAt: NOW - 200
+		});
+		const newAssigned = addRun(t, {
+			issueId: newIssue,
+			runnerId,
+			createdAt: NOW - 100
+		});
+		let signals = 0;
+		const released = await releaseSurplusAssigned(
+			t.db,
+			t.env,
+			{ userId: USER, runnerId, instanceId: 'boot_1', ceiling: 1, now: NOW },
+			() => signals++
+		);
+
+		expect(released).toEqual([oldAssigned, newAssigned]);
+		expect(runById(t, running)!.status).toBe('running');
+		expect(runById(t, oldAssigned)!.status).toBe('canceled');
+		expect(runById(t, newAssigned)!.status).toBe('canceled');
+		expect(signals).toBe(2);
+	});
+
+	it('rechecks capacity in the release transaction when a running slot opens', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		t.sqlite
+			.prepare(
+				`UPDATE runner SET daemon_instance_id = 'boot_1', concurrency_instance_id = 'boot_1',
+				 concurrency_mode = 'remote', concurrency_ceiling = 1 WHERE id = ?`
+			)
+			.run(runnerId);
+		const running = addRun(t, {
+			issueId: addIssue(t, { title: 'running' }),
+			runnerId,
+			status: 'running',
+			startedAt: NOW - 100,
+			createdAt: NOW - 200
+		});
+		const assigned = addRun(t, {
+			issueId: addIssue(t, { title: 'assigned' }),
+			runnerId,
+			createdAt: NOW - 100
+		});
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let injected = false;
+		t.env.DB.batch = async (statements) => {
+			if (!injected) {
+				injected = true;
+				t.sqlite
+					.prepare("UPDATE agent_run SET status = 'completed', ended_at = ? WHERE id = ?")
+					.run(NOW - 1, running);
+			}
+			return realBatch(statements);
+		};
+
+		const released = await releaseSurplusAssigned(
+			t.db,
+			t.env,
+			{ userId: USER, runnerId, instanceId: 'boot_1', ceiling: 1, now: NOW },
+			() => {}
+		);
+
+		expect(injected).toBe(true);
+		expect(released).toEqual([]);
+		expect(runById(t, assigned)!.status).toBe('assigned');
+	});
+
+	it('decline revokes only the refused run key', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const refused = addRun(t, {
+			issueId: addIssue(t, { title: 'refused' }),
+			runnerId,
+			status: 'launching'
+		});
+		const other = addRun(t, {
+			issueId: addIssue(t, { title: 'other' }),
+			runnerId,
+			status: 'launching'
+		});
+		addRunKey(t, refused);
+		addRunKey(t, other);
+
+		const released = await releaseDeclinedAssignments(
+			t.db,
+			t.env,
+			{ userId: USER, runnerId, runIds: [refused], now: NOW },
+			() => {}
+		);
+
+		expect(released).toEqual([refused]);
+		expect(keyForRun(t, refused)!.revoked_at).toBe(NOW);
+		expect(keyForRun(t, other)!.revoked_at).toBeNull();
+		expect(runById(t, other)!.status).toBe('launching');
 	});
 });
 
@@ -184,11 +372,31 @@ describe('readiness equivalence with the issues API', () => {
 	});
 });
 
+describe('an archived project', () => {
+	it('drops out of the dispatch queue and comes back on unarchive', async () => {
+		const t = world();
+		const runner = addRunner(t, { maxConcurrent: 10 });
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		expect((await loadEligibleIssues(t.db, USER)).map((c) => c.id)).toEqual([issue]);
+
+		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${PROJECT}'`);
+		expect(await loadEligibleIssues(t.db, USER)).toEqual([]);
+		expect((await pass(t)).claimed).toBe(0);
+		expect(runs(t)).toHaveLength(0);
+
+		t.sqlite.exec(`UPDATE project SET archived_at = NULL WHERE id = '${PROJECT}'`);
+		expect((await pass(t)).claimed).toBe(1);
+		expect(runs(t)).toHaveLength(1);
+	});
+});
+
 describe('the guarded claim', () => {
 	const claimInput = (t: TestDb, issueId: string, runnerId: string, over: object = {}) => ({
 		runId: `arun_${Math.random().toString(36).slice(2)}`,
 		userId: USER,
 		issueId,
+		projectId: PROJECT,
 		stateId: OPEN,
 		runnerId,
 		maxConcurrent: 5,
@@ -197,6 +405,44 @@ describe('the guarded claim', () => {
 		quota: { type: 'global_cap' as const, limit: 10 },
 		now: NOW,
 		...over
+	});
+
+	it('refuses an issue whose project was archived between the queue read and the claim', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const input = claimInput(t, issue, runner);
+		// The pass read the queue while the project was live.
+		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${PROJECT}'`);
+		expect(await claimRun(t.db, t.env, input)).toBe(false);
+		expect(runs(t)).toHaveLength(0);
+	});
+
+	it('refuses a stale route after a project assignment changes, including ABA', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const input = claimInput(t, issue, runner, { projectAssignmentToken: '' });
+		// A -> B -> A can restore the same project while never restoring this token.
+		t.sqlite.exec(
+			`UPDATE issue SET project_assignment_token = 'assignment-after-aba' WHERE id = '${issue}'`
+		);
+		expect(await claimRun(t.db, t.env, input)).toBe(false);
+		expect(runs(t)).toHaveLength(0);
+	});
+
+	it('refuses a source route after the issue moves even if its assignment token is unchanged', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const input = claimInput(t, issue, runner);
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_moved', '${USER}', 'moved', ${NOW}, ${NOW});
+			UPDATE issue SET project_id = 'prj_moved', number = 1 WHERE id = '${issue}';
+		`);
+		expect(await claimRun(t.db, t.env, input)).toBe(false);
+		expect(runs(t)).toHaveLength(0);
 	});
 
 	it('two racing claims on one issue: exactly one insert wins', async () => {
@@ -225,7 +471,9 @@ describe('the guarded claim', () => {
 		const first = addIssue(t);
 		const second = addIssue(t);
 		expect(await claimRun(t.db, t.env, claimInput(t, first, r1, { maxConcurrent: 1 }))).toBe(true);
-		expect(await claimRun(t.db, t.env, claimInput(t, second, r1, { maxConcurrent: 1 }))).toBe(false);
+		expect(await claimRun(t.db, t.env, claimInput(t, second, r1, { maxConcurrent: 1 }))).toBe(
+			false
+		);
 	});
 
 	it('enforces the global cap inside the statement', async () => {
@@ -244,9 +492,9 @@ describe('the guarded claim', () => {
 		const quota = { type: 'state_roster' as const, default_limit: 1, overrides: {} };
 		const first = addIssue(t, { workflow: 'wf_two', state: STAGE_A });
 		const second = addIssue(t, { workflow: 'wf_two', state: STAGE_A });
-		expect(
-			await claimRun(t.db, t.env, claimInput(t, first, r1, { stateId: STAGE_A, quota }))
-		).toBe(true);
+		expect(await claimRun(t.db, t.env, claimInput(t, first, r1, { stateId: STAGE_A, quota }))).toBe(
+			true
+		);
 		// The agent moves the first issue onward mid-run; the run still
 		// occupies its starting state's roster slot until it ends.
 		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(STAGE_B, first);
@@ -264,6 +512,67 @@ describe('the guarded claim', () => {
 });
 
 describe('dispatch pass against the fake adapter', () => {
+	it('prefers a routed runner holding a resumable session, without changing the target set', async () => {
+		const t = world();
+		const cold = addRunner(t, { name: 'cold' });
+		const holder = addRunner(t, { name: 'holder' });
+		// Routing lists the cold runner first; only affinity moves the holder up.
+		addRule(t, { targets: [{ runner_id: cold }, { runner_id: holder }] });
+		const issue = addIssue(t);
+		const prior = 'arun_prior';
+		addRun(t, {
+			id: prior,
+			issueId: issue,
+			runnerId: holder,
+			status: 'completed',
+			createdAt: NOW - 2,
+			endedAt: NOW - 1,
+			outcome: 'advanced'
+		});
+		t.sqlite
+			.prepare(
+				`INSERT INTO run_resource (
+			id, user_id, runner_id, issue_id, kind, owner_run_id, state, expires_at,
+			provider_session_id, resume_fingerprint, created_at, updated_at
+		) VALUES ('res_aff', ?, ?, ?, 'local_claude', ?, 'available', ?, 'sess_prior', 'v1:abc', ?, ?)`
+			)
+			.run(USER, holder, issue, prior, NOW + 60_000, NOW, NOW);
+
+		expect(await pass(t, localAdapter)).toEqual({ claimed: 1, launched: 0 });
+		const claimed = runs(t).find((r) => r.id !== prior);
+		expect(claimed!.runner_id).toBe(holder);
+	});
+
+	it('leaves routing order alone when the resource is expired', async () => {
+		const t = world();
+		const cold = addRunner(t, { name: 'cold' });
+		const holder = addRunner(t, { name: 'holder' });
+		addRule(t, { targets: [{ runner_id: cold }, { runner_id: holder }] });
+		const issue = addIssue(t);
+		const prior = 'arun_prior';
+		addRun(t, {
+			id: prior,
+			issueId: issue,
+			runnerId: holder,
+			status: 'completed',
+			createdAt: NOW - 2,
+			endedAt: NOW - 1,
+			outcome: 'advanced'
+		});
+		t.sqlite
+			.prepare(
+				`INSERT INTO run_resource (
+			id, user_id, runner_id, issue_id, kind, owner_run_id, state, expires_at,
+			provider_session_id, resume_fingerprint, created_at, updated_at
+		) VALUES ('res_aff', ?, ?, ?, 'local_claude', ?, 'available', ?, 'sess_prior', 'v1:abc', ?, ?)`
+			)
+			.run(USER, holder, issue, prior, NOW - 1, NOW, NOW);
+
+		expect(await pass(t, localAdapter)).toEqual({ claimed: 1, launched: 0 });
+		const claimed = runs(t).find((r) => r.id !== prior);
+		expect(claimed!.runner_id).toBe(cold);
+	});
+
 	it('claims, launches, mints the run key, and records the started event', async () => {
 		const t = world();
 		const fake = createFakeAdapter();
@@ -381,7 +690,11 @@ describe('dispatch pass against the fake adapter', () => {
 		addIssue(t, { updatedAt: NOW - 1000 });
 
 		expect((await pass(t)).claimed).toBe(2);
-		expect(runs(t).map((r) => r.runner_id).sort()).toEqual([r1, r2].sort());
+		expect(
+			runs(t)
+				.map((r) => r.runner_id)
+				.sort()
+		).toEqual([r1, r2].sort());
 	});
 
 	it('a pin replaces rule matching entirely, tier included', async () => {
@@ -406,6 +719,16 @@ describe('dispatch pass against the fake adapter', () => {
 		expect((await pass(t)).claimed).toBe(0);
 	});
 
+	it('a draining local runner is skipped by the pass; the next rule target takes the issue', async () => {
+		const t = world();
+		const draining = addRunner(t, { draining: true });
+		const open = addRunner(t);
+		addRule(t, { targets: [{ runner_id: draining }, { runner_id: open }] });
+		addIssue(t);
+		expect((await pass(t)).claimed).toBe(1);
+		expect(runs(t)[0].runner_id).toBe(open);
+	});
+
 	it('rule tier entries override the runner default; entries without one use it', async () => {
 		const t = world();
 		const r1 = addRunner(t, { defaultTier: 'cheapest', maxConcurrent: 10 });
@@ -413,6 +736,24 @@ describe('dispatch pass against the fake adapter', () => {
 		addIssue(t);
 		await pass(t);
 		expect(runs(t)[0].tier).toBe('smartest');
+	});
+
+	it('dispatches a scoped tier-only rule through its broader runner fallback list', async () => {
+		const t = world();
+		const held = addRunner(t, { backoffUntil: NOW + 60_000 });
+		const available = addRunner(t, {
+			tiers: { smartest: { model: 'runner-two-smartest' } }
+		});
+		addRule(t, { targets: [{ runner_id: held }, { runner_id: available }] });
+		addRule(t, { state: OPEN, targets: [{ runner_id: '*', tier: 'smartest' }] });
+		addIssue(t);
+
+		expect((await pass(t)).claimed).toBe(1);
+		expect(runs(t)[0]).toMatchObject({
+			runner_id: available,
+			tier: 'smartest',
+			model: 'runner-two-smartest'
+		});
 	});
 
 	it('honors per-runner tier overrides at launch', async () => {
@@ -500,6 +841,7 @@ describe('launch failures', () => {
 			runId: 'arun_race',
 			userId: USER,
 			issueId: issue,
+			projectId: PROJECT,
 			stateId: OPEN,
 			runnerId,
 			maxConcurrent: 1,
@@ -534,6 +876,58 @@ describe('launch failures', () => {
 		expect(runById(t, 'arun_race')!.status).toBe('canceled');
 	});
 
+	it('persists the first managed effort milestone from a null CAS state', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		await claimRun(t.db, t.env, {
+			runId: 'arun_effort_launch',
+			userId: USER,
+			issueId: issue,
+			projectId: PROJECT,
+			stateId: OPEN,
+			runnerId,
+			maxConcurrent: 1,
+			tier: 'balanced',
+			model: 'claude-sonnet-5',
+			requestedEffort: 'high',
+			resolvedEffort: 'high',
+			effortSource: { kind: 'runner_tier', runner_id: runnerId, tier: 'balanced' },
+			quota: { type: 'global_cap', limit: 10 },
+			now: NOW
+		});
+		const fake = createFakeAdapter();
+		const launch = fake.launch.bind(fake);
+		fake.launch = async (input) => {
+			await input.recordEffortEvidence?.({
+				status: 'confirmed',
+				transport: 'managed_agent_config',
+				attempted_effort: 'high',
+				observed_model: 'claude-sonnet-5',
+				observed_effort: 'high'
+			});
+			return launch(input);
+		};
+		const runner = (await loadEngineRunners(t.db, USER)).get(runnerId)!;
+		expect(
+			await launchClaimedRun(t.db, t.env, fake, {
+				userId: USER,
+				runId: 'arun_effort_launch',
+				issueId: issue,
+				projectId: PROJECT,
+				runner,
+				tier: 'balanced',
+				model: 'claude-sonnet-5',
+				effort: 'high',
+				now: NOW
+			})
+		).toBe('launched');
+		expect(runById(t, 'arun_effort_launch')).toMatchObject({
+			status: 'running',
+			effort_application_status: 'confirmed'
+		});
+	});
+
 	it('consecutive failures double the backoff', async () => {
 		const t = world();
 		const fake = createFakeAdapter();
@@ -564,7 +958,12 @@ describe('end judgment', () => {
 		return { issue, runner, runId: run.id as string, keyId: run.api_key_id as string };
 	}
 
-	async function end(t: TestDb, runId: string, status: 'completed' | 'failed' | 'timed_out' | 'canceled', now = NOW + 60_000) {
+	async function end(
+		t: TestDb,
+		runId: string,
+		status: 'completed' | 'failed' | 'timed_out' | 'canceled',
+		now = NOW + 60_000
+	) {
 		const run = await loadEndableRun(t.db, USER, runId);
 		return endRun(t.db, t.env, run!, { status, now });
 	}
@@ -595,11 +994,57 @@ describe('end judgment', () => {
 		expect(eventsOfType(t, 'agent_run.ended')[0].payload.outcome).toBe('advanced');
 	});
 
+	it('an interrupted end neither strikes the issue nor forgives its earlier attempts', async () => {
+		const t = world();
+		const { issue, runId } = await runningRun(t, { attemptCount: 2 });
+		const run = await loadEndableRun(t.db, USER, runId);
+		const outcome = await endRun(t.db, t.env, run!, {
+			status: 'failed',
+			error: 'runner offline',
+			judgment: 'interrupted',
+			now: NOW + 60_000
+		});
+		expect(outcome).toEqual({ ended: true, outcome: 'interrupted', parked: false });
+		// Not 3 (no strike) and not 0 (no reset): the attempt never happened.
+		expect(issueById(t, issue).attempt_count).toBe(2);
+		expect(runById(t, runId)!.status).toBe('failed');
+		expect(eventsOfType(t, 'agent_run.ended')[0].payload.outcome).toBe('interrupted');
+		expect(keyForRun(t, runId)!.revoked_at).not.toBeNull();
+	});
+
+	it('an interrupted run whose key moved the issue is still advanced', async () => {
+		const t = world();
+		const { issue, runId, keyId } = await runningRun(t, { attemptCount: 2 });
+		addTransitionEvent(t, { issueId: issue, apiKeyId: keyId, at: NOW + 1000 });
+		const run = await loadEndableRun(t.db, USER, runId);
+		const outcome = await endRun(t.db, t.env, run!, {
+			status: 'failed',
+			error: 'runner offline',
+			judgment: 'interrupted',
+			now: NOW + 60_000
+		});
+		// Authorship is checked first and wins: the work landed either way.
+		expect(outcome.outcome).toBe('advanced');
+		expect(issueById(t, issue).attempt_count).toBe(0);
+	});
+
 	it('A→B→A wandering still counts as engagement, not a strike', async () => {
 		const t = world();
 		const { issue, runId, keyId } = await runningRun(t, { attemptCount: 1 });
-		addTransitionEvent(t, { issueId: issue, apiKeyId: keyId, at: NOW + 1000, from: OPEN, to: REVIEW });
-		addTransitionEvent(t, { issueId: issue, apiKeyId: keyId, at: NOW + 2000, from: REVIEW, to: OPEN });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: keyId,
+			at: NOW + 1000,
+			from: OPEN,
+			to: REVIEW
+		});
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: keyId,
+			at: NOW + 2000,
+			from: REVIEW,
+			to: OPEN
+		});
 		const outcome = await end(t, runId, 'completed');
 		expect(outcome.outcome).toBe('advanced');
 		expect(issueById(t, issue).attempt_count).toBe(0);
@@ -644,14 +1089,41 @@ describe('end judgment', () => {
 		expect((await pass(t)).claimed).toBe(0);
 	});
 
-	it('a double end applies exactly once (the flip is the CAS)', async () => {
+	it('concurrent finish and cancel reports apply exactly one final report (the flip is the CAS)', async () => {
 		const t = world();
 		const { issue, runId } = await runningRun(t);
 		const run = await loadEndableRun(t.db, USER, runId);
-		expect((await endRun(t.db, t.env, run!, { status: 'completed', now: NOW + 1000 })).ended).toBe(true);
-		expect((await endRun(t.db, t.env, run!, { status: 'canceled', now: NOW + 2000 })).ended).toBe(false);
+		const winnerUsage = JSON.stringify({ cost_usd: 1, cost_source: 'priced' });
+		const [first, second] = await Promise.all([
+			endRun(t.db, t.env, run!, {
+				status: 'completed',
+				now: NOW + 1000,
+				finalReport: { usage: winnerUsage, provider_session_id: 'winner' }
+			}),
+			endRun(t.db, t.env, run!, {
+				status: 'canceled',
+				now: NOW + 2000,
+				finalReport: {
+					usage: JSON.stringify({ cost_usd: 99 }),
+					provider_session_id: 'loser'
+				}
+			})
+		]);
+		expect([first.ended, second.ended].sort()).toEqual([false, true]);
+		const stored = runById(t, runId)!;
+		if (stored.status === 'completed') {
+			expect(stored).toMatchObject({ usage: winnerUsage, provider_session_id: 'winner' });
+		} else {
+			expect(stored).toMatchObject({
+				status: 'canceled',
+				usage: JSON.stringify({ cost_usd: 99 }),
+				provider_session_id: 'loser'
+			});
+		}
 		expect(issueById(t, issue).attempt_count).toBe(1);
-		expect(eventsOfType(t, 'agent_run.ended')).toHaveLength(1);
+		const events = eventsOfType(t, 'agent_run.ended');
+		expect(events).toHaveLength(1);
+		expect(events[0].payload.usage).toEqual(JSON.parse(stored.usage as string));
 	});
 
 	it('two ends with identical status and clock still apply exactly once', async () => {
@@ -704,6 +1176,54 @@ describe('end judgment', () => {
 });
 
 describe('cancel', () => {
+	it('reports each durable assigned-run cancellation before a later failure', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRun(t, { issueId: addIssue(t), runnerId: runner, status: 'assigned' });
+		addRun(t, { issueId: addIssue(t), runnerId: runner, status: 'assigned' });
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let batches = 0;
+		t.env.DB.batch = async (statements) => {
+			batches += 1;
+			// endRun owns one flip batch and one dependent-write batch. Fail the
+			// next run's flip, after the first win has returned and notified.
+			if (batches === 3) throw new Error('injected later cancellation failure');
+			return realBatch(statements);
+		};
+		let notifications = 0;
+		await expect(
+			cancelAssignedRuns(
+				t.db,
+				t.env,
+				{ userId: USER, runnerId: runner },
+				'runner paused',
+				() => notifications++,
+				NOW
+			)
+		).rejects.toThrow('injected later cancellation failure');
+		expect(notifications).toBe(1);
+		expect(runs(t).filter((run) => run.status === 'canceled')).toHaveLength(1);
+	});
+
+	it('reports no cancellation for zero matches or a lost terminal guard', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		addRun(t, { issueId: issue, runnerId: runner, status: 'running', startedAt: NOW });
+		let notifications = 0;
+		expect(
+			await cancelAssignedRuns(
+				t.db,
+				t.env,
+				{ userId: USER, runnerId: runner },
+				'runner paused',
+				() => notifications++,
+				NOW
+			)
+		).toBe(0);
+		expect(notifications).toBe(0);
+	});
+
 	it('cancels a running run through the adapter and judges it like any end', async () => {
 		const t = world();
 		const fake = createFakeAdapter();
@@ -729,19 +1249,21 @@ describe('resume and manual transitions', () => {
 	it('resume clears parking, resets the count, fires issue.resumed', async () => {
 		const t = world();
 		const issue = addIssue(t, { needsAttention: true, attemptCount: 3 });
-		const detail = await resumeIssue(t.db, t.env, sessionActor, issue);
+		const detail = await resumeIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue);
 		expect(detail.needs_attention).toBe(false);
 		expect(detail.attempt_count).toBe(0);
 		expect(eventsOfType(t, 'issue.resumed')).toHaveLength(1);
 		// Idempotent: resuming again records nothing new.
-		await resumeIssue(t.db, t.env, sessionActor, issue);
+		await resumeIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue);
 		expect(eventsOfType(t, 'issue.resumed')).toHaveLength(1);
 	});
 
 	it('any non-run-key transition un-parks and resets the count', async () => {
 		const t = world();
 		const issue = addIssue(t, { needsAttention: true, attemptCount: 3 });
-		await transitionIssue(t.db, t.env, sessionActor, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, sessionActor, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 		const row = issueById(t, issue);
 		expect(row.needs_attention).toBe(0);
 		expect(row.attempt_count).toBe(0);
@@ -764,7 +1286,9 @@ describe('resume and manual transitions', () => {
 			apiKeyName: 'run key',
 			agentRunId: runs(t)[0].id as string
 		};
-		await transitionIssue(t.db, t.env, runKeyActor, issue, { action: 'Submit for review' });
+		await transitionIssue(t.db, t.env, runKeyActor, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+			action: 'Submit for review'
+		});
 		expect(issueById(t, issue).attempt_count).toBe(2);
 		expect(issueById(t, other).attempt_count).toBe(0);
 	});
@@ -798,7 +1322,9 @@ describe('the sweep', () => {
 		addIssue(t);
 		await pass(t, fake);
 		const runId = runs(t)[0].id as string;
-		t.sqlite.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?').run(NOW - 6 * 60_000, runner);
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
 		setSettings(t, { enabled: false });
 
 		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
@@ -806,6 +1332,207 @@ describe('the sweep', () => {
 		expect(run.status).toBe('failed');
 		expect(run.error).toBe('runner offline');
 		expect(keyForRun(t, runId)!.revoked_at).not.toBeNull();
+	});
+
+	it('an offline runner interrupts its running runs: no strike, no park, runner backs off', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		setSettings(t, { attemptLimit: 3 });
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t, { attemptCount: 2 });
+		await pass(t, fake);
+		const runId = runs(t)[0].id as string;
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
+		setSettings(t, { enabled: false, attemptLimit: 3 });
+
+		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
+		// One strike short of the limit, and it stays there: the laptop lid
+		// closing is not the issue failing.
+		expect(issueById(t, issue).attempt_count).toBe(2);
+		expect(issueById(t, issue).needs_attention).toBe(0);
+		expect(eventsOfType(t, 'issue.parked')).toHaveLength(0);
+		expect(runById(t, runId)!.outcome).toBe('interrupted');
+		expect(keyForRun(t, runId)!.revoked_at).not.toBeNull();
+		const ended = eventsOfType(t, 'agent_run.ended');
+		expect(ended[ended.length - 1].payload).toMatchObject({
+			status: 'failed',
+			outcome: 'interrupted'
+		});
+		// The pressure lands on the runner instead.
+		expect(runnerById(t, runner).launch_failures).toBe(1);
+		expect(runnerById(t, runner).backoff_until).toBeGreaterThan(NOW);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+	});
+
+	it('an offline run whose agent already transitioned the issue is still advanced', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t, { attemptCount: 2 });
+		await pass(t, fake);
+		const run = runs(t)[0];
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: run.api_key_id as string,
+			at: NOW - 1000
+		});
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
+		setSettings(t, { enabled: false });
+
+		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
+		// The work landed before the daemon died — credit is unchanged by how
+		// the run ended.
+		expect(runById(t, run.id as string)!.outcome).toBe('advanced');
+		expect(issueById(t, issue).attempt_count).toBe(0);
+	});
+
+	it('one offline sweep taking down two runs is one incident for the runner', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		const runner = addRunner(t, { maxConcurrent: 2 });
+		addRule(t, { targets: [{ runner_id: runner }] });
+		addIssue(t);
+		addIssue(t);
+		await pass(t, fake);
+		expect(runs(t)).toHaveLength(2);
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
+		setSettings(t, { enabled: false });
+
+		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
+		expect(runs(t).every((r) => r.outcome === 'interrupted')).toBe(true);
+		// One dead daemon, one failure — not one per run it happened to hold.
+		expect(runnerById(t, runner).launch_failures).toBe(1);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(1);
+
+		// A second incident, once the backoff has expired, does count again —
+		// a daemon that keeps dying keeps escalating.
+		const later = (runnerById(t, runner).backoff_until as number) + 1;
+		addRun(t, {
+			issueId: addIssue(t),
+			runnerId: runner,
+			status: 'running',
+			startedAt: later - 1000
+		});
+		await sweepSupervisor(t.db, t.env, later, { local: fake });
+		expect(runnerById(t, runner).launch_failures).toBe(2);
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(2);
+	});
+
+	it('a usage limit holds the runner to the reported reset without a strike', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		await noteRateLimit(t.db, t.env, {
+			userId: USER,
+			runnerId: runner,
+			runId: 'arun_x',
+			error: 'rate limited: session limit',
+			resumeAt: NOW + 3_600_000,
+			limit: 'five_hour',
+			now: NOW
+		});
+		const r = runnerById(t, runner);
+		expect(r.backoff_until).toBe(NOW + 3_600_000 + 60_000);
+		expect(r.backoff_reason).toBe('rate_limit');
+		// A busy afternoon must not read as the dead-credential escalation.
+		expect(r.launch_failures).toBe(0);
+		const events = eventsOfType(t, 'runner.rate_limited');
+		expect(events).toHaveLength(1);
+		expect(events[0].payload).toMatchObject({
+			resets_at: NOW + 3_600_000 + 60_000,
+			reported_reset_at: NOW + 3_600_000,
+			limit: 'five_hour',
+			run_id: 'arun_x'
+		});
+		expect(eventsOfType(t, 'runner.errored')).toHaveLength(0);
+	});
+
+	it('collapses a burst into one hold, but lets a later reset extend it', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const note = (resumeAt: number) =>
+			noteRateLimit(t.db, t.env, {
+				userId: USER,
+				runnerId: runner,
+				error: 'rate limited',
+				resumeAt,
+				limit: null,
+				now: NOW
+			});
+		await note(NOW + 3_600_000);
+		// The other two runs of the burst die seconds later with the same wall.
+		await note(NOW + 3_600_000);
+		await note(NOW + 60_000);
+		expect(runnerById(t, runner).backoff_until).toBe(NOW + 3_600_000 + 60_000);
+		expect(eventsOfType(t, 'runner.rate_limited')).toHaveLength(1);
+
+		// A later reset is better information, so it wins — unlike the
+		// interruption backoff, which refuses any change inside its window.
+		await note(NOW + 2 * 3_600_000);
+		expect(runnerById(t, runner).backoff_until).toBe(NOW + 2 * 3_600_000 + 60_000);
+		expect(eventsOfType(t, 'runner.rate_limited')).toHaveLength(2);
+	});
+
+	it('a known reset overrides a failure backoff, and a launch clears the reason', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		t.sqlite
+			.prepare('UPDATE runner SET launch_failures = 3, backoff_until = ? WHERE id = ?')
+			.run(NOW + 10_000, runner);
+		await noteRateLimit(t.db, t.env, {
+			userId: USER,
+			runnerId: runner,
+			error: 'rate limited',
+			resumeAt: NOW + 3_600_000,
+			limit: null,
+			now: NOW
+		});
+		expect(runnerById(t, runner).backoff_reason).toBe('rate_limit');
+		expect(runnerById(t, runner).launch_failures).toBe(3);
+
+		addIssue(t);
+		const after = NOW + 4_000_000;
+		t.sqlite.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?').run(after, runner);
+		await pass(t, fake, after);
+		const r = runnerById(t, runner);
+		expect(r.backoff_until).toBeNull();
+		expect(r.backoff_reason).toBeNull();
+		expect(r.launch_failures).toBe(0);
+	});
+
+	it('a successful launch clears the pressure an interruption applied', async () => {
+		const t = world();
+		const fake = createFakeAdapter();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		await pass(t, fake);
+		t.sqlite
+			.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?')
+			.run(NOW - 6 * 60_000, runner);
+		setSettings(t, { enabled: false });
+		await sweepSupervisor(t.db, t.env, NOW, { local: fake });
+		expect(runnerById(t, runner).launch_failures).toBe(1);
+
+		// The daemon comes back and the issue — never struck — is picked up
+		// again. Launching is what proves the runner healthy, so that is what
+		// clears the count; a poll alone (every 15s) would not be evidence.
+		setSettings(t, { enabled: true });
+		const back = (runnerById(t, runner).backoff_until as number) + 1;
+		t.sqlite.prepare('UPDATE runner SET last_seen_at = ? WHERE id = ?').run(back, runner);
+		await pass(t, fake, back);
+		expect(runs(t).some((r) => r.status === 'running' && r.issue_id === issue)).toBe(true);
+		expect(runnerById(t, runner).launch_failures).toBe(0);
+		expect(runnerById(t, runner).backoff_until).toBeNull();
 	});
 
 	it('fails assigned runs unacknowledged after five minutes as launch failures', async () => {
@@ -903,7 +1630,9 @@ describe('the sweep', () => {
 		`);
 		setSettings(t, { enabled: false });
 		await sweepSupervisor(t.db, t.env, NOW + 2000);
-		expect(t.all(`SELECT revoked_at FROM api_key WHERE id = 'key_x'`)[0].revoked_at).toBe(NOW + 2000);
+		expect(t.all(`SELECT revoked_at FROM api_key WHERE id = 'key_x'`)[0].revoked_at).toBe(
+			NOW + 2000
+		);
 	});
 
 	it('runs the dispatch pass for every armed user', async () => {
@@ -914,5 +1643,30 @@ describe('the sweep', () => {
 		await sweepSupervisor(t.db, t.env, NOW); // default adapters: local = poll mode
 		expect(runs(t)).toHaveLength(1);
 		expect(runs(t)[0].status).toBe('assigned');
+	});
+
+	it('sweeps issue owners with missing settings and preserves saved stops', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		addIssue(t, { title: 'Title only', description: '' });
+		t.sqlite.exec(`DELETE FROM supervisor_settings WHERE user_id = '${USER}'`);
+
+		await sweepSupervisor(t.db, t.env, NOW);
+		expect(runs(t)).toHaveLength(1);
+
+		const stopped = world();
+		const stoppedRunner = addRunner(stopped);
+		addRule(stopped, { targets: [{ runner_id: stoppedRunner }] });
+		addIssue(stopped);
+		setSettings(stopped, { enabled: false });
+		const queries = stopped.spyOnQueries();
+		await sweepSupervisor(stopped.db, stopped.env, NOW);
+		expect(runs(stopped)).toHaveLength(0);
+		// Exclusion happens in the sweep population query, rather than wasting a
+		// dispatch pass whose later settings guard happens to mask the result.
+		expect(queries().filter((query) => query.includes('from "supervisor_settings"')).length).toBe(
+			0
+		);
 	});
 });

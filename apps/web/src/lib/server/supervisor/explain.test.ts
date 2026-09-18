@@ -6,9 +6,12 @@ import { explainDispatch } from './explain';
 import { createFakeAdapter } from './fake-adapter';
 import {
 	addIssue,
+	addLabel,
 	addRule,
 	addRunner,
 	NOW,
+	OPEN,
+	PROJECT,
 	REVIEW,
 	seedBase,
 	setSettings,
@@ -44,6 +47,32 @@ describe('explainDispatch', () => {
 		expect(ex.verdict).toBe('Automation is off');
 		expect(ex.eligible).toBe(false);
 		expect(check(ex, 'automation_enabled').ok).toBe(false);
+		expect(check(ex, 'automation_enabled').action).toEqual({
+			label: 'Turn automation on',
+			href: '/agents',
+			cli: 'tines supervisor enable'
+		});
+		// A remedy is presentational: the passing checks stay bare.
+		expect(check(ex, 'ready').action).toBeUndefined();
+		expect(check(ex, 'no_active_run').action).toBeUndefined();
+	});
+
+	it('reports an archived project, and clears once it is unarchived', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		expect(check((await explainDispatch(t.db, USER, issue, NOW))!, 'project_archived').ok).toBe(
+			true
+		);
+
+		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${PROJECT}'`);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		const archived = check(ex, 'project_archived');
+		expect(archived.ok).toBe(false);
+		expect(archived.detail).toContain('is archived (since');
+		expect(archived.detail).toContain('nothing dispatches');
+		expect(ex.eligible).toBe(false);
 	});
 
 	it('names the ineligible state and category', async () => {
@@ -63,11 +92,32 @@ describe('explainDispatch', () => {
 		const issue = addIssue(t);
 		const blocker = addIssue(t);
 		t.sqlite
-			.prepare(`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES ('lnk_1', ?, ?, 'blocks', ${NOW})`)
+			.prepare(
+				`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES ('lnk_1', ?, ?, 'blocks', ${NOW})`
+			)
 			.run(blocker, issue);
 		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
 		expect(check(ex, 'ready').ok).toBe(false);
+		expect(check(ex, 'ready').action?.href).toMatch(/^\/issues\/demo\/\d+$/);
+		expect(check(ex, 'ready').action?.label).toMatch(/^Open demo\/\d+$/);
 		expect(ex.verdict).toContain('Not eligible — blocked by');
+	});
+
+	it('points a duplicate at the issue it duplicates', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		const original = addIssue(t);
+		t.sqlite
+			.prepare(
+				`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES ('lnk_dup', ?, ?, 'duplicate_of', ${NOW})`
+			)
+			.run(issue, original);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		const ready = check(ex, 'ready');
+		expect(ready.ok).toBe(false);
+		expect(ready.action?.href).toMatch(/^\/issues\/demo\/\d+$/);
 	});
 
 	it('reports parking with the attempt tally', async () => {
@@ -80,16 +130,98 @@ describe('explainDispatch', () => {
 		expect(ex.attempt_count).toBe(3);
 		expect(ex.attempt_limit).toBe(3);
 		expect(ex.verdict).toBe('Parked — agents struck out 3 times here');
+		const parked = check(ex, 'not_parked');
+		expect(parked.action?.label).toBe('Resume');
+		expect(parked.action?.cli).toMatch(/^tines issues resume demo\/\d+$/);
+		// The Resume button is the parked banner on the same page, so no link.
+		expect(parked.action?.href).toBeUndefined();
 	});
 
 	it('says so when no rule matches', async () => {
 		const t = world();
-		addRunner(t);
+		addRunner(t, { name: 'macbook-claude' });
 		const issue = addIssue(t);
 		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
 		expect(ex.matched_rule).toBeNull();
 		expect(check(ex, 'routed').ok).toBe(false);
+		expect(check(ex, 'routed').action).toEqual({
+			label: 'Add a routing rule',
+			href: '/agents#routing',
+			cli: 'tines routing set macbook-claude'
+		});
 		expect(ex.verdict).toBe('No matching routing rule — nothing will dispatch');
+	});
+
+	it('falls back to a placeholder runner name when the account has none', async () => {
+		const t = world();
+		const issue = addIssue(t);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		expect(check(ex, 'routed').action?.cli).toBe('tines routing set <runner>');
+	});
+
+	it('offers to edit a matched rule that has no targets', async () => {
+		const t = world();
+		addRunner(t);
+		addRule(t, { targets: [] });
+		const issue = addIssue(t);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		const routed = check(ex, 'routed');
+		expect(routed.ok).toBe(false);
+		expect(routed.detail).toContain('no targets');
+		expect(routed.action).toEqual({ label: 'Edit the rule', href: '/agents#routing' });
+	});
+
+	it('explains a tier-only rule without a broader runner source', async () => {
+		const t = world();
+		addRule(t, { state: OPEN, targets: [{ runner_id: '*', tier: 'smartest' }] });
+		const issue = addIssue(t);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		const routed = check(ex, 'routed');
+		expect(ex.matched_rule?.scope_label).toBe('state Open');
+		expect(ex.runner_rule).toBeNull();
+		expect(ex.tier_override).toBe('smartest');
+		expect(routed.detail).toContain('no broader routing rule supplies runners');
+		expect(routed.action).toEqual({ label: 'Configure routing', href: '/agents#routing' });
+		expect(ex.verdict).toBe('No inherited runners — add or edit a broader routing rule');
+	});
+
+	it('reports both tier and runner-rule provenance with effective target tiers', async () => {
+		const t = world();
+		const first = addRunner(t);
+		const second = addRunner(t);
+		const runnerRule = addRule(t, { targets: [{ runner_id: first }, { runner_id: second }] });
+		const tierRule = addRule(t, {
+			state: OPEN,
+			targets: [{ runner_id: '*', tier: 'cheapest' }]
+		});
+		const issue = addIssue(t);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		expect(ex.matched_rule).toMatchObject({ rule_id: tierRule, scope_label: 'state Open' });
+		expect(ex.runner_rule).toMatchObject({ rule_id: runnerRule, scope_label: 'global' });
+		expect(ex.tier_override).toBe('cheapest');
+		expect(ex.targets.map((target) => [target.runner_id, target.tier])).toEqual([
+			[first, 'cheapest'],
+			[second, 'cheapest']
+		]);
+	});
+
+	it('offers to clear a pin that points at a runner which no longer exists', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t, { pinnedRunner: runner });
+		// The pin column has no ON DELETE, so reach the dangling state the
+		// verdict line already knows about the only way the test can.
+		t.sqlite.exec(
+			`PRAGMA foreign_keys = OFF; DELETE FROM runner WHERE id = '${runner}'; PRAGMA foreign_keys = ON;`
+		);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		const routed = check(ex, 'routed');
+		// The engine would still try the pin, so the check itself passes —
+		// the remedy rides along with the verdict that nothing can run.
+		expect(routed.ok).toBe(true);
+		expect(ex.verdict).toBe('Pinned to a removed runner — clear the pin');
+		expect(routed.action?.label).toBe('Clear the pin');
+		expect(routed.action?.cli).toMatch(/^tines issues assign demo\/\d+ --clear$/);
 	});
 
 	it('names the matched rule and per-target verdicts with tier→model resolution', async () => {
@@ -107,6 +239,68 @@ describe('explainDispatch', () => {
 		expect(ex.targets[0].model).toMatch(/^claude-/);
 		expect(ex.targets[1]).toMatchObject({ verdict: 'offline', tier: 'cheapest' });
 		expect(ex.verdict).toContain('is paused');
+	});
+
+	it('says a rate-limited runner is waiting on its usage window, not failing', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		t.sqlite
+			.prepare("UPDATE runner SET backoff_until = ?, backoff_reason = 'rate_limit' WHERE id = ?")
+			.run(NOW + 3_600_000, runner);
+
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		expect(ex.targets[0].verdict).toBe('rate_limited');
+		expect(ex.verdict).toContain('hit its usage limit');
+		expect(ex.verdict).toContain(new Date(NOW + 3_600_000).toISOString());
+		expect(ex.verdict).not.toContain('repeated failures');
+	});
+
+	it('labels a scoped rule with the project and state names', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		addRule(t, { project: PROJECT, state: OPEN, targets: [{ runner_id: runner }] });
+		const issue = addIssue(t);
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		expect(ex.matched_rule!.scope_label).toBe('project demo · state Open');
+	});
+
+	it("names the label in a label-scoped rule's scope", async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const docs = addLabel(t, 'docs');
+		addRule(t, { project: PROJECT, label: docs, targets: [{ runner_id: runner }] });
+		const issue = addIssue(t, { labels: [docs] });
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		expect(ex.matched_rule!.scope_label).toBe('project demo · label docs');
+		expect(ex.ambiguous_rules).toEqual([]);
+		expect(check(ex, 'routed').ok).toBe(true);
+	});
+
+	it('names both rules, and refuses to route, when two label rules tie', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const docs = addLabel(t, 'docs');
+		const security = addLabel(t, 'security');
+		addRule(t, { label: docs, targets: [{ runner_id: runner }] });
+		addRule(t, { label: security, targets: [{ runner_id: runner }] });
+		const issue = addIssue(t, { labels: [docs, security] });
+
+		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
+		expect(ex.matched_rule).toBeNull();
+		expect(ex.ambiguous_rules.map((r) => r.scope_label).sort()).toEqual([
+			'label docs',
+			'label security'
+		]);
+		expect(ex.eligible).toBe(false);
+		expect(check(ex, 'routed').ok).toBe(false);
+		expect(check(ex, 'routed').detail).toContain('neither is more specific');
+		expect(check(ex, 'routed').action).toEqual({
+			label: 'Make one rule more specific',
+			href: '/agents#routing'
+		});
+		expect(ex.verdict).toBe('Two routing rules tie — make one more specific');
 	});
 
 	it('shows the pin (replacing rules) even when a rule would match', async () => {
@@ -129,7 +323,10 @@ describe('explainDispatch', () => {
 		const runner = addRunner(t);
 		addRule(t, { targets: [{ runner_id: runner }] });
 		const issue = addIssue(t);
-		await runDispatchPass(t.db, t.env, USER, { now: NOW, adapters: { local: createFakeAdapter() } });
+		await runDispatchPass(t.db, t.env, USER, {
+			now: NOW,
+			adapters: { local: createFakeAdapter() }
+		});
 
 		const ex = (await explainDispatch(t.db, USER, issue, NOW))!;
 		expect(ex.active_run).not.toBeNull();
@@ -147,7 +344,10 @@ describe('explainDispatch', () => {
 		addIssue(t, { updatedAt: NOW - 2000 });
 		const waiting = addIssue(t, { updatedAt: NOW - 1000 });
 		// The cap is consumed by the oldest issue's run.
-		await runDispatchPass(t.db, t.env, USER, { now: NOW, adapters: { local: createFakeAdapter() } });
+		await runDispatchPass(t.db, t.env, USER, {
+			now: NOW,
+			adapters: { local: createFakeAdapter() }
+		});
 
 		const ex = (await explainDispatch(t.db, USER, waiting, NOW))!;
 		expect(ex.eligible).toBe(true);
@@ -155,7 +355,9 @@ describe('explainDispatch', () => {
 		// One eligible issue (the middle one) is ahead; the busy one is out of
 		// the pool while its run holds the claim.
 		expect(ex.queue_position).toBe(1);
-		expect(ex.verdict).toBe(`Eligible — waiting for capacity on ${runner} (1 eligible issue ahead)`);
+		expect(ex.verdict).toBe(
+			`Eligible — waiting for capacity on ${runner} (1 eligible issue ahead)`
+		);
 
 		const exBusy = (await explainDispatch(t.db, USER, busy, NOW))!;
 		expect(exBusy.queue_position).toBeNull();

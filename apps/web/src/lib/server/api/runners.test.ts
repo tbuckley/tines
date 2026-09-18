@@ -1,6 +1,16 @@
+import {
+	recordDispatchEffects,
+	TEST_NOOP_DISPATCH_EFFECTS
+} from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
 import { ApiFail, type ActorContext } from './core';
-import { deleteRunner, planRunnerRemoval, requireTier, runnerOnline, type RunnerRemovalRefs } from './runners';
+import {
+	deleteRunner,
+	planRunnerRemoval,
+	requireTier,
+	runnerOnline,
+	type RunnerRemovalRefs
+} from './runners';
 import { createTestDb, type TestDb } from './test-db';
 
 const runner = { id: 'rnr_1', name: 'laptop-m4' };
@@ -133,7 +143,8 @@ function seedRemovalFixture(t: TestDb) {
 			VALUES ('iss_1', 'prj_1', 12, 'Fix it', 'wf_standard', 'wfs_std_open', 'rnr_1', 'smartest', ${NOW}, ${NOW});
 		INSERT INTO routing_rule (id, user_id, project_id, workflow_state_id, targets, created_at, updated_at) VALUES
 			('rul_1', 'u1', NULL, NULL, '[{"runner_id":"rnr_1"},{"runner_id":"rnr_2","tier":"cheapest"}]', ${NOW}, ${NOW}),
-			('rul_2', 'u1', 'prj_1', NULL, '[{"runner_id":"rnr_1","tier":"smartest"}]', ${NOW}, ${NOW});
+			('rul_2', 'u1', 'prj_1', NULL, '[{"runner_id":"rnr_1","tier":"smartest"}]', ${NOW}, ${NOW}),
+			('rul_3', 'u1', NULL, 'wfs_std_open', '[{"runner_id":"*","tier":"smartest"}]', ${NOW}, ${NOW});
 		INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, state_id_at_start, created_at)
 			VALUES ('arun_1', 'u1', 'iss_1', 'rnr_1', 'completed', 'balanced', 'wfs_std_open', ${NOW});
 		INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, agent_run_id, expires_at, created_at)
@@ -145,8 +156,9 @@ describe('deleteRunner (db batch)', () => {
 	it('force cascade lands in one batch with no FK failure', async () => {
 		const t = createTestDb();
 		seedRemovalFixture(t);
+		const effects = recordDispatchEffects();
 
-		await deleteRunner(t.db, t.env, actor, 'rnr_1', true);
+		await deleteRunner(t.db, t.env, actor, effects, 'rnr_1', true);
 
 		// Runner gone; the other survives.
 		expect(t.all(`SELECT id FROM runner`).map((r) => r.id)).toEqual(['rnr_2']);
@@ -161,24 +173,37 @@ describe('deleteRunner (db batch)', () => {
 		]);
 		// Targets stripped; the emptied rule is kept, flagged by its empty list.
 		const targets = Object.fromEntries(
-			t.all(`SELECT id, targets FROM routing_rule`).map((r) => [r.id, JSON.parse(r.targets as string)])
+			t
+				.all(`SELECT id, targets FROM routing_rule`)
+				.map((r) => [r.id, JSON.parse(r.targets as string)])
 		);
 		expect(targets).toEqual({
 			rul_1: [{ runner_id: 'rnr_2', tier: 'cheapest' }],
-			rul_2: []
+			rul_2: [],
+			rul_3: [{ runner_id: '*', tier: 'smartest' }]
 		});
 		// Every cascade step recorded its event.
 		const types = t.all(`SELECT type FROM event ORDER BY id`).map((r) => r.type);
 		expect(types.filter((x) => x === 'routing_rule.updated')).toHaveLength(2);
 		expect(types).toContain('issue.updated');
 		expect(types).toContain('runner.removed');
+		expect(effects.count()).toBe(1);
 	});
 
 	it('refuses without force, and the db is untouched', async () => {
 		const t = createTestDb();
 		seedRemovalFixture(t);
-		await expect(deleteRunner(t.db, t.env, actor, 'rnr_1', false)).rejects.toMatchObject({
-			code: 'runner_referenced'
+		await expect(
+			deleteRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'rnr_1', false)
+		).rejects.toMatchObject({
+			code: 'runner_referenced',
+			// The referenced rules are named with the canonical scope label.
+			details: {
+				rules: [
+					{ rule_id: 'rul_1', label: 'global' },
+					{ rule_id: 'rul_2', label: 'project demo' }
+				]
+			}
 		});
 		expect(t.all(`SELECT id FROM runner`)).toHaveLength(2);
 		expect(t.all(`SELECT pinned_runner_id FROM issue WHERE id = 'iss_1'`)).toEqual([
@@ -201,12 +226,19 @@ describe('deleteRunner (db batch)', () => {
 			return realBatch(statements);
 		};
 
-		await expect(deleteRunner(t.db, t.env, actor, 'rnr_1', true)).rejects.toMatchObject({
+		const effects = recordDispatchEffects();
+		await expect(deleteRunner(t.db, t.env, actor, effects, 'rnr_1', true)).rejects.toMatchObject({
 			code: 'runner_busy'
 		});
+		expect(effects.count()).toBe(0);
 		// The in-batch guards made every statement a no-op: nothing stripped,
 		// nothing deleted, no events recorded.
-		expect(t.all(`SELECT id FROM runner`).map((r) => r.id).sort()).toEqual(['rnr_1', 'rnr_2']);
+		expect(
+			t
+				.all(`SELECT id FROM runner`)
+				.map((r) => r.id)
+				.sort()
+		).toEqual(['rnr_1', 'rnr_2']);
 		expect(t.all(`SELECT pinned_runner_id FROM issue WHERE id = 'iss_1'`)).toEqual([
 			{ pinned_runner_id: 'rnr_1' }
 		]);
@@ -217,5 +249,20 @@ describe('deleteRunner (db batch)', () => {
 			{ agent_run_id: 'arun_1' }
 		]);
 		expect(t.all(`SELECT type FROM event`)).toEqual([]);
+	});
+
+	it('stays silent and preserves the runner when its deletion batch rejects', async () => {
+		const t = createTestDb();
+		seedRemovalFixture(t);
+		const effects = recordDispatchEffects();
+		t.env.DB.batch = async () => {
+			throw new Error('injected runner deletion batch failure');
+		};
+		await expect(deleteRunner(t.db, t.env, actor, effects, 'rnr_1', true)).rejects.toThrow(
+			'injected runner deletion batch failure'
+		);
+		expect(effects.count()).toBe(0);
+		expect(t.all("SELECT id FROM runner WHERE id = 'rnr_1'")).toEqual([{ id: 'rnr_1' }]);
+		expect(t.all('SELECT type FROM event')).toEqual([]);
 	});
 });

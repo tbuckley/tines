@@ -108,6 +108,23 @@ canonical scope label is unchanged everywhere else (UI chips, events,
 `parts[].scope.label`, proposal references), and a non-journal prompt in
 the same layer keeps the ordinary heading.
 
+**The journal follows the root of the state's inheritance chain.** Once a
+workflow state may inherit context from another state (see
+`specs/context/SPEC.md`), "the journal for this stage" would otherwise mean
+one file per state — and two Merging states inheriting from one base would
+learn the same lesson twice and prune neither. So the writable journal is
+the `journal` at `project ∧ the root ancestor` of the launch state's chain,
+not the state's own. `GET /api/v1/issues/:id/journal` resolves it, so
+`tines journal append/show/rewrite <ref>` are unchanged in form and land
+there; `--state` still addresses any state directly. A state that inherits
+from nothing is its own root, so this is inert for it.
+
+A journal left on a state that later *gains* a parent keeps stitching into
+the prompt under its own `## Journal (<scope label>)` heading — it is
+knowledge, and dropping it would lose it — but it is read-only: only the
+root's is handed out. A merge helper folds such a legacy journal into the
+root later; until then the prompt says so in as many words.
+
 **Broader tiers are propose-only for agents.** Project-, state-, and
 global-scoped context governs work the proposing agent cannot see, so
 changes route through review (below) instead of direct writes.
@@ -154,23 +171,41 @@ Agents address their journal by the one reference they already hold — the
 issue — never by item id:
 
 ```
-tines journal show    <project>/<number> [--json]
-tines journal append  <project>/<number> <markdown>
-tines journal rewrite <project>/<number> --body <md|@file> --expect-version <n>
+tines journal show    [--state <workflow>/<state>] <project>/<number> [--json]
+tines journal append  [--state <workflow>/<state>] <project>/<number> <markdown>
+tines journal rewrite [--state <workflow>/<state>] <project>/<number> --body <md|@file> --expect-version <n>
 ```
 
-The CLI resolves the issue's project and **current** state and targets the
-prompt item named `journal` at exactly that scope (`project ∧ state`).
-`append` finds-or-creates it: if absent, the item is created with the text
-as its first body (on a create race, the loser retries as an append).
-`show` prints the body and version; `rewrite` is the version-checked
-whole-body replace. Following the *current* state is deliberate — after a
-transition, appends land in the new stage's journal, which is where
-lessons about that stage belong.
+The CLI asks `GET /api/v1/issues/:id/journal` which scope it owns, and
+targets the prompt item named `journal` at exactly that scope
+(`project ∧ state`). `append` finds-or-creates it: if absent, the item is
+created with the text as its first body (on a create race, the loser
+retries as an append). `show` prints the body and version; `rewrite` is
+the version-checked whole-body replace.
 
-These are CLI sugar over the generic endpoints (exact-scope list + create
-/ append / PATCH); JSON-only agents do the same dance. No new journal
-resource is added to the API.
+The scope is the state the caller's **run was launched in**
+(`agent_run.state_id_at_start`, reached from the run key via
+`api_key.agent_run_id`) — not the issue's current state. A run's identity
+is its stage: the lessons it learns belong to the stage that did the work,
+and the launch prompt tells agents to move the issue last, so resolving
+against the current state silently misfiled every lesson appended after a
+transition. Callers that are not a run — a browser session, a named PAT,
+or a run key presented against a different issue — get the issue's current
+state, as does a run whose launch state a workflow edit has since deleted;
+in the latter two cases the response carries a `note` saying so, and the
+CLI prints it to stderr. Resolution never fails on an anchor problem: a
+lost lesson is worse than a misfiled one.
+
+`--state <workflow>/<state>` overrides the resolution entirely — the
+recovery tool for a lesson already filed in the wrong journal, and the way
+a curator reads another stage's journal. Note the argument order: `append`
+is `passThroughOptions()` (so a lesson may itself start with `-`), which
+makes a *trailing* `--state` a hard parse error rather than a silent
+no-op; the flag goes before `<ref>`, and the help text says so.
+
+Apart from that one read endpoint, these are CLI sugar over the generic
+endpoints (exact-scope list + create / append / PATCH); JSON-only agents
+do the same dance. Writes stay on the generic context endpoints.
 
 The asymmetry is the point: the journal is reachable in one id-free,
 copy-pasteable command, while directly editing any broader item requires
@@ -219,6 +254,8 @@ layer):
 Your journal for this project and stage is the "Journal" section above
 (currently v7).
 
+Appends land in this stage's journal even after you move the issue.
+
 - Append a lesson: `tines journal append Tines/1 "- <date>: <lesson>"`
 - Fix or prune entries: `tines journal show Tines/1 --json`, revise, then
   `tines journal rewrite Tines/1 --body @file --expect-version 7`
@@ -232,6 +269,39 @@ Without one:
 No journal exists yet for project Tines · state Implementing. Start one:
 `tines journal append Tines/1 "- <date>: <lesson>"`
 ```
+
+When the state inherits, the section names the writable journal rather than
+pointing at "the section above" — there may be two `## Journal` headings up
+there, and only one of them is writable:
+
+```markdown
+### Journal
+
+Your journal for this project and stage is the journal of Shared stages / Merging
+(currently v7).
+
+The "Journal (project Tines · state Implementing)" section above is read-only;
+move anything still worth keeping into your journal with your next append.
+
+Appends land in this stage's journal even after you move the issue.
+```
+
+The base is named `<workflow> / <state>`, qualified for the same reason the
+inherited layers' scope labels are: two states in different workflows may
+share a name. The empty case names it the same way
+(`No journal exists yet for project Tines · state Shared stages / Merging`).
+
+The read-only paragraph appears whenever a journal other than the writable one
+is stitched, in both shapes — including the empty one, which is the
+configuration this rule ships into: the children carry their journals and the
+new base carries none, so a populated `## Journal` heading sits directly above
+a line saying no journal exists yet. It names those sections by their headings
+rather than by the issue's own state, because a chain may be three deep and
+the legacy journal may sit part-way up it (or on more than one state, in which
+case every section is named and the sentence is plural). For a state with no
+parent nothing above it is stitched but its own journal, so every line is
+byte-for-byte what it was before inheritance existed — with or without a
+journal of its own.
 
 Then two factual footnote lines, each present only when non-empty:
 
@@ -400,6 +470,8 @@ Add a comment: `tines issues comment Tines/12 "<markdown>"`
 Your journal for this project and stage is the "Journal" section above
 (currently v7).
 
+Appends land in this stage's journal even after you move the issue.
+
 - Append a lesson: `tines journal append Tines/12 "- <date>: <lesson>"`
 - Fix or prune entries: `tines journal show Tines/12 --json`, revise, then
   `tines journal rewrite Tines/12 --body @file --expect-version 7`
@@ -438,19 +510,20 @@ change.
 | Change | Detail |
 | --- | --- |
 | `POST /api/v1/context` | Scope may be empty (global). |
-| `POST /api/v1/projects` | Optional `initial_prompt` → project + its `conventions` prompt item, atomically. |
+| `POST /api/v1/projects` | Optional `initial_prompt` → project + its `conventions` prompt item, atomically. Optional `starter` applies a whole built-in bundle in the same batch — see [starters/SPEC.md](../starters/SPEC.md). |
 | `POST/PATCH /api/v1/workflows*` | Optional `prompt` per **new** state → the state + its `instructions` prompt item, atomically; 422 on existing states. |
 | `PATCH /api/v1/context/:id` | Accepts `expected_version`; 409 with the current item on mismatch. Unsetting the last scope dimension now yields a global item instead of a 422. |
 | `POST /api/v1/context/:id/append` | New. `{ text, expected_version? }`; prompts only; atomic; cap-checked; returns the updated item. |
 | everywhere items serialize | `version` included (list rows, detail, effective-context entries). |
 | `GET /api/v1/issues/:id/prompt` | Issue block gains the `### Journal` section and the names-only shared-context footnote. |
+| `GET /api/v1/issues/:id/journal` | New. Read-only; resolves which journal the caller owns — `{ scope, anchor: 'run' \| 'current', note, item }`, run-anchored for run keys. |
 
 ## CLI
 
 ```
-tines journal show    <project>/<number> [--json]
-tines journal append  <project>/<number> <markdown>
-tines journal rewrite <project>/<number> --body <md|@file> --expect-version <n>
+tines journal show    [--state <workflow>/<state>] <project>/<number> [--json]
+tines journal append  [--state <workflow>/<state>] <project>/<number> <markdown>
+tines journal rewrite [--state <workflow>/<state>] <project>/<number> --body <md|@file> --expect-version <n>
 tines context edit <id> … --expect-version <n>
 tines context create …                       # scope flags now optional → global
 tines context init                           # seed agent-guidelines if absent

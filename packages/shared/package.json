@@ -7,9 +7,17 @@
 		".": "./src/index.ts"
 	},
 	"scripts": {
-		"check": "tsc --noEmit"
+		"check": "tsc --noEmit",
+		"test": "vitest run"
 	},
 	"devDependencies": {
-		"typescript": "^6.0.3"
+		"@types/node": "^26.2.0",
+		"typescript": "^6.0.3",
+		"vitest": "^4.1.11"
+	},
+	"dependencies": {
+		"mdast-util-from-markdown": "^2.0.3",
+		"mdast-util-gfm": "^3.1.0",
+		"micromark-extension-gfm": "^3.0.0"
 	}
 }

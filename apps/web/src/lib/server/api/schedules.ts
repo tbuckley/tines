@@ -5,12 +5,13 @@ import {
 	ScheduleInputError,
 	validateScheduleCron,
 	validateTimezone,
+	type ArchivedFilter,
 	type CreateScheduleInput,
 	type Schedule,
 	type SchedulePreset,
 	type UpdateScheduleRequest
 } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import type { CompiledQuery, Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import {
 	instanceInserts,
@@ -28,7 +29,10 @@ import {
 	type ActorContext,
 	type Page
 } from './core';
+import { assertWritable } from './archive';
+import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { eventInsert } from './events';
+import { insertValues, type QueryGuard } from './query-guard';
 
 // ---------------------------------------------------------------------------
 // Recurrence input validation
@@ -103,7 +107,7 @@ export function resolveTimezone(tz: unknown): string {
 // here), so the workflow lookup and state resolution live here in the small
 // form the schedule needs.
 
-interface ScheduleWorkflow {
+export interface ScheduleWorkflow {
 	id: string;
 	name: string;
 	initial_state_id: string;
@@ -141,15 +145,22 @@ async function loadScheduleWorkflow(
  * workflow's initial state normalizes to null — "follow the workflow's
  * initial state" — so the schedule tracks the workflow if that changes.
  */
-function resolveStartState(workflow: ScheduleWorkflow, ref: string): string | null {
-	const state = workflow.states.find((s) => s.id === ref) ?? workflow.states.find((s) => s.name === ref);
+export function resolveStartState(
+	workflow: ScheduleWorkflow,
+	ref: string,
+	options: { preserveExplicitInitial?: boolean } = {}
+): string | null {
+	const state =
+		workflow.states.find((s) => s.id === ref) ?? workflow.states.find((s) => s.name === ref);
 	if (!state) {
 		throw new ApiFail(422, 'unknown_state', `Workflow "${workflow.name}" has no state "${ref}"`, {
 			field: 'state',
 			known_states: workflow.states.map((s) => ({ id: s.id, name: s.name }))
 		});
 	}
-	return state.id === workflow.initial_state_id ? null : state.id;
+	return !options.preserveExplicitInitial && state.id === workflow.initial_state_id
+		? null
+		: state.id;
 }
 
 async function assertScheduleNameAvailable(
@@ -187,6 +198,7 @@ export function scheduleQuery(db: Kysely<Database>, userId: string) {
 		.selectAll('scheduled_task')
 		.select([
 			'project.name as project_name',
+			'project.archived_at as project_archived_at',
 			'workflow.name as workflow_name',
 			'start_state.name as state_name'
 		])
@@ -217,6 +229,7 @@ export function serializeSchedule(row: ScheduleRow): Schedule {
 		id: row.id,
 		project_id: row.project_id,
 		project_name: row.project_name,
+		project_archived_at: row.project_archived_at,
 		name: row.name,
 		title_template: row.title_template,
 		description_template: row.description_template,
@@ -244,6 +257,8 @@ export interface ScheduleListFilters {
 	enabled?: boolean;
 	/** Restrict to one project id (the nested per-project route). */
 	projectId?: string;
+	/** Archived projects' schedules, when no project is named; default `'false'`. */
+	archived?: ArchivedFilter;
 }
 
 export async function listSchedules(
@@ -261,6 +276,12 @@ export async function listSchedules(
 	if (filters.enabled !== undefined) {
 		q = q.where('scheduled_task.enabled', '=', filters.enabled ? 1 : 0);
 	}
+	// A named project lists its schedules whatever its state; without one,
+	// archived projects drop out by default.
+	if (!filters.projectId && !filters.project) {
+		if ((filters.archived ?? 'false') === 'false') q = q.where('project.archived_at', 'is', null);
+		else if (filters.archived === 'true') q = q.where('project.archived_at', 'is not', null);
+	}
 	if (page.cursor) {
 		const { createdAt, id } = page.cursor;
 		q = q.where((eb) =>
@@ -275,7 +296,10 @@ export async function listSchedules(
 		.orderBy('scheduled_task.id desc')
 		.limit(page.limit + 1)
 		.execute();
-	return { items: rows.slice(0, page.limit).map(serializeSchedule), hasMore: rows.length > page.limit };
+	return {
+		items: rows.slice(0, page.limit).map(serializeSchedule),
+		hasMore: rows.length > page.limit
+	};
 }
 
 export async function getSchedule(
@@ -283,7 +307,9 @@ export async function getSchedule(
 	userId: string,
 	id: string
 ): Promise<Schedule> {
-	const row = await scheduleQuery(db, userId).where('scheduled_task.id', '=', id).executeTakeFirst();
+	const row = await scheduleQuery(db, userId)
+		.where('scheduled_task.id', '=', id)
+		.executeTakeFirst();
 	if (!row) throw notFound();
 	return serializeSchedule(row);
 }
@@ -325,10 +351,22 @@ export async function prepareSchedule(
 	titleTemplate: string,
 	now: number
 ): Promise<PreparedSchedule> {
-	const name = (optionalString(input.name, 'schedule.name', { max: 200 })?.trim() || titleTemplate).slice(0, 200);
+	const prepared = validateScheduleCreateFields(input, titleTemplate, now);
+	await assertScheduleNameAvailable(db, projectId, prepared.name);
+	return { id: newId('sch'), ...prepared };
+}
+
+/** Pure recurrence/name validation, also usable before prospective workflows exist. */
+export function validateScheduleCreateFields(
+	input: CreateScheduleInput,
+	titleTemplate: string,
+	now: number
+): Omit<PreparedSchedule, 'id'> {
+	const name = (
+		optionalString(input.name, 'schedule.name', { max: 200 })?.trim() || titleTemplate
+	).slice(0, 200);
 	const recurrence = resolveRecurrence(input);
 	const timezone = resolveTimezone(input.timezone);
-	await assertScheduleNameAvailable(db, projectId, name);
 	let nextRunAt: number;
 	try {
 		nextRunAt = nextOccurrenceFromCron(recurrence.cron, timezone, now);
@@ -336,7 +374,6 @@ export async function prepareSchedule(
 		inputFail(e, 'invalid_recurrence');
 	}
 	return {
-		id: newId('sch'),
 		name,
 		recurrence,
 		timezone,
@@ -348,6 +385,83 @@ export async function prepareSchedule(
 // ---------------------------------------------------------------------------
 // Mutations
 
+/**
+ * Ordinary schedule row/event builder. Defaults to a paused, never-run schedule.
+ * The initial-issue mode is for createIssue, which supplies the first instance
+ * separately in the same batch; this function never creates or dispatches work.
+ */
+export function scheduleInsertQueries(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	options: {
+		schedule: PreparedSchedule;
+		projectId: string;
+		workflowId: string;
+		stateId: string | null;
+		stateName: string | null;
+		titleTemplate: string;
+		descriptionTemplate: string;
+		now: number;
+		mode?: 'paused' | 'initial-issue';
+		guard?: QueryGuard;
+		eventId?: string;
+	}
+): [CompiledQuery, CompiledQuery] {
+	const { schedule, projectId, workflowId, stateId, stateName, now } = options;
+	const initial = options.mode === 'initial-issue';
+	return [
+		insertValues(
+			db,
+			'scheduled_task',
+			{
+				id: schedule.id,
+				project_id: projectId,
+				name: schedule.name,
+				title_template: options.titleTemplate,
+				description_template: options.descriptionTemplate,
+				workflow_id: workflowId,
+				state_id: stateId,
+				cron: schedule.recurrence.cron,
+				preset: schedule.recurrence.presetJson,
+				timezone: schedule.timezone,
+				require_all_closed: schedule.requireAllClosed ? 1 : 0,
+				enabled: initial ? 1 : 0,
+				next_run_at: schedule.nextRunAt,
+				last_run_at: initial ? now : null,
+				run_count: initial ? 1 : 0,
+				created_at: now,
+				updated_at: now
+			},
+			options.guard
+		),
+		eventInsert(
+			db,
+			actor,
+			{
+				id: options.eventId,
+				createdAt: now,
+				type: 'scheduled_task.created',
+				projectId,
+				payload: {
+					schedule_id: schedule.id,
+					name: schedule.name,
+					cron: schedule.recurrence.cron,
+					timezone: schedule.timezone,
+					require_all_closed: schedule.requireAllClosed,
+					...(stateId ? { start_state: stateName } : {}),
+					...(!initial ? { enabled: false, initial_issue_created: false } : {})
+				}
+			},
+			options.guard
+		)
+	];
+}
+
+/** The gate's view of a schedule's project. */
+function scheduleProject(s: Schedule) {
+	return { id: s.project_id, name: s.project_name, archived_at: s.project_archived_at };
+}
+
 export async function updateSchedule(
 	db: Kysely<Database>,
 	env: Env,
@@ -356,8 +470,10 @@ export async function updateSchedule(
 	body: UpdateScheduleRequest
 ): Promise<Schedule> {
 	const current = await getSchedule(db, actor.userId, id);
+	await assertWritable(db, actor, scheduleProject(current));
 
-	const name = body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
+	const name =
+		body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
 	const titleTemplate =
 		body.title_template !== undefined
 			? requireString(body.title_template, 'title_template', { max: 500 }).trim()
@@ -395,11 +511,17 @@ export async function updateSchedule(
 	const recurrenceEdited = body.preset !== undefined || body.cron !== undefined;
 	const recurrence: ResolvedRecurrence = recurrenceEdited
 		? resolveRecurrence(body)
-		: { cron: current.cron, presetJson: current.preset ? JSON.stringify(current.preset) : null, preset: current.preset };
+		: {
+				cron: current.cron,
+				presetJson: current.preset ? JSON.stringify(current.preset) : null,
+				preset: current.preset
+			};
 	const timezone = body.timezone !== undefined ? resolveTimezone(body.timezone) : current.timezone;
 
 	const requireAllClosed =
-		body.require_all_closed !== undefined ? body.require_all_closed === true : current.require_all_closed;
+		body.require_all_closed !== undefined
+			? body.require_all_closed === true
+			: current.require_all_closed;
 	const enabled = body.enabled !== undefined ? body.enabled === true : current.enabled;
 
 	if (name !== current.name) {
@@ -424,7 +546,8 @@ export async function updateSchedule(
 	const payload: Record<string, unknown> = { schedule_id: id, name };
 	if (name !== current.name) payload.renamed = { from: current.name, to: name };
 	if (titleTemplate !== current.title_template) payload.title_template_changed = true;
-	if (descriptionTemplate !== current.description_template) payload.description_template_changed = true;
+	if (descriptionTemplate !== current.description_template)
+		payload.description_template_changed = true;
 	if (recurrenceEdited && recurrence.cron !== current.cron) {
 		payload.recurrence = {
 			from: describeRecurrence(current.preset, current.cron),
@@ -467,7 +590,13 @@ export async function updateSchedule(
 			.where('id', '=', id)
 			.compile(),
 		...(changed
-			? [eventInsert(db, actor, { type: 'scheduled_task.updated', projectId: current.project_id, payload })]
+			? [
+					eventInsert(db, actor, {
+						type: 'scheduled_task.updated',
+						projectId: current.project_id,
+						payload
+					})
+				]
 			: [])
 	]);
 	return getSchedule(db, actor.userId, id);
@@ -480,10 +609,15 @@ export async function deleteSchedule(
 	id: string
 ): Promise<void> {
 	const current = await getSchedule(db, actor.userId, id);
+	await assertWritable(db, actor, scheduleProject(current));
 	await runAtomic(env, [
 		// Explicitly unlink issues (the FK's SET NULL is the backstop); their
 		// issue.created events keep the schedule's identity for history.
-		db.updateTable('issue').set({ scheduled_task_id: null }).where('scheduled_task_id', '=', id).compile(),
+		db
+			.updateTable('issue')
+			.set({ scheduled_task_id: null })
+			.where('scheduled_task_id', '=', id)
+			.compile(),
 		db.deleteFrom('scheduled_task').where('id', '=', id).compile(),
 		eventInsert(db, actor, {
 			type: 'scheduled_task.deleted',
@@ -504,9 +638,15 @@ export async function runScheduleNow(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
+	effects: DispatchEffects,
 	id: string
 ): Promise<string> {
 	const schedule = await getScheduleExecRow(db, actor.userId, id);
+	await assertWritable(db, actor, {
+		id: schedule.project_id,
+		name: schedule.project_name,
+		archived_at: schedule.project_archived_at
+	});
 
 	if (schedule.require_all_closed) {
 		const blockers = await openInstancesQuery(db, schedule.id).execute();
@@ -515,9 +655,17 @@ export async function runScheduleNow(
 				422,
 				'schedule_blocked',
 				`Schedule "${schedule.name}" requires all previous instances to be closed; ${blockers.length} still open: ${blockers
-					.map((b) => `#${b.number} "${b.title}"`)
+					.map((b) => `${b.project_name}/${b.number} "${b.title}"`)
 					.join(', ')}`,
-				{ open_instances: blockers.map((b) => ({ issue_id: b.id, number: b.number, title: b.title })) }
+				{
+					open_instances: blockers.map((b) => ({
+						issue_id: b.id,
+						project_id: b.project_id,
+						project_name: b.project_name,
+						number: b.number,
+						title: b.title
+					}))
+				}
 			);
 		}
 	}
@@ -528,6 +676,7 @@ export async function runScheduleNow(
 		actor: { userId: actor.userId, apiKeyId: actor.apiKeyId }
 	});
 	await runAtomic(env, queries);
+	effects.signalDispatch();
 	return issueId;
 }
 
@@ -566,7 +715,12 @@ export async function assertStatesNotScheduled(
 	const schedules = await db
 		.selectFrom('scheduled_task')
 		.innerJoin('workflow_state as state', 'state.id', 'scheduled_task.state_id')
-		.select(['scheduled_task.id', 'scheduled_task.name', 'state.id as state_id', 'state.name as state_name'])
+		.select([
+			'scheduled_task.id',
+			'scheduled_task.name',
+			'state.id as state_id',
+			'state.name as state_name'
+		])
 		.where('scheduled_task.state_id', 'in', stateIds)
 		.execute();
 	if (schedules.length > 0) {
@@ -587,6 +741,39 @@ export async function assertStatesNotScheduled(
 }
 
 /** Statements deleting a project's schedules (project deletion), with events. */
+/**
+ * Advances each schedule's `next_run_at` to its next future occurrence — the
+ * same resume-from-now rule `updateSchedule` applies when a paused schedule is
+ * re-enabled. Used by project unarchive so nothing fires a catch-up burst. A
+ * schedule whose cron or timezone no longer evaluates is left alone rather
+ * than failing the whole unarchive; the sweep already tolerates one.
+ */
+export function rearmScheduleQueries(
+	db: Kysely<Database>,
+	schedules: { id: string; cron: string; timezone: string }[],
+	now: number
+): { queries: CompiledQuery[] } {
+	const queries: CompiledQuery[] = [];
+	for (const s of schedules) {
+		let nextRunAt: number;
+		try {
+			nextRunAt = nextOccurrenceFromCron(s.cron, s.timezone, now);
+		} catch (e) {
+			console.error(`unarchive: schedule ${s.id} could not be re-armed:`, e);
+			continue;
+		}
+		queries.push(
+			db
+				.updateTable('scheduled_task')
+				.set({ next_run_at: nextRunAt, updated_at: now })
+				.where('id', '=', s.id)
+				.where('enabled', '=', 1)
+				.compile()
+		);
+	}
+	return { queries };
+}
+
 export async function projectScheduleDeletions(
 	db: Kysely<Database>,
 	actor: ActorContext,

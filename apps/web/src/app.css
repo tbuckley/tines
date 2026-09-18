@@ -3,6 +3,23 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* The generated `ui/alert-dialog` animates behind tw-animate-css's `data-open:`
+   / `data-closed:` variants, which Tailwind would otherwise compile to bare
+   `[data-open]` / `[data-closed]` selectors. bits-ui (2.19.0) stamps neither:
+   its dialog parts carry `data-state="open"|"closed"` and nothing else, so
+   those utilities matched no element and the AlertDialog never animated
+   (Tines/110). Redefining the variants against `data-state` keeps the
+   generated components working as written — including future
+   `shadcn-svelte add` output, which assumes these exist. */
+@custom-variant data-open (&[data-state='open']);
+@custom-variant data-closed (&[data-state='closed']);
+
+/* shadcn-svelte emits `data-checked:` utilities, but bits-ui (2.19.0) stamps
+   `data-state="checked"` and never a bare `data-checked` attribute, so those
+   utilities compile to a selector nothing matches. Map the variant here rather
+   than hand-editing generated components (see CLAUDE.md). */
+@custom-variant data-checked (&[data-state='checked']);
+
 :root {
 	color-scheme: light;
 	--radius: 0.625rem;
@@ -74,6 +91,13 @@
 	--sidebar-ring: oklch(0.551 0.027 264.364);
 }
 
+/* Chromium uses a select's computed background for its native popup. Let the
+   user-agent dark palette supply that background instead of carrying the
+   translucent form-control fill into the popup. */
+.dark select {
+	background-color: revert;
+}
+
 @theme inline {
 	--radius-sm: calc(var(--radius) - 4px);
 	--radius-md: calc(var(--radius) - 2px);
@@ -118,6 +142,18 @@
 	--cat-active: oklch(0.55 0.19 255);
 	--cat-awaiting_human: oklch(0.62 0.15 70);
 	--cat-done: oklch(0.55 0.15 150);
+
+	/* Label palette. Keys are stored in `label.color`; both blocks must stay
+	   in sync so a chip is legible in either theme. */
+	--label-slate: oklch(0.52 0.03 260);
+	--label-red: oklch(0.55 0.2 25);
+	--label-orange: oklch(0.58 0.16 50);
+	--label-amber: oklch(0.58 0.13 80);
+	--label-green: oklch(0.53 0.15 150);
+	--label-teal: oklch(0.53 0.11 190);
+	--label-blue: oklch(0.55 0.19 255);
+	--label-violet: oklch(0.55 0.2 300);
+	--label-pink: oklch(0.57 0.19 350);
 }
 
 .dark {
@@ -125,6 +161,16 @@
 	--cat-active: oklch(0.72 0.15 255);
 	--cat-awaiting_human: oklch(0.78 0.14 80);
 	--cat-done: oklch(0.72 0.14 150);
+
+	--label-slate: oklch(0.72 0.03 260);
+	--label-red: oklch(0.72 0.17 25);
+	--label-orange: oklch(0.75 0.14 50);
+	--label-amber: oklch(0.8 0.13 80);
+	--label-green: oklch(0.73 0.14 150);
+	--label-teal: oklch(0.74 0.1 190);
+	--label-blue: oklch(0.72 0.15 255);
+	--label-violet: oklch(0.73 0.16 300);
+	--label-pink: oklch(0.75 0.16 350);
 }
 
 @layer base {
@@ -275,13 +321,13 @@
 }
 
 /*
- * Directional tab slides on phones (below Tailwind's `sm`, where the bottom
+ * Directional tab slides below Tailwind's `md`, where the bottom
  * tab bar is shown). The layout stamps data-tab-slide on <html> when a
  * navigation crosses top-level tabs; the `page` group is <main>, so the
  * chrome stays put while the content glides toward the chosen tab. Desktop
  * never matches this query and keeps the plain crossfade.
  */
-@media (width < 40rem) {
+@media (width < 48rem) {
 	html[data-tab-slide]::view-transition-old(page),
 	html[data-tab-slide]::view-transition-new(page) {
 		animation-duration: 300ms;
@@ -342,6 +388,18 @@ html[data-tab-slide] .vt-shared {
 	::view-transition-new(root),
 	::view-transition-old(page),
 	::view-transition-new(page) {
+		animation: none !important;
+	}
+}
+
+/* The AlertDialog animates with tw-animate-css utilities rather than a Svelte
+   `transition:` directive, so `prefersReducedMotion()` never sees it. bits-ui
+   exposes no per-part attribute to hang this on (only `data-state`, shared by
+   overlay and content), so target the `data-slot` the generated components
+   set. */
+@media (prefers-reduced-motion: reduce) {
+	[data-slot='alert-dialog-overlay'],
+	[data-slot='alert-dialog-content'] {
 		animation: none !important;
 	}
 }
