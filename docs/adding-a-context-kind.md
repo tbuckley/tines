@@ -126,12 +126,12 @@ payload-agnostic.
 ### Agent-editing surface ([AGENT_EDITING.md](../specs/context/AGENT_EDITING.md), shipped)
 
 - A kind whose payload an agent fetches into its workspace joins the
-  "Attached to this issue: …" footnote in the launch prompt's Journal
-  section (`issueBlock` in
-  `apps/web/src/lib/server/api/context.ts`; today it lists skills and
-  repos — the `artifact` kind gets its own block and is not on that line).
-  The journal, proposal, and append machinery are kind-agnostic — no
-  other changes.
+  "Attached to this issue: …" footnote in the launch prompt (`issueBlock`
+  in `apps/web/src/lib/server/api/context.ts`). Today that line is built
+  from `context.repos` alone: skills get their own `### Skills` section
+  above it, and issue artifacts arrive as a separate `issueArtifacts`
+  argument with a block of their own, so neither is on it. The journal,
+  proposal, and append machinery are kind-agnostic — no other changes.
 
 ### Tests and docs
 
