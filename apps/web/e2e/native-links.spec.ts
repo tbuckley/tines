@@ -2,11 +2,26 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { APIRequestContext } from '@playwright/test';
 import { expect, test } from './fixtures';
 import type { IssueDetail, IssueLink, Project } from '@tines/shared';
-import { ALICE, ALICE_AGENT } from './constants.mjs';
+import { ALICE, ALICE_AGENT, BASE_URL } from './constants.mjs';
 import { apiClient, body, errorBody, runId } from './helpers';
+
+const ROOT = fileURLToPath(new URL('../../..', import.meta.url));
+const CLI_DIR = join(ROOT, 'packages/cli');
+const TSX = join(CLI_DIR, 'node_modules/.bin/tsx');
+const CLI = join(CLI_DIR, 'src/index.ts');
+
+function cliJson(args: string[]): unknown {
+	return JSON.parse(
+		execFileSync(TSX, [CLI, ...args, '--json', '--url', BASE_URL, '--api-key', ALICE.apiKey], {
+			encoding: 'utf8',
+			env: { ...process.env, TINES_API_URL: 'https://ambient-must-not-be-used.invalid' }
+		})
+	);
+}
 
 function d1(sql: string): Array<Record<string, unknown>> {
 	let output = '';
@@ -415,7 +430,9 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 				api.post(`/api/v1/projects/${project.id}/issues`, {
 					title: `${marker}-new`,
 					blocked_by: [a.id],
-					blocks: [b.id]
+					...(iteration % 2 === 0 ? { blocks: [b.id] } : { duplicate_of: b.id }),
+					labels: [`${marker}-label`],
+					schedule: { preset: { kind: 'daily', time: '09:00' } }
 				});
 			const close = () =>
 				agent.post(`/api/v1/issues/${b.id}/links`, { kind: 'blocks', issue_id: a.id });
@@ -432,6 +449,12 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 				`SELECT id FROM issue WHERE project_id=${literal(project.id)} AND title=${literal(`${marker}-new`)}`
 			);
 			expect(createdRows).toHaveLength(createWon ? 1 : 0);
+			if (!createWon) {
+				expect(d1(`SELECT id FROM label WHERE name=${literal(`${marker}-label`)}`)).toEqual([]);
+				expect(d1(`SELECT id FROM scheduled_task WHERE name=${literal(`${marker}-new`)}`)).toEqual(
+					[]
+				);
+			}
 			const ids = [a.id, b.id, ...createdRows.map((row) => row.id as string)];
 			const rows = audit(ids);
 			expect(rows.filter((row) => row.row_type === 'link')).toHaveLength(createWon ? 2 : 1);
@@ -477,6 +500,90 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 		} finally {
 			d1(`DROP TRIGGER IF EXISTS ${trigger}`);
 		}
+	});
+
+	test('multipart linked creates commit or reject as one unit and are visible through detail and CLI', async ({
+		request
+	}) => {
+		const marker = `multipart-${runId}`;
+		const {
+			project,
+			issues: [a, b, canonical]
+		} = await makeIssues(request, marker, 3);
+		const headers = { authorization: `Bearer ${ALICE.apiKey}` };
+		const metadata = (title: string, blocks: string[]) =>
+			JSON.stringify({
+				issue: {
+					title,
+					blocked_by: [a.id],
+					blocks,
+					duplicate_of: canonical.id
+				},
+				attachments: [{ part: 'file-0', name: 'proof', filename: 'proof.txt' }]
+			});
+		const accepted = await request.post(`/api/v1/projects/${project.id}/issues`, {
+			headers,
+			multipart: {
+				metadata: metadata(`${marker}-accepted`, [b.id]),
+				'file-0': { name: 'proof.txt', mimeType: 'text/plain', buffer: Buffer.from('proof') }
+			}
+		});
+		expect(accepted.status()).toBe(201);
+		const created = await body<IssueDetail>(accepted);
+		const detail = await body<IssueDetail>(
+			await request.get(`/api/v1/issues/${created.id}`, { headers })
+		);
+		expect(detail.links.blocked_by.map((link) => link.issue_id)).toEqual([a.id]);
+		expect(detail.links.blocks.map((link) => link.issue_id)).toEqual([b.id]);
+		expect(detail.links.duplicate_of?.issue_id).toBe(canonical.id);
+		const shown = cliJson(['issues', 'show', `${project.name}/${created.number}`]) as IssueDetail;
+		expect(shown.links).toEqual(detail.links);
+		expect(
+			d1(`SELECT id FROM context_item WHERE issue_id=${literal(created.id)} AND name='proof'`)
+		).toHaveLength(1);
+
+		const rejectedTitle = `${marker}-rejected`;
+		const rejected = await request.post(`/api/v1/projects/${project.id}/issues`, {
+			headers,
+			multipart: {
+				metadata: metadata(rejectedTitle, [b.id, b.id]),
+				'file-0': { name: 'proof.txt', mimeType: 'text/plain', buffer: Buffer.from('rejected') }
+			}
+		});
+		expect(rejected.status()).toBe(409);
+		expect((await errorBody(rejected)).error.code).toBe('conflict');
+		expect(d1(`SELECT id FROM issue WHERE title=${literal(rejectedTitle)}`)).toEqual([]);
+		expect(
+			d1(`SELECT id FROM context_item WHERE name='proof' AND issue_id != ${literal(created.id)}`)
+		).toEqual([]);
+	});
+
+	test('a linked create exceeding 100 relationships uses the fixed-binding path', async ({
+		request
+	}) => {
+		const marker = `many-create-${runId}`;
+		const { api, project } = await makeIssues(request, marker, 0);
+		const endpoints = Array.from({ length: 121 }, (_, index) => `iss_native_${marker}_${index}`);
+		d1File(
+			insertChunks(
+				'INSERT INTO issue (id,project_id,number,title,description,workflow_id,state_id,created_at,updated_at)',
+				endpoints.map(
+					(id, index) =>
+						`(${literal(id)},${literal(project.id)},${index + 1000},${literal(`Endpoint ${index}`)},'',` +
+						`'wf_standard','wfs_std_open',1,1)`
+				)
+			)
+		);
+		const response = await api.post(`/api/v1/projects/${project.id}/issues`, {
+			title: `${marker}-created`,
+			blocks: endpoints
+		});
+		expect(response.status()).toBe(201);
+		const created = await body<IssueDetail>(response);
+		expect(created.links.blocks).toHaveLength(121);
+		expect(
+			d1(`SELECT COUNT(*) AS n FROM issue_link WHERE source_issue_id=${literal(created.id)}`)[0].n
+		).toBe(121);
 	});
 
 	test('native traversal handles 1,000-node chain and converging fan-out fixtures', async ({
