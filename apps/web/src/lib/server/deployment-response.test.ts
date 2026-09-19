@@ -49,6 +49,21 @@ describe('deployment response boundary', () => {
 		expect(twice.headers.get('x-tines-version')).toBe('dev');
 	});
 
+	it('preserves multiple Set-Cookie headers', () => {
+		const headers = new Headers();
+		headers.append('set-cookie', 'first=one; Path=/; HttpOnly');
+		headers.append('set-cookie', 'second=two; Path=/; Secure');
+		const response = finalizeDeploymentResponse(
+			new Request('https://example.test/api/test'),
+			new Response('body', { headers }),
+			identity
+		);
+		expect(response.headers.getSetCookie()).toEqual([
+			'first=one; Path=/; HttpOnly',
+			'second=two; Path=/; Secure'
+		]);
+	});
+
 	it.each([204, 205, 304])('keeps status %s bodyless', async (status) => {
 		const response = finalizeDeploymentResponse(
 			new Request('https://example.test/api/test'),
@@ -85,7 +100,7 @@ describe('deployment response boundary', () => {
 	});
 
 	it('sanitizes thrown API failures and rethrows page failures', async () => {
-		vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 		const failure = new Error('private detail');
 		const api = await handleDeploymentFetch(
 			new Request('https://example.test/api/test'),
@@ -107,5 +122,10 @@ describe('deployment response boundary', () => {
 				identity
 			)
 		).rejects.toBe(failure);
+		expect(errorLog).toHaveBeenCalledTimes(1);
+		expect(errorLog).toHaveBeenCalledWith('API request failed', {
+			code: 'api_request_failed'
+		});
+		errorLog.mockRestore();
 	});
 });

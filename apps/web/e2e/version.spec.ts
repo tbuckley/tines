@@ -30,13 +30,15 @@ test('exposes and decorates the built deployment identity', async ({ request }) 
 	expect(invalidBearer.status()).toBe(200);
 	expect(await invalidBearer.json()).toEqual(identity);
 
-	for (const response of [
-		await request.get('/api/time'),
-		await request.get('/api/v1/projects'),
-		await request.get('/api/unknown'),
-		await request.post('/api/version'),
-		await request.get('/api/auth/get-session')
-	]) {
+	const time = await request.get('/api/time');
+	const protectedApi = await request.get('/api/v1/projects');
+	const unknownApi = await request.get('/api/unknown');
+	const wrongMethod = await request.post('/api/version');
+	const auth = await request.get('/api/auth/get-session');
+	expect(protectedApi.status()).toBe(401);
+	expect(unknownApi.status()).toBe(404);
+	expect(wrongMethod.status()).toBe(405);
+	for (const response of [time, protectedApi, unknownApi, wrongMethod, auth]) {
 		await expectIdentityHeaders(response);
 	}
 

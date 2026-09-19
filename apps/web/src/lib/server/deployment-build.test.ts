@@ -74,6 +74,56 @@ describe('deployment identity build inputs', () => {
 			resolveDeploymentIdentity(
 				{
 					TINES_BUILD_CHANNEL: 'production',
+					TINES_BUILD_VERSION: 'release-1234',
+					TINES_BUILD_COMMIT: sha
+				},
+				() => sha
+			)
+		).toThrow(/plain SemVer/);
+		expect(() =>
+			resolveDeploymentIdentity(
+				{
+					TINES_BUILD_CHANNEL: 'production',
+					TINES_BUILD_VERSION: '0.0.1234',
+					TINES_BUILD_COMMIT: '0123456789ab'
+				},
+				() => sha
+			)
+		).toThrow(/full lowercase Git SHA/);
+		expect(() =>
+			resolveDeploymentIdentity(
+				{
+					TINES_BUILD_CHANNEL: 'production',
+					TINES_BUILD_VERSION: '0.0.1234',
+					TINES_BUILD_COMMIT: 'ABCDEF0123456789ABCDEF0123456789ABCDEF01'
+				},
+				() => sha
+			)
+		).toThrow(/full lowercase Git SHA/);
+		expect(() =>
+			resolveDeploymentIdentity(
+				{
+					TINES_BUILD_CHANNEL: 'production',
+					TINES_BUILD_VERSION: '0.0.1234',
+					TINES_BUILD_COMMIT: 'g'.repeat(40)
+				},
+				() => sha
+			)
+		).toThrow(/full lowercase Git SHA/);
+		expect(() =>
+			resolveDeploymentIdentity(
+				{
+					TINES_BUILD_CHANNEL: 'staging',
+					TINES_BUILD_VERSION: '0.0.1234',
+					TINES_BUILD_COMMIT: sha
+				},
+				() => sha
+			)
+		).toThrow(/Unknown TINES_BUILD_CHANNEL/);
+		expect(() =>
+			resolveDeploymentIdentity(
+				{
+					TINES_BUILD_CHANNEL: 'production',
 					TINES_BUILD_VERSION: '0.0.1',
 					TINES_BUILD_COMMIT: sha
 				},
@@ -94,29 +144,37 @@ describe('deployment identity build inputs', () => {
 		);
 	});
 
-	it('adds development headers to exact API paths only', () => {
-		const plugin = deploymentIdentityPlugins({ version: 'dev', commit: sha }).find((candidate) =>
-			candidate.name.endsWith('-dev')
-		)!;
-		let middleware: (
-			req: { url: string },
-			res: { setHeader: ReturnType<typeof vi.fn> },
-			next: () => void
-		) => void;
-		(plugin.configureServer as (server: unknown) => void)({
-			middlewares: {
-				use: (value: typeof middleware) => {
-					middleware = value;
+	it.each([
+		{ path: '/api/time?x=1', expectsHeaders: true },
+		{ path: '/apiary', expectsHeaders: false }
+	])(
+		'adds development headers to exact API paths and continues for $path',
+		({ path, expectsHeaders }) => {
+			const plugin = deploymentIdentityPlugins({ version: 'dev', commit: sha }).find((candidate) =>
+				candidate.name.endsWith('-dev')
+			)!;
+			let middleware: (
+				req: { url: string },
+				res: { setHeader: ReturnType<typeof vi.fn> },
+				next: () => void
+			) => void;
+			(plugin.configureServer as (server: unknown) => void)({
+				middlewares: {
+					use: (value: typeof middleware) => {
+						middleware = value;
+					}
 				}
+			});
+			const setHeader = vi.fn();
+			const next = vi.fn();
+			middleware!({ url: path }, { setHeader }, next);
+			if (expectsHeaders) {
+				expect(setHeader).toHaveBeenCalledWith('X-Tines-Version', 'dev');
+				expect(setHeader).toHaveBeenCalledWith('X-Tines-Commit', sha);
+			} else {
+				expect(setHeader).not.toHaveBeenCalled();
 			}
-		});
-		const setHeader = vi.fn();
-		const next = vi.fn();
-		middleware!({ url: '/api/time?x=1' }, { setHeader }, next);
-		expect(setHeader).toHaveBeenCalledWith('X-Tines-Version', 'dev');
-		expect(setHeader).toHaveBeenCalledWith('X-Tines-Commit', sha);
-		setHeader.mockClear();
-		middleware!({ url: '/apiary' }, { setHeader }, next);
-		expect(setHeader).not.toHaveBeenCalled();
-	});
+			expect(next).toHaveBeenCalledTimes(1);
+		}
+	);
 });
