@@ -11,9 +11,17 @@
 		UpdateContextItemRequest,
 		WorkflowResponse
 	} from '@tines/shared';
-	import { ApiError, CONTEXT_KINDS, repoDirFromUrl } from '@tines/shared';
+	import {
+		ApiError,
+		CONTEXT_KINDS,
+		repoDirFromUrl,
+		SKILL_MAX_FILES,
+		SKILL_MAX_TOTAL_BYTES
+	} from '@tines/shared';
+	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
+	import { onDestroy, onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import ContextKindIcon from '$lib/components/ContextKindIcon.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
@@ -24,6 +32,13 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
+	import {
+		mergeSkillFiles,
+		readSkillFolder,
+		SkillFolderImportCancelled,
+		validateSkillDraft,
+		type SkippedSkillFile
+	} from './skill-folder-import';
 
 	interface ScopeDefaults {
 		project_id?: string;
@@ -86,12 +101,35 @@
 	let repoDir = $state('');
 	let errorMessage = $state<string | null>(null);
 	let saving = $state(false);
+	let folderInput = $state<HTMLInputElement>();
+	let folderPickerSupported = $state(false);
+	let folderReading = $state(false);
+	let folderError = $state<string | null>(null);
+	let folderStatus = $state<string | null>(null);
+	let folderSkipped = $state<SkippedSkillFile[]>([]);
+	let requiresRootSkill = $state(false);
+	let dialogGeneration = 0;
+	const draftValidation = $derived(validateSkillDraft(files, requiresRootSkill));
+	const fileMutationsDisabled = $derived(!filesReady || folderReading || saving);
+
+	onMount(() => {
+		folderPickerSupported = 'webkitdirectory' in document.createElement('input');
+	});
+	onDestroy(() => {
+		dialogGeneration += 1;
+	});
 
 	// Seed the form each time the dialog opens (create defaults or the item).
 	let wasOpen = false;
 	$effect(() => {
 		if (open && !wasOpen) {
+			const generation = ++dialogGeneration;
 			errorMessage = null;
+			folderError = null;
+			folderStatus = null;
+			folderSkipped = [];
+			folderReading = false;
+			requiresRootSkill = false;
 			previewBody = false;
 			kind = item?.kind ?? defaultKind ?? 'prompt';
 			name = item?.name ?? '';
@@ -118,7 +156,7 @@
 				api
 					.getContextItem(itemId)
 					.then((full) => {
-						if (!open || item?.id !== itemId) return;
+						if (!open || dialogGeneration !== generation || item?.id !== itemId) return;
 						files = (full.files ?? []).map((f) => ({
 							key: nextFileKey++,
 							path: f.path,
@@ -127,7 +165,7 @@
 						filesReady = true;
 					})
 					.catch(() => {
-						if (!open || item?.id !== itemId) return;
+						if (!open || dialogGeneration !== generation || item?.id !== itemId) return;
 						errorMessage =
 							'Couldn’t load this skill’s files — close the dialog and reopen to retry.';
 					});
@@ -147,6 +185,9 @@
 					})
 					.catch(() => {});
 			}
+		} else if (!open && wasOpen) {
+			dialogGeneration += 1;
+			folderReading = false;
 		}
 		wasOpen = open;
 	});
@@ -225,12 +266,56 @@
 	const derivedDir = $derived(repoUrl.trim() ? repoDirFromUrl(repoUrl.trim()) : '');
 	const isGlobal = $derived(!projectId && !stateId && !labelId && !issueId);
 
+	function changeKind(nextKind: ContextKind) {
+		if (nextKind === kind) return;
+		dialogGeneration += 1;
+		folderReading = false;
+		folderError = null;
+		kind = nextKind;
+	}
+
+	async function importFolder(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const selected = [...(input.files ?? [])];
+		input.value = '';
+		if (selected.length === 0 || fileMutationsDisabled) return;
+		const generation = ++dialogGeneration;
+		folderReading = true;
+		folderError = null;
+		folderStatus = 'Reading folder…';
+		folderSkipped = [];
+		try {
+			const result = await readSkillFolder(
+				selected,
+				() => !open || kind !== 'skill' || generation !== dialogGeneration
+			);
+			if (!open || kind !== 'skill' || generation !== dialogGeneration) return;
+			const merged = mergeSkillFiles(files, result.files, () => nextFileKey++);
+			files = merged.rows;
+			requiresRootSkill = true;
+			folderSkipped = result.skipped;
+			folderStatus = `Added ${merged.added} file${merged.added === 1 ? '' : 's'}; replaced ${merged.replaced}; skipped ${result.skipped.length} ignored file${result.skipped.length === 1 ? '' : 's'}.`;
+		} catch (error) {
+			if (
+				error instanceof SkillFolderImportCancelled ||
+				!open ||
+				kind !== 'skill' ||
+				generation !== dialogGeneration
+			)
+				return;
+			folderError = error instanceof Error ? error.message : 'Couldn’t read that folder — retry.';
+			folderStatus = null;
+		} finally {
+			if (open && kind === 'skill' && generation === dialogGeneration) folderReading = false;
+		}
+	}
+
 	async function save(e: SubmitEvent) {
 		e.preventDefault();
 		if (saving) return;
 		// Backstop behind the disabled button: never send a file list that was
 		// never actually loaded.
-		if (kind === 'skill' && !filesReady) return;
+		if (kind === 'skill' && (!filesReady || folderReading || draftValidation.error)) return;
 		saving = true;
 		errorMessage = null;
 		try {
@@ -322,7 +407,15 @@
 								? 'border-primary bg-primary/5'
 								: 'hover:bg-muted/50'}"
 						>
-							<input type="radio" name="kind" value={k} bind:group={kind} class="sr-only" />
+							<input
+								type="radio"
+								name="kind"
+								value={k}
+								checked={kind === k}
+								disabled={folderReading}
+								onchange={() => changeKind(k)}
+								class="sr-only"
+							/>
 							<ContextKindIcon kind={k} />
 							{KIND_LABELS[k]}
 						</label>
@@ -389,17 +482,74 @@
 			</div>
 		{:else if kind === 'skill'}
 			<div class="space-y-2">
-				<div class="flex items-center justify-between">
+				<div class="flex flex-wrap items-center justify-between gap-2">
 					<span class="text-sm font-medium">Files</span>
-					<Button
-						type="button"
-						size="sm"
-						variant="ghost"
-						onclick={() => (files = [...files, { key: nextFileKey++, path: '', content: '' }])}
-					>
-						<IconPlus size={14} /> Add file
-					</Button>
+					<div class="flex flex-wrap gap-1">
+						<Button
+							type="button"
+							size="sm"
+							variant="ghost"
+							disabled={fileMutationsDisabled}
+							onclick={() => (files = [...files, { key: nextFileKey++, path: '', content: '' }])}
+						>
+							<IconPlus size={14} /> Add file
+						</Button>
+						<Button
+							type="button"
+							size="sm"
+							variant="ghost"
+							disabled={!folderPickerSupported || fileMutationsDisabled}
+							onclick={() => folderInput?.click()}
+						>
+							<IconFolder size={14} /> Add from folder
+						</Button>
+						<input
+							bind:this={folderInput}
+							type="file"
+							class="sr-only"
+							aria-label="Skill folder"
+							webkitdirectory
+							multiple
+							onchange={importFolder}
+						/>
+					</div>
 				</div>
+				<p class="text-muted-foreground text-xs">
+					Adds files to this draft. Matching paths replace their contents.
+				</p>
+				{#if !folderPickerSupported}
+					<p class="text-muted-foreground text-xs">
+						Folder selection is not supported by this browser; add files individually.
+					</p>
+				{/if}
+				{#if folderStatus}
+					<p class="text-muted-foreground text-xs" aria-live="polite">{folderStatus}</p>
+				{/if}
+				{#if folderSkipped.length > 0}
+					<details class="text-muted-foreground text-xs">
+						<summary>Ignored files ({folderSkipped.length})</summary>
+						<ul class="list-disc pl-5">
+							{#each folderSkipped as skipped}
+								<li><code>{skipped.path}</code> — {skipped.reason}</li>
+							{/each}
+						</ul>
+					</details>
+				{/if}
+				{#if folderError}
+					<p
+						class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-xs"
+						role="alert"
+					>
+						{folderError}
+					</p>
+				{/if}
+				<p class="text-muted-foreground text-xs">
+					{draftValidation.fileCount} / {SKILL_MAX_FILES} files · {draftValidation.totalBytes.toLocaleString()}
+					/ {SKILL_MAX_TOTAL_BYTES.toLocaleString()} bytes (100 KiB). Includes UTF-8 paths and contents.
+				</p>
+				{#if draftValidation.error}
+					<p class="text-destructive text-xs" role="alert">{draftValidation.error}</p>
+				{/if}
 				{#if files.length === 0}
 					<p class="text-muted-foreground text-xs italic">
 						No files yet — seeded into the workspace at skills/&lt;name&gt;/…
@@ -410,6 +560,7 @@
 						<div class="flex items-center gap-2">
 							<Input
 								bind:value={file.path}
+								disabled={fileMutationsDisabled}
 								placeholder="SKILL.md"
 								class="h-8 font-mono text-xs"
 								aria-label="File {i + 1} path"
@@ -418,6 +569,7 @@
 								type="button"
 								size="sm"
 								variant="ghost"
+								disabled={fileMutationsDisabled}
 								onclick={() => (files = files.filter((f) => f.key !== file.key))}
 								aria-label="Remove file {file.path || i + 1}"
 							>
@@ -426,9 +578,11 @@
 						</div>
 						<Textarea
 							bind:value={file.content}
+							disabled={fileMutationsDisabled}
 							rows={4}
 							class="font-mono text-xs"
 							placeholder="File content…"
+							aria-label="File {file.path || i + 1} content"
 						/>
 					</div>
 				{/each}
@@ -548,8 +702,11 @@
 
 		<div class="flex items-center justify-between gap-2 pt-1">
 			{#if item}
-				<Button type="button" variant="destructive" onclick={deleteItem} disabled={saving}
-					>Delete</Button
+				<Button
+					type="button"
+					variant="destructive"
+					onclick={deleteItem}
+					disabled={saving || folderReading}>Delete</Button
 				>
 			{:else}
 				<span></span>
@@ -562,9 +719,16 @@
 					type="submit"
 					pending={saving}
 					pendingLabel="Saving…"
-					disabled={!name.trim() || (kind === 'skill' && !filesReady)}
+					disabled={!name.trim() ||
+						(kind === 'skill' && (!filesReady || folderReading || draftValidation.error !== null))}
 				>
-					{kind === 'skill' && !filesReady ? 'Loading files…' : item ? 'Save' : 'Create'}
+					{kind === 'skill' && !filesReady
+						? 'Loading files…'
+						: folderReading
+							? 'Reading folder…'
+							: item
+								? 'Save'
+								: 'Create'}
 				</PendingButton>
 			</div>
 		</div>
