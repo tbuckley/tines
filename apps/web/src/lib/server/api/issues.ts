@@ -319,6 +319,8 @@ export interface IssueListFilters {
 	/** Schedule id: only issues created by that scheduled task. */
 	schedule?: string;
 	hideDone?: boolean;
+	/** Hide issues with an outgoing duplicate link. Defaults to true. */
+	hideDuplicates?: boolean;
 	/** Only not-done, non-duplicate issues whose blockers are all effectively done. */
 	ready?: boolean;
 	/** Restrict to one project id (the nested per-project route). */
@@ -383,14 +385,18 @@ function applyScopeFilters(q: IssueQuery, userId: string, filters: IssueListFilt
 		);
 	}
 	if (filters.schedule) q = q.where('issue.scheduled_task_id', '=', filters.schedule);
+	// Ordinary issue lists omit duplicates by default. Ready uses the same
+	// predicate even when callers explicitly include duplicates.
+	if (filters.hideDuplicates !== false || filters.ready) {
+		q = q.where(
+			sql<boolean>`NOT EXISTS (SELECT 1 FROM issue_link dl WHERE dl.source_issue_id = issue.id AND dl.kind = 'duplicate_of')`
+		);
+	}
 	if (filters.ready) {
-		// Ready = effectively not done, not itself a duplicate, and no blocker
-		// still effectively open. Readiness is the default; links only take it away.
+		// Ready = effectively not done and no blocker still effectively open.
+		// Duplicate exclusion is shared with the ordinary-list default above.
 		q = q
 			.where(sql<boolean>`COALESCE(eff_state.category, state.category) != 'done'`)
-			.where(
-				sql<boolean>`NOT EXISTS (SELECT 1 FROM issue_link dl WHERE dl.source_issue_id = issue.id AND dl.kind = 'duplicate_of')`
-			)
 			.where(sql<boolean>`NOT EXISTS (SELECT 1 ${openBlockerFrom})`);
 	}
 	// One EXISTS per label, so repeated labels narrow rather than widen. An

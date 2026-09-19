@@ -33,6 +33,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		state: url.searchParams.get('state') ?? undefined,
 		category: url.searchParams.get('category') ?? undefined,
 		showDone: url.searchParams.get('done') === '1',
+		showDuplicates: url.searchParams.get('duplicates') === '1',
 		ready: url.searchParams.get('ready') === '1',
 		q: url.searchParams.get('q') ?? undefined,
 		labels: url.searchParams.getAll('label')
@@ -41,6 +42,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		projectId: project.id,
 		workflow: filters.workflow,
 		state: filters.state,
+		hideDuplicates: !filters.showDuplicates,
 		ready: filters.ready,
 		q: filters.q,
 		labels: filters.labels

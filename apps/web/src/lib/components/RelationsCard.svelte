@@ -102,7 +102,9 @@
 		if (candidates === null && !loadingCandidates) {
 			loadingCandidates = true;
 			try {
-				const { items } = await api.listIssues({ limit: 100 });
+				// Relationship editing supports duplicate chains, so keep duplicate
+				// issues selectable even though ordinary lists hide them.
+				const { items } = await api.listIssues({ hide_duplicates: false, limit: 100 });
 				// Empty input shows the most recently active issues first.
 				candidates = [...items].sort((a, b) => b.last_activity_at - a.last_activity_at);
 			} catch (e) {

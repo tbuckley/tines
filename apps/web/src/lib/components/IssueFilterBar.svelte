@@ -7,6 +7,7 @@
 		/** Label ids or names, as they appear in the URL. */
 		labels: string[];
 		showDone: boolean;
+		showDuplicates: boolean;
 		ready: boolean;
 		q?: string;
 	}
@@ -231,7 +232,8 @@
 		selectedLabels.length +
 			(filters.workflow ? 1 : 0) +
 			(filters.state ? 1 : 0) +
-			(filters.ready ? 1 : 0)
+			(filters.ready ? 1 : 0) +
+			(filters.showDuplicates ? 1 : 0)
 	);
 	const clearMenu = () =>
 		navigate((p) => {
@@ -239,6 +241,7 @@
 			p.delete('workflow');
 			p.delete('state');
 			p.delete('ready');
+			p.delete('duplicates');
 		});
 
 	// --- Search --------------------------------------------------------------
@@ -426,6 +429,17 @@
 					<p class="text-muted-foreground mt-0.5 pl-6 text-xs">
 						Unblocked, not done, not a duplicate.
 					</p>
+					<CheckboxField
+						label="Show duplicates"
+						class="mt-2 text-sm"
+						checked={filters.showDuplicates}
+						onCheckedChange={(checked) => set('duplicates', checked ? '1' : '')}
+					/>
+					{#if filters.ready && filters.showDuplicates}
+						<p class="text-muted-foreground mt-0.5 pl-6 text-xs">
+							Ready only still excludes duplicates.
+						</p>
+					{/if}
 				</div>
 				{#if menuCount > 0}
 					<div class="mt-1 border-t pt-1">
@@ -493,6 +507,17 @@
 					onclick={() => set('ready', '')}
 				>
 					<span class="font-medium">ready</span>
+					<IconX size={13} stroke={2} class="text-muted-foreground" />
+				</button>
+			{/if}
+			{#if filters.showDuplicates}
+				<button
+					type="button"
+					class="bg-background hover:bg-accent flex h-7 items-center gap-1.5 rounded-full border pr-1.5 pl-2.5 text-xs"
+					aria-label="Hide duplicates"
+					onclick={() => set('duplicates', '')}
+				>
+					<span class="font-medium">Show duplicates</span>
 					<IconX size={13} stroke={2} class="text-muted-foreground" />
 				</button>
 			{/if}

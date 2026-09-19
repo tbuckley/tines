@@ -75,9 +75,11 @@ describe('issue-list page loaders', () => {
 		await expect(
 			callLoad(
 				loadIssues,
-				event(`https://example.test/issues?q=needle&after=${cursor}&page_scope=prj_old`)
+				event(
+					`https://example.test/issues?q=needle&duplicates=1&after=${cursor}&page_scope=prj_old`
+				)
 			)
-		).rejects.toMatchObject({ status: 303, location: '/issues?q=needle' });
+		).rejects.toMatchObject({ status: 303, location: '/issues?q=needle&duplicates=1' });
 		expect(mocks.listIssues).not.toHaveBeenCalled();
 	});
 
@@ -139,6 +141,7 @@ describe('issue-list page loaders', () => {
 				...(projectId ? { projectId } : {}),
 				workflow: 'wf_eng',
 				state: 's_review',
+				hideDuplicates: true,
 				ready: true,
 				q: 'needle',
 				labels: ['lab_a', 'lab_b']
@@ -152,6 +155,58 @@ describe('issue-list page loaders', () => {
 				{ ...scope, category: undefined, hideDone: false, brief: true },
 				expect.objectContaining({ limit: 100 })
 			);
+		}
+	);
+
+	it.each([
+		['all issues', loadIssues, 'https://example.test/issues', {}, undefined],
+		[
+			'project issues',
+			loadProject,
+			'https://example.test/projects/prj_test',
+			{ id: 'prj_test' },
+			'prj_test'
+		]
+	] as const)(
+		'parses duplicate visibility consistently for %s',
+		async (_name, load, baseUrl, params, projectId) => {
+			for (const [query, showDuplicates] of [
+				['', false],
+				['?duplicates=1', true],
+				['?duplicates=0', false],
+				['?duplicates=true', false]
+			] as const) {
+				vi.clearAllMocks();
+				mocks.listIssues.mockResolvedValue({ items: [], hasMore: false });
+				mocks.countIssuesByCategory.mockResolvedValue({
+					backlog: 0,
+					active: 0,
+					awaiting_human: 0,
+					done: 0
+				});
+				mocks.resolveFocus.mockResolvedValue({ focusId: null, lastProjectId: null });
+				mocks.getProject.mockResolvedValue({ id: 'prj_test', name: 'Test project' });
+				const result = (await callLoad(load, event(`${baseUrl}${query}`, params))) as {
+					filters: { showDuplicates: boolean };
+				};
+				const scope = {
+					...(projectId ? { projectId } : {}),
+					workflow: undefined,
+					state: undefined,
+					hideDuplicates: !showDuplicates,
+					ready: false,
+					q: undefined,
+					labels: []
+				};
+				expect(result.filters.showDuplicates).toBe(showDuplicates);
+				expect(mocks.countIssuesByCategory).toHaveBeenCalledWith({}, 'usr_test', scope);
+				expect(mocks.listIssues).toHaveBeenCalledWith(
+					{},
+					'usr_test',
+					{ ...scope, category: undefined, hideDone: true, brief: true },
+					expect.objectContaining({ limit: 100 })
+				);
+			}
 		}
 	);
 
