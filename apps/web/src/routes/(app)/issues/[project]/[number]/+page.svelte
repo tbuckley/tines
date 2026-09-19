@@ -712,7 +712,8 @@
 	const contextTotal = $derived(
 		data.issue.context_summary.prompts +
 			data.issue.context_summary.skills +
-			data.issue.context_summary.repos
+			data.issue.context_summary.repos +
+			(data.issue.context_summary.envs ?? 0)
 	);
 
 	let editingDescription = $state(false);
