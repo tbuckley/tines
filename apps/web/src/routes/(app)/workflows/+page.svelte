@@ -60,21 +60,27 @@
 
 <svelte:head><title>Workflows · Tines</title></svelte:head>
 
-<div class="mb-6 flex flex-col items-start gap-4 lg:flex-row lg:justify-between">
+<div
+	class="mb-6 flex flex-col items-start gap-4 lg:flex-row lg:justify-between"
+	data-testid="workflow-page-intro"
+>
 	<div>
 		<h1 class="text-2xl font-semibold tracking-tight">Workflows</h1>
 		<p class="text-muted-foreground mt-1 max-w-2xl text-sm">
 			Your library of state machines. Any workflow can drive issues in any project.
 		</p>
 	</div>
-	<div class="grid w-full gap-2 sm:w-auto sm:grid-cols-3 lg:flex lg:flex-wrap lg:justify-end">
-		<Button class="w-full" href="/publications" variant="outline">
+	<div
+		class="grid w-full gap-2 sm:w-auto sm:grid-cols-3 lg:flex lg:flex-wrap lg:justify-end"
+		data-testid="workflow-actions"
+	>
+		<Button href="/publications" variant="outline">
 			<IconWorld size={16} /> Public snapshots
 		</Button>
-		<Button class="w-full" href="/workflows/import" variant="outline">
+		<Button href="/workflows/import" variant="outline">
 			<IconUpload size={16} /> Install package
 		</Button>
-		<Button class="w-full" href="/workflows/new">
+		<Button href="/workflows/new">
 			<IconPlus size={16} /> New workflow
 		</Button>
 	</div>
