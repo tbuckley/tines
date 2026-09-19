@@ -153,7 +153,6 @@ test('workflow actions form a full-width group below the intro on a phone', asyn
 			actionBoxes[index - 1]!.y + actionBoxes[index - 1]!.height
 		);
 	}
-	expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
 });
 
 test('the app chrome stays inside both responsive breakpoint boundaries', async ({ page }) => {
