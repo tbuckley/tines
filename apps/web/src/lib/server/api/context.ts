@@ -948,7 +948,10 @@ export async function createContextItem(
 	const { kind, name } = fields;
 	fenceRunKeyEnvWrite(actor, kind);
 	if (fields.envPayload?.secret) {
-		fields.envValueEnc = await encryptSecret(fields.envPayload.value ?? '', encryptionKeyOr503(env));
+		fields.envValueEnc = await encryptSecret(
+			fields.envPayload.value ?? '',
+			encryptionKeyOr503(env)
+		);
 	}
 
 	const scope = await resolveScope(db, actor.userId, {
@@ -1113,7 +1116,10 @@ export async function updateContextItem(
 	let envValueEnc = row.env_value_enc;
 	let envHint = row.env_hint;
 	const envChanged: string[] = [];
-	if (kind === 'env' && (body.value !== undefined || body.secret !== undefined || body.hint !== undefined)) {
+	if (
+		kind === 'env' &&
+		(body.value !== undefined || body.secret !== undefined || body.hint !== undefined)
+	) {
 		const wasSecret = row.env_value_enc !== null;
 		const next = validateEnvPayload(body, { secret: wasSecret, hint: row.env_hint });
 		if (next.hint !== row.env_hint) envChanged.push('hint');

@@ -73,9 +73,9 @@ Commands:
 Create a context item scoped to a project, state, and/or issue
 
 Options:
-  -k, --kind <kind>             prompt, skill, or repo
-  -n, --name <name>             item name (slug-like for skills; the
-                                dedup/override key)
+  -k, --kind <kind>             prompt, skill, repo, or env
+  -n, --name <name>             item name (slug-like for skills, the variable
+                                name for env; the dedup/override key)
   -d, --description <text>      one-liner shown in lists
   --body <md>                   prompt body: inline Markdown or @file (escape a
                                 literal @ as @@)
@@ -85,6 +85,12 @@ Options:
   --branch <branch>             repo: branch to check out
   --dir <dir>                   repo: checkout directory (defaults to the URL's
                                 basename)
+  --value <v>                   env: the value — inline, @file, or - for stdin
+                                (keeps a secret out of shell history)
+  --secret                      env: encrypt the value at rest; it is write-only
+                                afterwards
+  --hint <text>                 env: a safe display hint for a secret (e.g.
+                                "github_pat_…abcd")
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
   -i, --issue <ref>             scope: issue (<project>/<number>)
@@ -124,6 +130,12 @@ Options:
   --branch <branch>             repo: branch (empty string clears it)
   --dir <dir>                   repo: checkout directory (empty string restores
                                 the URL default)
+  --value <v>                   env: replace the value (inline, @file, or - for
+                                stdin)
+  --secret                      env: encrypt the stored value (irreversible;
+                                delete to make public)
+  --hint <text>                 env: display hint for a secret (empty string
+                                clears it)
   --unset <dimension>           drop a scope dimension: project, state, issue,
                                 or label (repeatable) (default: [])
   --expect-version <n>          fail (409) unless the item is still at this

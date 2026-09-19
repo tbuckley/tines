@@ -430,6 +430,12 @@ export interface LogBatcherOptions {
 	 * interval keeps the live tail responsive regardless.
 	 */
 	maxBytes?: number;
+	/**
+	 * Secret values to mask (as `***`) in every appended chunk — the
+	 * assignment's secret env values. Best-effort: a harness that re-encodes
+	 * its environment defeats a substring match.
+	 */
+	redact?: string[];
 	/** Flush at most this long after the first unflushed byte. Default 2 s. */
 	intervalMs?: number;
 	/** Send failures land here (default: swallowed). */
@@ -467,6 +473,7 @@ export class LogBatcher {
 
 	append(text: string): void {
 		if (!text) return;
+		if (this.opts.redact?.length) text = redactSecrets(text, this.opts.redact);
 		this.buffer += text;
 		if (Buffer.byteLength(this.buffer, 'utf8') >= (this.opts.maxBytes ?? 32 * 1024)) {
 			void this.flush();
@@ -655,16 +662,42 @@ export function pathWithin(path: string, dir: string): boolean {
  */
 export function buildSpawnEnv(
 	base: NodeJS.ProcessEnv,
-	opts: { binDir: string | null; apiKey: string; apiUrl: string }
+	opts: {
+		binDir: string | null;
+		apiKey: string;
+		apiUrl: string;
+		/** Env context items; applied before the Tines-owned variables, which always win. */
+		extra?: { name: string; value: string }[];
+	}
 ): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = {
 		...base,
+		...Object.fromEntries((opts.extra ?? []).map((e) => [e.name, e.value])),
 		TINES_API_KEY: opts.apiKey,
 		// Own canonicalization at the final child-process boundary too. This
 		// keeps the spawned CLI safe even if a future daemon call site passes
 		// the original --url value instead of its normalized local variable.
 		TINES_API_URL: opts.apiUrl.replace(/\/+$/, '')
 	};
+	if (opts.extra?.some((e) => e.name === 'PATH')) env.PATH = base.PATH;
 	if (opts.binDir) env.PATH = base.PATH ? `${opts.binDir}${delimiter}${base.PATH}` : opts.binDir;
 	return env;
+}
+
+/**
+ * Masks each secret (and its JSON-escaped form, so NDJSON streams are covered
+ * too) with `***`. Secrets shorter than 4 characters are not masked: the
+ * false-positive rate would render the log unreadable.
+ */
+export function redactSecrets(text: string, secrets: readonly string[]): string {
+	let out = text;
+	for (const secret of secrets) {
+		if (secret.length < 4) continue;
+		const forms = new Set([secret, JSON.stringify(secret).slice(1, -1)]);
+		for (const form of forms) {
+			if (form.length < 4) continue;
+			out = out.split(form).join('***');
+		}
+	}
+	return out;
 }

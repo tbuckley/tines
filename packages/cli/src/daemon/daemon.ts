@@ -61,6 +61,7 @@ import {
 	AMBIENT_CLI,
 	buildHarnessInvocation,
 	buildSpawnEnv,
+	redactSecrets,
 	CliRefresher,
 	exitLineForRun,
 	formatLaunchBanner,
@@ -549,6 +550,9 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 	// -- launching one assignment ---------------------------------------------
 	const launch = async (assignment: RunnerAssignment) => {
+		// Env items live in this closure only: never the workspace files, the
+		// banner, or daemon-state.json. Secret values also drive log masking.
+		const secretEnvValues = (assignment.env ?? []).filter((e) => e.secret).map((e) => e.value);
 		const runId = assignment.run.id;
 		if (table.has(runId)) return;
 		// A resumed run reuses its predecessor's workspace — the repositories,
@@ -579,7 +583,10 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			keepForResume: false,
 			batcher: new LogBatcher(
 				(chunk, seq) => client.appendRunLog(runId, { chunk, seq }).then(() => {}),
-				{ onError: (err) => log(`log append for run ${runId} failed: ${message(err)}`) }
+				{
+					onError: (err) => log(`log append for run ${runId} failed: ${message(err)}`),
+					...(secretEnvValues.length > 0 ? { redact: secretEnvValues } : {})
+				}
 			)
 		};
 		run.flush = () => run.batcher.flush();
@@ -700,8 +707,16 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			const spawnEnv = buildSpawnEnv(process.env, {
 				binDir: cli.binDir,
 				apiKey: assignment.run_key,
-				apiUrl: baseUrl
+				apiUrl: baseUrl,
+				...(assignment.env ? { extra: assignment.env } : {})
 			});
+			if (assignment.env?.length) {
+				run.batcher.append(
+					`[env] ${assignment.env.length} environment variable(s) set: ${assignment.env
+						.map((e) => `${e.name}${e.secret ? ' (secret)' : ''}`)
+						.join(', ')}\n`
+				);
+			}
 			if (opts.harness === 'codex') run.codexHome = resolveCodexHome(spawnEnv, workspace);
 			const child = spawn(invocation.file, invocation.args, {
 				cwd: workspace,
@@ -751,12 +766,22 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				const decoder = new StringDecoder('utf8');
 				run.drain = () => {
 					const trailing = decoder.end();
-					if (trailing) renderer.write(trailing);
+					if (trailing) {
+						run.rawSpool?.write(
+							secretEnvValues.length > 0 ? redactSecrets(trailing, secretEnvValues) : trailing
+						);
+						renderer.write(trailing);
+					}
 					renderer.finish();
 				};
 				child.stdout?.on('data', (data: Buffer) => {
-					run.rawSpool?.write(data);
-					renderer.write(decoder.write(data));
+					// The raw spool is uploaded verbatim, so it is masked too
+					// (text, not the Buffer — the decoder owns partial code points).
+					const text = decoder.write(data);
+					run.rawSpool?.write(
+						secretEnvValues.length > 0 ? redactSecrets(text, secretEnvValues) : text
+					);
+					renderer.write(text);
 				});
 			} else if (opts.harness === 'codex') {
 				const renderer = new CodexStreamRenderer((line) => run.batcher.append(line));
@@ -908,6 +933,8 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					? { declined_assignments: [...declinedAssignments].slice(0, 100) }
 					: {}),
 				...(effortCapabilities ? { effort_capabilities: effortCapabilities } : {}),
+				// Capability: this daemon merges assignment.env into the harness environment.
+				env_delivery: 1,
 				// Stated on every poll while pending; absent otherwise, which
 				// the server reads as "not draining" — so a daemon that died
 				// mid-drain cannot pin its runner shut past its relaunch.

@@ -63,7 +63,12 @@ import { effectiveAutomationEnabled } from '$lib/server/supervisor/settings';
 import { priceCodexUsage } from '$lib/server/supervisor/codex-pricing';
 import { listArtifacts } from './artifacts';
 import { listLabels } from './labels';
-import { buildLaunchPrompt, buildResumePrompt, effectiveContextForIssue } from './context';
+import {
+	buildLaunchPrompt,
+	buildResumePrompt,
+	effectiveContextForIssue,
+	resolvedEnvForIssue
+} from './context';
 import { ApiFail, notFound, optionalString, runAtomic } from './core';
 import { requestDispatchEffects } from './core';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
@@ -625,7 +630,9 @@ export async function pollRunner(
 	if (runner.status === 'active') {
 		for (const run of active) {
 			if (run.status !== 'assigned') continue;
-			const assignment = await deliverAssignedRun(db, env, runner, effects, run, now);
+			const assignment = await deliverAssignedRun(db, env, runner, effects, run, now, {
+				envDelivery: body.env_delivery === 1
+			});
 			if (assignment) assignments.push(assignment);
 		}
 	}
@@ -666,7 +673,8 @@ async function deliverAssignedRun(
 	runner: RunnerRow,
 	effects: DispatchEffects,
 	run: Database['agent_run'],
-	now: number
+	now: number,
+	caps: { envDelivery: boolean } = { envDelivery: false }
 ): Promise<RunnerAssignment | null> {
 	const [eligibility, settings] = await Promise.all([
 		db
@@ -752,13 +760,35 @@ async function deliverAssignedRun(
 	});
 	if (!minted) return null;
 
-	const [issue, bundle, artifacts, labels] = await Promise.all([
+	const [issue, bundle, artifacts, labels, resolvedEnv] = await Promise.all([
 		getIssueDetail(db, run.user_id, { id: run.issue_id }, { round: true, launchComments: true }),
 		effectiveContextForIssue(db, run.user_id, run.issue_id),
 		listArtifacts(db, run.user_id, run.issue_id),
-		listLabels(db, run.user_id)
+		listLabels(db, run.user_id),
+		resolvedEnvForIssue(db, env, run.user_id, run.issue_id)
 	]);
 	const issueRef = `${issue.project_name}/${issue.number}`;
+	// Env items ride beside the bundle, never inside it (the bundle is written
+	// to the workspace). A daemon that has not advertised the capability gets
+	// nothing and the run log says why — a resumed run gets a fresh spawn
+	// environment too, so both branches below carry the same field.
+	let envField: { env: RunnerAssignment['env'] } | Record<string, never> = {};
+	if (resolvedEnv.length > 0) {
+		if (caps.envDelivery) {
+			envField = {
+				env: resolvedEnv.map(({ name, value, secret }) => ({ name, value, secret }))
+			};
+		} else {
+			await appendRunLog(
+				db,
+				env,
+				runner,
+				run.id,
+				`[env] ${resolvedEnv.length} environment variable(s) are configured for this issue but this runner's tines CLI is too old to receive them; update it (npm i -g tines)\n`,
+				now
+			);
+		}
+	}
 
 	// Continuation, when the previous run on this runner left a live session
 	// for this issue and every guard passes. A failure anywhere here — an
@@ -794,6 +824,7 @@ async function deliverAssignedRun(
 			)}`,
 			bundle,
 			run_key: minted.secret,
+			...envField,
 			timeout_minutes: runner.max_run_minutes,
 			resume
 		};
@@ -825,6 +856,7 @@ async function deliverAssignedRun(
 		)}`,
 		bundle,
 		run_key: minted.secret,
+		...envField,
 		timeout_minutes: runner.max_run_minutes
 	};
 }
