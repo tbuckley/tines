@@ -23,7 +23,7 @@ import {
 	setSettings,
 	USER
 } from '../supervisor/test-fixtures';
-import { sha256Hex } from '../crypto';
+import { encryptSecret, sha256Hex } from '../crypto';
 import { ApiFail, type ActorContext } from './core';
 import {
 	appendLogTail,
@@ -900,6 +900,68 @@ describe('pollRunner', () => {
 			NOW + 2
 		);
 		expect(second.response.assignments).toEqual([]);
+	});
+
+	it('delivers env items only to daemons that advertise env_delivery, never inside the bundle', async () => {
+		const t = world();
+		t.env.SECRET_ENCRYPTION_KEY = 'unit-test-key';
+		const runnerId = addRunner(t, { name: 'laptop-m4' });
+		const issue = addIssue(t);
+		const insert = t.sqlite.prepare(
+			`INSERT INTO context_item
+				(id, user_id, kind, name, description, env_value, env_value_enc, env_hint, position, version, created_at, updated_at)
+			 VALUES (?, ?, 'env', ?, '', ?, ?, ?, 0, 1, 0, 0)`
+		);
+		insert.run('ctx_env_pub', USER, 'NPM_REGISTRY', 'https://r.example', null, null);
+		insert.run(
+			'ctx_env_sec',
+			USER,
+			'GH_TOKEN',
+			null,
+			await encryptSecret('github_pat_plaintext', 'unit-test-key'),
+			'github_pat_…text'
+		);
+
+		// Old daemon: no capability, no env, warning line in the run log.
+		addRun(t, { id: 'run_old', issueId: issue, runnerId });
+		const old = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [] },
+			NOW + 1
+		);
+		expect(old.response.assignments).toHaveLength(1);
+		expect(old.response.assignments[0].env).toBeUndefined();
+		expect(JSON.stringify(old.response)).not.toContain('github_pat_plaintext');
+
+		// New daemon: env rides beside the bundle; secrets never enter prompt or bundle.
+		addRun(t, { id: 'run_new', issueId: issue, runnerId });
+		const fresh = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [], env_delivery: 1 },
+			NOW + 2
+		);
+		expect(fresh.response.assignments).toHaveLength(1);
+		const a = fresh.response.assignments[0];
+		const byName = (x: { name: string }, y: { name: string }) => x.name.localeCompare(y.name);
+		expect([...(a.env ?? [])].sort(byName)).toEqual([
+			{ name: 'GH_TOKEN', value: 'github_pat_plaintext', secret: true },
+			{ name: 'NPM_REGISTRY', value: 'https://r.example', secret: false }
+		]);
+		expect(JSON.stringify(a.bundle)).not.toContain('github_pat_plaintext');
+		expect(a.prompt).not.toContain('github_pat_plaintext');
+		expect(a.prompt).toContain(
+			'Environment variables set for this run: `GH_TOKEN` (secret), `NPM_REGISTRY`.'
+		);
+		expect([...a.bundle.env].sort(byName).map((e) => [e.name, e.secret, e.value ?? null])).toEqual([
+			['GH_TOKEN', true, null],
+			['NPM_REGISTRY', false, 'https://r.example']
+		]);
 	});
 
 	it('selects essential comments in the locally delivered cold prompt', async () => {
