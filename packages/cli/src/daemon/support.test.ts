@@ -6,6 +6,7 @@ import {
 	buildHarnessInvocation,
 	buildSpawnEnv,
 	redactSecrets,
+	SecretRedactor,
 	CliRefresher,
 	isNewerVersion,
 	pathWithin,
@@ -832,9 +833,9 @@ describe('buildSpawnEnv env items', () => {
 });
 
 describe('redactSecrets', () => {
-	it('masks each secret and its JSON-escaped form, skipping very short ones', () => {
+	it('masks each secret and its JSON-escaped form, including short ones', () => {
 		const text = 'token=s3cr"et\\n {"text":"s3cr\\"et"} pin=ab ab';
-		expect(redactSecrets(text, ['s3cr"et', 'ab'])).toBe('token=***\\n {"text":"***"} pin=ab ab');
+		expect(redactSecrets(text, ['s3cr"et', 'ab'])).toBe('token=***\\n {"text":"***"} pin=*** ***');
 	});
 
 	it('is applied by LogBatcher.append when configured', async () => {
@@ -849,5 +850,41 @@ describe('redactSecrets', () => {
 		await batcher.flush();
 		expect(chunks.join('')).toBe('GH_TOKEN=*** exported\n');
 		expect(chunks.join('')).not.toContain('ghp_secretvalue');
+	});
+});
+
+describe('streaming secret masking', () => {
+	it('masks every split of literal and JSON-escaped secrets, including overlapping values', async () => {
+		const secrets = ['abc', 'abcdef', 'quote"and\nnewline', 'xy', ''];
+		const input = 'before abcdef / quote"and\nnewline / "quote\\"and\\nnewline" / xy after';
+		const expected = 'before *** / *** / "***" / *** after';
+		for (let split = 0; split <= input.length; split++) {
+			const raw = new SecretRedactor(secrets);
+			expect(raw.write(input.slice(0, split)) + raw.write(input.slice(split)) + raw.end()).toBe(
+				expected
+			);
+			const chunks: string[] = [];
+			const batcher = new LogBatcher(async (chunk) => void chunks.push(chunk), {
+				redact: secrets,
+				maxBytes: 1
+			});
+			batcher.append(input.slice(0, split));
+			await batcher.flush();
+			batcher.append(input.slice(split));
+			await batcher.finish();
+			expect(chunks.join('')).toBe(expected);
+		}
+	});
+
+	it('holds a possible secret prefix through flush and releases unmatched final text', async () => {
+		const chunks: string[] = [];
+		const batcher = new LogBatcher(async (chunk) => void chunks.push(chunk), {
+			redact: ['secret']
+		});
+		batcher.append('value=sec');
+		await batcher.flush();
+		expect(chunks.join('')).toBe('value=');
+		await batcher.finish();
+		expect(chunks.join('')).toBe('value=sec');
 	});
 });

@@ -460,6 +460,7 @@ export interface LogBatcherOptions {
  */
 export class LogBatcher {
 	private buffer = '';
+	private readonly redactor: SecretRedactor;
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private sending: Promise<void> = Promise.resolve();
 	private seq = 0;
@@ -469,11 +470,13 @@ export class LogBatcher {
 	constructor(
 		private readonly send: (chunk: string, seq: number) => Promise<void>,
 		private readonly opts: LogBatcherOptions = {}
-	) {}
+	) {
+		this.redactor = new SecretRedactor(opts.redact ?? []);
+	}
 
 	append(text: string): void {
 		if (!text) return;
-		if (this.opts.redact?.length) text = redactSecrets(text, this.opts.redact);
+		text = this.redactor.write(text);
 		this.buffer += text;
 		if (Buffer.byteLength(this.buffer, 'utf8') >= (this.opts.maxBytes ?? 32 * 1024)) {
 			void this.flush();
@@ -481,6 +484,12 @@ export class LogBatcher {
 			this.timer = setTimeout(() => void this.flush(), this.opts.intervalMs ?? 2000);
 			this.timer.unref?.();
 		}
+	}
+
+	/** Release an incomplete final match only after the producer has ended. */
+	finish(): Promise<void> {
+		this.buffer += this.redactor.end();
+		return this.flush();
 	}
 
 	/** Sends whatever is buffered now; resolves when every send so far settled. */
@@ -684,20 +693,66 @@ export function buildSpawnEnv(
 	return env;
 }
 
-/**
- * Masks each secret (and its JSON-escaped form, so NDJSON streams are covered
- * too) with `***`. Secrets shorter than 4 characters are not masked: the
- * false-positive rate would render the log unreadable.
- */
+/** Literal and JSON-escaped secrets, longest first so overlapping values do not leak suffixes. */
+function secretForms(secrets: readonly string[]): string[] {
+	return [
+		...new Set(
+			secrets.filter(Boolean).flatMap((secret) => [secret, JSON.stringify(secret).slice(1, -1)])
+		)
+	].sort((a, b) => b.length - a.length);
+}
+
+function secretPattern(forms: string[]): RegExp | null {
+	return forms.length
+		? new RegExp(forms.map((form) => form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g')
+		: null;
+}
+
+/** Masks all non-empty secrets; transformed/encoded output remains best-effort. */
 export function redactSecrets(text: string, secrets: readonly string[]): string {
-	let out = text;
-	for (const secret of secrets) {
-		if (secret.length < 4) continue;
-		const forms = new Set([secret, JSON.stringify(secret).slice(1, -1)]);
-		for (const form of forms) {
-			if (form.length < 4) continue;
-			out = out.split(form).join('***');
-		}
+	const pattern = secretPattern(secretForms(secrets));
+	return pattern ? text.replace(pattern, '***') : text;
+}
+
+/** Keeps a possible secret prefix private across stream chunks and timer flushes. */
+export class SecretRedactor {
+	private pending = '';
+	private readonly forms: string[];
+	private readonly pattern: RegExp | null;
+
+	constructor(secrets: readonly string[]) {
+		this.forms = secretForms(secrets);
+		this.pattern = secretPattern(this.forms);
 	}
-	return out;
+
+	write(chunk: string): string {
+		if (!this.pattern) return chunk;
+		const text = this.pending + chunk;
+		let cut = text.length;
+		for (const form of this.forms) {
+			for (let size = Math.min(form.length - 1, text.length); size > text.length - cut; size--) {
+				if (text.endsWith(form.slice(0, size))) {
+					cut = text.length - size;
+					break;
+				}
+			}
+		}
+		// Never divide a complete match at the pending-prefix boundary.
+		this.pattern.lastIndex = 0;
+		for (let match; (match = this.pattern.exec(text));) {
+			if (match.index >= cut) break;
+			if (this.pattern.lastIndex > cut) {
+				cut = match.index;
+				break;
+			}
+		}
+		this.pending = text.slice(cut);
+		return text.slice(0, cut).replace(this.pattern, '***');
+	}
+
+	end(): string {
+		const text = this.pending;
+		this.pending = '';
+		return this.pattern ? text.replace(this.pattern, '***') : text;
+	}
 }

@@ -1,6 +1,6 @@
 # Adding a context kind
 
-Context items are typed — `prompt`, `skill`, `repo`, `artifact` — and the
+Context items are typed — `prompt`, `skill`, `repo`, `artifact`, `env` — and the
 type set is designed to grow ([specs/context/SPEC.md](../specs/context/SPEC.md)).
 `artifact` and `env` are the kinds added since this doc was written
 ([specs/artifacts/SPEC.md](../specs/artifacts/SPEC.md); env in

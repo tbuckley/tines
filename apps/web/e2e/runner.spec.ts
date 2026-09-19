@@ -145,6 +145,12 @@ case "$MODE" in
 		# the secret's value in the log it ships.
 		cp prompt.md "$E2E_DIR/last-prompt.md"
 		echo "env plain=$E2E_ENV_PLAIN secret=$E2E_ENV_SECRET"
+		# Force the secret across distinct pipe reads and the log flush timer.
+		printf 'split secret='
+		printf '%s' "$E2E_ENV_SECRET" | cut -c 1-8 | tr -d '\\n'
+		sleep 3
+		printf '%s' "$E2E_ENV_SECRET" | cut -c 9-
+
 		REF=$(sed -n 's/^This is run .* for issue \\([^;]*\\);.*/\\1/p' prompt.md | head -n 1)
 		${TSX} ${CLI_ENTRY} issues move "$REF" "Submit for review"
 		;;
@@ -859,6 +865,7 @@ esac
 		);
 		const detail = await body<AgentRunDetail>(await api.get(`/api/v1/runs/${run.id}`));
 		expect(detail.log).toContain('env plain=plain-payload secret=***');
+		expect(detail.log).toContain('split secret=***');
 		expect(detail.log).not.toContain(secret);
 		// The prompt names the variables; neither value is in the workspace.
 		const prompt = readSideFile('last-prompt.md');

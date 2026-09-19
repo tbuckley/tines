@@ -386,7 +386,7 @@ runs. Reads stay open; they never carry secrets.
 server answers with `RunnerAssignment.env` (top-level, not in `bundle`, so it
 never reaches the workspace files) and the daemon merges it into the spawn
 environment with `TINES_*` and `PATH` always winning. It masks secret values
-(`***`, plain and JSON-escaped forms, length ≥ 4) in the rendered log and the
+(`***`, all non-empty plain and JSON-escaped forms, including across stream chunks) in the rendered log and the
 raw NDJSON spool — best-effort; a harness that re-encodes its environment
 defeats a substring match. A daemon without the capability gets no env and one
 `[env] … tines CLI is too old …` line in the run log. Claude managed runners:

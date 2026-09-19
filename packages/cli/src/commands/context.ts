@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-/** `tines context` — context items (prompts, skills, repo pointers) and their scopes. */
+/** `tines context` — context items (prompts, skills, repo pointers, environment variables) and their scopes. */
 import { readBodyValue } from '../body-value.js';
 import {
 	client,
@@ -121,7 +121,7 @@ export function register(program: Command): void {
 	const context = program
 		.command('context')
 		.description(
-			'Manage context items (prompts, skills, repo pointers) scoped to projects, states, and issues'
+			'Manage context items (prompts, skills, repo pointers, environment variables) scoped to projects, states, and issues'
 		);
 
 	withList(
@@ -131,7 +131,7 @@ export function register(program: Command): void {
 				.description(
 					'List context items (scope filters match every item whose scope includes the element)'
 				)
-				.option('-k, --kind <kind>', 'filter by kind: prompt, skill, or repo')
+				.option('-k, --kind <kind>', 'filter by kind: prompt, skill, repo, artifact, or env')
 				.option('--exact', 'only items whose scope sets exactly the given dimensions')
 				.option('-q, --search <text>', 'search names and descriptions')
 		)

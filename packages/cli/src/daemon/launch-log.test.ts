@@ -12,7 +12,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { FinishRunRequest } from '@tines/shared';
+import type { FinishRunRequest, RunnerAssignment } from '@tines/shared';
 import { cliVersion } from '../version.js';
 import { CLI_BIN, NODE } from '../test-bin.js';
 
@@ -20,7 +20,7 @@ const RUN_ID = 'run_stub1';
 const RUN_KEY = 'trk_stub_run_key_never_logged';
 
 /** The assignment the stub hands out once: no repos, no skills, one run. */
-function assignment(timeoutMinutes: number, model: string): unknown {
+function assignment(timeoutMinutes: number, model: string, env?: RunnerAssignment['env']) {
 	return {
 		run: {
 			id: RUN_ID,
@@ -32,6 +32,7 @@ function assignment(timeoutMinutes: number, model: string): unknown {
 		prompt: 'PROMPT BODY',
 		bundle: { skills: [], repos: [] },
 		run_key: RUN_KEY,
+		...(env ? { env } : {}),
 		timeout_minutes: timeoutMinutes
 	};
 }
@@ -39,6 +40,7 @@ function assignment(timeoutMinutes: number, model: string): unknown {
 interface Harvest {
 	log: string;
 	finish: FinishRunRequest | null;
+	raw: string | null;
 }
 
 /**
@@ -48,14 +50,15 @@ interface Harvest {
  */
 function stubSupervisor(
 	timeoutMinutes = 30,
-	model = 'claude-sonnet-5'
+	model = 'claude-sonnet-5',
+	env?: RunnerAssignment['env']
 ): {
 	server: Server;
 	done: Promise<Harvest>;
 	/** Live view, for tests that must act while the run is still going. */
 	harvest: Harvest;
 } {
-	const harvest: Harvest = { log: '', finish: null };
+	const harvest: Harvest = { log: '', finish: null, raw: null };
 	let handedOut = false;
 	let resolve!: (h: Harvest) => void;
 	const done = new Promise<Harvest>((r, reject) => {
@@ -76,12 +79,16 @@ function stubSupervisor(
 				return reply({ runner: { id: 'rnr_stub', name: 'stub' }, runner_token: 'rt_stub' });
 			}
 			if (url === '/api/v1/runners/rnr_stub/poll') {
-				const assignments = handedOut ? [] : [assignment(timeoutMinutes, model)];
+				const assignments = handedOut ? [] : [assignment(timeoutMinutes, model, env)];
 				handedOut = true;
 				return reply({ assignments, cancels: [] });
 			}
 			if (url === `/api/v1/runs/${RUN_ID}/logs`) {
 				harvest.log += (JSON.parse(body) as { chunk: string }).chunk;
+				return reply({ ok: true });
+			}
+			if (url === `/api/v1/runs/${RUN_ID}/log/raw`) {
+				harvest.raw = body;
 				return reply({ ok: true });
 			}
 			if (url === `/api/v1/runs/${RUN_ID}/finish`) {
@@ -590,3 +597,51 @@ describe('the run log a local run leaves behind', () => {
 		});
 	}, 30_000);
 });
+
+it('masks split env secrets in both rendered and raw logs through a spawned Claude daemon', async () => {
+	const secret = 'private"token\nwith-newline';
+	const {
+		server: stub,
+		done,
+		harvest
+	} = stubSupervisor(30, 'claude-sonnet-5', [
+		{ name: 'E2E_SECRET', value: secret, secret: true },
+		{ name: 'E2E_PUBLIC', value: 'public-payload', secret: false }
+	]);
+	server = stub;
+	await new Promise<void>((resolve) => stub.listen(0, '127.0.0.1', resolve));
+	configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-env-'));
+	const bin = join(configDir, 'fakebin');
+	mkdirSync(bin);
+	writeFileSync(
+		join(bin, 'writer.mjs'),
+		`
+const secret = process.env.E2E_SECRET;
+const text = process.env.E2E_PUBLIC + ' secret=' + secret;
+const event = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
+const cut = event.indexOf(JSON.stringify(secret).slice(1, -1)) + 9;
+process.stdout.write(event.slice(0, cut));
+process.stderr.write('diagnostic secret=' + secret.slice(0, 9));
+await new Promise((resolve) => setTimeout(resolve, 2200));
+process.stdout.write(event.slice(cut) + '\\n');
+process.stderr.write(secret.slice(9) + '\\n');
+`
+	);
+	writeFileSync(join(bin, 'claude'), '#!/bin/sh\nexec node "$(dirname "$0")/writer.mjs"\n', {
+		mode: 0o755
+	});
+	child = startDaemon((stub.address() as AddressInfo).port, configDir, { fakeClaudeDir: bin });
+	await done;
+	await expect.poll(() => harvest.raw, { timeout: 10_000 }).not.toBeNull();
+	expect(harvest.finish?.status).toBe('completed');
+	expect(harvest.log).toContain('diagnostic secret=');
+	expect(harvest.log.match(/\*\*\*/g)).toHaveLength(2);
+	expect(harvest.log).not.toContain(secret.slice(0, 9));
+	expect(harvest.log).not.toContain(secret.slice(9));
+	expect(harvest.log).toContain('[agent] public-payload secret=***');
+	expect(JSON.parse(harvest.raw!).message.content[0].text).toBe('public-payload secret=***');
+	for (const output of [harvest.log, harvest.raw!]) {
+		expect(output).not.toContain(secret);
+		expect(output).not.toContain(JSON.stringify(secret).slice(1, -1));
+	}
+}, 30_000);

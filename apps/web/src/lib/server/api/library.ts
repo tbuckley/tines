@@ -350,6 +350,14 @@ export function assertImportableDocument(doc: LibraryDocument | undefined | null
 		if (!Array.isArray(entries))
 			throw new ApiFail(422, 'invalid_field', `document.${name} must be an array`);
 	}
+	if (context.some((entry) => (entry?.kind as string) === 'env')) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'env items are deployment configuration and do not travel in library documents',
+			{ field: 'document.context' }
+		);
+	}
 	const total = projects.length + workflows.length + context.length;
 	if (total > LIBRARY_MAX_ENTRIES) {
 		throw new ApiFail(
@@ -781,17 +789,6 @@ export async function planImport(
 					ref,
 					action: 'skip',
 					reason: 'artifacts are issue data, not library content'
-				}
-			});
-			continue;
-		}
-		if ((entry.kind as string) === 'env') {
-			steps.push({
-				entry: {
-					section: 'context',
-					ref,
-					action: 'skip',
-					reason: 'env items are deployment configuration and do not travel in library documents'
 				}
 			});
 			continue;

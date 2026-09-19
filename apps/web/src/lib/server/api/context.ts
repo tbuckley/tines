@@ -250,6 +250,11 @@ export interface EnvPayload {
 
 function validateEnvValue(value: unknown, secret: boolean): string {
 	const v = requireString(value, 'value', { max: ENV_VALUE_MAX_BYTES * 4 });
+	if (v.includes('\0')) {
+		throw new ApiFail(422, 'invalid_field', 'Environment values cannot contain NUL bytes', {
+			field: 'value'
+		});
+	}
 	if (byteLength(v) > ENV_VALUE_MAX_BYTES) {
 		throw new ApiFail(
 			422,

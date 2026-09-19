@@ -1053,6 +1053,25 @@ describe('env context items', () => {
 		).toMatchObject({ status: 422, code: 'kind_payload_mismatch' });
 	});
 
+	it('rejects NUL bytes before they can reach process spawning', async () => {
+		const { t, db } = setup();
+		for (const secret of [false, true]) {
+			expect(
+				await fail(
+					createContextItem(db, t.env, human, { kind: 'env', name: 'BAD', value: 'a\0b', secret })
+				)
+			).toMatchObject({ status: 422, code: 'invalid_field' });
+		}
+		const item = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'GOOD',
+			value: 'ok'
+		});
+		expect(
+			await fail(updateContextItem(db, t.env, human, item.id, { value: 'a\0b' }))
+		).toMatchObject({ status: 422, code: 'invalid_field' });
+	});
+
 	it('stores a public value in the clear and a secret encrypted, serializing only the hint', async () => {
 		const { t, db } = setup();
 		const pub = await createContextItem(db, t.env, human, {

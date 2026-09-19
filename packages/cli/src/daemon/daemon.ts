@@ -61,7 +61,7 @@ import {
 	AMBIENT_CLI,
 	buildHarnessInvocation,
 	buildSpawnEnv,
-	redactSecrets,
+	SecretRedactor,
 	CliRefresher,
 	exitLineForRun,
 	formatLaunchBanner,
@@ -407,7 +407,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					status
 				};
 				run.batcher.append(`[usage] ${JSON.stringify(accounting)}\n`);
-				await run.batcher.flush();
+				await run.batcher.finish();
 				const ended = await client.finishRun(run.runId, {
 					status,
 					...(run.effortEvidence ? { effort_application: run.effortEvidence } : {}),
@@ -589,7 +589,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				}
 			)
 		};
-		run.flush = () => run.batcher.flush();
+		run.flush = () => run.batcher.finish();
 		table.track(run);
 		// Enforced effort never trusts the catalog advertised by an earlier probe.
 		// Reprobe the same PATH/environment used below and require the assignment's
@@ -764,23 +764,21 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				run.rawSpool = createWriteStream(spoolPath);
 				run.rawUpload = (body) => client.putRunLogRaw(runId, body);
 				const decoder = new StringDecoder('utf8');
+				const rawRedactor = new SecretRedactor(secretEnvValues);
 				run.drain = () => {
 					const trailing = decoder.end();
 					if (trailing) {
-						run.rawSpool?.write(
-							secretEnvValues.length > 0 ? redactSecrets(trailing, secretEnvValues) : trailing
-						);
+						run.rawSpool?.write(rawRedactor.write(trailing));
 						renderer.write(trailing);
 					}
+					run.rawSpool?.write(rawRedactor.end());
 					renderer.finish();
 				};
 				child.stdout?.on('data', (data: Buffer) => {
 					// The raw spool is uploaded verbatim, so it is masked too
 					// (text, not the Buffer — the decoder owns partial code points).
 					const text = decoder.write(data);
-					run.rawSpool?.write(
-						secretEnvValues.length > 0 ? redactSecrets(text, secretEnvValues) : text
-					);
+					run.rawSpool?.write(rawRedactor.write(text));
 					renderer.write(text);
 				});
 			} else if (opts.harness === 'codex') {
@@ -794,13 +792,29 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				};
 				child.stdout?.on('data', (data: Buffer) => renderer.write(decoder.write(data)));
 			} else {
-				child.stdout?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
+				const decoder = new StringDecoder('utf8');
+				const redactor = new SecretRedactor(secretEnvValues);
+				child.stdout?.on('data', (data: Buffer) =>
+					run.batcher.append(redactor.write(decoder.write(data)))
+				);
+				run.drain = () => {
+					run.batcher.append(redactor.write(decoder.end()) + redactor.end());
+				};
 			}
+			// Each pipe owns its decoder/redactor: stderr may interrupt stdout in
+			// the middle of a secret, so their pending prefixes cannot be shared.
+			const stderrDecoder = new StringDecoder('utf8');
+			const stderrRedactor = new SecretRedactor(secretEnvValues);
+			const drainStdout = run.drain;
+			run.drain = () => {
+				drainStdout?.();
+				run.batcher.append(stderrRedactor.write(stderrDecoder.end()) + stderrRedactor.end());
+			};
 			// stderr is never stream-json — it is the harness's own diagnostics,
 			// and it goes to the log verbatim for every harness.
 			child.stderr?.on('data', (data: Buffer) => {
-				const text = data.toString('utf8');
-				run.batcher.append(text);
+				const text = stderrDecoder.write(data);
+				run.batcher.append(stderrRedactor.write(text));
 				// Usage exhaustion at process start and some provider/transport
 				// failures only appear here; stdout is empty in those cases.
 				run.limiter?.noteStderr(text);

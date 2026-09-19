@@ -21,8 +21,9 @@ Commands:
   workflows         Manage the workflow library
   issues            Work with issues
   labels            Manage the label library
-  context           Manage context items (prompts, skills, repo pointers) scoped
-                    to projects, states, and issues
+  context           Manage context items (prompts, skills, repo pointers,
+                    environment variables) scoped to projects, states, and
+                    issues
   journal           An issue's stage journal: shared notes for its project + the
                     stage your run was launched in
   schedules         Manage scheduled tasks (addressed as <project>/<name>)
@@ -49,8 +50,8 @@ Options:
 ",
   "tines context": "Usage: tines context [options] [command]
 
-Manage context items (prompts, skills, repo pointers) scoped to projects,
-states, and issues
+Manage context items (prompts, skills, repo pointers, environment variables)
+scoped to projects, states, and issues
 
 Options:
   -h, --help             display help for command
@@ -169,7 +170,8 @@ List context items (scope filters match every item whose scope includes the
 element)
 
 Options:
-  -k, --kind <kind>             filter by kind: prompt, skill, or repo
+  -k, --kind <kind>             filter by kind: prompt, skill, repo, artifact,
+                                or env
   --exact                       only items whose scope sets exactly the given
                                 dimensions
   -q, --search <text>           search names and descriptions
