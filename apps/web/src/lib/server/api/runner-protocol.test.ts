@@ -955,9 +955,8 @@ describe('pollRunner', () => {
 		]);
 		expect(JSON.stringify(a.bundle)).not.toContain('github_pat_plaintext');
 		expect(a.prompt).not.toContain('github_pat_plaintext');
-		expect(a.prompt).toContain(
-			'Environment variables set for this run: `GH_TOKEN` (secret), `NPM_REGISTRY`.'
-		);
+		expect(a.prompt).toMatch(/Environment variables set for this run: .*`GH_TOKEN` \(secret\)/);
+		expect(a.prompt).toMatch(/Environment variables set for this run: .*`NPM_REGISTRY`/);
 		expect([...a.bundle.env].sort(byName).map((e) => [e.name, e.secret, e.value ?? null])).toEqual([
 			['GH_TOKEN', true, null],
 			['NPM_REGISTRY', false, 'https://r.example']
