@@ -63,6 +63,10 @@ test.describe.serial('the first-run path on an empty account', () => {
 		);
 		await signIn(context, USER.sessionToken);
 		await gotoHydrated(page, '/agents');
+		const issueDialog = page.getByRole('dialog', { name: 'New issue' });
+		await page.getByRole('button', { name: 'Create an issue' }).click();
+		await expect(issueDialog.getByLabel('Add attachment files')).toBeAttached();
+		await issueDialog.getByRole('button', { name: 'Cancel' }).click();
 
 		// The routing empty state knows there is no runner to route to yet.
 		const addRunner = page.getByRole('button', { name: 'Add runner' }).last();
