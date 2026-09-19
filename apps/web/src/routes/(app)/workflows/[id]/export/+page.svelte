@@ -24,18 +24,21 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import {
+		listEditableFields,
 		normalizeInputDraft,
+		readField,
+		replaceSelectionWithVariable,
+		saveAuthoredField,
 		updateAuthoredInput,
-		writeField,
 		type InputDraft
 	} from '$lib/components/library/package-input-editor';
 	import PackageReview from '$lib/components/library/PackageReview.svelte';
+	import { declaredOccurrences } from '$lib/components/library/package-text';
 	import TechnicalDetails from '$lib/components/publications/TechnicalDetails.svelte';
 	import { PublicationFlowController } from '$lib/components/publications/publication-flow';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
-	import { Textarea } from '$lib/components/ui/textarea/index.js';
 
 	let { data } = $props();
 	function initialCandidate(): WorkflowPackageDocument {
@@ -80,13 +83,16 @@
 	let addDraftSnapshot = $state<InputDraft | null>(null);
 	let inputFormError = $state('');
 	let selectedInputId = $state('');
-	let selectedTarget = $state('');
-	let fieldEditor = $state<HTMLTextAreaElement | null>(null);
-	let fieldEditPending = $state(false);
 	let inputPanel = $state<HTMLElement | null>(null);
 	let keyEditor = $state<HTMLInputElement | null>(null);
 	let tokenInvoker = $state<HTMLElement | null>(null);
 	let diagnosticsPanel = $state<HTMLElement | null>(null);
+	let samples = $state<Record<string, string>>({});
+	let changedInputIds = $state<Set<string>>(new Set());
+	let changedOccurrenceIds = $state<Set<string>>(new Set());
+	let inlineStates = $state<
+		Record<string, { active: boolean; bound: boolean; inputIds: string[] }>
+	>({});
 
 	const requiredReviews = $derived(
 		candidate.context
@@ -107,68 +113,7 @@
 	const availableSchedules = $derived(
 		data.schedules.filter((schedule) => schedule.project_id === sourceProjectId)
 	);
-	const editableFields = $derived.by(() => {
-		const fields: {
-			key: string;
-			recordId: string;
-			field: TextUseField;
-			label: string;
-			value: string;
-		}[] = [];
-		for (const workflow of candidate.workflows)
-			fields.push({
-				key: `${workflow.id}:description`,
-				recordId: workflow.id,
-				field: 'description',
-				label: `${workflow.name} — description`,
-				value: workflow.description
-			});
-		for (const item of candidate.context) {
-			if (item.description)
-				fields.push({
-					key: `${item.id}:description`,
-					recordId: item.id,
-					field: 'description',
-					label: `${item.name} — description`,
-					value: item.description
-				});
-			if (item.kind === 'prompt')
-				fields.push({
-					key: `${item.id}:body`,
-					recordId: item.id,
-					field: 'body',
-					label: `${item.name} — prompt body`,
-					value: item.body
-				});
-			if (item.kind === 'skill')
-				for (const file of item.files)
-					fields.push({
-						key: `${file.id}:content`,
-						recordId: file.id,
-						field: 'content',
-						label: `${item.name} / ${file.path}`,
-						value: file.content
-					});
-		}
-		for (const schedule of candidate.schedules) {
-			fields.push({
-				key: `${schedule.id}:title_template`,
-				recordId: schedule.id,
-				field: 'title_template',
-				label: `${schedule.name} — title template`,
-				value: schedule.title_template
-			});
-			fields.push({
-				key: `${schedule.id}:description_template`,
-				recordId: schedule.id,
-				field: 'description_template',
-				label: `${schedule.name} — description template`,
-				value: schedule.description_template
-			});
-		}
-		return fields;
-	});
-	const selectedField = $derived(editableFields.find((field) => field.key === selectedTarget));
+	const editableFields = $derived(listEditableFields(candidate));
 	const selectedInput = $derived(candidate.inputs.find((input) => input.id === selectedInputId));
 	const diagnosticFieldKeys = $derived(
 		new Set(
@@ -196,6 +141,32 @@
 		publicationResult = null;
 		shareConsent = false;
 		step = 'customize';
+	}
+	function inlineStateChanged(
+		key: string,
+		state: { active: boolean; bound: boolean; inputIds: string[] }
+	) {
+		const previous = inlineStates[key];
+		inlineStates = { ...inlineStates, [key]: state };
+		// A bare Edit/Preview toggle changes no bytes, so it keeps the review acknowledgments;
+		// typed text or an open variable form is a bound edit and invalidates them.
+		if (state.bound && !previous?.bound)
+			resetReview('Finish or cancel the passage edit before continuing.');
+	}
+	async function guardInlineEdits(action: string, inputId?: string, exceptKey?: string) {
+		const blocked = Object.entries(inlineStates).find(
+			([key, state]) =>
+				key !== exceptKey && state.active && (!inputId || state.inputIds.includes(inputId))
+		);
+		if (!blocked) return true;
+		status = `Save or cancel the passage edit before ${action}.`;
+		await tick();
+		const section = document.querySelector<HTMLElement>(
+			`[data-field-key="${CSS.escape(blocked[0])}"]`
+		);
+		(section?.querySelector<HTMLElement>('[data-inline-action]') ?? section)?.focus();
+		section?.scrollIntoView({ block: 'center' });
+		return false;
 	}
 	function displayNameChanged(event: Event) {
 		displayName = (event.currentTarget as HTMLInputElement).value;
@@ -256,12 +227,9 @@
 	}
 	async function rebuild() {
 		if (candidateUpdating || busy) return;
+		if (!(await guardInlineEdits('rebuilding'))) return;
 		if (editingInputId) {
 			status = 'Save or cancel the variable edit before applying automation.';
-			return;
-		}
-		if (fieldEditPending || (fieldEditor && fieldEditor.value !== selectedField?.value)) {
-			status = 'Save or cancel the text edit before applying automation.';
 			return;
 		}
 		if (
@@ -278,6 +246,9 @@
 			const rebuilt = await api.exportWorkflowPackage(data.workflow.id, options);
 			if (!rebuilt.inputs.some((input) => input.id === selectedInputId)) selectedInputId = '';
 			candidate = rebuilt;
+			samples = {};
+			changedInputIds = new Set();
+			changedOccurrenceIds = new Set();
 			baseline = { document_digest: rebuilt.digest, exported_at: rebuilt.exported_at };
 			appliedSourceOptions = JSON.parse(
 				canonicalizeLibraryValue(options)
@@ -304,12 +275,9 @@
 		}
 	}
 	async function prepareForPublication() {
+		if (!(await guardInlineEdits('previewing'))) return;
 		if (editingInputId) {
 			status = 'Save or cancel the variable edit before previewing.';
-			return;
-		}
-		if (fieldEditPending || (fieldEditor && fieldEditor.value !== selectedField?.value)) {
-			status = 'Save or cancel the text edit before previewing.';
 			return;
 		}
 		if (candidateUpdating) {
@@ -566,28 +534,10 @@
 		}
 		const tokenChanges =
 			inputToken(current.key, current.default) !== inputToken(normalized.key, normalized.default);
-		const selectedFieldIsAffected = Boolean(
-			tokenChanges &&
-			selectedField &&
-			candidate.text_uses.some(
-				(use) =>
-					use.input_id === inputId &&
-					use.target.record_id === selectedField?.recordId &&
-					use.target.field === selectedField.field
-			)
-		);
-		if (selectedFieldIsAffected && fieldEditor && fieldEditor.value !== selectedField?.value) {
+		if (tokenChanges && !(await guardInlineEdits('updating this variable', inputId))) {
 			inputFormError = 'Save text before changing this variable’s key or default.';
 			return;
 		}
-		const pendingField =
-			!selectedFieldIsAffected && fieldEditor
-				? {
-						value: fieldEditor.value,
-						start: fieldEditor.selectionStart,
-						end: fieldEditor.selectionEnd
-					}
-				: null;
 		const snapshot = candidate;
 		let updated: WorkflowPackageDocument;
 		try {
@@ -612,62 +562,127 @@
 		}
 		if (!saved) return;
 		await finishInputEdit(inputId);
-		await tick();
-		if (fieldEditor) {
-			if (selectedFieldIsAffected && selectedField) fieldEditor.value = selectedField.value;
-			else if (pendingField) {
-				fieldEditor.value = pendingField.value;
-				fieldEditor.setSelectionRange(pendingField.start, pendingField.end);
-			}
-		}
 	}
-	async function saveCandidateField(addUse = false) {
-		if (!selectedField || !fieldEditor) return;
-		const input = addUse ? selectedInput : undefined;
-		if (addUse && !input) {
-			status = 'Choose a variable first.';
-			return;
+	async function saveInlineText(recordId: string, field: TextUseField, value: string) {
+		if (candidateUpdating) return false;
+		let next: WorkflowPackageDocument;
+		try {
+			next = saveAuthoredField(candidate, { recordId, field }, value);
+		} catch (error) {
+			status = message(error);
+			return false;
 		}
-		const next = JSON.parse(JSON.stringify(candidate)) as WorkflowPackageDocument;
-		resetReview('Saving text.');
+		resetReview('Saving the passage text.');
 		candidateUpdating = true;
-		let value = fieldEditor.value;
-		if (input) {
-			const token = inputToken(input.key, input.default);
-			const start = fieldEditor.selectionStart;
-			const end = fieldEditor.selectionEnd;
-			value = `${value.slice(0, start)}${token}${value.slice(end)}`;
-			next.text_uses.push({
-				id: `use:author:${next.text_uses.length + 1}`,
-				target: { record_id: selectedField.recordId, field: selectedField.field },
-				input_id: input.id,
-				token
-			});
-		}
-		writeField(next, selectedField.recordId, selectedField.field, value);
 		try {
 			candidate = await withLibraryDocumentDigest(next);
 			dirty = true;
-			fieldEditPending = false;
-			resetReview(
-				addUse
-					? 'Variable added at the selected location.'
-					: 'Text saved in this copy. Your private workflow is unchanged.'
-			);
-			await tick();
-			if (fieldEditor) fieldEditor.value = value;
+			changedInputIds = new Set();
+			changedOccurrenceIds = new Set();
+			resetReview('Text saved in this copy.');
+			return true;
 		} catch (error) {
 			status = message(error);
+			return false;
 		} finally {
 			candidateUpdating = false;
 		}
 	}
-	function cancelCandidateField() {
-		if (!selectedField || !fieldEditor || candidateUpdating) return;
-		fieldEditor.value = selectedField.value;
-		fieldEditPending = false;
-		status = 'Text edit canceled.';
-		fieldEditor.focus();
+	async function createInlineVariable(request: {
+		recordId: string;
+		field: TextUseField;
+		sourceSnapshot: string;
+		value: string;
+		start: number;
+		end: number;
+		direction: 'forward' | 'backward' | 'none';
+		inputId?: string;
+		draft?: InputDraft;
+	}) {
+		if (candidateUpdating) return null;
+		let result;
+		try {
+			result = replaceSelectionWithVariable(candidate, {
+				ref: { recordId: request.recordId, field: request.field },
+				sourceSnapshot: request.sourceSnapshot,
+				value: request.value,
+				start: request.start,
+				end: request.end,
+				inputId: request.inputId,
+				newInput: request.draft
+			});
+		} catch (error) {
+			status = message(error);
+			return { error: message(error) };
+		}
+		resetReview('Saving the new variable use.');
+		candidateUpdating = true;
+		try {
+			candidate = await withLibraryDocumentDigest(result.document);
+			selectedInputId = result.inputId;
+			dirty = true;
+			changedInputIds = new Set();
+			changedOccurrenceIds = new Set([`${result.useId}:${result.occurrence.ordinal}`]);
+			resetReview('1 use updated.');
+			return {
+				inputId: result.inputId,
+				useId: result.useId,
+				ordinal: result.occurrence.ordinal
+			};
+		} catch (error) {
+			status = message(error);
+			return null;
+		} finally {
+			candidateUpdating = false;
+		}
+	}
+	async function editInlineVariable(
+		inputId: string,
+		draft: InputDraft,
+		recordId: string,
+		field: TextUseField
+	) {
+		if (candidateUpdating) return false;
+		if (!(await guardInlineEdits('updating this variable', inputId, `${recordId}:${field}`)))
+			return false;
+		let next: WorkflowPackageDocument;
+		try {
+			next = updateAuthoredInput(candidate, inputId, draft);
+		} catch (error) {
+			status = message(error);
+			return false;
+		}
+		resetReview('Saving the variable changes.');
+		candidateUpdating = true;
+		try {
+			candidate = await withLibraryDocumentDigest(next);
+			dirty = true;
+			changedInputIds = new Set([inputId]);
+			changedOccurrenceIds = new Set();
+			resetReview('Variable updated in this copy.');
+			return true;
+		} catch (error) {
+			status = message(error);
+			return false;
+		} finally {
+			candidateUpdating = false;
+		}
+	}
+	function setSample(inputId: string, value: string | undefined) {
+		const next = { ...samples };
+		if (value === undefined) delete next[inputId];
+		else next[inputId] = value;
+		if (JSON.stringify(next) === JSON.stringify(samples)) return;
+		samples = next;
+		changedInputIds = new Set([inputId]);
+		changedOccurrenceIds = new Set();
+		const count = candidate.text_uses
+			.filter((use) => use.input_id === inputId)
+			.reduce((total, use) => {
+				const source = readField(candidate, use.target.record_id, use.target.field) ?? '';
+				return total + declaredOccurrences(source, [{ token: use.token, inputId }]).length;
+			}, 0);
+		status = `${count} ${count === 1 ? 'use' : 'uses'} updated. Sample values do not change the reusable file.`;
 	}
 	type InputRepairField = 'key' | 'default' | 'label' | 'description';
 	function diagnosticInput(path: string) {
@@ -711,6 +726,7 @@
 		return editableFields.find((item) => item.key === key) ?? null;
 	}
 	async function validate(expectedGeneration = candidateGeneration) {
+		if (!(await guardInlineEdits('checking the file'))) return null;
 		if (candidateUpdating) {
 			status = 'Wait for the edit to finish before checking this copy.';
 			return null;
@@ -787,10 +803,12 @@
 		tokenInvoker = null;
 	}
 	async function beginEdit(recordId: string, field: string) {
-		selectedTarget = `${recordId}:${field}`;
-		fieldEditPending = false;
 		await tick();
-		fieldEditor?.focus();
+		const section = document.querySelector<HTMLElement>(
+			`[data-field-key="${CSS.escape(`${recordId}:${field}`)}"]`
+		);
+		section?.querySelector<HTMLButtonElement>('[data-inline-edit]')?.click();
+		section?.scrollIntoView({ block: 'center' });
 	}
 </script>
 
@@ -860,6 +878,31 @@
 		{#if displayNameError}<p class="text-destructive mt-1 text-sm" role="alert">
 				{displayNameError}
 			</p>{/if}
+	</section>
+
+	<section class="mb-6 rounded-lg border p-4" aria-labelledby="passage-review-title">
+		<h2 id="passage-review-title" class="font-semibold">Review and customize passages</h2>
+		<p class="text-muted-foreground mt-1 mb-4 text-xs">
+			Edit beside the passage, select exact text, then make or reuse a variable. Preview values
+			never change the reusable file.
+		</p>
+		<PackageReview
+			document={candidate}
+			{reviewed}
+			onReview={setReviewed}
+			onToken={focusInput}
+			expandedFields={diagnosticFieldKeys}
+			contextFirst
+			{samples}
+			{selectedInputId}
+			{changedInputIds}
+			{changedOccurrenceIds}
+			onSaveText={saveInlineText}
+			onCreate={createInlineVariable}
+			onEditVariable={editInlineVariable}
+			onSample={setSample}
+			onStateChange={inlineStateChanged}
+		/>
 	</section>
 
 	<details class="mb-6 rounded-lg border p-4">
@@ -1095,62 +1138,10 @@
 						</div>
 					{/each}
 				</div>{/if}
-			<div class="mt-4 border-t pt-4">
-				<label class="text-xs"
-					>Edit instructions<Select
-						class="mt-1"
-						bind:value={selectedTarget}
-						onchange={() => (fieldEditPending = false)}
-						><option value="">Choose a text field</option>{#each editableFields as field}<option
-								value={field.key}>{field.label}</option
-							>{/each}</Select
-					></label
-				>{#if selectedField}<Textarea
-						class="mt-2 min-h-40 font-mono text-xs"
-						bind:ref={fieldEditor}
-						value={selectedField.value}
-						oninput={(event) =>
-							(fieldEditPending = event.currentTarget.value !== selectedField?.value)}
-					></Textarea>
-					<div class="mt-2 flex flex-wrap gap-2">
-						<Button
-							size="sm"
-							variant="outline"
-							onclick={() => saveCandidateField(false)}
-							disabled={candidateUpdating}>Save text</Button
-						>
-						<Button
-							size="sm"
-							variant="outline"
-							onclick={cancelCandidateField}
-							disabled={candidateUpdating || !fieldEditPending}>Cancel text edit</Button
-						>
-						<div
-							class="flex max-w-full min-w-0 flex-wrap items-center gap-2"
-							data-testid="input-replacement"
-						>
-							<Button
-								size="sm"
-								onclick={() => saveCandidateField(true)}
-								disabled={!selectedInput || candidateUpdating}>Use selected variable here</Button
-							>
-							{#if selectedInput}<span
-									class="text-muted-foreground max-w-full min-w-0 text-xs [overflow-wrap:anywhere]"
-									>Using <code class="[overflow-wrap:anywhere]">{selectedInput.key}</code></span
-								>{/if}
-						</div>
-						<a
-							class="text-primary inline-flex min-h-9 items-center px-2 text-xs underline"
-							href="/workflows/{data.workflow.id}"
-							title="Applying automation afterward replaces the edits in this copy"
-							>Edit private source instead</a
-						>
-					</div>
-					<p class="text-muted-foreground mt-2 text-xs">
-						This opens your private workflow. Return here and choose Apply automation to include its
-						latest changes. That replaces instruction and variable edits made in this copy.
-					</p>{/if}
-			</div>
+			<p class="text-muted-foreground mt-4 border-t pt-4 text-xs">
+				Edit passage text and place variables only beside the passage above. The inventory keeps
+				declarations, including variables with no current uses.
+			</p>
 		</section>
 	</details>
 
@@ -1200,14 +1191,6 @@
 		<p class="text-muted-foreground mb-4 text-sm">
 			Review included content, then download a private file.
 		</p>
-		<PackageReview
-			document={candidate}
-			{reviewed}
-			onReview={setReviewed}
-			onToken={focusInput}
-			onEdit={beginEdit}
-			expandedFields={diagnosticFieldKeys}
-		/>
 		<div class="mt-4 flex flex-wrap gap-2">
 			<Button variant="outline" onclick={() => validate()} disabled={busy || candidateUpdating}
 				>Check file</Button

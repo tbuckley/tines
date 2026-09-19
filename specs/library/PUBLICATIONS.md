@@ -92,3 +92,14 @@ requests retain their existing interpretation.
 This normal-view language rule also covers optional authoring controls and installation recovery
 alerts: they name the task and the next action, while diagnostic identifiers stay inside closed
 Technical details.
+
+## Decision update — 2026-09-16 inline variables beside passages (Tines/554)
+
+Owned-workflow Customize authors variables beside each passage. A field workbench toggles Edit and
+Preview, retains the selection and text across the toggle, and offers Make variable on the selected
+range: the compact form atomically creates or reuses a declaration plus that exact text use, and
+Done/Cancel return focus to the occurrence. Sample values are ephemeral, use the installer's
+canonical substitution, and never enter drafts, downloads, public views or installs. Unsaved
+passage text and open variable forms are bound edits: they invalidate proof and reviews and block
+rebuild, file checks and Preview. The declaration inventory keeps declaration-only creation,
+zero-use variables, selection and editing, and has no global field selector or replacement action.

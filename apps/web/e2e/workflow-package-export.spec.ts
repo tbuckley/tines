@@ -25,7 +25,7 @@ const literal = 'The ordinary prose marker stays exactly unchanged.';
 const markdownTail = 'The final Markdown passage is visible only after expansion.';
 const imageUrl = 'https://example.invalid/auto-fetch.png';
 const IMPLEMENTATION_JARGON =
-	/candidate-only|candidate rebuilt|edit candidate text|input declaration|registered tokens|save candidate text|prepared plan|signed plan identity|a different digest is refused/i;
+	/candidate-only|in this candidate only|candidate rebuilt|edit candidate text|input declaration|registered tokens|save candidate text|prepared plan|signed plan identity|a different digest is refused/i;
 const longMarkdown = `# Long guidance
 
 ![remote pixel](${imageUrl})
@@ -84,8 +84,28 @@ function declaredInput(page: Page, key: string) {
 	return candidateInputs(page).getByRole('button', { name: new RegExp(`^${key} ·`) });
 }
 
-function inputReplacement(page: Page) {
-	return candidateInputs(page).getByTestId('input-replacement');
+function passageSection(page: Page, fieldLabel: string) {
+	return page.locator(`section[aria-label="${fieldLabel}"]`);
+}
+
+/** Select `phrase` in the passage editor beside `fieldLabel`, then bind it to the declared `key`. */
+async function useVariableInline(page: Page, fieldLabel: string, phrase: string, key: string) {
+	const passage = passageSection(page, fieldLabel);
+	if ((await passage.getByRole('textbox', { name: fieldLabel }).count()) === 0)
+		await passage.getByRole('button', { name: `Edit ${fieldLabel}`, exact: true }).click();
+	const editor = passage.getByRole('textbox', { name: fieldLabel });
+	await editor.evaluate((node: HTMLTextAreaElement, needle: string) => {
+		const start = node.value.indexOf(needle);
+		node.focus();
+		node.setSelectionRange(start, start + needle.length, 'forward');
+		node.dispatchEvent(new Event('select', { bubbles: true }));
+	}, phrase);
+	await passage.getByRole('button', { name: 'Make variable' }).click();
+	const choice = passage.locator('select:has(option[value="new"])');
+	const value = await choice.locator('option', { hasText: ` · ${key} · ` }).getAttribute('value');
+	await choice.selectOption(value!);
+	await passage.getByRole('button', { name: 'Save', exact: true }).click();
+	return passage;
 }
 
 async function reviewDependencies(page: Page) {
@@ -240,9 +260,6 @@ for (const { viewport, theme } of [
 		await expect(page.locator('html')).toHaveClass(
 			theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
 		);
-		await expect(
-			page.getByRole('button', { name: 'Edit text', exact: true }).first()
-		).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Edit candidate text' })).toHaveCount(0);
 
 		await page.getByLabel('Key').fill('project_name');
@@ -251,20 +268,7 @@ for (const { viewport, theme } of [
 		await page.getByRole('button', { name: 'Add variable' }).click();
 		await expect(page.getByText('Variable added to this copy.').first()).toBeVisible();
 		await expect(page.getByText('Input declaration added to this candidate only.')).toHaveCount(0);
-		await page
-			.getByLabel('Edit instructions')
-			.selectOption({ label: 'instructions — prompt body' });
-		const editor = page.locator('textarea');
-		await editor.evaluate((node: HTMLTextAreaElement) => {
-			const start = node.value.indexOf('TARGET');
-			node.focus();
-			node.setSelectionRange(start, start + 'TARGET'.length);
-		});
-		await page.getByRole('button', { name: 'Use selected variable here' }).click();
-		await expect(page.getByText('Variable added at the selected location.').first()).toBeVisible();
-		await expect(page.getByText('Exact declared token use added to the draft field.')).toHaveCount(
-			0
-		);
+		await useVariableInline(page, 'instructions — prompt body', 'TARGET', 'project_name');
 
 		await page.getByLabel('Key').fill('review_label');
 		await page.getByLabel('Type').selectOption('label');
@@ -308,11 +312,10 @@ for (const { viewport, theme } of [
 			.getByRole('checkbox', { name: /I reviewed (every file|this required repository)/ })
 			.all())
 			await expect(checkbox).not.toBeChecked();
-		await expect(
-			page.getByRole('button', {
-				name: /Show declaration for \{\{project_name:customer-portal\}\}/
-			})
-		).toBeVisible();
+		const projectChip = page.locator('[data-input-id]').filter({ hasText: 'project_name · 1 use' });
+		await expect(projectChip).toBeVisible();
+		await expect(projectChip.locator('span').first()).toHaveText('customer-portal');
+		await expect(projectChip.getByRole('button', { name: 'Edit project_name' })).toBeVisible();
 
 		const editButton = page.getByRole('button', { name: 'Edit variable approval_label' });
 		await expect(editButton.locator('svg')).toBeVisible();
@@ -363,7 +366,113 @@ for (const { viewport, theme } of [
 	});
 }
 
-test('cancels safely and refuses variable changes over unsaved text', async ({ page }) => {
+test('creates and previews one exact occurrence beside its passage', async ({ page }) => {
+	await openExport(page);
+	const passage = page.locator('section[aria-label="instructions — prompt body"]');
+	await passage
+		.getByRole('button', { name: 'Edit instructions — prompt body', exact: true })
+		.click();
+	const editor = passage.getByRole('textbox', { name: 'instructions — prompt body' });
+	await editor.fill('Deploy customer-portal, but keep customer-portal private.');
+	await editor.evaluate((node: HTMLTextAreaElement) => {
+		const start = node.value.indexOf('customer-portal');
+		node.focus();
+		node.setSelectionRange(start, start + 'customer-portal'.length, 'forward');
+		node.dispatchEvent(new Event('select', { bubbles: true }));
+	});
+	await passage.getByRole('button', { name: 'Make variable' }).click();
+	await passage.getByRole('textbox', { name: 'Friendly name' }).fill('Project name');
+	await passage.getByRole('button', { name: 'Save', exact: true }).click();
+
+	const chip = passage.locator('[data-input-id]');
+	const chipValue = chip.locator('span').first();
+	await expect(chip.getByRole('button', { name: 'Edit Project name' })).toBeFocused();
+	await expect(chip).toContainText('Project name · 1 use');
+	await expect(chipValue).toHaveText('customer-portal');
+	await expect(passage.getByText('keep customer-portal private', { exact: false })).toBeVisible();
+	await expect(passage).not.toContainText('{{project_name:customer-portal}}');
+
+	await passage.getByRole('button', { name: 'Preview values' }).click();
+	await passage
+		.getByRole('textbox', { name: 'Sample value — Project name' })
+		.fill('support-console');
+	await expect(chipValue).toHaveText('support-console');
+	await expect(passage.getByText('keep customer-portal private', { exact: false })).toBeVisible();
+	// A Markdown-valued sample splits into styled fragments but stays one occurrence:
+	// one chip, one Edit control, one id.
+	await passage.getByRole('textbox', { name: 'Sample value — Project name' }).fill('a **b** c');
+	await expect(chip).toHaveCount(1);
+	await expect(chipValue).toHaveText('a b c');
+	await expect(chipValue.locator('.font-bold')).toHaveText('b');
+	await expect(chip.getByRole('button', { name: 'Edit Project name' })).toHaveCount(1);
+	await expect(passage).not.toContainText('**b**');
+	expect(
+		await passage.evaluate((section) => {
+			const ids = [...section.querySelectorAll('[id]')].map((node) => node.id);
+			return ids.length - new Set(ids).size;
+		})
+	).toBe(0);
+	for (const name of ['Preview values', 'Use default'])
+		expect(
+			(await passage.getByRole('button', { name }).boundingBox())!.height
+		).toBeGreaterThanOrEqual(44);
+	await passage.getByRole('button', { name: 'Use default' }).click();
+	await expect(chipValue).toHaveText('customer-portal');
+
+	await chip.getByRole('button', { name: 'Edit Project name' }).click();
+	await passage.getByRole('textbox', { name: 'Friendly name' }).fill('Service name');
+	await passage.getByText('More options', { exact: true }).click();
+	await passage.getByLabel('Example/default').fill('billing-service');
+	await passage.getByRole('button', { name: 'Done' }).click();
+	await expect(chip.getByRole('button', { name: 'Edit Service name' })).toBeFocused();
+	await expect(page.getByText('Variable updated in this copy.').first()).toBeVisible();
+	await expectPlainLanguage(page);
+	await expect(chip).toContainText('Service name · 1 use');
+	await expect(chipValue).toHaveText('billing-service');
+
+	// A bare Edit/Preview toggle changes no bytes, so review acknowledgments survive it.
+	await reviewDependencies(page);
+	const download = page.getByRole('button', { name: 'Download file' });
+	await expect(download).toBeEnabled();
+	const editToggle = passage.getByRole('button', {
+		name: 'Edit instructions — prompt body',
+		exact: true
+	});
+	await editToggle.click();
+	await passage
+		.getByRole('button', { name: 'Preview instructions — prompt body', exact: true })
+		.click();
+	await expect(download).toBeEnabled();
+
+	// Escape cancels an open form and returns focus to the editor with its selection.
+	await editToggle.click();
+	await editor.evaluate((node: HTMLTextAreaElement) => {
+		const start = node.value.indexOf('private');
+		node.focus();
+		node.setSelectionRange(start, start + 'private'.length, 'forward');
+		node.dispatchEvent(new Event('select', { bubbles: true }));
+	});
+	await passage.getByRole('button', { name: 'Make variable' }).click();
+	await expect(passage.getByRole('group', { name: 'Make variable' })).toBeVisible();
+	await page.keyboard.press('Escape');
+	await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toHaveCount(0);
+	await expect(editor).toBeFocused();
+	// The editor holds source text, so the retained range is measured against its own value.
+	const retained = await editor.evaluate((node: HTMLTextAreaElement) => ({
+		start: node.selectionStart,
+		end: node.selectionEnd,
+		expected: node.value.indexOf('private')
+	}));
+	expect(retained.expected).toBeGreaterThan(0);
+	expect([retained.start, retained.end]).toEqual([
+		retained.expected,
+		retained.expected + 'private'.length
+	]);
+});
+
+test('cancels safely and refuses duplicate keys or registered-token edits over unsaved text', async ({
+	page
+}) => {
 	await openExport(page);
 	await page.getByLabel('Source project').selectOption(projectId);
 	await page.getByRole('checkbox', { name: new RegExp(scheduleName) }).check();
@@ -376,14 +485,12 @@ test('cancels safely and refuses variable changes over unsaved text', async ({ p
 	await page.getByLabel('Key').fill('first_input');
 	await page.getByLabel('Default').fill('before');
 	await page.getByRole('button', { name: 'Add variable' }).click();
-	await page.getByLabel('Edit instructions').selectOption({ label: 'instructions — prompt body' });
-	const editor = page.locator('textarea');
-	await editor.evaluate((node: HTMLTextAreaElement) => {
-		const start = node.value.indexOf('TARGET');
-		node.focus();
-		node.setSelectionRange(start, start + 'TARGET'.length);
-	});
-	await page.getByRole('button', { name: 'Use selected variable here' }).click();
+	const passage = await useVariableInline(
+		page,
+		'instructions — prompt body',
+		'TARGET',
+		'first_input'
+	);
 	await page.getByLabel('Key').fill('second_input');
 	await page.getByLabel('Default').fill('second');
 	await page.getByRole('button', { name: 'Add variable' }).click();
@@ -410,6 +517,10 @@ test('cancels safely and refuses variable changes over unsaved text', async ({ p
 	await expect(page.getByLabel('Key')).toHaveValue('pending_input');
 	await expect(page.getByLabel('Default')).toHaveValue('pending');
 
+	await passage
+		.getByRole('button', { name: 'Edit instructions — prompt body', exact: true })
+		.click();
+	const editor = passage.getByRole('textbox', { name: 'instructions — prompt body' });
 	const unsaved = `${await editor.inputValue()} Unsaved adjacent prose.`;
 	await editor.fill(unsaved);
 	await page.getByRole('button', { name: 'Edit variable first_input' }).click();
@@ -420,14 +531,13 @@ test('cancels safely and refuses variable changes over unsaved text', async ({ p
 	);
 	await expect(editor).toHaveValue(unsaved);
 	await expect(page.getByLabel('Default')).toHaveValue('after');
-	await page.getByRole('button', { name: 'Save text' }).click();
-	await expect(
-		page.getByText('Text saved in this copy. Your private workflow is unchanged.').first()
-	).toBeVisible();
+	await passage.getByRole('button', { name: 'Save text', exact: true }).click();
+	await expect(passage).toContainText('Unsaved adjacent prose.');
 	await page.getByRole('button', { name: 'Save changes' }).click();
 	await expect(selectedDeclaration).toHaveAttribute('aria-pressed', 'true');
 	await expect(page.getByRole('button', { name: 'Edit variable first_input' })).toBeFocused();
-	await expect(editor).toHaveValue(/\{\{first_input:after\}\}.*Unsaved adjacent prose\./s);
+	await expect(passage.locator('[data-input-id]').locator('span').first()).toHaveText('after');
+	await expect(passage).toContainText('Unsaved adjacent prose.');
 	const applyAutomation = page.getByRole('button', { name: 'Apply automation' });
 	await expect(applyAutomation).toBeEnabled();
 	await expectPlainLanguage(page);
@@ -440,7 +550,7 @@ test('cancels safely and refuses variable changes over unsaved text', async ({ p
 	);
 	await firstDialog.dismiss();
 	await dismissedClick;
-	await expect(editor).toHaveValue(/\{\{first_input:after\}\}.*Unsaved adjacent prose\./s);
+	await expect(passage).toContainText('Unsaved adjacent prose.');
 
 	const acceptedDialog = page.waitForEvent('dialog');
 	const acceptedClick = applyAutomation.click();
@@ -509,40 +619,24 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	await expect(targetWorkflow).toHaveAttribute('aria-pressed', 'true');
 	await expect(targetName).toHaveAttribute('aria-pressed', 'false');
 	await expect(reviewedCheckbox).toBeChecked();
-	await page.getByLabel('Edit instructions').selectOption({ label: 'instructions — prompt body' });
-	const editor = page.locator('textarea');
-	await editor.focus();
-	await expect(inputReplacement(page)).toContainText('Using target_workflow');
-	await targetName.click();
-	await expect(inputReplacement(page)).toContainText('Using target_name');
-	await editor.evaluate((node: HTMLTextAreaElement) => {
-		const start = node.value.indexOf('TARGET');
-		node.focus();
-		node.setSelectionRange(start, start + 'TARGET'.length);
-	});
-	await page.getByRole('button', { name: 'Use selected variable here' }).click();
-	const token = page.getByRole('button', {
-		name: /Show declaration for \{\{target_name:TARGET\}\}/
-	});
+	const passage = await useVariableInline(
+		page,
+		'instructions — prompt body',
+		'TARGET',
+		'target_name'
+	);
+	const token = passage.locator('[data-input-id]');
 	await expect(token).toBeVisible();
+	await expect(token.locator('span').first()).toHaveText('TARGET');
+	await expect(token).toContainText('Target name · 1 use');
 	// The escaped literal renders as ordinary text: exactly one substitutable use.
 	await expect(token).toHaveCount(1);
-	await expect(page.getByText('Escaped literal {{target_name:TARGET}} stays.')).toBeVisible();
-	await targetWorkflow.click();
-	await expect(inputReplacement(page)).toContainText('Using target_workflow');
-	await token.click();
-	await expect(targetName).toHaveAttribute('aria-pressed', 'true');
-	await expect(targetWorkflow).toHaveAttribute('aria-pressed', 'false');
-	await expect(inputReplacement(page)).toContainText('Using target_name');
-	await expect(page.getByRole('button', { name: 'Back to passage' })).toBeVisible();
-	await page.keyboard.press('Escape');
-	await expect(token).toBeFocused();
-	await reviewDependencies(page);
-	await page.getByRole('button', { name: 'Save text' }).click();
+	await expect(passage.getByText('Escaped literal {{target_name:TARGET}} stays.')).toBeVisible();
+	await token.getByRole('button', { name: 'Edit Target name' }).click();
+	await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toBeVisible();
+	await passage.getByRole('button', { name: 'Cancel', exact: true }).click();
+	await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Download file' })).toBeDisabled();
-	await expect(
-		page.getByText('Review included skills and repositories again.').first()
-	).toBeVisible();
 	await reviewDependencies(page);
 	const downloadPromise = page.waitForEvent('download');
 	await page.getByRole('button', { name: 'Download file' }).click();
@@ -900,29 +994,51 @@ test('reviews inheritance plus long Markdown and plain-text files without remote
 		markdownSection.getByRole('img', { name: `Image not loaded: remote pixel — ${imageUrl}` })
 	).toHaveText(`Image (not loaded): remote pixel — ${imageUrl}`);
 	await expect(markdownSection.getByText(markdownTail)).toBeHidden();
-	await expect(markdownSection.locator('pre code')).toContainText('fenced24');
+	// The snippet stops at 100 rendered words, which lands before the fenced block here, so
+	// the block renders as <pre><code> only once the passage is expanded.
+	await expect(markdownSection.locator('pre code')).toHaveCount(0);
+	await expect(markdownSection).not.toContainText('[content omitted]');
 	const expandMarkdown = markdownSection.getByRole('button', { name: /Show all \d+ words/ });
 	await expandMarkdown.click();
 	await expect(page.getByText(markdownTail)).toBeVisible();
+	await expect(markdownSection.locator('pre code')).toContainText('fenced24');
 	const collapseMarkdown = markdownSection.getByRole('button', { name: 'Show snippet' });
 	await expect(collapseMarkdown).toBeFocused();
-	await expect(markdownSection.getByRole('link', { name: 'Reviewed destination' })).toHaveAttribute(
+	// Links open through the same confirm-destination dialog the public reader uses; the
+	// destination is shown and only opened by an explicit click.
+	const reviewedDestination = markdownSection.getByRole('button', {
+		name: 'Reviewed destination'
+	});
+	await expect(reviewedDestination).toHaveAttribute(
+		'title',
+		'Open external destination: https://example.invalid/never-fetch'
+	);
+	await reviewedDestination.click();
+	const destinationDialog = page.getByRole('dialog', { name: 'Open external destination?' });
+	await expect(destinationDialog).toBeVisible();
+	await expect(destinationDialog.getByRole('link', { name: 'Open destination' })).toHaveAttribute(
 		'href',
 		'https://example.invalid/never-fetch'
 	);
+	await destinationDialog.getByRole('button', { name: 'Cancel' }).click();
+	await expect(destinationDialog).toBeHidden();
+	await expect(reviewedDestination).toBeFocused();
 	await collapseMarkdown.click();
 	await expect(page.getByText(markdownTail)).toBeHidden();
 	await expect(markdownSection.getByRole('button', { name: /Show all \d+ words/ })).toBeFocused();
 
 	const plainBlock = page.getByText('notes.txt').locator('..').locator('..');
-	await expect(plainBlock.locator('pre')).toContainText('alpha    beta\nline two');
+	// Plain text renders as one whitespace-preserving run, as on the public reader.
+	const plainText = plainBlock.locator('p.whitespace-pre-wrap').first();
+	await expect(plainText).toContainText('alpha    beta\nline two');
+	expect(await plainText.evaluate((node) => getComputedStyle(node).whiteSpace)).toBe('pre-wrap');
 	const expandText = plainBlock.getByRole('button', { name: /Show all \d+ words/ });
 	await expandText.click();
-	await expect(plainBlock.locator('pre')).toContainText('plain125');
+	await expect(plainText).toContainText('plain125');
 	const collapseText = plainBlock.getByRole('button', { name: 'Show snippet' });
 	await expect(collapseText).toBeFocused();
 	await collapseText.click();
-	await expect(plainBlock.locator('pre')).not.toContainText('plain125');
+	await expect(plainText).not.toContainText('plain125');
 	await expect(plainBlock.getByRole('button', { name: /Show all \d+ words/ })).toBeFocused();
 	await expect.poll(() => externalRequests).toEqual([]);
 });
@@ -979,24 +1095,20 @@ test('does not restore a stale generated input selection when its ID returns', a
 	await destination.click();
 	await expect(destination).toHaveAttribute('aria-pressed', 'true');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
-	await page.getByLabel('Edit instructions').selectOption({ label: 'instructions — prompt body' });
-	const replace = page.getByRole('button', { name: 'Use selected variable here' });
-	await expect(replace).toBeEnabled();
-	await expect(inputReplacement(page)).toContainText('Using destination_project');
+	// The inventory declares and selects only; passages own every replacement.
+	await expect(page.getByLabel('Edit instructions', { exact: true })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Use selected variable here' })).toHaveCount(0);
+	await expect(candidateInputs(page).locator('select:has(option[value="new"])')).toHaveCount(0);
 
 	await schedule.uncheck();
 	await rebuildCandidate(page);
 	await expect(destination).toHaveCount(0);
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
-	await expect(inputReplacement(page)).not.toContainText('Using');
-	await expect(replace).toBeDisabled();
 
 	await schedule.check();
 	await rebuildCandidate(page);
 	await expect(destination).toHaveAttribute('aria-pressed', 'false');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
-	await expect(inputReplacement(page)).not.toContainText('Using');
-	await expect(replace).toBeDisabled();
 });
 
 test('retains a generated input selection across an equivalent rebuild', async ({ page }) => {
@@ -1007,17 +1119,12 @@ test('retains a generated input selection across an equivalent rebuild', async (
 	const destination = declaredInput(page, 'destination_project');
 	await expect(destination).toHaveAttribute('aria-pressed', 'false');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(0);
-	await page.getByLabel('Edit instructions').selectOption({ label: 'instructions — prompt body' });
-	await expect(page.getByRole('button', { name: 'Use selected variable here' })).toBeDisabled();
-	await expect(inputReplacement(page)).not.toContainText('Using');
 
 	await destination.click();
 	await expect(destination).toHaveAttribute('aria-pressed', 'true');
-	await expect(inputReplacement(page)).toContainText('Using destination_project');
 	await rebuildCandidate(page);
 	await expect(destination).toHaveAttribute('aria-pressed', 'true');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
-	await expect(inputReplacement(page)).toContainText('Using destination_project');
 });
 
 for (const theme of ['light', 'dark'] as const) {
@@ -1055,12 +1162,6 @@ for (const theme of ['light', 'dark'] as const) {
 			expect(focusShadow).not.toBe('none');
 			await page.keyboard.press('Enter');
 			await expect(longInput).toHaveAttribute('aria-pressed', 'true');
-			await page
-				.getByLabel('Edit instructions')
-				.selectOption({ label: 'instructions — prompt body' });
-			const editor = candidateInputs(page).locator('textarea');
-			await editor.focus();
-			await expect(inputReplacement(page)).toContainText(`Using ${longKey}`);
 			const selectedColors = await longInput.evaluate((element) => {
 				const style = getComputedStyle(element);
 				return { border: style.borderColor, background: style.backgroundColor };
@@ -1083,16 +1184,40 @@ for (const theme of ['light', 'dark'] as const) {
 			await expect(reviewLabel).toBeFocused();
 			await page.keyboard.press('Space');
 			await expect(reviewLabel).toHaveAttribute('aria-pressed', 'true');
-			await editor.focus();
-			await expect(inputReplacement(page)).toContainText('Using review_label');
+			await expect(longInput).toHaveAttribute('aria-pressed', 'false');
 			await page.screenshot({
 				path: testInfo.outputPath(`package-input-second-${theme}-${viewport.width}.png`),
 				fullPage: true
 			});
 
 			await longInput.click();
-			await inputReplacement(page).scrollIntoViewIfNeeded();
-			await expect(inputReplacement(page)).toContainText(`Using ${longKey}`);
+			await expect(longInput).toHaveAttribute('aria-pressed', 'true');
+			// The inventory selection feeds the passage: "Using <key>" beside Make variable, and the
+			// chooser preselects that declaration when the form opens.
+			const passage = passageSection(page, 'instructions — prompt body');
+			await passage
+				.getByRole('button', { name: 'Edit instructions — prompt body', exact: true })
+				.click();
+			const usingBeforeForm = passage.getByTestId('input-replacement');
+			await expect(usingBeforeForm).toHaveText(`Using ${longKey}`);
+			await passage
+				.getByRole('textbox', { name: 'instructions — prompt body' })
+				.evaluate((node: HTMLTextAreaElement) => {
+					const start = node.value.indexOf('TARGET');
+					node.focus();
+					node.setSelectionRange(start, start + 'TARGET'.length, 'forward');
+					node.dispatchEvent(new Event('select', { bubbles: true }));
+				});
+			await passage.getByRole('button', { name: 'Make variable' }).click();
+			const chooser = passage.locator('select:has(option[value="new"])');
+			await expect(chooser).not.toHaveValue('new');
+			await expect(chooser.locator('option:checked')).toContainText(` · ${longKey} · `);
+			const using = passage.getByTestId('input-replacement');
+			await expect(using).toHaveText(`Using ${longKey}`);
+			await page.screenshot({
+				path: testInfo.outputPath(`package-input-using-${theme}-${viewport.width}.png`),
+				fullPage: true
+			});
 			const geometry = await page.evaluate(() => {
 				const longCard = document
 					.querySelector<HTMLElement>('section[aria-labelledby="inputs-title"]')!
@@ -1103,8 +1228,6 @@ for (const theme of ['light', 'dark'] as const) {
 						document.documentElement.scrollWidth - document.documentElement.clientWidth,
 					cardOverflow: longCard.scrollWidth - longCard.clientWidth,
 					actionOverflow: action.scrollWidth - action.clientWidth,
-					cardBottom: longCard.getBoundingClientRect().bottom,
-					actionTop: action.getBoundingClientRect().top,
 					textOverflow: getComputedStyle(longCard.querySelector('code')!).textOverflow
 				};
 			});
@@ -1112,8 +1235,11 @@ for (const theme of ['light', 'dark'] as const) {
 			expect(geometry.cardOverflow).toBeLessThanOrEqual(1);
 			expect(geometry.actionOverflow).toBeLessThanOrEqual(1);
 			expect(geometry.textOverflow).not.toBe('ellipsis');
-			if (viewport.width === PHONE.width)
-				expect(geometry.cardBottom).toBeLessThan(geometry.actionTop);
+			await page.keyboard.press('Escape');
+			await expect(passage.getByRole('textbox', { name: 'Friendly name' })).toHaveCount(0);
+			await expect(
+				passage.getByRole('textbox', { name: 'instructions — prompt body' })
+			).toBeFocused();
 		});
 	}
 }

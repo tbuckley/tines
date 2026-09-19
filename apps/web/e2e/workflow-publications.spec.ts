@@ -618,24 +618,56 @@ test.describe.serial('public workflow snapshots', () => {
 		await ownerPage.getByRole('textbox', { name: 'Label', exact: true }).fill('Project name');
 		await ownerPage.getByLabel('Default').fill('customer-portal');
 		await ownerPage.getByRole('button', { name: 'Add variable' }).click();
-		await ownerPage
-			.getByLabel('Edit instructions')
-			.selectOption({ label: 'instructions — prompt body' });
-		const editor = ownerPage.locator('textarea');
-		await editor.evaluate((element) => (element as HTMLTextAreaElement).setSelectionRange(0, 15));
-		await ownerPage.getByRole('button', { name: 'Use selected variable here' }).click();
-		await ownerPage.getByRole('button', { name: 'Edit variable project_name' }).click();
-		await ownerPage.getByLabel('Default').fill('billing-service');
-		await ownerPage.getByRole('button', { name: 'Save changes' }).click();
+		const passage = ownerPage.locator('section[aria-label="instructions — prompt body"]');
+		const editToggle = passage.getByRole('button', {
+			name: 'Edit instructions — prompt body',
+			exact: true
+		});
+		const previewToggle = passage.getByRole('button', {
+			name: 'Preview instructions — prompt body',
+			exact: true
+		});
+		await editToggle.click();
+		const editor = passage.getByRole('textbox', { name: 'instructions — prompt body' });
+		await editor.evaluate((node: HTMLTextAreaElement) => {
+			node.focus();
+			node.setSelectionRange(0, 15, 'forward');
+			node.dispatchEvent(new Event('select', { bubbles: true }));
+		});
+		await passage.getByRole('button', { name: 'Make variable' }).click();
+		// The inventory declaration is offered beside the passage; reuse it rather than minting a copy.
+		const choice = passage.locator('select:has(option[value="new"])');
+		const existing = await choice
+			.locator('option', { hasText: ' · project_name · ' })
+			.getAttribute('value');
+		await choice.selectOption(existing!);
+		await expect(passage.getByTestId('input-replacement')).toHaveText('Using project_name');
+		await passage.getByRole('button', { name: 'Save', exact: true }).click();
+		const chip = passage.locator('[data-input-id]');
+		const chipEdit = chip.getByRole('button', { name: 'Edit Project name' });
+		await expect(chipEdit).toBeFocused();
+		await chipEdit.click();
+		await passage.getByText('More options', { exact: true }).click();
+		await passage.getByLabel('Example/default').fill('billing-service');
+		await passage.getByRole('button', { name: 'Done' }).click();
+		await expect(chip).toContainText('Project name · 1 use');
+		await expect(chip.locator('span').first()).toHaveText('billing-service');
+		await editToggle.click();
 		await expect(editor).toHaveValue('{{project_name:billing-service}} and customer-portal');
-		await editor.fill('{{project_name:billing-service}} and UNSAVED text');
+		// An unsaved inline edit blocks publication Preview even after toggling back to Preview.
+		await editor.fill('{{project_name:billing-service}} and UNSAVED candidate text');
+		await previewToggle.click();
+		await expect(passage.getByText('Unsaved text', { exact: true })).toBeVisible();
 		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
 		await expect(ownerPage.getByRole('heading', { name: 'Customize', exact: true })).toBeVisible();
 		await expect(ownerPage.getByTestId('package-actions')).toContainText(
-			'Save or cancel the text edit before previewing.'
+			'Save or cancel the passage edit before previewing.'
 		);
-		await ownerPage.getByRole('button', { name: 'Cancel text edit' }).click();
+		await expect(passage.getByRole('button', { name: 'Save text' })).toBeFocused();
+		await passage.getByRole('button', { name: 'Cancel text edits' }).click();
+		await editToggle.click();
 		await expect(editor).toHaveValue('{{project_name:billing-service}} and customer-portal');
+		await previewToggle.click();
 
 		await ownerPage.route('**/api/v1/publications/prepare', async (route) => {
 			const request = route.request().postDataJSON();

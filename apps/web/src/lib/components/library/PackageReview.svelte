@@ -1,27 +1,69 @@
 <script lang="ts">
-	import { describeRecurrence, type WorkflowPackageDocument } from '@tines/shared';
+	import {
+		describeRecurrence,
+		type TextUseField,
+		type WorkflowPackageDocument
+	} from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
+	import { declaredOccurrences } from './package-text';
+	import { readField } from './package-input-editor';
 	import PackageText from './PackageText.svelte';
+	import PackageFieldWorkbench from './PackageFieldWorkbench.svelte';
+	import type { InputDraft } from './package-input-editor';
 
 	let {
 		document,
 		reviewed,
 		onReview,
 		onToken,
-		onEdit,
 		expandedFields = new Set(),
 		reviewMode = 'per-item',
-		contextFirst = false
+		contextFirst = false,
+		samples = {},
+		selectedInputId = '',
+		changedInputIds = new Set(),
+		changedOccurrenceIds = new Set(),
+		onSaveText,
+		onCreate,
+		onEditVariable,
+		onSample,
+		onStateChange
 	}: {
 		document: WorkflowPackageDocument;
 		reviewed: Set<string>;
 		onReview?: (id: string, checked: boolean) => void;
 		onToken?: (id: string, trigger: HTMLElement) => void;
-		onEdit?: (recordId: string, field: string) => void;
 		expandedFields?: Set<string>;
 		reviewMode?: 'per-item' | 'summary';
 		contextFirst?: boolean;
+		samples?: Record<string, string>;
+		selectedInputId?: string;
+		changedInputIds?: Set<string>;
+		changedOccurrenceIds?: Set<string>;
+		onSaveText?: (recordId: string, field: TextUseField, value: string) => Promise<boolean>;
+		onCreate?: (request: {
+			recordId: string;
+			field: TextUseField;
+			sourceSnapshot: string;
+			value: string;
+			start: number;
+			end: number;
+			direction: 'forward' | 'backward' | 'none';
+			inputId?: string;
+			draft?: InputDraft;
+		}) => Promise<{ inputId: string; useId: string; ordinal: number } | { error: string } | null>;
+		onSample?: (inputId: string, value: string | undefined) => void;
+		onEditVariable?: (
+			inputId: string,
+			draft: InputDraft,
+			recordId: string,
+			field: TextUseField
+		) => Promise<boolean>;
+		onStateChange?: (
+			key: string,
+			state: { active: boolean; bound: boolean; inputIds: string[] }
+		) => void;
 	} = $props();
 
 	const workflowByState = $derived.by(() => {
@@ -36,13 +78,49 @@
 			result.set(item.state_id, [...(result.get(item.state_id) ?? []), item]);
 		return result;
 	});
+	function inputCount(inputId: string) {
+		let count = 0;
+		for (const use of document.text_uses) {
+			if (use.input_id !== inputId) continue;
+			const source = readField(document, use.target.record_id, use.target.field);
+			if (source !== undefined)
+				count += declaredOccurrences(source, [{ token: use.token, inputId }]).length;
+		}
+		return count;
+	}
 	function tokens(recordId: string, field: string) {
 		return document.text_uses
 			.filter((use) => use.target.record_id === recordId && use.target.field === field)
-			.map((use) => ({ token: use.token, inputId: use.input_id }));
+			.map((use) => {
+				const input = document.inputs.find((item) => item.id === use.input_id);
+				return {
+					id: use.id,
+					token: use.token,
+					inputId: use.input_id,
+					label: input?.label ?? input?.key ?? use.input_id,
+					value: Object.hasOwn(samples, use.input_id)
+						? samples[use.input_id]
+						: (input?.default ?? ''),
+					count: inputCount(use.input_id),
+					changed: changedInputIds.has(use.input_id)
+				};
+			});
 	}
 	function fieldKey(recordId: string, field: string) {
 		return `${recordId}:${field}`;
+	}
+	function fieldUpdateCount(recordId: string, field: TextUseField) {
+		let count = 0;
+		for (const use of document.text_uses) {
+			if (use.target.record_id !== recordId || use.target.field !== field) continue;
+			const source = readField(document, recordId, field) ?? '';
+			for (const [ordinal] of declaredOccurrences(source, [
+				{ token: use.token, inputId: use.input_id }
+			]).entries())
+				if (changedInputIds.has(use.input_id) || changedOccurrenceIds.has(`${use.id}:${ordinal}`))
+					count++;
+		}
+		return count;
 	}
 	function stateName(id: string) {
 		return workflowByState.get(id)?.states.find((state) => state.id === id)?.name ?? id;
@@ -63,8 +141,26 @@
 								: 'Required inheritance dependency'}</span
 						>
 					</div>
-					{#if workflow.description}
-						<PackageText
+					{#if onCreate}<PackageFieldWorkbench
+							recordId={workflow.id}
+							field="description"
+							label={`${workflow.name} — description`}
+							text={workflow.description}
+							format="markdown"
+							tokens={tokens(workflow.id, 'description')}
+							inputs={document.inputs}
+							{samples}
+							{selectedInputId}
+							{onToken}
+							{onSaveText}
+							{onCreate}
+							{onEditVariable}
+							{onSample}
+							{onStateChange}
+							{changedOccurrenceIds}
+							updateCount={fieldUpdateCount(workflow.id, 'description')}
+							forceExpanded={expandedFields.has(fieldKey(workflow.id, 'description'))}
+						/>{:else if workflow.description}<PackageText
 							text={workflow.description}
 							format="markdown"
 							tokens={tokens(workflow.id, 'description')}
@@ -138,41 +234,89 @@
 										<h4 class="font-medium">
 											{item.name} <span class="text-muted-foreground text-xs">· {item.kind}</span>
 										</h4>
-										{#if item.kind === 'prompt' && onEdit}<button
-												class="text-primary text-xs underline"
-												type="button"
-												onclick={() => onEdit?.(item.id, 'body')}>Edit text</button
-											>{/if}
 									</div>
-									{#if item.description}<p class="text-muted-foreground my-2 text-xs">
+									{#if onCreate}<PackageFieldWorkbench
+											recordId={item.id}
+											field="description"
+											label={`${item.name} — description`}
+											text={item.description}
+											format="markdown"
+											tokens={tokens(item.id, 'description')}
+											inputs={document.inputs}
+											{samples}
+											{selectedInputId}
+											{onToken}
+											{onSaveText}
+											{onCreate}
+											{onEditVariable}
+											{onSample}
+											{onStateChange}
+											{changedOccurrenceIds}
+											updateCount={fieldUpdateCount(item.id, 'description')}
+										/>{:else if item.description}<p class="text-muted-foreground my-2 text-xs">
 											{item.description}
 										</p>{/if}
 									{#if item.kind === 'prompt'}
-										<PackageText
-											text={item.body}
-											format="markdown"
-											tokens={tokens(item.id, 'body')}
-											forceExpanded={expandedFields.has(fieldKey(item.id, 'body'))}
-											{onToken}
-										/>
+										{#if onCreate}<PackageFieldWorkbench
+												recordId={item.id}
+												field="body"
+												label={`${item.name} — prompt body`}
+												text={item.body}
+												format="markdown"
+												tokens={tokens(item.id, 'body')}
+												inputs={document.inputs}
+												{samples}
+												{selectedInputId}
+												{onToken}
+												{onSaveText}
+												{onCreate}
+												{onEditVariable}
+												{onSample}
+												{onStateChange}
+												{changedOccurrenceIds}
+												updateCount={fieldUpdateCount(item.id, 'body')}
+												forceExpanded={expandedFields.has(fieldKey(item.id, 'body'))}
+											/>{:else}<PackageText
+												text={item.body}
+												format="markdown"
+												tokens={tokens(item.id, 'body')}
+												forceExpanded={expandedFields.has(fieldKey(item.id, 'body'))}
+												{onToken}
+											/>{/if}
 									{:else if item.kind === 'skill'}
 										{#each item.files as file (file.id)}
 											<div class="mt-3">
 												<div class="mb-1 flex justify-between gap-2 text-xs">
-													<code>{file.path}</code>{#if onEdit}<button
-															class="text-primary underline"
-															type="button"
-															onclick={() => onEdit?.(file.id, 'content')}>Edit text</button
-														>{/if}
+													<code>{file.path}</code>
 												</div>
-												<PackageText
-													text={file.content}
-													format={file.path.toLowerCase().endsWith('.md') ? 'markdown' : 'text'}
-													tokens={tokens(file.id, 'content')}
-													forceExpanded={reviewMode === 'summary' ||
-														expandedFields.has(fieldKey(file.id, 'content'))}
-													{onToken}
-												/>
+												{#if onCreate}<PackageFieldWorkbench
+														recordId={file.id}
+														field="content"
+														label={`${item.name} / ${file.path}`}
+														text={file.content}
+														format={file.path.toLowerCase().endsWith('.md') ? 'markdown' : 'text'}
+														tokens={tokens(file.id, 'content')}
+														inputs={document.inputs}
+														{samples}
+														{selectedInputId}
+														{onToken}
+														{onSaveText}
+														{onCreate}
+														{onEditVariable}
+														{onSample}
+														{onStateChange}
+														{changedOccurrenceIds}
+														updateCount={fieldUpdateCount(file.id, 'content')}
+														forceExpanded={reviewMode === 'summary' ||
+															expandedFields.has(fieldKey(file.id, 'content'))}
+													/>{:else}<PackageText
+														text={file.content}
+														format={file.path.toLowerCase().endsWith('.md') ? 'markdown' : 'text'}
+														tokens={tokens(file.id, 'content')}
+														forceExpanded={reviewMode === 'summary' ||
+															expandedFields.has(fieldKey(file.id, 'content'))}
+														{onToken}
+													/>{/if}
 											</div>
 										{/each}
 										{#if reviewMode === 'per-item'}<label
@@ -275,21 +419,58 @@
 						</dd>
 					</dl>
 					<div class="mt-3">
-						<b>Title template</b><PackageText
-							text={schedule.title_template}
-							tokens={tokens(schedule.id, 'title_template')}
-							forceExpanded={expandedFields.has(fieldKey(schedule.id, 'title_template'))}
-							{onToken}
-						/>
+						<b>Title template</b>{#if onCreate}<PackageFieldWorkbench
+								recordId={schedule.id}
+								field="title_template"
+								label={`${schedule.name} — title template`}
+								text={schedule.title_template}
+								tokens={tokens(schedule.id, 'title_template')}
+								inputs={document.inputs}
+								{samples}
+								{selectedInputId}
+								{onToken}
+								{onSaveText}
+								{onCreate}
+								{onEditVariable}
+								{onSample}
+								{onStateChange}
+								{changedOccurrenceIds}
+								updateCount={fieldUpdateCount(schedule.id, 'title_template')}
+								forceExpanded={expandedFields.has(fieldKey(schedule.id, 'title_template'))}
+							/>{:else}<PackageText
+								text={schedule.title_template}
+								tokens={tokens(schedule.id, 'title_template')}
+								forceExpanded={expandedFields.has(fieldKey(schedule.id, 'title_template'))}
+								{onToken}
+							/>{/if}
 					</div>
 					<div class="mt-3">
-						<b>Description template</b><PackageText
-							text={schedule.description_template}
-							format="markdown"
-							tokens={tokens(schedule.id, 'description_template')}
-							forceExpanded={expandedFields.has(fieldKey(schedule.id, 'description_template'))}
-							{onToken}
-						/>
+						<b>Description template</b>{#if onCreate}<PackageFieldWorkbench
+								recordId={schedule.id}
+								field="description_template"
+								label={`${schedule.name} — description template`}
+								text={schedule.description_template}
+								format="markdown"
+								tokens={tokens(schedule.id, 'description_template')}
+								inputs={document.inputs}
+								{samples}
+								{selectedInputId}
+								{onToken}
+								{onSaveText}
+								{onCreate}
+								{onEditVariable}
+								{onSample}
+								{onStateChange}
+								{changedOccurrenceIds}
+								updateCount={fieldUpdateCount(schedule.id, 'description_template')}
+								forceExpanded={expandedFields.has(fieldKey(schedule.id, 'description_template'))}
+							/>{:else}<PackageText
+								text={schedule.description_template}
+								format="markdown"
+								tokens={tokens(schedule.id, 'description_template')}
+								forceExpanded={expandedFields.has(fieldKey(schedule.id, 'description_template'))}
+								{onToken}
+							/>{/if}
 					</div>
 				</article>
 			{/each}{#each document.routing as route}<p class="mt-2 text-xs">
