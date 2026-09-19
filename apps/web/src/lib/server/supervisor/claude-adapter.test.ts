@@ -1374,6 +1374,41 @@ describe('claude adapter finalizeEnd (retain or archive)', () => {
 		return { t, runnerId };
 	}
 
+	it.each([undefined, 'digest-of-effective-env'])(
+		'retains the launch env fingerprint (%s) through finalizeEnd',
+		async (digest) => {
+			const { t } = await endedWorld();
+			const net = fakeNetwork();
+			const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+			const provider_meta = JSON.stringify({
+				...JSON.parse(runRef.provider_meta),
+				...(digest ? { env_digest: digest } : {})
+			});
+			t.sqlite
+				.prepare('UPDATE agent_run SET provider_meta = ? WHERE id = ?')
+				.run(provider_meta, runRef.id);
+			await adapter.finalizeEnd!({ ...runRef, provider_meta }, endInput);
+			const [resource] = t.all('SELECT resume_fingerprint FROM run_resource');
+			if (digest) {
+				expect(resource.resume_fingerprint).toBe(
+					JSON.stringify({
+						version: 2,
+						runner_id: runRef.runner_id,
+						harness: 'claude_managed',
+						model: endInput.model,
+						effort: null,
+						preamble_variant: 'claude_managed',
+						env_digest: digest
+					})
+				);
+			} else {
+				expect(resource.resume_fingerprint).toBe(
+					'v1|rnr_c1|claude_managed|claude-sonnet-5|claude_managed'
+				);
+			}
+		}
+	);
+
 	it('a run that advanced its issue into an awaiting state keeps its session and vault', async () => {
 		const { t } = await endedWorld();
 		const net = fakeNetwork();

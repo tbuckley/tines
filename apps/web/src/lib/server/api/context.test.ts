@@ -1072,6 +1072,99 @@ describe('env context items', () => {
 		).toMatchObject({ status: 422, code: 'invalid_field' });
 	});
 
+	it.each(['', '   ', '\n', ' \t\n '])(
+		'preserves exact public env bytes %j on create and update',
+		async (value) => {
+			const { t, db } = setup();
+			const creation = createContextItem(db, t.env, human, { kind: 'env', name: 'EMPTY', value });
+			await expect(creation).resolves.toMatchObject({ value, value_set: true });
+			const created = await creation;
+			expect(created).toMatchObject({ value, value_set: true });
+			expect(await getContextItem(db, USER, created.id)).toMatchObject({ value, value_set: true });
+			await updateContextItem(db, t.env, human, created.id, { value: 'replacement' });
+			expect(await updateContextItem(db, t.env, human, created.id, { value })).toMatchObject({
+				value,
+				value_set: true
+			});
+			expect(t.all('SELECT env_value FROM context_item WHERE id = ?', created.id)[0]).toEqual({
+				env_value: value
+			});
+		}
+	);
+
+	it.each([
+		['null', null],
+		['number', 12],
+		['boolean', false],
+		['object', {}],
+		['UTF-8 overflow', 'é'.repeat(8193)]
+	])('rejects invalid env value %s on create and update', async (_label, invalid) => {
+		// Exercise untyped API input that intentionally violates the public request type.
+		const value = invalid as unknown as string;
+		const { t, db } = setup();
+		expect(
+			await fail(createContextItem(db, t.env, human, { kind: 'env', name: 'INVALID', value }))
+		).toMatchObject({ status: 422, code: 'invalid_field' });
+		const item = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'VALID',
+			value: 'ok'
+		});
+		expect(await fail(updateContextItem(db, t.env, human, item.id, { value }))).toMatchObject({
+			status: 422,
+			code: 'invalid_field'
+		});
+	});
+
+	it('rejects empty secrets on create, replacement and public-to-secret conversion', async () => {
+		const { t, db } = setup();
+		expect(
+			await fail(
+				createContextItem(db, t.env, human, {
+					kind: 'env',
+					name: 'SECRET',
+					value: '',
+					secret: true
+				})
+			)
+		).toMatchObject({ status: 422, code: 'invalid_field' });
+		const item = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'SECRET',
+			value: 'ok',
+			secret: true
+		});
+		expect(await fail(updateContextItem(db, t.env, human, item.id, { value: '' }))).toMatchObject({
+			status: 422,
+			code: 'invalid_field'
+		});
+		const empty = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'EMPTY',
+			value: ''
+		});
+		expect(
+			await fail(updateContextItem(db, t.env, human, empty.id, { secret: true }))
+		).toMatchObject({ status: 422, code: 'invalid_field' });
+	});
+
+	it.each(['', '   ', '\n', null])(
+		'normalizes an empty env hint %j on create and update',
+		async (hint) => {
+			const { t, db } = setup();
+			const item = await createContextItem(db, t.env, human, {
+				kind: 'env',
+				name: 'HINT',
+				value: 'ok',
+				hint
+			});
+			expect(item.hint).toBeNull();
+			await updateContextItem(db, t.env, human, item.id, { hint: '  safe hint  ' });
+			expect((await getContextItem(db, USER, item.id)).hint).toBe('safe hint');
+			expect((await updateContextItem(db, t.env, human, item.id, { hint })).hint).toBeNull();
+		}
+	);
+
 	it('stores a public value in the clear and a secret encrypted, serializing only the hint', async () => {
 		const { t, db } = setup();
 		const pub = await createContextItem(db, t.env, human, {

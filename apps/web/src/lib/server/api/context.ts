@@ -249,7 +249,10 @@ export interface EnvPayload {
 }
 
 function validateEnvValue(value: unknown, secret: boolean): string {
-	const v = requireString(value, 'value', { max: ENV_VALUE_MAX_BYTES * 4 });
+	if (typeof value !== 'string') {
+		throw new ApiFail(422, 'invalid_field', '"value" must be a string', { field: 'value' });
+	}
+	const v = value;
 	if (v.includes('\0')) {
 		throw new ApiFail(422, 'invalid_field', 'Environment values cannot contain NUL bytes', {
 			field: 'value'
@@ -273,7 +276,10 @@ function validateEnvValue(value: unknown, secret: boolean): string {
 
 function validateEnvHint(value: unknown): string | null {
 	if (value === undefined || value === null) return null;
-	const hint = requireString(value, 'hint', { max: ENV_HINT_MAX_CHARS }).trim();
+	if (typeof value !== 'string') {
+		throw new ApiFail(422, 'invalid_field', '"hint" must be a string', { field: 'hint' });
+	}
+	const hint = value.trim();
 	if (hint.length > ENV_HINT_MAX_CHARS) {
 		throw new ApiFail(
 			422,
@@ -2617,6 +2623,8 @@ export function sweepAttachedContext(
 			{ context_items: items.map(toDeleted) }
 		);
 	}
+	// Apply the same write boundary as direct deletion before building any cascade.
+	for (const item of items) fenceRunKeyEnvWrite(actor, item.kind);
 	const queries = items.flatMap((item) => [
 		db.deleteFrom('context_item_file').where('context_item_id', '=', item.id).compile(),
 		db.deleteFrom('context_item').where('id', '=', item.id).compile(),

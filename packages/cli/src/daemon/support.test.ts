@@ -808,6 +808,19 @@ describe('pathWithin', () => {
 });
 
 describe('buildSpawnEnv env items', () => {
+	it('an empty env override replaces the inherited host value', () => {
+		const env = buildSpawnEnv(
+			{ EMPTY: 'host value' },
+			{
+				binDir: null,
+				apiKey: 'key',
+				apiUrl: 'https://tines.test',
+				extra: [{ name: 'EMPTY', value: '' }]
+			}
+		);
+		expect(env).toHaveProperty('EMPTY', '');
+	});
+
 	it('merges extra variables but Tines-owned ones and PATH always win', () => {
 		const env = buildSpawnEnv(
 			{ PATH: '/usr/bin', KEEP: 'base' },
