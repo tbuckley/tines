@@ -347,3 +347,62 @@ From later work:
 
 - **2026-09-10, Tines/392 — transfer rescopes the project dimension in place**: when an issue moves to another project, every context row anchored to *both* the source project and that issue moves its project dimension with it, inside the same transaction — keeping its ID, version, position, files, timestamps and every other dimension, including rows whose state/label dimension is currently dormant. Issue-only and shared rows are untouched. Because the version is deliberately *not* bumped, `updateContextItem`'s CAS compares the originally read scope columns as well as the version, so an edit that read the pre-move scope cannot restore it; a `context_item` trigger rejects any project∧issue scope that does not match the issue's current project.
 - **2026-09-10, Tines/431 — overridden repositories remain inspectable**: ordinary effective-context output includes each losing repository candidate's URL, branch and resolved checkout directory. This is presentation metadata only; winner precedence and signed transfer changes are unchanged.
+
+## Env items (Tines/597)
+
+An `env` context item is one environment variable delivered to every run of
+the issues it matches. The item **name is the variable name**
+(`[A-Z_][A-Z0-9_]*`; `TINES_*` and `PATH` are reserved, 422 `reserved_name`),
+so the uniform dedupe-by-name rule gives per-variable override across scopes
+for free. Payload: `value` (≤ 16 KiB UTF-8), `secret` (boolean, default
+false), `hint` (≤ 200 chars, user-supplied display text, never derived from
+the value).
+
+**Storage.** Three nullable columns on `context_item` (migration
+`0039_context_env.sql`): `env_value`, `env_value_enc`, `env_hint`. Exactly one
+of the first two is set; `secret := env_value_enc IS NOT NULL`. Secrets are
+AES-256-GCM under `SECRET_ENCRYPTION_KEY` (the GitHub PAT scheme, `crypto.ts`).
+Without the key, storing a secret is a 503 `encryption_unavailable`; plaintext
+is never written. Columns rather than `config` because publication snapshots
+and the library exporters copy `config` wholesale. Key rotation / re-encrypt
+tooling is the same gap the PAT and provider keys have today.
+
+**Reads.** `serializeItem` is the single gate: an env item serializes as
+`secret`, `value_set: true`, `hint`, plus `value` only when non-secret. The
+effective context gains `env: EffectiveEnv[]` (same shape, no secret values),
+`ContextSummary.envs` counts distinct names, and the launch prompt carries a
+names-only line ("Environment variables set for this run: `GH_TOKEN`
+(secret), …"). Events list the changed field names (`value`, `secret`,
+`hint`), never a value.
+
+**Writes.** `value` replaces (write-only for secrets); `secret: true` on a
+public item encrypts in place; `secret: false` on a secret item is a 422
+`secret_irreversible` (delete and recreate); `value: null` is a 422. Run keys
+cannot create, edit or delete env items (403 `run_key_forbidden`,
+`reason: env_context`) — a compromised run must not plant variables for later
+runs. Reads stay open; they never carry secrets.
+
+**Delivery.** Local runners: the daemon polls with `env_delivery: 1`; the
+server answers with `RunnerAssignment.env` (top-level, not in `bundle`, so it
+never reaches the workspace files) and the daemon merges it into the spawn
+environment with `TINES_*` and `PATH` always winning. It masks secret values
+(`***`, plain and JSON-escaped forms, length ≥ 4) in the rendered log and the
+raw NDJSON spool — best-effort; a harness that re-encodes its environment
+defeats a substring match. A daemon without the capability gets no env and one
+`[env] … tines CLI is too old …` line in the run log. Claude managed runners:
+one `environment_variable` vault credential per secret item (`unrestricted`
+egress in v1, header injection) beside the run-key credential, and `export`
+lines in the preamble for public values (the `TINES_API_URL` precedent — the
+SDK has no plaintext env channel). The `claude_managed` resume fingerprint
+gains an `env_digest` (names, item ids, versions — no values), serialized only
+when env items exist so older fingerprints stay byte-identical; a changed env
+set falls back to the existing cold launch, which builds a fresh vault.
+
+**Exclusions.** Env items never travel: publication snapshots, the v2/v3
+library exporters and `exportWorkflowPackage` filter the kind out, and the
+library importer skips an env entry with a stated reason. `tines issues
+context --out` writes no env file — the daemon delivers env through the
+process environment only.
+
+CLI: `tines context create --kind env --name NAME --value <v|@file|-> [--secret] [--hint <text>]`;
+`tines context edit <id> [--value …] [--secret] [--hint …]`.

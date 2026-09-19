@@ -2,9 +2,14 @@
 
 Context items are typed — `prompt`, `skill`, `repo`, `artifact` — and the
 type set is designed to grow ([specs/context/SPEC.md](../specs/context/SPEC.md)).
-`artifact` is the one kind added since this doc was written
-([specs/artifacts/SPEC.md](../specs/artifacts/SPEC.md)); it is cited below
-wherever it makes a step concrete.
+`artifact` and `env` are the kinds added since this doc was written
+([specs/artifacts/SPEC.md](../specs/artifacts/SPEC.md); env in
+[specs/context/SPEC.md](../specs/context/SPEC.md) "Env items"). `artifact` is
+cited below wherever it makes a step concrete. `env` chose nullable columns
+over `config` deliberately: publication snapshots and the library exporters
+copy `config` wholesale, so a payload that must never leave the deployment
+(a secret's ciphertext, its hint) has to live in columns those paths do not
+select — and it is excluded from every export by kind as well.
 `kind` is an open string with a per-kind payload, so a new kind is an
 **additive** change: no row migration, and no changes to scoping, layer
 ordering, name uniqueness, events, list filters, lifecycle guards, or the
