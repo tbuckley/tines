@@ -135,3 +135,49 @@ describe('ApiNetworkError', () => {
 		expect((await client.getTime()).unix).toBe(1767225600000);
 	});
 });
+
+describe('createIssueWithFiles', () => {
+	it('sends indexed multipart parts, authoritative filenames, auth, and no manual boundary', async () => {
+		let captured: RequestInit | undefined;
+		const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+			captured = init;
+			return new Response(JSON.stringify({ id: 'iss_1' }), {
+				status: 201,
+				headers: { 'content-type': 'application/json' }
+			});
+		}) as typeof globalThis.fetch;
+		const client = createApiClient({ baseUrl: 'https://example.test', apiKey: 'secret', fetch });
+		await client.createIssueWithFiles('prj_1', { title: 'With file' }, [
+			{
+				name: 'screen',
+				filename: 'Screenshot.png',
+				file: new Blob([new Uint8Array([1, 2])], { type: 'image/png' })
+			}
+		]);
+		expect(captured?.method).toBe('POST');
+		expect(captured?.headers).toEqual({ authorization: 'Bearer secret' });
+		const form = captured?.body as FormData;
+		expect(JSON.parse(form.get('metadata') as string)).toEqual({
+			issue: { title: 'With file' },
+			attachments: [{ part: 'file-0', name: 'screen', filename: 'Screenshot.png' }]
+		});
+		const file = form.get('file-0') as File;
+		expect(file.name).toBe('Screenshot.png');
+		expect(file.type).toBe('image/png');
+		expect(new Uint8Array(await file.arrayBuffer())).toEqual(new Uint8Array([1, 2]));
+	});
+
+	it('keeps ordinary issue creation as JSON', async () => {
+		let captured: RequestInit | undefined;
+		const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+			captured = init;
+			return new Response(JSON.stringify({ id: 'iss_1' }), { status: 201 });
+		}) as typeof globalThis.fetch;
+		await createApiClient({ baseUrl: '', fetch }).createIssue('prj_1', { title: 'Plain' });
+		expect(captured?.headers).toEqual({
+			accept: 'application/json',
+			'content-type': 'application/json'
+		});
+		expect(captured?.body).toBe(JSON.stringify({ title: 'Plain' }));
+	});
+});

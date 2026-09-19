@@ -31,7 +31,8 @@
 		size = 'md',
 		children,
 		onclose,
-		initialFocus
+		initialFocus,
+		dismissible = true
 	}: {
 		open?: boolean;
 		title: string;
@@ -49,6 +50,8 @@
 		 * the race and silently focuses nothing (Tines/256).
 		 */
 		initialFocus?: () => HTMLElement | null | undefined;
+		/** Prevent close/backdrop/Escape while a caller is committing work. */
+		dismissible?: boolean;
 	} = $props();
 
 	const titleId = $props.id();
@@ -87,6 +90,7 @@
 	}
 
 	function close() {
+		if (!dismissible) return;
 		open = false;
 		onclose?.();
 	}
@@ -96,7 +100,7 @@
 	// bubble on to window).
 	function onkeydown(e: KeyboardEvent) {
 		if (!open) return;
-		if (e.key === 'Escape' && !e.defaultPrevented) close();
+		if (e.key === 'Escape' && !e.defaultPrevented && dismissible) close();
 		else ontab(e);
 	}
 
@@ -172,6 +176,7 @@
 				bind:this={closeButton}
 				class="text-muted-foreground hover:text-foreground hover:bg-muted -mt-1 -mr-2 inline-flex size-9 shrink-0 items-center justify-center rounded-md"
 				aria-label="Close"
+				disabled={!dismissible}
 				onclick={close}
 			>
 				<IconX size={18} />

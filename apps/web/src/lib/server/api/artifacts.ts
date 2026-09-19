@@ -17,6 +17,8 @@ import {
 	ARTIFACT_MAX_VERSIONS,
 	ARTIFACT_NAME_PATTERN,
 	ARTIFACT_TEXT_MAX_BYTES,
+	ISSUE_CREATE_FILES_MAX_BYTES,
+	ISSUE_CREATE_MAX_FILES,
 	ARTIFACT_TYPES,
 	canonicalGitHubRepoUrl,
 	parsePrSpec,
@@ -33,7 +35,7 @@ import {
 	type ArtifactVersionFile,
 	type UpsertArtifactRequest
 } from '@tines/shared';
-import type { CompiledQuery, Kysely } from 'kysely';
+import { sql, type CompiledQuery, type Kysely, type RawBuilder } from 'kysely';
 import {
 	artifactFileKey,
 	artifactKey,
@@ -114,7 +116,7 @@ function rejectForeignPayload(type: ArtifactType, body: Record<string, unknown>)
 }
 
 /** Display filename: a basename, not a path — no separators or dot-segments. */
-function validateFilename(value: string, field = 'filename'): string {
+export function validateFilename(value: string, field = 'filename'): string {
 	const name = value.trim();
 	if (
 		name.length === 0 ||
@@ -155,7 +157,7 @@ function validateFolderPath(value: string): string {
 	return path;
 }
 
-function validateContentType(value: string, field = 'content_type'): string {
+export function validateContentType(value: string, field = 'content_type'): string {
 	const type = value.trim().toLowerCase();
 	if (!/^[\w!#$&^.+-]+\/[\w!#$&^.+-]+$/.test(type) || type.length > 100) {
 		throw new ApiFail(
@@ -831,7 +833,7 @@ function appendVersionQueries(
 function createArtifactQueries(
 	db: Kysely<Database>,
 	actor: ActorContext,
-	issue: IssueRef,
+	issue: Pick<IssueRef, 'id' | 'projectId'>,
 	input: {
 		name: string;
 		type: ArtifactType;
@@ -841,8 +843,19 @@ function createArtifactQueries(
 	},
 	itemId: string,
 	versionId: string,
-	now: number
+	now: number,
+	scopePayloadSql?: RawBuilder<string>
 ): CompiledQuery[] {
+	const eventPayload = {
+		context_id: itemId,
+		kind: 'artifact',
+		name: input.name,
+		artifact_type: input.type,
+		version: 1,
+		...(input.payload.filename ? { filename: input.payload.filename } : {}),
+		...(input.payload.size_bytes !== null ? { size_bytes: input.payload.size_bytes } : {}),
+		...(input.fileRows ? { file_count: input.fileRows.length } : {})
+	};
 	return [
 		db
 			.insertInto('context_item')
@@ -884,19 +897,143 @@ function createArtifactQueries(
 			type: 'context.created',
 			issueId: issue.id,
 			projectId: issue.projectId,
-			payload: {
-				context_id: itemId,
-				kind: 'artifact',
-				name: input.name,
-				artifact_type: input.type,
-				version: 1,
-				...(input.payload.filename ? { filename: input.payload.filename } : {}),
-				...(input.payload.size_bytes !== null ? { size_bytes: input.payload.size_bytes } : {}),
-				...(input.fileRows ? { file_count: input.fileRows.length } : {}),
-				scope: scopeEventPayload(issue)
-			}
+			createdAt: now,
+			...(scopePayloadSql
+				? { payloadSql: scopePayloadSql }
+				: { payload: { ...eventPayload, scope: scopeEventPayload(issue as IssueRef) } })
 		})
 	];
+}
+
+export interface InitialIssueFile {
+	name: string;
+	filename: string;
+	contentType: string;
+	body: Blob;
+}
+
+/** Validate and stage initial file bytes, then return their issue-batch queries. */
+export async function initialFileArtifactQueries(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issue: { id: string; projectId: string },
+	files: InitialIssueFile[],
+	now: number
+): Promise<CompiledQuery[]> {
+	if (files.length > ISSUE_CREATE_MAX_FILES) {
+		throw new ApiFail(
+			422,
+			'artifact_file_limit',
+			`At most ${ISSUE_CREATE_MAX_FILES} files may be attached`,
+			{
+				max_files: ISSUE_CREATE_MAX_FILES
+			}
+		);
+	}
+	const prepared = files.map((file, attachmentIndex) => {
+		try {
+			const name = validateArtifactName(file.name);
+			const filename = validateFilename(file.filename);
+			const contentType = validateContentType(file.contentType || 'application/octet-stream');
+			if (file.body.size > ARTIFACT_FILE_MAX_BYTES) {
+				throw new ApiFail(
+					422,
+					'artifact_too_large',
+					`Artifact file exceeds ${ARTIFACT_FILE_MAX_BYTES} bytes`,
+					{
+						max_bytes: ARTIFACT_FILE_MAX_BYTES,
+						size_bytes: file.body.size
+					}
+				);
+			}
+			const itemId = newId('ctx');
+			const versionId = newId('av');
+			return { ...file, name, filename, contentType, attachmentIndex, itemId, versionId };
+		} catch (error) {
+			if (error instanceof ApiFail) {
+				error.details = { ...error.details, attachment_index: attachmentIndex };
+			}
+			throw error;
+		}
+	});
+	const duplicate = prepared.find((file, i) =>
+		prepared.some((other, j) => j < i && other.name === file.name)
+	);
+	if (duplicate) {
+		throw new ApiFail(
+			422,
+			'duplicate_artifact_name',
+			`Artifact name "${duplicate.name}" is duplicated`,
+			{
+				field: `attachments[${duplicate.attachmentIndex}].name`,
+				attachment_index: duplicate.attachmentIndex,
+				name: duplicate.name
+			}
+		);
+	}
+	const total = prepared.reduce((sum, file) => sum + file.body.size, 0);
+	if (total > ISSUE_CREATE_FILES_MAX_BYTES) {
+		throw new ApiFail(
+			422,
+			'artifact_too_large',
+			`Attachments exceed ${ISSUE_CREATE_FILES_MAX_BYTES} bytes`,
+			{
+				max_bytes: ISSUE_CREATE_FILES_MAX_BYTES,
+				size_bytes: total
+			}
+		);
+	}
+
+	const queries: CompiledQuery[] = [];
+	for (const file of prepared) {
+		const bytes = new Uint8Array(await file.body.arrayBuffer());
+		if (bytes.byteLength !== file.body.size) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`Attachment ${file.attachmentIndex} changed while reading`,
+				{
+					attachment_index: file.attachmentIndex
+				}
+			);
+		}
+		const key = artifactKey(actor.userId, file.itemId, file.versionId);
+		await getArtifactStore(env).put(key, bytes);
+		const payload: VersionPayload = {
+			...emptyPayload,
+			filename: file.filename,
+			content_type: file.contentType,
+			size_bytes: bytes.byteLength,
+			r2_key: key
+		};
+		const baseEventPayload = JSON.stringify({
+			context_id: file.itemId,
+			kind: 'artifact',
+			name: file.name,
+			artifact_type: 'file',
+			version: 1,
+			filename: file.filename,
+			size_bytes: bytes.byteLength,
+			scope: { type: 'issue', id: issue.id }
+		});
+		const scopePayloadSql = sql<string>`json_set(${baseEventPayload}, '$.scope.label',
+			(SELECT 'issue ' || p.name || '/' || i.number
+			 FROM issue i JOIN project p ON p.id = i.project_id WHERE i.id = ${issue.id}))`;
+		queries.push(
+			...createArtifactQueries(
+				db,
+				actor,
+				issue,
+				{ name: file.name, type: 'file', description: '', payload },
+				file.itemId,
+				file.versionId,
+				now,
+				scopePayloadSql
+			)
+		);
+	}
+	return queries;
 }
 
 async function loadCurrent(

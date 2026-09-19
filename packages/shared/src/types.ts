@@ -738,6 +738,18 @@ export interface CreateIssueRequest {
 	labels?: string[];
 }
 
+/** One file entry in the multipart issue-create metadata manifest. */
+export interface CreateIssueAttachmentManifestEntry {
+	part: string;
+	name: string;
+	filename: string;
+}
+
+export interface CreateIssueMultipartMetadata {
+	issue: CreateIssueRequest;
+	attachments: CreateIssueAttachmentManifestEntry[];
+}
+
 /** The recurrence part of a create-issue request. */
 export interface CreateScheduleInput {
 	/** Unique within the project; defaults to the title template. */
@@ -1368,6 +1380,11 @@ export const ARTIFACT_TYPES: readonly ArtifactType[] = ['file', 'text', 'link', 
 
 /** Per-file upload cap. */
 export const ARTIFACT_FILE_MAX_BYTES = 25 * 1024 * 1024;
+/** Limits for files attached as part of issue creation. */
+export const ISSUE_CREATE_MAX_FILES = 10;
+export const ISSUE_CREATE_FILES_MAX_BYTES = 50 * 1024 * 1024;
+export const ISSUE_CREATE_METADATA_MAX_BYTES = 256 * 1024;
+export const ISSUE_CREATE_MULTIPART_MAX_BYTES = 51 * 1024 * 1024;
 /** Per-text-document cap (UTF-8). */
 export const ARTIFACT_TEXT_MAX_BYTES = 256 * 1024;
 /** Versions per artifact. */
