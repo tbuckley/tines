@@ -32,6 +32,7 @@ import {
 } from './issues';
 import { createLabel, listLabels } from './labels';
 import { listArtifacts } from './artifacts';
+import { getArtifactStore } from '$lib/server/artifact-store';
 import { loadWorkflows } from './workflows';
 import { createTestDb, type TestDb } from './test-db';
 
@@ -829,6 +830,92 @@ describe('createIssue with labels', () => {
 			{ cursor: null, limit: 50 }
 		);
 		expect(items.map((i) => i.id)).toEqual([labelled.id]);
+	});
+});
+
+describe('createIssue with initial files', () => {
+	const human: ActorContext = {
+		userId: USER,
+		userName: 'alice',
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	};
+
+	it('publishes file rows, bytes, and canonical scope before signaling dispatch', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		let visibleAtSignal: unknown[] = [];
+		const issue = await createIssue(
+			t.db,
+			t.env,
+			human,
+			{
+				signalDispatch() {
+					visibleAtSignal = t.all("SELECT name FROM context_item WHERE kind = 'artifact'");
+				}
+			},
+			PROJECT,
+			{ title: 'With files', labels: ['reference'] },
+			[
+				{
+					name: 'screen',
+					filename: 'Screen.png',
+					contentType: 'image/png',
+					body: new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })
+				},
+				{
+					name: 'notes',
+					filename: 'notes.txt',
+					contentType: 'text/plain',
+					body: new Blob(['hello'], { type: 'text/plain' })
+				}
+			]
+		);
+		expect(visibleAtSignal).toHaveLength(2);
+		const artifacts = await listArtifacts(t.db, USER, issue.id);
+		expect(artifacts.map((artifact) => [artifact.name, artifact.artifact_type])).toEqual([
+			['notes', 'file'],
+			['screen', 'file']
+		]);
+		const versions = t.all(
+			'SELECT filename, content_type, size_bytes, r2_key FROM artifact_version ORDER BY filename'
+		) as { filename: string; content_type: string; size_bytes: number; r2_key: string }[];
+		expect(
+			versions.map((version) => [version.filename, version.content_type, version.size_bytes])
+		).toEqual([
+			['Screen.png', 'image/png', 3],
+			['notes.txt', 'text/plain', 5]
+		]);
+		expect(await getArtifactStore(t.env).get(versions[0].r2_key)).toEqual(
+			new Uint8Array([1, 2, 3])
+		);
+		const payloads = t.all("SELECT payload FROM event WHERE type = 'context.created'") as {
+			payload: string;
+		}[];
+		expect(payloads.map((row) => JSON.parse(row.payload).scope.label)).toEqual([
+			`issue ${issue.project_name}/${issue.number}`,
+			`issue ${issue.project_name}/${issue.number}`
+		]);
+	});
+
+	it('rejects duplicate names before creating an issue or writing bytes', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const file = (name: string) => ({
+			name,
+			filename: `${name}.txt`,
+			contentType: 'text/plain',
+			body: new Blob(['x'])
+		});
+		await expect(
+			createIssue(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, { title: 'Nope' }, [
+				file('same'),
+				file('same')
+			])
+		).rejects.toMatchObject({ code: 'duplicate_artifact_name' });
+		expect(t.all('SELECT id FROM issue')).toEqual([]);
+		expect(t.all("SELECT id FROM context_item WHERE kind = 'artifact'")).toEqual([]);
 	});
 });
 

@@ -47,7 +47,9 @@ import {
 	listArtifacts,
 	loadIssueVersions,
 	requirementSpecLabel,
-	versionQuery
+	versionQuery,
+	initialFileArtifactQueries,
+	type InitialIssueFile
 } from './artifacts';
 import { contextSummaryForIssue } from './context';
 import { actorOf, eventInsert, eventQuery, serializeEvent } from './events';
@@ -981,7 +983,8 @@ export async function createIssue(
 	actor: ActorContext,
 	effects: DispatchEffects,
 	projectId: string,
-	body: CreateIssueRequest
+	body: CreateIssueRequest,
+	initialFiles: InitialIssueFile[] = []
 ): Promise<CreateIssueResponse> {
 	const project = await db
 		.selectFrom('project')
@@ -1067,6 +1070,19 @@ export async function createIssue(
 			...labelInserts(db, actor, resolvedLabels.toCreate),
 			...issueLabelInserts(db, actor, { id, project_id: projectId }, resolvedLabels.labels, now)
 		);
+	}
+	if (initialFiles.length > 0) {
+		queries.push(
+			...(await initialFileArtifactQueries(db, env, actor, { id, projectId }, initialFiles, now))
+		);
+		const currentProject = await db
+			.selectFrom('project')
+			.selectAll()
+			.where('id', '=', projectId)
+			.where('user_id', '=', actor.userId)
+			.executeTakeFirst();
+		if (!currentProject) throw notFound();
+		await assertWritable(db, actor, currentProject);
 	}
 	await runAtomic(env, queries);
 	effects.signalDispatch();
