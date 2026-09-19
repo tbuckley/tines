@@ -523,6 +523,17 @@ test.describe.serial('env context items', () => {
 		await expect(envSection.getByText('E2E_UI_SECRET', { exact: true })).toBeVisible();
 		await expect(envSection).toContainText('secret · set · ui…hint');
 		expect(await page.content()).not.toContain('ui-secret-value');
+
+		await gotoHydrated(page, '/context?q=E2E_UI_SECRET');
+		await page.getByLabel('Filter by kind').selectOption('env');
+		await expect(page).toHaveURL(/kind=env/);
+		const row = page.locator('li:not([inert])').filter({ hasText: 'E2E_UI_SECRET' });
+		await expect(row).toContainText('secret · set · ui…hint');
+		await row.getByRole('button').click();
+		await expect(dialog.getByLabel('Value', { exact: true })).toHaveValue('');
+		await expect(dialog.getByLabel('Secret (encrypted at rest, write-only)')).toBeDisabled();
+		await expect(dialog).toContainText('A secret value is stored');
+		expect(await page.content()).not.toContain('ui-secret-value');
 	});
 });
 

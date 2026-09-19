@@ -354,7 +354,7 @@ An `env` context item is one environment variable delivered to every run of
 the issues it matches. The item **name is the variable name**
 (`[A-Z_][A-Z0-9_]*`; `TINES_*` and `PATH` are reserved, 422 `reserved_name`),
 so the uniform dedupe-by-name rule gives per-variable override across scopes
-for free. Payload: `value` (≤ 16 KiB UTF-8), `secret` (boolean, default
+for free. Payload: `value` (≤ 16 KiB UTF-8, no NUL bytes), `secret` (boolean, default
 false), `hint` (≤ 200 chars, user-supplied display text, never derived from
 the value).
 
@@ -400,7 +400,7 @@ set falls back to the existing cold launch, which builds a fresh vault.
 
 **Exclusions.** Env items never travel: publication snapshots, the v2/v3
 library exporters and `exportWorkflowPackage` filter the kind out, and the
-library importer skips an env entry with a stated reason. `tines issues
+library importer rejects env entries as deployment configuration. `tines issues
 context --out` writes no env file — the daemon delivers env through the
 process environment only.
 
