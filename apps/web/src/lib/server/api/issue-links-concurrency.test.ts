@@ -559,9 +559,9 @@ describe('commit-time issue-link graph guard', () => {
 
 	it('bounds rejection diagnostics to the candidate graph', async () => {
 		const { t, a, b } = fixture();
-		await addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, {
+		await addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, b, {
 			kind: 'blocks',
-			issue_id: b
+			issue_id: a
 		});
 		const insert = t.sqlite.prepare(
 			'INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES (?, ?, ?, ?, ?)'
@@ -593,10 +593,10 @@ describe('commit-time issue-link graph guard', () => {
 				kind: 'blocks',
 				issue_id: b
 			})
-		).rejects.toMatchObject({ status: 409, code: 'conflict' });
+		).rejects.toMatchObject({ status: 422, code: 'link_cycle' });
 
 		expect(diagnosticRows, 'the shipped rejection diagnostic SELECT').toBeDefined();
-		expect(diagnosticRows).toHaveLength(1);
+		expect(diagnosticRows).toHaveLength(2);
 		expect(JSON.stringify(diagnosticRows).length).toBeLessThan(1_000);
 	});
 
