@@ -1,5 +1,5 @@
 import type { Actor, ActorRun, TinesEvent } from '@tines/shared';
-import { sql, type CompiledQuery, type Kysely } from 'kysely';
+import { sql, type CompiledQuery, type Kysely, type RawBuilder } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { ApiFail, type ActorContext } from './core';
 
@@ -43,6 +43,8 @@ export interface EventInput {
 	issueId?: string | null;
 	projectId?: string | null;
 	payload?: Record<string, unknown>;
+	/** Parameterized SQL producing the JSON payload; mutually exclusive with payload. */
+	payloadSql?: RawBuilder<string>;
 }
 
 /**
@@ -73,7 +75,7 @@ export function eventInsert(
 		actor_user_id: actor.userId,
 		actor_api_key_id: actor.apiKeyId,
 		issue_id: input.issueId ?? null,
-		payload: JSON.stringify(input.payload ?? {}),
+		payload: input.payloadSql ?? JSON.stringify(input.payload ?? {}),
 		created_at: input.createdAt ?? Date.now()
 	};
 	// Issue-scoped attribution belongs to the issue's project at the instant the

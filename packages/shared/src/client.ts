@@ -33,6 +33,7 @@ import type {
 	CreateContextItemRequest,
 	CreateIssueRequest,
 	CreateIssueResponse,
+	CreateIssueMultipartMetadata,
 	CreateProjectRequest,
 	CreateProjectResponse,
 	CreateRoutingRuleRequest,
@@ -344,6 +345,25 @@ export function createApiClient(options: ApiClientOptions) {
 		) => get<ListResponse<IssueListItem>>(`/api/v1/projects/${projectId}/issues${query(filters)}`),
 		createIssue: (projectId: string, body: CreateIssueRequest) =>
 			request<CreateIssueResponse>('POST', `/api/v1/projects/${projectId}/issues`, body),
+		createIssueWithFiles: async (
+			projectId: string,
+			issue: CreateIssueRequest,
+			files: { name: string; filename: string; file: Blob }[]
+		) => {
+			const form = new FormData();
+			const metadata: CreateIssueMultipartMetadata = {
+				issue,
+				attachments: files.map((file, index) => ({
+					part: `file-${index}`,
+					name: file.name,
+					filename: file.filename
+				}))
+			};
+			form.append('metadata', JSON.stringify(metadata));
+			files.forEach((file, index) => form.append(`file-${index}`, file.file, file.filename));
+			const res = await raw('POST', `/api/v1/projects/${projectId}/issues`, { body: form });
+			return (await res.json()) as CreateIssueResponse;
+		},
 		getIssue: (id: string) => get<IssueDetail>(`/api/v1/issues/${id}`),
 		getIssueByNumber: (projectId: string, number: number) =>
 			get<IssueDetail>(`/api/v1/projects/${projectId}/issues/${number}`),

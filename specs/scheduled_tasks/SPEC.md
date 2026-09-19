@@ -61,6 +61,7 @@ When an occurrence comes due (see Execution), the sweep either **creates** an is
 - **Gate check**: with `require_all_closed` set, the occurrence is skipped if any issue linked to this schedule sits in a state whose category is not `done`. Skips are terminal — the occurrence is recorded as skipped (a `scheduled_task.skipped` event naming the blocking issues) and is never retried; the next issue appears at the next scheduled occurrence after the blockers close.
 - **Collapse**: if multiple occurrences have elapsed since the last sweep (downtime, a long pause), at most one issue is created and `next_run_at` advances to the next *future* occurrence. Missed intermediates are silently collapsed.
 - **Creation**: the templates are rendered, and an issue is created through the same server path as manual creation — number allocation, initial state, and `issue.created` event included.
+- **Initial attachments**: files selected while creating a recurring issue belong only to the immediately created first instance. The schedule stores title, description, workflow, and state templates, not file payloads; future occurrences therefore have no copied attachments. The creation form states this when Repeat and attachments are both selected.
 
 ### Instance linkage
 
