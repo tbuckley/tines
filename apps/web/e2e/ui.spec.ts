@@ -121,6 +121,72 @@ test('the mobile layout swaps the header tabs for a bottom bar', async ({ page }
 	await expect(page.locator('header').getByRole('link', { name: 'Workflows' })).toBeHidden();
 });
 
+test('workflow actions fill the phone content and form a compact desktop row', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await page.goto('/workflows');
+
+	const intro = page.getByText('Your library of state machines.');
+	const pageIntro = page.getByTestId('workflow-page-intro');
+	const actionGroup = page.getByTestId('workflow-actions');
+	const actions = [
+		page.getByRole('link', { name: 'Public snapshots' }),
+		page.getByRole('link', { name: 'Install package' }),
+		page.getByRole('link', { name: 'New workflow' })
+	];
+	await expect(intro).toBeVisible();
+	await expect(actions[0]).toBeVisible();
+
+	const introBox = (await intro.boundingBox())!;
+	const pageIntroBox = (await pageIntro.boundingBox())!;
+	const actionGroupBox = (await actionGroup.boundingBox())!;
+	const actionBoxes = await Promise.all(actions.map((action) => action.boundingBox()));
+	expect(actionGroupBox.x, 'phone action group left edge').toBeCloseTo(pageIntroBox.x, 0);
+	expect(actionGroupBox.width, 'phone action group fills the content width').toBeCloseTo(
+		pageIntroBox.width,
+		0
+	);
+	for (const [index, actionBox] of actionBoxes.entries()) {
+		expect(actionBox).not.toBeNull();
+		expect(actionBox!.y, `action ${index + 1} follows the intro`).toBeGreaterThan(
+			introBox.y + introBox.height
+		);
+		expect(actionBox!.x, `action ${index + 1} left edge`).toBe(actionBoxes[0]!.x);
+		expect(actionBox!.width, `phone action ${index + 1} fills the group`).toBeCloseTo(
+			actionGroupBox.width,
+			0
+		);
+		expect(
+			actionBox!.x + actionBox!.width,
+			`action ${index + 1} stays in the viewport`
+		).toBeLessThanOrEqual(390);
+	}
+	for (let index = 1; index < actionBoxes.length; index += 1) {
+		expect(actionBoxes[index]!.y, `action ${index + 1} follows action ${index}`).toBeGreaterThan(
+			actionBoxes[index - 1]!.y + actionBoxes[index - 1]!.height
+		);
+	}
+
+	await page.setViewportSize({ width: 1440, height: 900 });
+	const desktopPageIntroBox = (await pageIntro.boundingBox())!;
+	const desktopActionGroupBox = (await actionGroup.boundingBox())!;
+	const desktopActionBoxes = await Promise.all(actions.map((action) => action.boundingBox()));
+	for (const [index, actionBox] of desktopActionBoxes.entries()) {
+		expect(actionBox).not.toBeNull();
+		expect(actionBox!.y, `desktop action ${index + 1} shares one row`).toBeCloseTo(
+			desktopActionBoxes[0]!.y,
+			0
+		);
+		expect(
+			actionBox!.width,
+			`desktop action ${index + 1} does not span the action region`
+		).toBeLessThan(desktopActionGroupBox.width / 2);
+	}
+	expect(
+		desktopActionGroupBox.x + desktopActionGroupBox.width,
+		'desktop action row is right-aligned'
+	).toBeCloseTo(desktopPageIntroBox.x + desktopPageIntroBox.width, 0);
+});
+
 test('the app chrome stays inside both responsive breakpoint boundaries', async ({ page }) => {
 	const api = apiClient(page.request, ALICE.apiKey);
 	await body(await api.patch('/api/v1/preferences', { focused_project_id: longProject.id }));
