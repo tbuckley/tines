@@ -255,12 +255,13 @@ export function register(program: Command): void {
 	withList(
 		issues
 			.command('list')
-			.description('List issues across projects (hides done issues unless --all)')
+			.description('List issues across projects (hides done and duplicate issues unless included)')
 			.option('-p, --project <name>', 'filter by project name or id')
 			.option('-s, --state <name>', 'filter by state name or id')
 			.option('-c, --category <cat>', 'filter by state category')
 			.option('-w, --workflow <id-or-name>', 'filter by workflow')
 			.option('-a, --all', 'include issues in done states')
+			.option('--show-duplicates', 'include issues marked as duplicates')
 			.option(
 				'--ready',
 				'only issues that are actionable now (not done, not a duplicate, no open blockers)'
@@ -276,6 +277,7 @@ export function register(program: Command): void {
 				category?: StateCategory;
 				workflow?: string;
 				all?: boolean;
+				showDuplicates?: boolean;
 				ready?: boolean;
 				search?: string;
 				label?: string[];
@@ -290,6 +292,7 @@ export function register(program: Command): void {
 					category: opts.category,
 					workflow: opts.workflow,
 					hide_done: !opts.all,
+					hide_duplicates: !opts.showDuplicates,
 					ready: opts.ready,
 					q: opts.search,
 					label: opts.label,

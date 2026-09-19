@@ -26,6 +26,13 @@ async function list(query: string) {
 		workflow: 'wf_other',
 		state: 'wfs_other_open'
 	});
+	const duplicate = addIssue(t, { id: 'iss_duplicate', title: 'Duplicate issue' });
+	t.sqlite
+		.prepare(
+			`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at)
+			 VALUES ('lnk_duplicate', ?, ?, 'duplicate_of', 0)`
+		)
+		.run(duplicate, standard);
 	const url = new URL(`http://test/api/v1/projects/${PROJECT}/issues${query}`);
 	const event = {
 		locals: { user: { id: USER, name: 'alice' } },
@@ -39,7 +46,8 @@ async function list(query: string) {
 		status: response.status,
 		body: (await response.json()) as { items: Array<{ id: string }> },
 		standard,
-		other
+		other,
+		duplicate
 	};
 }
 
@@ -59,6 +67,22 @@ describe('GET /api/v1/projects/:id/issues', () => {
 		const result = await list('?workflow=wf_missing');
 		expect(result.status).toBe(200);
 		expect(result.body.items).toEqual([]);
+	});
+
+	it.each([
+		['', false],
+		['&hide_duplicates=true', false],
+		['&hide_duplicates=1', false],
+		['&hide_duplicates=', false],
+		['&hide_duplicates=unknown', false],
+		['&hide_duplicates=false', true],
+		['&hide_duplicates=0', true]
+	])('parses duplicate inclusion from %s', async (suffix, includesDuplicate) => {
+		const result = await list(`?workflow=wf_standard${suffix}`);
+		expect(result.status).toBe(200);
+		expect(result.body.items.map((item) => item.id).includes(result.duplicate)).toBe(
+			includesDuplicate
+		);
 	});
 });
 

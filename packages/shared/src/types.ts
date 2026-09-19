@@ -877,6 +877,8 @@ export interface IssueFilters {
 	schedule?: string;
 	/** Exclude issues whose state is categorized `done`. */
 	hide_done?: boolean;
+	/** Exclude duplicate issues. Defaults to true; false includes duplicates. */
+	hide_duplicates?: boolean;
 	/** Only issues that are not done, not duplicates, and have all blockers effectively done. */
 	ready?: boolean;
 	/** Literal title/description substring search, case-insensitive for ASCII. */

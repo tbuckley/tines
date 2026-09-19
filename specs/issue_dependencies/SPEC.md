@@ -44,6 +44,8 @@ The preceding tolerance for a theoretical concurrent-write race is superseded. A
 
 ### Effective state (duplicate passthrough)
 
+**2026-09-19 amendment — duplicate list visibility.** Ordinary API, CLI, and web issue lists now hide every issue with an outgoing `duplicate_of` link by default. Callers can explicitly include them with `hide_duplicates=false`, CLI `--show-duplicates`, or the web **Show duplicates** filter. Filtering still uses the effective state when duplicates are included, while direct detail reads and relationship/context selectors continue to reach duplicates. This supersedes the unconditional list visibility described below and in acceptance criterion 2; the effective-state, chain-resolution, and readiness rules are unchanged.
+
 An issue's **effective state** is its own state unless it has a `duplicate_of` edge, in which case it is the effective state of its canonical issue — i.e. the state of the duplicate chain's terminus. Because chains are acyclic and each issue has at most one outgoing duplicate edge, the terminus is unique.
 
 - The duplicate keeps its own `state_id` in the database; nothing is written when the canonical issue moves. Closing the canonical issue effectively closes every transitive duplicate at read time; reopening it effectively reopens them.

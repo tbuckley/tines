@@ -547,6 +547,104 @@ describe('listIssues search', () => {
 	});
 });
 
+describe('listIssues duplicate visibility', () => {
+	const PROJECT2 = 'prj_duplicates_other';
+	let t: TestDb;
+	let ordinary: string;
+	let canonical: string;
+	let duplicate: string;
+	let chain: string;
+
+	beforeEach(() => {
+		t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(
+			`INSERT INTO project (id, user_id, name, created_at, updated_at)
+			 VALUES ('${PROJECT2}', '${USER}', 'duplicate targets', 0, 0)`
+		);
+		ordinary = addIssue(t, { title: 'Ordinary' });
+		canonical = addIssue(t, { title: 'Canonical', project: PROJECT2 });
+		duplicate = addIssue(t, { title: 'Duplicate' });
+		chain = addIssue(t, { title: 'Chain source' });
+		t.sqlite
+			.prepare(
+				`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at)
+				 VALUES (?, ?, ?, 'duplicate_of', 0), (?, ?, ?, 'duplicate_of', 0)`
+			)
+			.run('lnk_duplicate', duplicate, canonical, 'lnk_chain', chain, duplicate);
+	});
+
+	const list = async (filters: Parameters<typeof listIssues>[2] = {}, limit = 50) =>
+		listIssues(t.db, USER, filters, { cursor: null, limit });
+
+	it('hides every duplicate source by default and includes them only when requested', async () => {
+		expect((await list({ projectId: PROJECT })).items.map((item) => item.id)).toEqual([ordinary]);
+		expect(
+			(await list({ projectId: PROJECT, hideDuplicates: true })).items.map((item) => item.id)
+		).toEqual([ordinary]);
+		expect(
+			(await list({ projectId: PROJECT, hideDuplicates: false })).items
+				.map((item) => item.id)
+				.sort()
+		).toEqual([ordinary, duplicate, chain].sort());
+		// An incoming duplicate link does not hide the canonical target.
+		expect((await list({ projectId: PROJECT2 })).items.map((item) => item.id)).toEqual([canonical]);
+	});
+
+	it('restores an issue when its outgoing duplicate link is removed', async () => {
+		t.sqlite.prepare('DELETE FROM issue_link WHERE source_issue_id = ?').run(duplicate);
+		expect((await list({ projectId: PROJECT })).items.map((item) => item.id).sort()).toEqual(
+			[ordinary, duplicate].sort()
+		);
+	});
+
+	it('keeps counts, workflow counts, Ready, and brief rows on the same population', async () => {
+		expect(await countIssuesByCategory(t.db, USER, { projectId: PROJECT })).toMatchObject({
+			active: 1
+		});
+		expect(
+			await countIssuesByCategory(t.db, USER, { projectId: PROJECT, hideDuplicates: false })
+		).toMatchObject({ active: 3 });
+		expect(await countOpenIssuesByWorkflow(t.db, USER, PROJECT)).toEqual({ wf_standard: 1 });
+		expect(
+			(await list({ projectId: PROJECT, hideDuplicates: false, ready: true })).items.map(
+				(item) => item.id
+			)
+		).toEqual([ordinary]);
+		const shown = await list({ projectId: PROJECT, hideDuplicates: false, brief: true });
+		expect(shown.items.find((item) => item.id === duplicate)?.duplicate_of).toMatchObject({
+			project_name: 'duplicate targets'
+		});
+		expect(shown.items.every((item) => !Object.hasOwn(item, 'description'))).toBe(true);
+	});
+
+	it('filters duplicates before cursor pagination', async () => {
+		for (const [id, createdAt] of [
+			[ordinary, 50],
+			[duplicate, 40],
+			[canonical, 30],
+			[chain, 20]
+		] as const) {
+			t.sqlite.prepare('UPDATE issue SET created_at = ? WHERE id = ?').run(createdAt, id);
+		}
+		const first = await list({}, 1);
+		expect(first.items.map((item) => item.id)).toEqual([ordinary]);
+		expect(first.hasMore).toBe(true);
+		const second = await listIssues(
+			t.db,
+			USER,
+			{},
+			{
+				cursor: { createdAt: first.items[0].created_at, id: first.items[0].id },
+				direction: 'after',
+				limit: 1
+			}
+		);
+		expect(second.items.map((item) => item.id)).toEqual([canonical]);
+		expect(second.hasMore).toBe(false);
+	});
+});
+
 describe('listIssues workflow filtering', () => {
 	let t: TestDb;
 	let ids: Record<string, string>;
@@ -602,19 +700,21 @@ describe('listIssues workflow filtering', () => {
 		).items.map((item) => item.id);
 
 	it('matches workflow and state by id or exact name, including duplicate semantics', async () => {
-		expect((await list({ workflow: 'wf_alpha' })).sort()).toEqual(
+		expect((await list({ workflow: 'wf_alpha', hideDuplicates: false })).sort()).toEqual(
 			[ids.alphaReview, ids.alphaDone, ids.alphaDuplicate].sort()
 		);
-		expect((await list({ workflow: 'Shared workflow' })).sort()).toEqual(Object.values(ids).sort());
+		expect((await list({ workflow: 'Shared workflow', hideDuplicates: false })).sort()).toEqual(
+			Object.values(ids).sort()
+		);
 		expect(await list({ workflow: 'wf_alpha', state: 's_alpha_review' })).toEqual([
 			ids.alphaReview
 		]);
-		expect(await list({ workflow: 'wf_alpha', state: 's_beta_review' })).toEqual([
-			ids.alphaDuplicate
-		]);
-		expect((await list({ workflow: 'Shared workflow', state: 'Review' })).sort()).toEqual(
-			[ids.alphaReview, ids.betaReview, ids.alphaDuplicate].sort()
-		);
+		expect(
+			await list({ workflow: 'wf_alpha', state: 's_beta_review', hideDuplicates: false })
+		).toEqual([ids.alphaDuplicate]);
+		expect(
+			(await list({ workflow: 'Shared workflow', state: 'Review', hideDuplicates: false })).sort()
+		).toEqual([ids.alphaReview, ids.betaReview, ids.alphaDuplicate].sort());
 		expect(await list({ workflow: 'WF_ALPHA' })).toEqual([]);
 	});
 
@@ -641,7 +741,8 @@ describe('listIssues workflow filtering', () => {
 				workflow: 'wf_alpha',
 				state: 'Review',
 				category: 'done',
-				hideDone: true
+				hideDone: true,
+				hideDuplicates: false
 			})
 		).toEqual({ backlog: 0, active: 1, awaiting_human: 1, done: 0 });
 		expect(
