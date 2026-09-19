@@ -11,22 +11,53 @@ export default defineConfig({
 		// reload — wiping the "Check your email" state as it appeared.
 		watch: { ignored: ['**/.wrangler/**'] }
 	},
+	// Two suites, one command. `server` is everything that has always run
+	// here: plain modules under node. `client` mounts Svelte components in a
+	// DOM, which needs its own environment and resolution, so it cannot share
+	// a project with the first. `pnpm test` runs both; `--project=client`
+	// (or `=server`) picks one.
 	test: {
-		include: ['src/**/*.test.ts'],
-		// The navigation-cost probe is a measurement tool, not a gate: it spends
-		// seconds deliberately sleeping. `pnpm --filter web perf:nav` sets
-		// NAVPERF=1 to opt in.
-		exclude: [
-			...configDefaults.exclude,
-			...(process.env.NAVPERF === '1' ? [] : ['**/nav-perf.test.ts']),
-			...(process.env.STATSPERF === '1' ? [] : ['**/stats-perf.test.ts'])
-		],
-		environment: 'node',
-		// The unit-test DB is node:sqlite (src/lib/server/api/test-db.ts),
-		// which Node 22 still flags as experimental — once per worker, so a
-		// run printed it half a dozen times. Silence just that warning, just
-		// in the workers.
-		execArgv: ['--disable-warning=ExperimentalWarning']
+		projects: [
+			{
+				extends: true,
+				test: {
+					name: 'server',
+					include: ['src/**/*.test.ts'],
+					exclude: [
+						...configDefaults.exclude,
+						// `*.svelte.test.ts` also ends in `.test.ts`, so without this
+						// the component tests would run here too — in node, where
+						// mounting a component throws.
+						'**/*.svelte.test.ts',
+						// The navigation-cost probe is a measurement tool, not a gate:
+						// it spends seconds deliberately sleeping.
+						// `pnpm --filter web perf:nav` sets NAVPERF=1 to opt in.
+						...(process.env.NAVPERF === '1' ? [] : ['**/nav-perf.test.ts']),
+						...(process.env.STATSPERF === '1' ? [] : ['**/stats-perf.test.ts'])
+					],
+					environment: 'node',
+					// The unit-test DB is node:sqlite (src/lib/server/api/test-db.ts),
+					// which Node 22 still flags as experimental — once per worker, so a
+					// run printed it half a dozen times. Silence just that warning, just
+					// in the workers.
+					execArgv: ['--disable-warning=ExperimentalWarning']
+				}
+			},
+			{
+				extends: true,
+				// Svelte ships a server build and a client build behind export
+				// conditions. Without `browser` the import resolves to the SSR
+				// half, whose `mount` is a stub that throws — the components would
+				// render to a string and never become DOM.
+				resolve: { conditions: ['browser'] },
+				test: {
+					name: 'client',
+					include: ['src/**/*.svelte.test.ts'],
+					environment: 'jsdom',
+					setupFiles: ['./test/setup-client.ts']
+				}
+			}
+		]
 	},
 	plugins: [
 		tailwindcss(),
