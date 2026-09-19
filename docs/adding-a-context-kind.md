@@ -107,9 +107,11 @@ an opaque string.
 - **`contextSummaryForIssue`**: add the post-dedupe count (distinct names
   among matching rows of the kind).
 
-Nothing else in the server changes: `requireKind`, scope resolution,
-name-uniqueness, positions, events, and the deletion guards are all
-payload-agnostic.
+`requireKind`, scope resolution, name-uniqueness, positions, events, and
+scope discovery are payload-agnostic. A kind with a write restriction must
+also enforce it in `sweepAttachedContext`: forced project/workflow/state
+deletions otherwise bypass direct item-write checks. Env run-key fencing
+is the precedent.
 
 ### CLI — `packages/cli/src/`
 
@@ -156,8 +158,9 @@ If a new kind requires edits to any of these, the change is off the rails
 - Name-uniqueness or position handling (per exact scope, kind-aware
   already).
 - Event emission (`context.*` payloads carry `kind` as-is).
-- Lifecycle guards (`findAttachedContext` / `sweepAttachedContext` sweep
-  by scope, not payload).
+- Lifecycle scope discovery (`findAttachedContext` sweeps by scope).
+  Kind-specific authorization still belongs in `sweepAttachedContext` before
+  it builds any forced-delete statements; env run-key fencing is the precedent.
 - List filtering, pagination, or the launch-prompt/journal machinery.
 - Existing rows or existing clients: old rows never match the new kind,
   and clients that don't know it simply see items whose payload fields
