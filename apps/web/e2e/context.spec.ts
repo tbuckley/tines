@@ -10,8 +10,8 @@ import type {
 	WorkflowResponse
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
-import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
+import { ALICE, BOB, RUNROW } from './constants.mjs';
+import { apiClient, body, errorBody, gotoHydrated, issuePath, runId, signIn } from './helpers';
 
 /**
  * The context-attachments acceptance loop (specs/context/SPEC.md): scoped
@@ -329,6 +329,195 @@ test.describe.serial('context attachments', () => {
  * creation-time prompts, the journal (append, CAS, special heading), and
  * the id-free launch prompt.
  */
+test.describe.serial('env context items', () => {
+	// Variables delivered to runs (specs/context/SPEC.md "Env items"): the
+	// value is the payload, a secret is write-only and encrypted, and no read
+	// surface — item, list, effective context, launch prompt — carries it.
+	const projectName = `ctx-env-${runId}`;
+	const secretValue = `e2e-secret-${runId}-plaintext`;
+	const issueSecretValue = `e2e-issue-secret-${runId}-plaintext`;
+	let projectId: string;
+	let issue: IssueDetail;
+	let publicItem: ContextItem;
+	let secretItem: ContextItem;
+
+	test('creates public and secret items; foreign fields, bad names and un-secreting are rejected', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		projectId = (await body<Project>(await api.post('/api/v1/projects', { name: projectName }))).id;
+		issue = await body<IssueDetail>(
+			await api.post(`/api/v1/projects/${projectId}/issues`, { title: 'Env target' })
+		);
+
+		const pub = await api.post('/api/v1/context', {
+			kind: 'env',
+			name: 'NPM_REGISTRY',
+			project_id: projectId,
+			value: 'https://r.example'
+		});
+		expect(pub.status()).toBe(201);
+		publicItem = await body<ContextItem>(pub);
+		expect(publicItem).toMatchObject({
+			kind: 'env',
+			name: 'NPM_REGISTRY',
+			value: 'https://r.example',
+			secret: false,
+			value_set: true,
+			hint: null
+		});
+
+		const sec = await api.post('/api/v1/context', {
+			kind: 'env',
+			name: 'GH_TOKEN',
+			project_id: projectId,
+			value: secretValue,
+			secret: true,
+			hint: 'e2e…text'
+		});
+		expect(sec.status()).toBe(201);
+		secretItem = await body<ContextItem>(sec);
+		expect(secretItem).toMatchObject({
+			kind: 'env',
+			name: 'GH_TOKEN',
+			secret: true,
+			value_set: true,
+			hint: 'e2e…text'
+		});
+		expect(secretItem).not.toHaveProperty('value');
+		// Reading it back shows only that it is set, plus the hint.
+		const shown = await api.get(`/api/v1/context/${secretItem.id}`);
+		expect(shown.status()).toBe(200);
+		const shownText = await shown.text();
+		expect(shownText).not.toContain(secretValue);
+		expect(JSON.parse(shownText)).toMatchObject({ value_set: true, hint: 'e2e…text' });
+
+		// Foreign fields, both directions.
+		const code = async (payload: Record<string, unknown>) =>
+			(await errorBody(await api.post('/api/v1/context', payload))).error.code;
+		expect(
+			await code({ kind: 'env', name: 'X', project_id: projectId, value: 'v', body: 'prose' })
+		).toBe('kind_payload_mismatch');
+		expect(
+			await code({ kind: 'prompt', name: 'x', project_id: projectId, body: 'b', value: 'v' })
+		).toBe('kind_payload_mismatch');
+		// The name is the variable name: shell-safe, and never Tines' own.
+		expect(await code({ kind: 'env', name: 'lower-case', project_id: projectId, value: 'v' })).toBe(
+			'invalid_field'
+		);
+		expect(
+			await code({ kind: 'env', name: 'TINES_API_KEY', project_id: projectId, value: 'v' })
+		).toBe('reserved_name');
+		expect(await code({ kind: 'env', name: 'PATH', project_id: projectId, value: 'v' })).toBe(
+			'reserved_name'
+		);
+		// A secret cannot be made public again.
+		expect(
+			(await errorBody(await api.put(`/api/v1/context/${secretItem.id}`, { secret: false }))).error
+				.code
+		).toBe('secret_irreversible');
+	});
+
+	test('the more specific item wins by name, and no read surface carries a secret', async ({
+		request
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const issueScoped = await api.post('/api/v1/context', {
+			kind: 'env',
+			name: 'GH_TOKEN',
+			issue_id: issue.id,
+			value: issueSecretValue,
+			secret: true
+		});
+		expect(issueScoped.status()).toBe(201);
+		const winner = await body<ContextItem>(issueScoped);
+
+		const ctxRes = await api.get(`/api/v1/issues/${issue.id}/context`);
+		expect(ctxRes.status()).toBe(200);
+		const ctxText = await ctxRes.text();
+		expect(ctxText).not.toContain(secretValue);
+		expect(ctxText).not.toContain(issueSecretValue);
+		const ctx = JSON.parse(ctxText) as EffectiveContext;
+		expect(ctx.env.map((e) => [e.name, e.item_id, e.secret, e.value ?? null]).sort()).toEqual([
+			['GH_TOKEN', winner.id, true, null],
+			['NPM_REGISTRY', publicItem.id, false, 'https://r.example']
+		]);
+		expect(ctx.overridden.map((o) => `${o.kind}:${o.name}`)).toContain('env:GH_TOKEN');
+
+		// The launch prompt names the variables and nothing more.
+		const promptRes = await api.get(`/api/v1/issues/${issue.id}/prompt`);
+		const promptText = await promptRes.text();
+		expect(promptText).not.toContain(secretValue);
+		expect(promptText).not.toContain(issueSecretValue);
+		const prompt = JSON.parse(promptText) as LaunchPromptResponse;
+		expect(prompt.text).toMatch(/Environment variables set for this run: .*`GH_TOKEN` \(secret\)/);
+		expect(prompt.text).toMatch(/Environment variables set for this run: .*`NPM_REGISTRY`/);
+		expect(prompt.text).not.toContain('https://r.example');
+
+		// The list and the issue's own items: same gate.
+		const listText = await (await api.get(`/api/v1/context?project=${projectId}`)).text();
+		expect(listText).toContain('GH_TOKEN');
+		expect(listText).not.toContain(secretValue);
+		expect(listText).not.toContain(issueSecretValue);
+	});
+
+	test('a run key reads env items but cannot create, edit or delete them', async ({ request }) => {
+		const runKeyed = apiClient(request, RUNROW.runKey);
+		const create = await runKeyed.post('/api/v1/context', {
+			kind: 'env',
+			name: 'PLANTED',
+			project_id: projectId,
+			value: 'x'
+		});
+		expect(create.status()).toBe(403);
+		expect((await errorBody(create)).error.code).toBe('run_key_forbidden');
+		const edit = await runKeyed.put(`/api/v1/context/${publicItem.id}`, { value: 'y' });
+		expect(edit.status()).toBe(403);
+		const del = await runKeyed.delete(`/api/v1/context/${publicItem.id}`);
+		expect(del.status()).toBe(403);
+		// Reads stay open: they never carry a secret.
+		const read = await runKeyed.get(`/api/v1/context/${secretItem.id}`);
+		expect(read.status()).toBe(200);
+		expect(await read.text()).not.toContain(secretValue);
+		// The owner's items are untouched.
+		expect(
+			(
+				await body<ContextItem>(
+					await apiClient(request, ALICE.apiKey).get(`/api/v1/context/${publicItem.id}`)
+				)
+			).value
+		).toBe('https://r.example');
+	});
+
+	test('the issue page editor creates a secret item and shows it as set, never its value', async ({
+		page,
+		context
+	}) => {
+		await signIn(context, ALICE.sessionToken);
+		await gotoHydrated(page, issuePath(projectName, issue.number));
+		const section = page
+			.locator('section')
+			.filter({ has: page.getByRole('button', { name: 'View launch prompt' }) });
+		await section.getByRole('button', { name: 'Add' }).click();
+		const dialog = page.getByRole('dialog');
+		await expect(dialog.getByLabel('Name', { exact: true })).toBeVisible();
+		await dialog.getByText('Env — an environment variable').click();
+		await dialog.getByLabel('Name', { exact: true }).fill('E2E_UI_SECRET');
+		await dialog.getByLabel('Secret (encrypted at rest, write-only)').check();
+		await dialog.getByLabel('Value', { exact: true }).fill('ui-secret-value');
+		await dialog.getByLabel('Hint', { exact: true }).fill('ui…hint');
+		await dialog.getByRole('button', { name: 'Create' }).click();
+
+		await expect(
+			page.locator('li:not([inert])').filter({ hasText: 'E2E_UI_SECRET · secret · set · ui…hint' })
+		).toBeVisible();
+		await page.getByText('Effective context', { exact: false }).first().click();
+		await expect(page.getByRole('heading', { name: 'Environment' })).toBeVisible();
+		await expect(page.getByText('E2E_UI_SECRET', { exact: true })).toBeVisible();
+		expect(await page.content()).not.toContain('ui-secret-value');
+	});
+});
+
 test.describe.serial('agent-maintained context', () => {
 	const projectName = `agent-${runId}`;
 	let projectId: string;

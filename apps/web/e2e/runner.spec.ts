@@ -15,6 +15,7 @@ import type {
 	AgentRun,
 	AgentRunDetail,
 	Comment,
+	ContextItem,
 	IssueDetail,
 	ListResponse,
 	Project,
@@ -45,7 +46,7 @@ let daemonExited = false;
 let projectId: string;
 let runnerId: string;
 
-const setMode = (mode: 'work' | 'noop' | 'sleep' | 'flood') =>
+const setMode = (mode: 'work' | 'noop' | 'sleep' | 'flood' | 'env') =>
 	writeFileSync(join(e2eDir, 'mode'), mode);
 
 const sideFile = (name: string) => join(e2eDir, name);
@@ -138,6 +139,14 @@ case "$MODE" in
 	sleep)
 		echo $$ > "$E2E_DIR/sleep-pid"
 		sleep 300
+		;;
+	env)
+		# Env items reach the harness as ordinary variables; the daemon masks
+		# the secret's value in the log it ships.
+		cp prompt.md "$E2E_DIR/last-prompt.md"
+		echo "env plain=$E2E_ENV_PLAIN secret=$E2E_ENV_SECRET"
+		REF=$(sed -n 's/^This is run .* for issue \\([^;]*\\);.*/\\1/p' prompt.md | head -n 1)
+		${TSX} ${CLI_ENTRY} issues move "$REF" "Submit for review"
 		;;
 	flood)
 		# ~600 KB, well past the 256 KB tail cap, with the first and last
@@ -801,6 +810,49 @@ esac
 		await waitFor(async () => !existsSync(join(configDir, 'workspaces', running.id)), {
 			label: 'the workspace to be removed'
 		});
+		setMode('work');
+	});
+
+	test('env items reach the harness environment; the secret is masked in the shipped log', async ({
+		request
+	}) => {
+		test.setTimeout(60_000);
+		const api = apiClient(request, ALICE.apiKey);
+		const secret = `e2e-env-secret-${Date.now().toString(36)}`;
+		const plain = await body<ContextItem>(
+			await api.post('/api/v1/context', {
+				kind: 'env',
+				name: 'E2E_ENV_PLAIN',
+				project_id: projectId,
+				value: 'plain-payload'
+			})
+		);
+		const sec = await body<ContextItem>(
+			await api.post('/api/v1/context', {
+				kind: 'env',
+				name: 'E2E_ENV_SECRET',
+				project_id: projectId,
+				value: secret,
+				secret: true
+			})
+		);
+		setMode('env');
+		const issue = await createIssue(request, 'Env me');
+		const run = await waitFor(
+			async () => (await issueRuns(request, issue.id)).find((r) => r.status === 'completed'),
+			{ timeout: 45_000, label: 'the env-mode run to complete' }
+		);
+		const detail = await body<AgentRunDetail>(await api.get(`/api/v1/runs/${run.id}`));
+		expect(detail.log).toContain('env plain=plain-payload secret=***');
+		expect(detail.log).not.toContain(secret);
+		// The prompt names the variables; neither value is in the workspace.
+		const prompt = readSideFile('last-prompt.md');
+		expect(prompt).toContain('`E2E_ENV_SECRET` (secret)');
+		expect(prompt).toContain('`E2E_ENV_PLAIN`');
+		expect(prompt).not.toContain(secret);
+		expect(prompt).not.toContain('plain-payload');
+		await api.delete(`/api/v1/context/${plain.id}`);
+		await api.delete(`/api/v1/context/${sec.id}`);
 		setMode('work');
 	});
 
