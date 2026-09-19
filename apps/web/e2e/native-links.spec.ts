@@ -399,6 +399,86 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 		}
 	});
 
+	test('create-time relationship plans race standalone links without committing a cycle', async ({
+		request
+	}) => {
+		test.setTimeout(180_000);
+		for (let iteration = 0; iteration < 10; iteration++) {
+			const marker = `create-race-${iteration}`;
+			const {
+				api,
+				project,
+				issues: [a, b]
+			} = await makeIssues(request, marker, 2);
+			const agent = apiClient(request, ALICE_AGENT.apiKey);
+			const create = () =>
+				api.post(`/api/v1/projects/${project.id}/issues`, {
+					title: `${marker}-new`,
+					blocked_by: [a.id],
+					blocks: [b.id]
+				});
+			const close = () =>
+				agent.post(`/api/v1/issues/${b.id}/links`, { kind: 'blocks', issue_id: a.id });
+			const responses =
+				iteration % 2 === 0
+					? await Promise.all([create(), close()])
+					: (await Promise.all([close(), create()])).reverse();
+			expect(responses.map((response) => response.status()).sort()).toEqual([201, 422]);
+			const rejected = responses.find((response) => response.status() === 422)!;
+			expect((await errorBody(rejected)).error.code).toBe('link_cycle');
+
+			const createWon = responses[0].status() === 201;
+			const createdRows = d1(
+				`SELECT id FROM issue WHERE project_id=${literal(project.id)} AND title=${literal(`${marker}-new`)}`
+			);
+			expect(createdRows).toHaveLength(createWon ? 1 : 0);
+			const ids = [a.id, b.id, ...createdRows.map((row) => row.id as string)];
+			const rows = audit(ids);
+			expect(rows.filter((row) => row.row_type === 'link')).toHaveLength(createWon ? 2 : 1);
+			expect(rows.filter((row) => row.row_type === 'event')).toHaveLength(createWon ? 4 : 2);
+			expectAcyclic(rows);
+		}
+	});
+
+	test('a late create-link event failure rolls back every create-time row', async ({ request }) => {
+		const marker = `create-rollback-${runId}`;
+		const {
+			api,
+			project,
+			issues: [a, b]
+		} = await makeIssues(request, marker, 2);
+		const addressBefore = d1(
+			`SELECT COUNT(*) AS n FROM issue_address WHERE project_id=${literal(project.id)}`
+		)[0].n;
+		const trigger = `reject_native_create_link_event_${runId.replaceAll(/[^a-zA-Z0-9_]/g, '_')}`;
+		d1(`CREATE TRIGGER ${trigger} BEFORE INSERT ON event
+			WHEN NEW.type='issue.link_added' AND json_extract(NEW.payload, '$.role')='target'
+			BEGIN SELECT RAISE(ABORT, 'native injected create event failure'); END`);
+		try {
+			const response = await api.post(`/api/v1/projects/${project.id}/issues`, {
+				title: marker,
+				blocked_by: [a.id],
+				blocks: [b.id],
+				labels: [marker],
+				schedule: { preset: { kind: 'daily', time: '09:00' } }
+			});
+			expect(response.status()).toBe(500);
+			expect(
+				d1(
+					`SELECT id FROM issue WHERE project_id=${literal(project.id)} AND title=${literal(marker)}`
+				)
+			).toEqual([]);
+			expect(d1(`SELECT id FROM label WHERE name=${literal(marker)}`)).toEqual([]);
+			expect(d1(`SELECT id FROM scheduled_task WHERE name=${literal(marker)}`)).toEqual([]);
+			expect(
+				d1(`SELECT COUNT(*) AS n FROM issue_address WHERE project_id=${literal(project.id)}`)[0].n
+			).toBe(addressBefore);
+			expect(audit([a.id, b.id])).toEqual([]);
+		} finally {
+			d1(`DROP TRIGGER IF EXISTS ${trigger}`);
+		}
+	});
+
 	test('native traversal handles 1,000-node chain and converging fan-out fixtures', async ({
 		request
 	}) => {

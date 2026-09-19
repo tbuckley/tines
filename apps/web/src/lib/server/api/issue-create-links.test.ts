@@ -4,6 +4,8 @@ import { createIssue } from './issues';
 import { createTestDb, type TestDb } from './test-db';
 import { recordDispatchEffects, TEST_NOOP_DISPATCH_EFFECTS } from './test-dispatch-effects';
 import type { ActorContext } from './core';
+import { listArtifacts } from './artifacts';
+import { runScheduleNow } from './schedules';
 
 const actor: ActorContext = {
 	userId: USER,
@@ -116,5 +118,48 @@ describe('createIssue with initial relationships', () => {
 		expect(t.all("SELECT id FROM issue WHERE title IN ('Bad shape', 'Unknown endpoint')")).toEqual(
 			[]
 		);
+	});
+
+	it('composes relationships with recurrence, labels, and initial files without copying links', async () => {
+		const created = await createIssue(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			PROJECT,
+			{
+				title: 'Daily linked context',
+				blocked_by: [blocker],
+				labels: ['reference'],
+				schedule: { preset: { kind: 'daily', time: '09:00' } }
+			},
+			[
+				{
+					name: 'notes',
+					filename: 'notes.txt',
+					contentType: 'text/plain',
+					body: new Blob(['context'])
+				}
+			]
+		);
+		expect(created.schedule).toBeDefined();
+		expect(created.labels.map((label) => label.name)).toEqual(['reference']);
+		expect(created.links.blocked_by.map((link) => link.issue_id)).toEqual([blocker]);
+		expect(await listArtifacts(t.db, USER, created.id)).toHaveLength(1);
+
+		const nextId = await runScheduleNow(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			created.schedule!.id
+		);
+		expect(
+			t.all(
+				'SELECT id FROM issue_link WHERE source_issue_id = ? OR target_issue_id = ?',
+				nextId,
+				nextId
+			)
+		).toEqual([]);
 	});
 });
