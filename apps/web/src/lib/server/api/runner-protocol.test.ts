@@ -935,6 +935,15 @@ describe('pollRunner', () => {
 		expect(old.response.assignments).toHaveLength(1);
 		expect(old.response.assignments[0].env).toBeUndefined();
 		expect(JSON.stringify(old.response)).not.toContain('github_pat_plaintext');
+		// The run log says why, without a value or hint — and the run is still
+		// `launching`: nothing has started, so the stall guard must keep watching.
+		const oldRun = runById(t, 'run_old');
+		expect(oldRun?.log).toContain(
+			"[env] 2 environment variable(s) are configured for this issue but this runner's tines CLI is too old"
+		);
+		expect(oldRun?.log).not.toContain('github_pat');
+		expect(oldRun?.status).toBe('launching');
+		expect(oldRun?.started_at).toBeNull();
 
 		// New daemon: env rides beside the bundle; secrets never enter prompt or bundle.
 		addRun(t, { id: 'run_new', issueId: issue, runnerId });

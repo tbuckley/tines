@@ -9,6 +9,7 @@ import { encryptSecret } from '../crypto';
 import { createTestDb, type TestDb } from '../api/test-db';
 import { canonicalGitHubRepoUrl, createClaudeAdapter } from './claude-adapter';
 import { resumeFingerprint } from './resume';
+import { envDigest } from '../api/context';
 import { addIssue, addRun, addRunner, NOW, REVIEW, seedBase, USER } from './test-fixtures';
 
 const ENC_KEY = 'test-encryption-key';
@@ -142,6 +143,28 @@ async function world(
 	}
 	addIssue(t, { id: 'iss_1' });
 	return { t, runnerId };
+}
+
+/** Two effective env items for iss_1's owner: one public, one secret. */
+async function addEnvItems(t: TestDb) {
+	const insert = t.sqlite.prepare(
+		`INSERT INTO context_item
+			(id, user_id, kind, name, description, env_value, env_value_enc, env_hint, position, version, created_at, updated_at)
+		 VALUES (?, ?, 'env', ?, '', ?, ?, ?, 0, 1, 0, 0)`
+	);
+	insert.run('ctx_env_pub', USER, 'NPM_REGISTRY', 'https://r.example', null, null);
+	insert.run(
+		'ctx_env_sec',
+		USER,
+		'GH_TOKEN',
+		null,
+		await encryptSecret('github_pat_plaintext', ENC_KEY),
+		'github_pat_…text'
+	);
+	return envDigest([
+		{ name: 'NPM_REGISTRY', value: '', secret: false, itemId: 'ctx_env_pub', version: 1 },
+		{ name: 'GH_TOKEN', value: '', secret: true, itemId: 'ctx_env_sec', version: 1 }
+	]);
 }
 
 function launchInput(runnerId: string) {
@@ -294,6 +317,46 @@ describe('claude adapter launch', () => {
 		expect(t.all('SELECT resume_config_revision FROM runner WHERE id = ?', runnerId)).toEqual([
 			{ resume_config_revision: 2 }
 		]);
+	});
+
+	it('delivers env items: a vault credential per secret, an export line per public value, digest in meta', async () => {
+		const digest = await addEnvItems(t);
+		const net = fakeNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		const result = await adapter.launch(launchInput(runnerId));
+
+		// The run key credential first, then exactly one per secret item —
+		// any-host egress, header substitution — and none for the public one.
+		const creds = net.of('POST /v1/vaults/vlt_1/credentials');
+		expect(creds).toHaveLength(2);
+		expect(creds[0].body).toMatchObject({ auth: { secret_name: 'TINES_API_KEY' } });
+		expect(creds[1].body).toEqual({
+			display_name: 'GH_TOKEN for arun_l1',
+			auth: {
+				type: 'environment_variable',
+				secret_name: 'GH_TOKEN',
+				secret_value: 'github_pat_plaintext',
+				networking: { type: 'unrestricted' },
+				injection_location: { header: true }
+			}
+		});
+
+		// The public value reaches the agent as a preamble export; the secret
+		// plaintext is in the vault call only, never in the session request.
+		const [sessionCreate] = net.of('POST /v1/sessions');
+		const text = (sessionCreate.body as { initial_events: { content: { text: string }[] }[] })
+			.initial_events[0].content[0].text;
+		expect(text).toContain("`export NPM_REGISTRY='https://r.example'`");
+		expect(text).toContain('Secret environment variables (`GH_TOKEN`) are vault credentials');
+		expect(JSON.stringify(sessionCreate.body)).not.toContain('github_pat_plaintext');
+
+		// The digest (no values) is recorded so a later env change forces a
+		// fresh vault instead of a resume onto stale credentials.
+		expect(JSON.parse(result.provider_meta ?? '{}')).toMatchObject({
+			vault_id: 'vlt_1',
+			env_digest: digest
+		});
+		expect(result.provider_meta).not.toContain('github_pat_plaintext');
 	});
 
 	it('provisions a separate signature instead of mutating a drifted tier agent', async () => {
@@ -1189,6 +1252,60 @@ describe('claude adapter resume launch (the hand-over)', () => {
 		// and the session it is talking in are both live.
 		expect(sweepNet.of('DELETE /v1/vaults/vlt_1')).toHaveLength(0);
 		expect(sweepNet.of('POST /v1/sessions/sesn_kept/archive')).toHaveLength(0);
+	});
+
+	it('an env set the retained vault was not built for forces a cold launch', async () => {
+		const { t, runnerId } = await handoverWorld();
+		// The resource's fingerprint predates these items, so it cannot match.
+		await addEnvItems(t);
+		const net = handoverNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		const result = await adapter.launch(launchInput(runnerId));
+
+		expect(result.provider_session_id).not.toBe('sesn_kept');
+		expect(net.of('POST /v1/sessions')).toHaveLength(1);
+		expect(net.of('POST /v1/vaults')).toHaveLength(1);
+		expect(net.of('POST /v1/sessions/sesn_kept/events')).toHaveLength(0);
+		// The fresh vault carries the secret; the digest now travels with the run.
+		expect(
+			net
+				.of('POST /v1/vaults/vlt_1/credentials')
+				.map((c) => (c.body as { auth: { secret_name: string } }).auth.secret_name)
+		).toEqual(['TINES_API_KEY', 'GH_TOKEN']);
+		expect(
+			t.all(
+				'SELECT resumed_from_run_id, resume_fallback_reason FROM agent_run WHERE id = ?',
+				'arun_l1'
+			)
+		).toEqual([{ resumed_from_run_id: null, resume_fallback_reason: 'incompatible' }]);
+	});
+
+	it('resumes when the env set matches the retained fingerprint, carrying the digest forward', async () => {
+		const { t, runnerId } = await handoverWorld();
+		const digest = await addEnvItems(t);
+		t.sqlite.prepare('UPDATE run_resource SET resume_fingerprint = ? WHERE id = ?').run(
+			resumeFingerprint({
+				runnerId,
+				harness: 'claude_managed',
+				model: 'claude-sonnet-5',
+				preambleVariant: 'claude_managed',
+				envDigest: digest
+			}),
+			'rres_h'
+		);
+		const net = handoverNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		const result = await adapter.launch(launchInput(runnerId));
+
+		expect(result.provider_session_id).toBe('sesn_kept');
+		expect(net.of('POST /v1/vaults')).toHaveLength(0);
+		// No credential is (re)created: the retained vault already holds GH_TOKEN.
+		expect(net.of('POST /v1/vaults/vlt_1/credentials')).toHaveLength(0);
+		expect(JSON.parse(result.provider_meta!)).toMatchObject({
+			vault_id: 'vlt_1',
+			env_digest: digest
+		});
+		expect(result.provider_meta).not.toContain('github_pat_plaintext');
 	});
 
 	it('a provider error before the send launches fresh instead of failing the run', async () => {

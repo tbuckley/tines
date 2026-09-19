@@ -8,7 +8,8 @@ import {
 	isResumeProviderSupported,
 	orderTargetsByResumeAffinity,
 	resumeAffinityByIssue,
-	resumeEligibility
+	resumeEligibility,
+	resumeFingerprint
 } from './resume';
 
 const insertResource = (
@@ -278,5 +279,52 @@ describe('expired resource disposal', () => {
 			{ id: 'res_live' }
 		]);
 		expect(await disposeExpiredResumeResources(t.db, NOW)).toBe(0);
+	});
+});
+
+describe('resumeFingerprint', () => {
+	const base = {
+		runnerId: 'rnr_1',
+		harness: 'claude_managed',
+		model: 'claude-sonnet-5',
+		preambleVariant: 'claude_managed'
+	};
+
+	it('stays byte-identical to the stored forms when no env digest is given', () => {
+		// Rows written before env items existed carry exactly these strings;
+		// a changed serialization would orphan every retained session.
+		expect(resumeFingerprint(base)).toBe('v1|rnr_1|claude_managed|claude-sonnet-5|claude_managed');
+		expect(resumeFingerprint({ ...base, envDigest: null })).toBe(resumeFingerprint(base));
+		expect(resumeFingerprint({ ...base, effort: 'high' })).toBe(
+			JSON.stringify({
+				version: 2,
+				runner_id: 'rnr_1',
+				harness: 'claude_managed',
+				model: 'claude-sonnet-5',
+				effort: 'high',
+				preamble_variant: 'claude_managed'
+			})
+		);
+		expect(resumeFingerprint({ ...base, effort: 'high', envDigest: null })).toBe(
+			resumeFingerprint({ ...base, effort: 'high' })
+		);
+	});
+
+	it('folds the env digest in so a changed env set fails the match', () => {
+		const withEnv = resumeFingerprint({ ...base, envDigest: 'abc' });
+		expect(JSON.parse(withEnv)).toEqual({
+			version: 2,
+			runner_id: 'rnr_1',
+			harness: 'claude_managed',
+			model: 'claude-sonnet-5',
+			effort: null,
+			preamble_variant: 'claude_managed',
+			env_digest: 'abc'
+		});
+		expect(withEnv).not.toBe(resumeFingerprint(base));
+		expect(withEnv).not.toBe(resumeFingerprint({ ...base, envDigest: 'abd' }));
+		expect(resumeFingerprint({ ...base, effort: 'high', envDigest: 'abc' })).not.toBe(
+			resumeFingerprint({ ...base, effort: 'high' })
+		);
 	});
 });

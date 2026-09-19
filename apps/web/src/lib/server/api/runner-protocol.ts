@@ -779,14 +779,19 @@ async function deliverAssignedRun(
 				env: resolvedEnv.map(({ name, value, secret }) => ({ name, value, secret }))
 			};
 		} else {
-			await appendRunLog(
-				db,
-				env,
-				runner,
-				run.id,
-				`[env] ${resolvedEnv.length} environment variable(s) are configured for this issue but this runner's tines CLI is too old to receive them; update it (npm i -g tines)\n`,
-				now
+			// Written straight to the tail, not through `appendRunLog`: that path
+			// marks the run running, and nothing has started yet — the launch
+			// stall guard must still see `launching`.
+			const appended = appendLogTail(
+				run.log,
+				run.log_bytes_dropped,
+				`[env] ${resolvedEnv.length} environment variable(s) are configured for this issue but this runner's tines CLI is too old to receive them; update it (npm i -g tines)\n`
 			);
+			await db
+				.updateTable('agent_run')
+				.set({ log: appended.log, log_bytes_dropped: appended.dropped })
+				.where('id', '=', run.id)
+				.execute();
 		}
 	}
 
