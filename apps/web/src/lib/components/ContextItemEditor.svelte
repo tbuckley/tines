@@ -85,6 +85,11 @@
 	let repoUrl = $state('');
 	let repoBranch = $state('');
 	let repoDir = $state('');
+	// Env payload. A stored secret never reaches the client: editing one shows
+	// "set" plus the hint, and `value` is sent only when a replacement is typed.
+	let envValue = $state('');
+	let envSecret = $state(false);
+	let envHint = $state('');
 	let errorMessage = $state<string | null>(null);
 	let saving = $state(false);
 
@@ -136,6 +141,9 @@
 			repoUrl = item?.repo_url ?? '';
 			repoBranch = item?.repo_branch ?? '';
 			repoDir = item?.repo_dir ?? '';
+			envValue = item?.kind === 'env' && !item.secret ? (item.value ?? '') : '';
+			envSecret = item?.kind === 'env' ? (item.secret ?? false) : false;
+			envHint = item?.kind === 'env' ? (item.hint ?? '') : '';
 			// Labels are small and rarely change, so one fetch per open is
 			// cheaper than threading them through all four call sites. A
 			// failure leaves the select empty rather than blocking the save:
@@ -259,6 +267,12 @@
 					request.repo_branch = repoBranch.trim() || null;
 					request.repo_dir = repoDir.trim() || null;
 				}
+				if (kind === 'env') {
+					// Write-only secret: an empty field means "keep the stored value".
+					if (!item.secret || envValue.length > 0) request.value = envValue;
+					if (envSecret && !item.secret) request.secret = true;
+					request.hint = envHint.trim() || null;
+				}
 				await api.updateContextItem(item.id, request);
 			} else {
 				const request: CreateContextItemRequest = {
@@ -277,6 +291,11 @@
 					request.repo_url = repoUrl;
 					request.repo_branch = repoBranch.trim() || null;
 					request.repo_dir = repoDir.trim() || null;
+				}
+				if (kind === 'env') {
+					request.value = envValue;
+					if (envSecret) request.secret = true;
+					if (envHint.trim()) request.hint = envHint.trim();
 				}
 				await api.createContextItem(request);
 			}
@@ -454,6 +473,52 @@
 					<Input id="ctx-dir" bind:value={repoDir} placeholder={derivedDir || 'derived from URL'} />
 				</div>
 			</div>
+		{:else if kind === 'env'}
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="ctx-env-value">Value</label>
+				{#if item?.kind === 'env' && item.secret}
+					<p class="text-muted-foreground text-xs">
+						A secret value is stored{item.hint ? ` (${item.hint})` : ''} — it is write-only; paste a new
+						value to replace it, or leave this empty to keep it.
+					</p>
+				{/if}
+				{#if envSecret}
+					<Input
+						id="ctx-env-value"
+						type="password"
+						autocomplete="off"
+						bind:value={envValue}
+						required={!(item?.kind === 'env' && item.secret)}
+						placeholder={item?.kind === 'env' && item.secret ? '(unchanged)' : 'secret value'}
+					/>
+				{:else}
+					<Textarea id="ctx-env-value" bind:value={envValue} rows={2} placeholder="value" />
+				{/if}
+			</div>
+			<div class="grid grid-cols-2 gap-3">
+				<label class="flex items-center gap-2 text-sm font-medium">
+					<input
+						type="checkbox"
+						bind:checked={envSecret}
+						disabled={item?.kind === 'env' && item.secret}
+					/>
+					Secret (encrypted at rest, write-only)
+				</label>
+				<div class="space-y-1.5">
+					<label class="text-sm font-medium" for="ctx-env-hint">Hint</label>
+					<Input id="ctx-env-hint" bind:value={envHint} placeholder="e.g. github_pat_…abcd" />
+				</div>
+			</div>
+			{#if item?.kind === 'env' && item.secret}
+				<p class="text-muted-foreground text-xs">
+					A secret cannot be made public again — delete the item and recreate it instead.
+				</p>
+			{/if}
+			<p class="text-muted-foreground text-xs">
+				The name is the variable name (<code>[A-Z_][A-Z0-9_]*</code>; <code>TINES_*</code> and
+				<code>PATH</code> are reserved). Delivered to the harness environment on every run this scope
+				matches; secrets are masked from run logs.
+			</p>
 		{:else}
 			<p class="text-muted-foreground rounded-md border px-3 py-2 text-xs">
 				This artifact's content and version history are managed from the Artifacts panel on its
