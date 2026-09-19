@@ -60,16 +60,16 @@ gained work since, so compare against the current table below, not this one:
 | `/projects` | 4 | 4.5 | 2.3 |
 | `/activity` | 2 | 2.2 | 1.2 |
 
-## Current, 2026-09-10 (Tines/416)
+## Current, 2026-09-15 (Tines/563)
 
-One local run of `pnpm --filter web perf:nav` on the tree that repaired the
-probe. Query counts are the stable comparison; waves are derived from
+Two local runs of `pnpm --filter web perf:nav` on the current tree. Query
+counts are the stable comparison; waves are derived from
 wall-clock and move by a tenth or two between machines:
 
 | Page | Queries | Waves |
 |---|---|---|
-| `/issues/[project]/[number]` | 11 blocking, 25 total | 3.4 to first paint, 6.8 to fully settled |
-| `/agents` | 17 | 2.3 |
+| `/issues/[project]/[number]` | 11 blocking, 28 total | 3.4–3.5 to first paint, 7.6–7.7 to fully settled |
+| `/agents` | 18 | 2.3 |
 | `/issues` | 7 | 3.4 |
 | `/context` | 7 | 3.4 |
 | `/projects` | 3 | 2.2 |
@@ -96,8 +96,8 @@ anything it streams is not. The issue page is the worked example:
   while a replacement is in flight, instead of `{#await}` collapsing the
   panel back to a skeleton on every resync.
 
-Result (`pnpm --filter web perf:nav`, 2026-09-10): 11 statements and ~3.4 waves
-to first paint, 25 statements and ~6.8 waves to fully settled — from 26
+Result (`pnpm --filter web perf:nav`, 2026-09-15): 11 statements and ~3.4–3.5 waves
+to first paint, 28 statements and ~7.6–7.7 waves to fully settled — from 26
 statements and 29.1 waves before Tines/32.
 
 Two rules follow, and the probe asserts the first:
