@@ -3,6 +3,7 @@ import type { CreateIssueRequest, IssueListItem, ListResponse } from '@tines/sha
 import { api, apiContext, encodeCursor, readJson, readPage } from '$lib/server/api/core';
 import { createIssue, listIssues } from '$lib/server/api/issues';
 import { readIssueCreateMultipart } from '$lib/server/api/issue-create-files';
+import { addIssueLink } from '$lib/server/api/issue-links';
 import { getProject } from '$lib/server/api/projects';
 import { assertWritable } from '$lib/server/api/archive';
 import type { RequestHandler } from './$types';
@@ -50,6 +51,14 @@ export const POST: RequestHandler = api(async (event) => {
 		const project = await getProject(db, actor.userId, event.params.id);
 		await assertWritable(db, actor, project);
 		const parsed = await readIssueCreateMultipart(event.request);
+		const race =
+			import.meta.env.VITE_TINES_E2E === '1'
+				? event.request.headers.get('x-tines-e2e-linked-create-close')
+				: null;
+		const [raceIssueId, raceOtherId, ...raceExtra] = race?.split(':') ?? [];
+		if (race && (!raceIssueId || !raceOtherId || raceExtra.length > 0)) {
+			throw new Error('Malformed linked-create E2E race header');
+		}
 		const issue = await createIssue(
 			db,
 			env,
@@ -57,7 +66,15 @@ export const POST: RequestHandler = api(async (event) => {
 			effects,
 			event.params.id,
 			parsed.issue,
-			parsed.files
+			parsed.files,
+			raceIssueId && raceOtherId
+				? async () => {
+						await addIssueLink(db, env, actor, effects, raceIssueId, {
+							kind: 'blocks',
+							issue_id: raceOtherId
+						});
+					}
+				: undefined
 		);
 		return json(issue, { status: 201 });
 	}

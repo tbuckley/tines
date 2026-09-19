@@ -1002,7 +1002,8 @@ export async function createIssue(
 	effects: DispatchEffects,
 	projectId: string,
 	body: CreateIssueRequest,
-	initialFiles: InitialIssueFile[] = []
+	initialFiles: InitialIssueFile[] = [],
+	beforeCommit?: () => Promise<void>
 ): Promise<CreateIssueResponse> {
 	const project = await db
 		.selectFrom('project')
@@ -1141,6 +1142,7 @@ export async function createIssue(
 		linkBatchOffset = queries.length;
 		queries.push(...linkBatch.queries);
 	}
+	if (beforeCommit) await beforeCommit();
 	const results = await runAtomic(env, queries);
 	if (linkPlan && linkBatch) {
 		assertCreateIssueLinksCommitted(linkPlan, results, linkBatch, linkBatchOffset);

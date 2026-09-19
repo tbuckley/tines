@@ -428,7 +428,6 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 		request
 	}) => {
 		test.setTimeout(180_000);
-		let createLosses = 0;
 		for (let iteration = 0; iteration < 10; iteration++) {
 			const marker = `create-race-${runId}-${iteration}`;
 			const fileName = `${marker}-file`;
@@ -436,10 +435,12 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 				project,
 				issues: [a, b]
 			} = await makeIssues(request, marker, 2);
-			const agent = apiClient(request, ALICE_AGENT.apiKey);
 			const create = () =>
 				request.post(`/api/v1/projects/${project.id}/issues`, {
-					headers: { authorization: `Bearer ${ALICE.apiKey}` },
+					headers: {
+						authorization: `Bearer ${ALICE.apiKey}`,
+						'x-tines-e2e-linked-create-close': `${b.id}:${a.id}`
+					},
 					multipart: {
 						metadata: JSON.stringify({
 							issue: {
@@ -458,25 +459,16 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 						}
 					}
 				});
-			const close = () =>
-				agent.post(`/api/v1/issues/${b.id}/links`, { kind: 'blocks', issue_id: a.id });
-			const responses =
-				iteration % 2 === 0
-					? await Promise.all([create(), close()])
-					: (await Promise.all([close(), create()])).reverse();
-			expect(responses.map((response) => response.status()).sort()).toEqual([201, 422]);
-			const rejected = responses.find((response) => response.status() === 422)!;
+			const rejected = await create();
+			expect(rejected.status()).toBe(422);
 			expect((await errorBody(rejected)).error.code).toBe('link_cycle');
 
-			const createWon = responses[0].status() === 201;
-			if (!createWon) createLosses++;
 			const createdRows = d1(
 				`SELECT id FROM issue WHERE project_id=${literal(project.id)} AND title=${literal(`${marker}-new`)}`
 			);
-			expect(createdRows).toHaveLength(createWon ? 1 : 0);
-			if (!createWon) {
-				const residue = d1(
-					`SELECT
+			expect(createdRows).toEqual([]);
+			const residue = d1(
+				`SELECT
 						(SELECT COUNT(*) FROM issue WHERE project_id=${literal(project.id)}
 							AND title=${literal(`${marker}-new`)}) AS issue,
 						(SELECT COUNT(*) FROM issue_address WHERE project_id=${literal(project.id)}
@@ -501,27 +493,25 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 									AND issue_link.target_issue_id=${literal(a.id)})) AS issue_link,
 						(SELECT COUNT(*) FROM event WHERE project_id=${literal(project.id)}
 							AND issue_id NOT IN (${literal(a.id)},${literal(b.id)})) AS event`
-				)[0];
-				expect(residue, 'losing create residue by table').toEqual({
-					issue: 0,
-					issue_address: 0,
-					scheduled_task: 0,
-					label: 0,
-					issue_label: 0,
-					context_item: 0,
-					artifact_version: 0,
-					artifact_version_file: 0,
-					issue_link: 0,
-					event: 0
-				});
-			}
-			const ids = [a.id, b.id, ...createdRows.map((row) => row.id as string)];
+			)[0];
+			expect(residue, 'losing create residue by table').toEqual({
+				issue: 0,
+				issue_address: 0,
+				scheduled_task: 0,
+				label: 0,
+				issue_label: 0,
+				context_item: 0,
+				artifact_version: 0,
+				artifact_version_file: 0,
+				issue_link: 0,
+				event: 0
+			});
+			const ids = [a.id, b.id];
 			const rows = audit(ids);
-			expect(rows.filter((row) => row.row_type === 'link')).toHaveLength(createWon ? 2 : 1);
-			expect(rows.filter((row) => row.row_type === 'event')).toHaveLength(createWon ? 4 : 2);
+			expect(rows.filter((row) => row.row_type === 'link')).toHaveLength(1);
+			expect(rows.filter((row) => row.row_type === 'event')).toHaveLength(2);
 			expectAcyclic(rows);
 		}
-		expect(createLosses, 'native race exercised the rejected create order').toBeGreaterThan(0);
 
 		const winnerMarker = `create-first-${runId}`;
 		const winnerFile = `${winnerMarker}-file`;
