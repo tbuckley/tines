@@ -99,7 +99,7 @@
 							transition:slide={{ duration: dur() }}
 						>
 							<span class="text-muted-foreground"><ContextKindIcon kind="env" size={14} /></span>
-							<span class="font-mono font-medium">{v.name}</span>
+							<span class="max-w-full min-w-0 font-mono font-medium wrap-anywhere">{v.name}</span>
 							<span class="text-muted-foreground truncate font-mono text-xs">
 								{#if v.secret}
 									secret · set{v.hint ? ` · ${v.hint}` : ''}

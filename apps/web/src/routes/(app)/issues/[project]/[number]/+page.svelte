@@ -491,7 +491,8 @@
 		const parts = [
 			[c.prompts, 'prompt'],
 			[c.skills, 'skill'],
-			[c.repos, 'repo']
+			[c.repos, 'repo'],
+			[c.envs, 'env']
 		]
 			.filter(([n]) => (n as number) > 0)
 			.map(([n, word]) => `${n} ${word}${n === 1 ? '' : 's'}`);
