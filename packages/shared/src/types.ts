@@ -736,6 +736,12 @@ export interface CreateIssueRequest {
 	schedule?: CreateScheduleInput;
 	/** Label names or ids to attach on creation; unknown names are created. */
 	labels?: string[];
+	/** Existing issue ids that block the new issue. */
+	blocked_by?: string[];
+	/** Existing issue ids that the new issue blocks. */
+	blocks?: string[];
+	/** Existing canonical issue id that the new issue duplicates. */
+	duplicate_of?: string;
 }
 
 /** One file entry in the multipart issue-create metadata manifest. */

@@ -457,16 +457,23 @@ export async function resolveOrCreateLabels(
 export function labelInserts(
 	db: Kysely<Database>,
 	actor: ActorContext,
-	toCreate: Label[]
+	toCreate: Label[],
+	guard?: QueryGuard
 ): CompiledQuery[] {
 	return toCreate.flatMap((l) => [
 		sql`INSERT OR IGNORE INTO label (id, user_id, name, color, description, created_at, updated_at)
-			VALUES (${l.id}, ${actor.userId}, ${l.name}, ${l.color}, ${l.description},
-				${l.created_at}, ${l.updated_at})`.compile(db),
-		eventInsert(db, actor, {
-			type: 'label.created',
-			payload: { label_id: l.id, name: l.name, color: l.color }
-		})
+			SELECT ${l.id}, ${actor.userId}, ${l.name}, ${l.color}, ${l.description},
+				${l.created_at}, ${l.updated_at}
+			${guard ? sql`WHERE ${guard.predicate}` : sql``}`.compile(db),
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'label.created',
+				payload: { label_id: l.id, name: l.name, color: l.color }
+			},
+			guard
+		)
 	]);
 }
 
@@ -476,7 +483,8 @@ export function issueLabelInserts(
 	actor: ActorContext,
 	issue: { id: string; project_id: string },
 	labels: Label[],
-	now: number
+	now: number,
+	guard?: QueryGuard
 ): CompiledQuery[] {
 	return labels.flatMap((l) => [
 		// By name, not by the id in hand: if this label was created on the fly
@@ -484,13 +492,19 @@ export function issueLabelInserts(
 		// that exists. For an already-resolved label the name is its own id.
 		sql`INSERT OR IGNORE INTO issue_label (issue_id, label_id, created_at)
 			SELECT ${issue.id}, id, ${now} FROM label
-			WHERE user_id = ${actor.userId} AND name = ${l.name} COLLATE NOCASE`.compile(db),
-		eventInsert(db, actor, {
-			type: 'issue.labeled',
-			issueId: issue.id,
-			projectId: issue.project_id,
-			payload: { label_id: l.id, name: l.name, color: l.color }
-		})
+			WHERE user_id = ${actor.userId} AND name = ${l.name} COLLATE NOCASE
+				${guard ? sql`AND ${guard.predicate}` : sql``}`.compile(db),
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.labeled',
+				issueId: issue.id,
+				projectId: issue.project_id,
+				payload: { label_id: l.id, name: l.name, color: l.color }
+			},
+			guard
+		)
 	]);
 }
 
