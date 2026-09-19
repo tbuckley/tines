@@ -147,18 +147,27 @@ describe('createIssueWithFiles', () => {
 			});
 		}) as typeof globalThis.fetch;
 		const client = createApiClient({ baseUrl: 'https://example.test', apiKey: 'secret', fetch });
-		await client.createIssueWithFiles('prj_1', { title: 'With file' }, [
-			{
-				name: 'screen',
-				filename: 'Screenshot.png',
-				file: new Blob([new Uint8Array([1, 2])], { type: 'image/png' })
-			}
-		]);
+		await client.createIssueWithFiles(
+			'prj_1',
+			{ title: 'With file', blocked_by: ['iss_a'], blocks: ['iss_b'], duplicate_of: 'iss_c' },
+			[
+				{
+					name: 'screen',
+					filename: 'Screenshot.png',
+					file: new Blob([new Uint8Array([1, 2])], { type: 'image/png' })
+				}
+			]
+		);
 		expect(captured?.method).toBe('POST');
 		expect(captured?.headers).toEqual({ authorization: 'Bearer secret' });
 		const form = captured?.body as FormData;
 		expect(JSON.parse(form.get('metadata') as string)).toEqual({
-			issue: { title: 'With file' },
+			issue: {
+				title: 'With file',
+				blocked_by: ['iss_a'],
+				blocks: ['iss_b'],
+				duplicate_of: 'iss_c'
+			},
 			attachments: [{ part: 'file-0', name: 'screen', filename: 'Screenshot.png' }]
 		});
 		const file = form.get('file-0') as File;
@@ -173,12 +182,15 @@ describe('createIssueWithFiles', () => {
 			captured = init;
 			return new Response(JSON.stringify({ id: 'iss_1' }), { status: 201 });
 		}) as typeof globalThis.fetch;
-		await createApiClient({ baseUrl: '', fetch }).createIssue('prj_1', { title: 'Plain' });
+		await createApiClient({ baseUrl: '', fetch }).createIssue('prj_1', {
+			title: 'Plain',
+			blocks: ['iss_b']
+		});
 		expect(captured?.headers).toEqual({
 			accept: 'application/json',
 			'content-type': 'application/json'
 		});
-		expect(captured?.body).toBe(JSON.stringify({ title: 'Plain' }));
+		expect(captured?.body).toBe(JSON.stringify({ title: 'Plain', blocks: ['iss_b'] }));
 	});
 });
 
