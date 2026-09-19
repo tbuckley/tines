@@ -518,8 +518,10 @@ test.describe.serial('env context items', () => {
 			page.locator('li:not([inert])').filter({ hasText: 'E2E_UI_SECRET · secret · set · ui…hint' })
 		).toBeVisible();
 		await page.getByText('Effective context', { exact: false }).first().click();
-		await expect(page.getByRole('heading', { name: 'Environment' })).toBeVisible();
-		await expect(page.getByText('E2E_UI_SECRET', { exact: true })).toBeVisible();
+		const envSection = page.getByRole('heading', { name: 'Environment' }).locator('..');
+		await expect(envSection).toBeVisible();
+		await expect(envSection.getByText('E2E_UI_SECRET', { exact: true })).toBeVisible();
+		await expect(envSection).toContainText('secret · set · ui…hint');
 		expect(await page.content()).not.toContain('ui-secret-value');
 	});
 });

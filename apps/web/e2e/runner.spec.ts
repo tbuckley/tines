@@ -780,6 +780,11 @@ esac
 			await expect(dialog).toContainText('counts as a strike', { timeout: 2000 });
 		}).toPass({ timeout: 15_000 });
 		await dialog.getByLabel(/Comment/).fill('Canceled from the dialog — try smaller steps');
+		// The sleeping process already captured its mode. Reset before the
+		// cancel lands: the supervisor re-dispatches this still-active issue
+		// within a couple of seconds, and a successor that reads `sleep` would
+		// hold the daemon's only slot for five minutes and starve the next test.
+		setMode('work');
 		await dialog.getByRole('button', { name: 'Cancel run' }).click();
 		await expect(dialog).toBeHidden();
 
@@ -810,7 +815,6 @@ esac
 		await waitFor(async () => !existsSync(join(configDir, 'workspaces', running.id)), {
 			label: 'the workspace to be removed'
 		});
-		setMode('work');
 	});
 
 	test('env items reach the harness environment; the secret is masked in the shipped log', async ({
@@ -835,6 +839,17 @@ esac
 				value: secret,
 				secret: true
 			})
+		);
+		// The canceled issue's successor run (work mode) must have come and gone
+		// before the mode flips, or it would be the one reading `env`.
+		await waitFor(
+			async () => {
+				const runs = await body<ListResponse<AgentRun>>(
+					await api.get(`/api/v1/runs?runner=${runnerId}`)
+				);
+				return runs.items.every((r) => !['assigned', 'launching', 'running'].includes(r.status));
+			},
+			{ label: 'the daemon to be idle' }
 		);
 		setMode('env');
 		const issue = await createIssue(request, 'Env me');
