@@ -874,7 +874,11 @@ describe('createIssue with initial files', () => {
 		);
 		expect(visibleAtSignal).toHaveLength(2);
 		const artifacts = await listArtifacts(t.db, USER, issue.id);
-		expect(artifacts.map((artifact) => [artifact.name, artifact.artifact_type])).toEqual([
+		expect(
+			artifacts
+				.map((artifact) => [artifact.name, artifact.artifact_type])
+				.sort(([a], [b]) => a.localeCompare(b))
+		).toEqual([
 			['notes', 'file'],
 			['screen', 'file']
 		]);

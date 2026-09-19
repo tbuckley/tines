@@ -24,11 +24,15 @@
 		attachments = $bindable([]),
 		disabled = false,
 		transitions = [],
+		serverError = null,
+		oninteract,
 		onvalidchange
 	}: {
 		attachments?: IssueAttachmentDraft[];
 		disabled?: boolean;
 		transitions?: WorkflowTransition[];
+		serverError?: { index: number; message: string } | null;
+		oninteract?: (index: number) => void;
 		onvalidchange?: (valid: boolean) => void;
 	} = $props();
 
@@ -44,7 +48,7 @@
 				attachments.some((other, otherIndex) => otherIndex !== index && other.name.trim() === name)
 			)
 				return 'Each attachment name must be unique.';
-			return null;
+			return serverError?.index === index ? serverError.message : null;
 		})
 	);
 	const valid = $derived(errors.every((error) => error === null));
@@ -57,6 +61,7 @@
 	}
 
 	function add(files: File[]) {
+		oninteract?.(-1);
 		selectionError = null;
 		if (attachments.length + files.length > ISSUE_CREATE_MAX_FILES) {
 			selectionError = `Choose at most ${ISSUE_CREATE_MAX_FILES} files.`;
@@ -173,6 +178,7 @@
 								<Input
 									id={`attachment-name-${attachment.id}`}
 									bind:value={attachment.name}
+									oninput={() => oninteract?.(index)}
 									{disabled}
 									aria-invalid={errors[index] ? 'true' : undefined}
 									aria-describedby={errors[index] ? `attachment-error-${attachment.id}` : undefined}
@@ -197,7 +203,10 @@
 								variant="ghost"
 								{disabled}
 								aria-label={`Edit name for ${attachment.file.name}`}
-								onclick={() => (attachment.editing = !attachment.editing)}>Edit name</Button
+								onclick={() => {
+									oninteract?.(index);
+									attachment.editing = !attachment.editing;
+								}}>Edit name</Button
 							>
 							<Button
 								type="button"
@@ -205,8 +214,10 @@
 								variant="ghost"
 								{disabled}
 								aria-label={`Remove ${attachment.file.name}`}
-								onclick={() => (attachments = attachments.filter((_, i) => i !== index))}
-								>Remove</Button
+								onclick={() => {
+									oninteract?.(index);
+									attachments = attachments.filter((_, i) => i !== index);
+								}}>Remove</Button
 							>
 						</div>
 					</div>

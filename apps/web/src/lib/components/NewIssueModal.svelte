@@ -58,6 +58,7 @@
 	let errorMessage = $state<string | null>(null);
 	let uncertain = $state(false);
 	let createdHref = $state<string | null>(null);
+	let attachmentServerError = $state<{ index: number; message: string } | null>(null);
 	let attachmentValid = $state(true);
 	let attachments = $state<{ id: string; file: File; name: string; editing: boolean }[]>([]);
 	let form = $state<HTMLFormElement | null>(null);
@@ -86,6 +87,7 @@
 			errorMessage = null;
 			uncertain = false;
 			createdHref = null;
+			attachmentServerError = null;
 			attachments = [];
 			// No `projects[0]` fallback: under "All projects" with no last project
 			// the select starts empty and required, so nothing is filed by accident.
@@ -118,6 +120,7 @@
 		errorMessage = null;
 		uncertain = false;
 		createdHref = null;
+		attachmentServerError = null;
 		try {
 			const request = {
 				title,
@@ -150,6 +153,18 @@
 			}
 		} catch (err) {
 			uncertain = err instanceof ApiNetworkError || !(err instanceof ApiError) || err.status >= 500;
+			const attachmentIndex =
+				err instanceof ApiError && typeof err.details?.attachment_index === 'number'
+					? err.details.attachment_index
+					: null;
+			if (err instanceof ApiError && attachmentIndex !== null && attachments[attachmentIndex]) {
+				attachments[attachmentIndex].editing = true;
+				attachmentServerError = { index: attachmentIndex, message: err.message };
+				await new Promise((resolve) => setTimeout(resolve));
+				form
+					?.querySelector<HTMLElement>(`#attachment-name-${attachments[attachmentIndex].id}`)
+					?.focus();
+			}
 			errorMessage = uncertain
 				? 'We couldn’t confirm whether the issue was created. Check the project’s issues before submitting again.'
 				: err instanceof ApiError
@@ -183,16 +198,20 @@
 				<label class="text-sm font-medium" for="issue-title">Title</label>
 				<Input id="issue-title" bind:value={title} placeholder="What needs doing?" required />
 			</div>
-			<IssueAttachmentPicker
-				bind:attachments
-				disabled={creating}
-				transitions={outgoingTransitions}
-				onvalidchange={(valid) => (attachmentValid = valid)}
-			/>
 			<div class="space-y-1.5">
 				<label class="text-sm font-medium" for="issue-description">Description (Markdown)</label>
 				<Textarea id="issue-description" bind:value={description} rows={4} />
 			</div>
+			<IssueAttachmentPicker
+				bind:attachments
+				disabled={creating}
+				transitions={outgoingTransitions}
+				serverError={attachmentServerError}
+				oninteract={(index) => {
+					if (attachmentServerError?.index === index) attachmentServerError = null;
+				}}
+				onvalidchange={(valid) => (attachmentValid = valid)}
+			/>
 			<div class="space-y-1.5">
 				<span class="text-sm font-medium">Labels</span>
 				<div class="flex flex-wrap items-center gap-1.5">
