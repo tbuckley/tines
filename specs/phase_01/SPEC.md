@@ -160,6 +160,17 @@ Notes:
 
 JSON over HTTP under `/api/v1/*`, served by the SvelteKit app; shared request/response types live in `@tines/shared`. Auth: Better Auth session cookie or bearer API key. All resources are scoped to the authenticated user; cross-user access is a 404.
 
+### Decision update — 2026-09-19 deployment identity (Tines/598)
+
+`GET /api/version` is a public utility endpoint reporting the running server build's `version`
+and full source `commit`; it is distinct from an installed caller's CLI version. Every response at
+the exact `/api` root or below carries the same values in `X-Tines-Version` and
+`X-Tines-Commit`, including auth failures, unknown paths, method errors and bodyless responses.
+Production uses the CLI release formula for the same checkout, previews name the PR and actual
+built commit, and local builds report `dev` plus local HEAD (or `unknown` without Git metadata).
+The endpoint and headers are non-secret build metadata and are the only unauthenticated exception
+recorded here; resource APIs keep their existing authentication rules.
+
 | Method & path | Purpose |
 | --- | --- |
 | `GET/POST /api/v1/projects` | List / create projects |

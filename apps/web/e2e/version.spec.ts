@@ -2,11 +2,14 @@ import { expect, test } from '@playwright/test';
 import type { APIResponse } from '@playwright/test';
 
 const shaPattern = /^[0-9a-f]{40}$/;
+const expectedVersion = process.env.TINES_E2E_EXPECT_VERSION ?? 'dev';
+const expectedCommit = process.env.TINES_E2E_EXPECT_COMMIT;
 
 async function expectIdentityHeaders(response: APIResponse) {
 	const headers = response.headers();
-	expect(headers['x-tines-version']).toBe('dev');
-	expect(headers['x-tines-commit']).toMatch(shaPattern);
+	expect(headers['x-tines-version']).toBe(expectedVersion);
+	if (expectedCommit) expect(headers['x-tines-commit']).toBe(expectedCommit);
+	else expect(headers['x-tines-commit']).toMatch(shaPattern);
 	return { version: headers['x-tines-version'], commit: headers['x-tines-commit'] };
 }
 
@@ -15,7 +18,10 @@ test('exposes and decorates the built deployment identity', async ({ request }) 
 	expect(version.status()).toBe(200);
 	expect(version.headers()['cache-control']).toBe('no-store');
 	const identity = await version.json();
-	expect(identity).toEqual({ version: 'dev', commit: expect.stringMatching(shaPattern) });
+	expect(identity).toEqual({
+		version: expectedVersion,
+		commit: expectedCommit ?? expect.stringMatching(shaPattern)
+	});
 	expect(await expectIdentityHeaders(version)).toEqual(identity);
 
 	const invalidBearer = await request.get('/api/version', {
