@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures';
+import type { APIRequestContext, Page } from '@playwright/test';
 import {
 	canonicalizeLibraryValue,
 	inputToken,
@@ -22,6 +23,72 @@ async function expectPlainLanguage(page: import('@playwright/test').Page) {
 	expect(text).not.toMatch(IMPLEMENTATION_JARGON);
 }
 
+type ReceiptMotion = { startedAt: number | null; endedAt: number | null };
+
+async function createReceiptWorkflow(
+	request: APIRequestContext,
+	name: string,
+	description = `First published content for ${name}`
+): Promise<{ id: string }> {
+	return body(
+		await apiClient(request, WORKFLOW_PUBLICATIONS_PUBLISHER.apiKey).post('/api/v1/workflows', {
+			name,
+			description,
+			initial_state: 'Draft',
+			states: [{ name: 'Draft', category: 'active' }],
+			transitions: []
+		})
+	);
+}
+
+async function observeReceiptMotion(page: Page): Promise<void> {
+	await page.evaluate(() => {
+		const state: ReceiptMotion = { startedAt: null, endedAt: null };
+		(window as unknown as { receiptMotion: ReceiptMotion }).receiptMotion = state;
+		const receiptTransition = (event: Event) =>
+			event.target instanceof Element &&
+			event.target.matches('section[aria-labelledby="published-title"]');
+		document.addEventListener(
+			'introstart',
+			(event) => {
+				if (receiptTransition(event)) state.startedAt = performance.now();
+			},
+			true
+		);
+		document.addEventListener(
+			'introend',
+			(event) => {
+				if (receiptTransition(event)) state.endedAt = performance.now();
+			},
+			true
+		);
+	});
+}
+
+async function publishReceipt(page: Page, workflowId: string): Promise<PublicationOwnerResult> {
+	await gotoHydrated(page, `/workflows/${workflowId}/export#publish`);
+	await page.getByLabel('Public display name').fill('Receipt Test Publisher');
+	await page.getByRole('button', { name: 'Preview', exact: true }).click();
+	await expect(page.getByRole('heading', { name: 'Preview', exact: true })).toBeFocused();
+	await page.getByRole('button', { name: 'Continue to Share', exact: true }).click();
+	await page
+		.getByRole('checkbox', { name: /I have the right to share all included content/ })
+		.check();
+	await observeReceiptMotion(page);
+	const response = page.waitForResponse(
+		(res) =>
+			res.request().method() === 'POST' &&
+			res.url().includes('/api/v1/publications/') &&
+			res.url().endsWith('/publish')
+	);
+	await page.getByRole('button', { name: 'Publish workflow' }).click();
+	const result = (await (await response).json()) as PublicationOwnerResult;
+	await expect(
+		page.getByRole('heading', { name: 'Your workflow is ready to share', exact: true })
+	).toBeFocused();
+	return result;
+}
+
 test.describe.serial('public workflow snapshots', () => {
 	let marker: string;
 	let snapshotId: string;
@@ -36,6 +103,7 @@ test.describe.serial('public workflow snapshots', () => {
 		request,
 		browser
 	}) => {
+		test.setTimeout(120_000);
 		for (const mode of ['throw', '304']) {
 			const boundary = await request.get('/p/e2e-worker-boundary', {
 				headers: { 'x-tines-e2e-publication-boundary': mode }
@@ -321,6 +389,38 @@ test.describe.serial('public workflow snapshots', () => {
 				value: () => Promise.reject(new DOMException('Denied', 'NotAllowedError'))
 			});
 		});
+		await shareLink.evaluate((input: HTMLInputElement) => {
+			input.focus();
+			input.setSelectionRange(2, 2);
+		});
+		expect(
+			await shareLink.evaluate((input: HTMLInputElement) => [
+				input.selectionStart,
+				input.selectionEnd
+			])
+		).toEqual([2, 2]);
+		await copyButton.click();
+		await expect(ownerPage.locator('#copy-help')).toHaveText(
+			'Copy unavailable. Select the link and copy it.'
+		);
+		await expect(shareLink).toBeFocused();
+		expect(
+			await shareLink.evaluate((input: HTMLInputElement) => [
+				input.selectionStart,
+				input.selectionEnd
+			])
+		).toEqual([0, receiptUrl.length]);
+
+		await ownerPage.evaluate(() => {
+			Object.defineProperty(navigator.clipboard, 'writeText', {
+				configurable: true,
+				value: undefined
+			});
+		});
+		await shareLink.evaluate((input: HTMLInputElement) => {
+			input.focus();
+			input.setSelectionRange(3, 3);
+		});
 		await copyButton.click();
 		await expect(ownerPage.locator('#copy-help')).toHaveText(
 			'Copy unavailable. Select the link and copy it.'
@@ -351,6 +451,39 @@ test.describe.serial('public workflow snapshots', () => {
 		await publicPreview.close();
 		await expect(receiptHeading).toBeVisible();
 		expect(publishAttempts).toHaveLength(2);
+		await ownerPage.unroute('**/api/v1/publications/*/publish');
+
+		const revisionText = `Revised public content ${marker}`;
+		expect(
+			(
+				await publisher.patch(`/api/v1/workflows/${workflow.id}`, { description: revisionText })
+			).ok()
+		).toBe(true);
+		await ownerPage.getByRole('link', { name: marker, exact: true }).click();
+		await expect(ownerPage).toHaveURL(`/workflows/${workflow.id}`);
+		await ownerPage.getByRole('link', { name: 'Publish workflow', exact: true }).click();
+		await expect(ownerPage.getByRole('heading', { name: 'Customize', exact: true })).toBeVisible();
+		await ownerPage.getByLabel('Public display name').fill('Alice Revision');
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		await ownerPage.getByRole('button', { name: /Continue to Share/ }).click();
+		await ownerPage
+			.getByRole('checkbox', { name: /I have the right to share all included content/ })
+			.check();
+		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
+		await expect(receiptHeading).toBeFocused();
+		const revisionUrl = await ownerPage.getByLabel('Share link', { exact: true }).inputValue();
+		expect(revisionUrl).not.toBe(receiptUrl);
+		const originalSnapshotId = new URL(receiptUrl).pathname.split('/').at(-1)!;
+		const revisionSnapshotId = new URL(revisionUrl).pathname.split('/').at(-1)!;
+		const originalBytes = await request.get(
+			`/api/v1/publications/public/${originalSnapshotId}/download`
+		);
+		const revisionBytes = await request.get(
+			`/api/v1/publications/public/${revisionSnapshotId}/download`
+		);
+		expect(await originalBytes.text()).toContain(`Inspectable exact text ${marker}`);
+		expect(await originalBytes.text()).not.toContain(revisionText);
+		expect(await revisionBytes.text()).toContain(revisionText);
 		await ownerContext.close();
 		const publicContext = await browser.newContext();
 		const page = await publicContext.newPage();
@@ -498,6 +631,101 @@ test.describe.serial('public workflow snapshots', () => {
 		await expect(moderatorPage.getByText('dismiss recorded.')).toBeVisible();
 		await moderatorContext.close();
 	});
+
+	for (const { viewport, theme, reducedMotion } of [
+		{ viewport: PHONE, theme: 'light', reducedMotion: 'no-preference' },
+		{ viewport: PHONE, theme: 'dark', reducedMotion: 'reduce' },
+		{ viewport: DESKTOP, theme: 'light', reducedMotion: 'reduce' },
+		{ viewport: DESKTOP, theme: 'dark', reducedMotion: 'no-preference' }
+	] as const) {
+		test(`lands on a fresh ${viewport.width}px ${theme} receipt with ${reducedMotion} motion`, async ({
+			browser,
+			request,
+			uniqueName
+		}) => {
+			test.setTimeout(60_000);
+			const workflowName = uniqueName(
+				`receipt-${viewport.width}-${theme}-${'long-workflow-name-'.repeat(4)}`,
+				{ maxLength: 100 }
+			);
+			const workflow = await createReceiptWorkflow(request, workflowName);
+			const context = await browser.newContext({ viewport, colorScheme: theme, reducedMotion });
+			await context.addInitScript(
+				(savedTheme) => localStorage.setItem('tines:theme', savedTheme),
+				theme
+			);
+			await signIn(context, WORKFLOW_PUBLICATIONS_PUBLISHER.sessionToken);
+			const page = await context.newPage();
+			const result = await publishReceipt(page, workflow.id);
+			await expect(page.locator('html')).toHaveClass(
+				theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
+			);
+
+			const geometry = await page.evaluate(() => {
+				const required = (selector: string): HTMLElement => {
+					const element = document.querySelector<HTMLElement>(selector);
+					if (!element) throw new Error(`Missing receipt element: ${selector}`);
+					return element;
+				};
+				const box = (element: HTMLElement) => {
+					const rect = element.getBoundingClientRect();
+					return {
+						x: rect.x,
+						y: rect.y,
+						width: rect.width,
+						height: rect.height,
+						right: rect.right,
+						bottom: rect.bottom
+					};
+				};
+				const nav = document.querySelector<HTMLElement>('nav[aria-label="Primary"]');
+				return {
+					header: box(required('header')),
+					heading: box(required('#published-title')),
+					receipt: box(required('section[aria-labelledby="published-title"]')),
+					input: box(required('#published-share-link')),
+					copy: box(required('[data-testid="copy-share-link"]')),
+					nav: nav ? box(nav) : null,
+					innerWidth,
+					innerHeight,
+					scrollWidth: document.documentElement.scrollWidth
+				};
+			});
+			expect(geometry.heading.y).toBeGreaterThanOrEqual(geometry.header.bottom);
+			expect(geometry.receipt.x).toBeGreaterThanOrEqual(0);
+			expect(geometry.receipt.right).toBeLessThanOrEqual(geometry.innerWidth);
+			expect(geometry.copy.bottom).toBeLessThanOrEqual(
+				viewport === PHONE && geometry.nav ? geometry.nav.y : geometry.innerHeight
+			);
+			expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.innerWidth);
+			if (viewport === PHONE) {
+				expect(geometry.input.bottom).toBeLessThanOrEqual(geometry.copy.y);
+				expect(Math.abs(geometry.input.width - geometry.copy.width)).toBeLessThanOrEqual(1);
+			} else {
+				expect(geometry.input.right).toBeLessThanOrEqual(geometry.copy.x);
+				expect(Math.abs(geometry.input.y - geometry.copy.y)).toBeLessThanOrEqual(1);
+			}
+			expect(await page.getByLabel('Share link', { exact: true }).inputValue()).toBe(
+				result.receipt.public_url
+			);
+
+			await expect
+				.poll(() =>
+					page.evaluate(
+						() => (window as unknown as { receiptMotion: ReceiptMotion }).receiptMotion.endedAt
+					)
+				)
+				.not.toBeNull();
+			const motion = await page.evaluate(
+				() => (window as unknown as { receiptMotion: ReceiptMotion }).receiptMotion
+			);
+			expect(motion.startedAt).not.toBeNull();
+			const duration = motion.endedAt! - motion.startedAt!;
+			if (reducedMotion === 'reduce') expect(duration).toBeLessThan(100);
+			else expect(duration).toBeGreaterThanOrEqual(150);
+			await context.close();
+		});
+	}
 
 	test('pages more than 100 owner rows through API and Next, Back, and First UI controls', async ({
 		browser,
