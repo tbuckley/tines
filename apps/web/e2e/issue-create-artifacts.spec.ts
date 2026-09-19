@@ -331,13 +331,17 @@ test('future repeats created by the native Worker do not copy browser attachment
 
 test('the issues list and project page expose the shared attachment picker', async ({ page }) => {
 	const listDialog = await openListDialog(page);
-	await expect(listDialog.getByLabel('Add attachment files')).toBeAttached();
+	await expect(
+		listDialog.getByRole('button', { name: 'Add files or drag files here' })
+	).toBeVisible();
 	await listDialog.getByRole('button', { name: 'Cancel' }).click();
 
 	await gotoHydrated(page, `/projects/${project.id}`);
 	const projectDialog = page.getByRole('dialog', { name: `New issue in ${project.name}` });
 	await clickToOpen(page.getByRole('button', { name: 'New issue' }), projectDialog);
-	await expect(projectDialog.getByLabel('Add attachment files')).toBeAttached();
+	await expect(
+		projectDialog.getByRole('button', { name: 'Add files or drag files here' })
+	).toBeVisible();
 	await expect(projectDialog.getByLabel('Project', { exact: true })).toHaveCount(0);
 });
 
