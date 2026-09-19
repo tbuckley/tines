@@ -109,7 +109,11 @@ test.describe.serial('public workflow snapshots', () => {
 		snapshotId = published.receipt.snapshot_id;
 		documentJson = canonicalizeLibraryValue(proof.document);
 
-		const ownerContext = await browser.newContext();
+		const ownerContext = await browser.newContext({
+			permissions: ['clipboard-read', 'clipboard-write'],
+			reducedMotion: 'reduce',
+			viewport: PHONE
+		});
 		await signIn(ownerContext, WORKFLOW_PUBLICATIONS_PUBLISHER.sessionToken);
 		const ownerPage = await ownerContext.newPage();
 		await gotoHydrated(ownerPage, `/workflows/${workflow.id}/export#publish`);
@@ -202,23 +206,151 @@ test.describe.serial('public workflow snapshots', () => {
 		await ownerPage
 			.getByRole('checkbox', { name: /I have the right to share all included content/ })
 			.check();
+		await ownerPage.route(
+			'**/api/v1/publications/*/publish',
+			async (route) =>
+				route.fulfill({
+					status: 409,
+					contentType: 'application/json',
+					body: JSON.stringify({
+						error: {
+							code: 'publication_proof_stale',
+							message: 'The publication proof is stale.'
+						}
+					})
+				}),
+			{ times: 1 }
+		);
+		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
+		await expect(ownerPage.getByRole('heading', { name: 'Customize', exact: true })).toBeFocused();
+		await expect(ownerPage.getByTestId('package-actions')).toContainText(
+			'Preview this version again before sharing.'
+		);
+		await ownerPage.getByRole('button', { name: 'Preview', exact: true }).click();
+		await ownerPage.getByRole('button', { name: /Continue to Share/ }).click();
+		await ownerPage
+			.getByRole('checkbox', { name: /I have the right to share all included content/ })
+			.check();
 		const publishAttempts: unknown[] = [];
+		let releaseCommittedPublish!: () => void;
+		const heldCommittedPublish = new Promise<void>(
+			(resolve) => (releaseCommittedPublish = resolve)
+		);
+		let committedPublishStarted!: () => void;
+		const startedCommittedPublish = new Promise<void>(
+			(resolve) => (committedPublishStarted = resolve)
+		);
 		await ownerPage.route('**/api/v1/publications/*/publish', async (route) => {
 			publishAttempts.push(route.request().postDataJSON());
 			if (publishAttempts.length === 1) {
 				const response = await route.fetch();
 				expect(response.ok()).toBe(true);
+				committedPublishStarted();
+				await heldCommittedPublish;
 				await route.abort('connectionreset');
 				return;
 			}
 			await route.continue();
 		});
 		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
+		await startedCommittedPublish;
+		await expect(ownerPage.getByRole('button', { name: 'Publishing…' })).toBeDisabled();
+		await expect(
+			ownerPage.getByRole('checkbox', { name: /I have the right to share all included content/ })
+		).toBeDisabled();
+		await expect(
+			ownerPage.getByRole('button', { name: 'Review included content again' })
+		).toBeDisabled();
+		await expect(
+			ownerPage.getByRole('heading', { name: 'Your workflow is ready to share' })
+		).toHaveCount(0);
+		releaseCommittedPublish();
 		await expect(ownerPage.getByText(/could not confirm whether sharing finished/)).toBeVisible();
-		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
-		await expect(ownerPage.getByText('Shared', { exact: true })).toBeVisible();
+		await ownerPage.getByRole('button', { name: 'Retry', exact: true }).click();
+		const receiptHeading = ownerPage.getByRole('heading', {
+			name: 'Your workflow is ready to share',
+			exact: true
+		});
+		await expect(receiptHeading).toBeFocused();
+		expect(
+			await receiptHeading.evaluate((heading) => getComputedStyle(heading).boxShadow)
+		).not.toBe('none');
+		const receipt = ownerPage.locator('section[aria-labelledby="published-title"]');
+		await expect(receipt.getByText(marker, { exact: true })).toBeVisible();
+		await expect(receipt.getByText('Public', { exact: true })).toBeVisible();
+		await expect(
+			ownerPage.getByRole('heading', { name: 'Ready to share', exact: true })
+		).toHaveCount(0);
+		await expect(ownerPage.getByRole('button', { name: /Publish/ })).toHaveCount(0);
+		await expect(ownerPage.getByRole('button', { name: /Download/ })).toHaveCount(0);
+		await expect(ownerPage.getByTestId('package-actions')).toHaveCount(0);
 		expect(publishAttempts).toHaveLength(2);
 		expect(publishAttempts[1]).toEqual(publishAttempts[0]);
+
+		const shareLink = ownerPage.getByLabel('Share link', { exact: true });
+		const receiptUrl = await shareLink.inputValue();
+		expect(new URL(receiptUrl).pathname).toMatch(/^\/p\//);
+		const copyButton = ownerPage.getByTestId('copy-share-link');
+		const headerBox = await ownerPage.locator('header').boundingBox();
+		const copyBox = await copyButton.boundingBox();
+		const navBox = await ownerPage.getByRole('navigation', { name: 'Primary' }).boundingBox();
+		const headingBox = await receiptHeading.boundingBox();
+		expect(headingBox!.y).toBeGreaterThanOrEqual(headerBox!.y + headerBox!.height);
+		expect(copyBox!.y + copyBox!.height).toBeLessThanOrEqual(navBox!.y);
+		expect(await ownerPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+			true
+		);
+
+		await ownerPage.keyboard.press('Tab');
+		await expect(shareLink).toBeFocused();
+		await expect(receiptHeading).toHaveCSS('box-shadow', 'none');
+		await copyButton.click();
+		await expect(copyButton).toHaveText('Copied');
+		await expect(ownerPage.getByRole('status')).toContainText('Link copied.');
+		expect(await ownerPage.evaluate(() => navigator.clipboard.readText())).toBe(receiptUrl);
+		await expect(copyButton).toBeFocused();
+		await ownerPage.waitForTimeout(1_100);
+		await copyButton.click();
+		await ownerPage.waitForTimeout(1_100);
+		await expect(copyButton).toHaveText('Copied');
+		await expect(copyButton).toHaveText('Copy link', { timeout: 1_500 });
+
+		await ownerPage.evaluate(() => {
+			Object.defineProperty(navigator.clipboard, 'writeText', {
+				configurable: true,
+				value: () => Promise.reject(new DOMException('Denied', 'NotAllowedError'))
+			});
+		});
+		await copyButton.click();
+		await expect(ownerPage.locator('#copy-help')).toHaveText(
+			'Copy unavailable. Select the link and copy it.'
+		);
+		await expect(shareLink).toBeFocused();
+		expect(
+			await shareLink.evaluate((input: HTMLInputElement) => [
+				input.selectionStart,
+				input.selectionEnd
+			])
+		).toEqual([0, receiptUrl.length]);
+
+		await ownerPage.setViewportSize(DESKTOP);
+		const desktopCopyBox = await copyButton.boundingBox();
+		expect(desktopCopyBox!.y + desktopCopyBox!.height).toBeLessThanOrEqual(DESKTOP.height);
+		await ownerPage.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+		await ownerPage.getByText('Technical details', { exact: true }).click();
+		expect(publishAttempts).toHaveLength(2);
+		await expect(ownerPage.getByRole('link', { name: 'Manage sharing' })).toHaveAttribute(
+			'href',
+			'/publications'
+		);
+		const popupPromise = ownerPage.waitForEvent('popup');
+		await ownerPage.getByRole('link', { name: /Preview public page/ }).click();
+		const publicPreview = await popupPromise;
+		await expect(publicPreview).toHaveURL(receiptUrl);
+		await expect(publicPreview.getByRole('heading', { name: marker, exact: true })).toBeVisible();
+		await publicPreview.close();
+		await expect(receiptHeading).toBeVisible();
+		expect(publishAttempts).toHaveLength(2);
 		await ownerContext.close();
 		const publicContext = await browser.newContext();
 		const page = await publicContext.newPage();
@@ -701,8 +833,12 @@ test.describe.serial('public workflow snapshots', () => {
 			.getByRole('checkbox', { name: /I have the right to share all included content/ })
 			.check();
 		await ownerPage.getByRole('button', { name: 'Publish workflow' }).click();
-		await expect(ownerPage.getByRole('heading', { name: 'Shared', exact: true })).toBeVisible();
-		const publicHref = await ownerPage.locator('a[href*="/p/"]').first().getAttribute('href');
+		await expect(
+			ownerPage.getByRole('heading', { name: 'Your workflow is ready to share', exact: true })
+		).toBeVisible();
+		const publicHref = await ownerPage
+			.getByRole('link', { name: /Preview public page/ })
+			.getAttribute('href');
 		expect(publicHref).toBeTruthy();
 		await ownerContext.close();
 
