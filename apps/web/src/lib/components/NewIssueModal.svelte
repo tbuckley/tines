@@ -59,7 +59,11 @@
 	let errorMessage = $state<string | null>(null);
 	let uncertain = $state(false);
 	let createdHref = $state<string | null>(null);
-	let attachmentServerError = $state<{ index: number; message: string } | null>(null);
+	let attachmentServerError = $state<{
+		index: number;
+		message: string;
+		field: 'name' | 'file';
+	} | null>(null);
 	let attachmentValid = $state(true);
 	let attachments = $state<{ id: string; file: File; name: string; editing: boolean }[]>([]);
 	let form = $state<HTMLFormElement | null>(null);
@@ -118,7 +122,7 @@
 			return;
 		}
 		creating = true;
-		let attachmentToFocus: string | null = null;
+		let attachmentToFocus: { id: string; field: 'name' | 'file' } | null = null;
 		errorMessage = null;
 		uncertain = false;
 		createdHref = null;
@@ -160,9 +164,13 @@
 					? err.details.attachment_index
 					: null;
 			if (err instanceof ApiError && attachmentIndex !== null && attachments[attachmentIndex]) {
-				attachments[attachmentIndex].editing = true;
-				attachmentServerError = { index: attachmentIndex, message: err.message };
-				attachmentToFocus = attachments[attachmentIndex].id;
+				const field =
+					typeof err.details?.field === 'string' && err.details.field.endsWith('.name')
+						? 'name'
+						: 'file';
+				if (field === 'name') attachments[attachmentIndex].editing = true;
+				attachmentServerError = { index: attachmentIndex, message: err.message, field };
+				attachmentToFocus = { id: attachments[attachmentIndex].id, field };
 			}
 			errorMessage = uncertain
 				? 'We couldn’t confirm whether the issue was created. Check the project’s issues before submitting again.'
@@ -173,7 +181,13 @@
 			creating = false;
 			if (attachmentToFocus) {
 				await tick();
-				form?.querySelector<HTMLElement>(`#attachment-name-${attachmentToFocus}`)?.focus();
+				form
+					?.querySelector<HTMLElement>(
+						attachmentToFocus.field === 'name'
+							? `#attachment-name-${attachmentToFocus.id}`
+							: `#attachment-row-${attachmentToFocus.id}`
+					)
+					?.focus();
 			}
 		}
 	}

@@ -229,6 +229,24 @@ describe('POST /api/v1/projects/:id/issues multipart', () => {
 		);
 	});
 
+	it('accepts exactly ten files', async () => {
+		const result = await post(
+			await multipartRequest(
+				validForm(
+					Array.from({ length: ISSUE_CREATE_MAX_FILES }, (_, index) => ({
+						name: `file-${index}`,
+						filename: `file-${index}.txt`
+					}))
+				)
+			)
+		);
+		expect(result.response.status).toBe(201);
+		expect(result.puts()).toBe(ISSUE_CREATE_MAX_FILES);
+		expect(result.t.all("SELECT id FROM context_item WHERE kind = 'artifact'")).toHaveLength(
+			ISSUE_CREATE_MAX_FILES
+		);
+	});
+
 	it('accepts exact metadata and aggregate limits, then rejects one byte over each', async () => {
 		const attachments = [
 			{ name: 'one', filename: 'one.bin', bytes: ARTIFACT_FILE_MAX_BYTES },

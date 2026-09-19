@@ -1,4 +1,4 @@
-import type { IssueDetail, Project } from '@tines/shared';
+import type { IssueDetail, Label, ListResponse, Project } from '@tines/shared';
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { body, clickToOpen, gotoHydrated, signedSessionCookie } from './helpers';
@@ -9,6 +9,7 @@ const PNG = Buffer.from(
 );
 
 let project: Project;
+let recoveryLabel: Label;
 
 async function openListDialog(page: import('@playwright/test').Page) {
 	await gotoHydrated(page, '/issues');
@@ -30,9 +31,24 @@ async function addTextFile(
 	});
 }
 
+async function selectRecoveryLabel(
+	page: import('@playwright/test').Page,
+	dialog: import('@playwright/test').Locator
+) {
+	await dialog.getByRole('button', { name: 'Add label' }).click();
+	const option = page.getByRole('button', { name: recoveryLabel.name, exact: true });
+	await option.press('Enter');
+	await expect(option).toHaveAttribute('aria-pressed', 'true');
+	await page.keyboard.press('Escape');
+}
+
 test.beforeAll(async ({ apiFor, uniqueName }) => {
+	const api = apiFor(ALICE);
 	project = await body<Project>(
-		await apiFor(ALICE).post('/api/v1/projects', { name: uniqueName('create-files') })
+		await api.post('/api/v1/projects', { name: uniqueName('create-files') })
+	);
+	recoveryLabel = await body<Label>(
+		await api.post('/api/v1/labels', { name: uniqueName('attachment-recovery'), color: 'blue' })
 	);
 });
 
@@ -112,6 +128,9 @@ test('puts indexed server validation on the affected row and preserves the draft
 		{ name: 'first.txt', mimeType: 'text/plain', buffer: Buffer.from('first') },
 		{ name: 'second.txt', mimeType: 'text/plain', buffer: Buffer.from('second') }
 	]);
+	await selectRecoveryLabel(page, dialog);
+	await dialog.getByRole('button', { name: 'Edit name for first.txt' }).click();
+	await dialog.getByLabel('Artifact name').fill('kept-definite-name');
 	await page.route('**/api/v1/projects/*/issues', async (route) => {
 		if (route.request().method() !== 'POST') return route.continue();
 		await route.fulfill({
@@ -129,9 +148,12 @@ test('puts indexed server validation on the affected row and preserves the draft
 	await dialog.getByRole('button', { name: 'Create issue' }).click();
 	const secondRow = dialog.getByRole('listitem').filter({ hasText: 'second.txt' });
 	await expect(secondRow.getByText('The second filename is invalid')).toBeVisible();
-	await expect(secondRow.getByLabel('Artifact name')).toBeFocused();
+	await expect(secondRow).toBeFocused();
+	await expect(secondRow.getByLabel('Artifact name')).toHaveCount(0);
 	await expect(dialog.getByLabel('Title')).toHaveValue('Keep this title');
 	await expect(dialog.getByLabel('Description (Markdown)')).toHaveValue('Keep this description');
+	await expect(dialog.getByText(recoveryLabel.name, { exact: true })).toBeVisible();
+	await expect(dialog.getByLabel('Artifact name')).toHaveValue('kept-definite-name');
 	await expect(dialog.getByRole('listitem')).toHaveCount(2);
 });
 
@@ -143,6 +165,9 @@ test('classifies network, 5xx, and malformed success responses as uncertain with
 		await dialog.getByLabel('Title').fill(`Uncertain ${mode}`);
 		await dialog.getByLabel('Description (Markdown)').fill(`description ${mode}`);
 		await addTextFile(dialog, `${mode}.txt`);
+		await selectRecoveryLabel(page, dialog);
+		await dialog.getByRole('button', { name: `Edit name for ${mode}.txt` }).click();
+		await dialog.getByLabel('Artifact name').fill(`kept-${mode}-name`);
 		await dialog.getByRole('button', { name: 'Repeat' }).click();
 		await dialog.getByLabel('Repeat', { exact: true }).selectOption('daily');
 		await expect(
@@ -178,6 +203,8 @@ test('classifies network, 5xx, and malformed success responses as uncertain with
 		await expect(dialog.getByLabel('Title')).toHaveValue(`Uncertain ${mode}`);
 		await expect(dialog.getByLabel('Description (Markdown)')).toHaveValue(`description ${mode}`);
 		await expect(dialog.getByText(`${mode}.txt`, { exact: true })).toBeVisible();
+		await expect(dialog.getByText(recoveryLabel.name, { exact: true })).toBeVisible();
+		await expect(dialog.getByLabel('Artifact name')).toHaveValue(`kept-${mode}-name`);
 		await expect(dialog.getByLabel('Repeat', { exact: true })).toHaveValue('daily');
 		await page.waitForTimeout(100);
 		expect(attempts).toBe(1);
@@ -239,6 +266,57 @@ test('keyboard add, edit, remove, and invalid batches leave existing rows intact
 	await expect(dialog.getByRole('listitem')).toHaveCount(0);
 	await addTextFile(dialog, 'keyboard.txt');
 	await expect(dialog.getByText('keyboard', { exact: true })).toBeVisible();
+});
+
+test('rejects a directory drop without disturbing an existing attachment', async ({ page }) => {
+	const dialog = await openListDialog(page);
+	await addTextFile(dialog, 'kept.txt');
+	const dropArea = dialog.getByRole('group', { name: 'Attachment drop area' });
+	await dropArea.evaluate((element) => {
+		const event = new Event('drop', { bubbles: true, cancelable: true });
+		Object.defineProperty(event, 'dataTransfer', {
+			value: {
+				items: [{ webkitGetAsEntry: () => ({ isDirectory: true }) }],
+				files: []
+			}
+		});
+		element.dispatchEvent(event);
+	});
+	await expect(dialog.getByText('Choose files inside the folder.')).toBeVisible();
+	await expect(dialog.getByRole('listitem')).toHaveCount(1);
+	await expect(dialog.getByText('kept.txt', { exact: true })).toBeVisible();
+});
+
+test('future repeats created by the native Worker do not copy browser attachments', async ({
+	page,
+	apiFor
+}) => {
+	const dialog = await openListDialog(page);
+	await dialog.getByLabel('Title').fill('Browser recurring attachment');
+	await addTextFile(dialog, 'first-instance.txt');
+	await dialog.getByRole('button', { name: 'Repeat' }).click();
+	await dialog.getByLabel('Repeat', { exact: true }).selectOption('daily');
+	await dialog.getByRole('button', { name: 'Create issue + schedule' }).click();
+	await expect(page).toHaveURL(new RegExp(`/issues/${project.name}/\\d+$`));
+
+	const api = apiFor(ALICE);
+	const number = Number(new URL(page.url()).pathname.split('/').at(-1));
+	const first = await body<IssueDetail>(
+		await api.get(`/api/v1/projects/${project.id}/issues/${number}`)
+	);
+	expect(first.scheduled_task_id).not.toBeNull();
+	const firstArtifacts = await body<ListResponse<unknown>>(
+		await api.get(`/api/v1/issues/${first.id}/artifacts`)
+	);
+	expect(firstArtifacts.items).toHaveLength(1);
+
+	const repeated = await body<IssueDetail>(
+		await api.post(`/api/v1/schedules/${first.scheduled_task_id}/run`)
+	);
+	const repeatedArtifacts = await body<ListResponse<unknown>>(
+		await api.get(`/api/v1/issues/${repeated.id}/artifacts`)
+	);
+	expect(repeatedArtifacts.items).toEqual([]);
 });
 
 test('the issues list and project page expose the shared attachment picker', async ({ page }) => {

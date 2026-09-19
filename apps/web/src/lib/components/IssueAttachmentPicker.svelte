@@ -32,7 +32,7 @@
 		attachments?: IssueAttachmentDraft[];
 		disabled?: boolean;
 		transitions?: WorkflowTransition[];
-		serverError?: { index: number; message: string } | null;
+		serverError?: { index: number; message: string; field: 'name' | 'file' } | null;
 		oninteract?: (index: number) => void;
 		onvalidchange?: (valid: boolean) => void;
 	} = $props();
@@ -174,7 +174,13 @@
 		<ul class="space-y-2">
 			{#each attachments as attachment, index (attachment.id)}
 				{@const gateWarning = warning(attachment)}
-				<li class="min-w-0 rounded-md border p-3">
+				<li
+					id={`attachment-row-${attachment.id}`}
+					class="min-w-0 rounded-md border p-3 {serverError?.index === index
+						? 'border-destructive'
+						: ''}"
+					tabindex="-1"
+				>
 					<div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start">
 						<IconFile class="text-muted-foreground mt-0.5 shrink-0" size={18} />
 						<div class="min-w-0 flex-1">
@@ -190,8 +196,10 @@
 									bind:value={attachment.name}
 									oninput={() => oninteract?.(index)}
 									{disabled}
-									aria-invalid={errors[index] ? 'true' : undefined}
-									aria-describedby={errors[index] ? `attachment-error-${attachment.id}` : undefined}
+									aria-invalid={errors[index] && serverError?.field !== 'file' ? 'true' : undefined}
+									aria-describedby={errors[index] && serverError?.field !== 'file'
+										? `attachment-error-${attachment.id}`
+										: undefined}
 								/>
 							{:else}
 								<p class="mt-1 font-mono text-xs break-words">{attachment.name}</p>
