@@ -369,13 +369,7 @@
 			? 'No issues on this page. Results may have changed.'
 			: data.filters.ready
 				? 'No ready issues in this project.'
-				: data.filters.workflow ||
-					  data.filters.state ||
-					  data.filters.category ||
-					  data.filters.q ||
-					  data.filters.labels.length > 0
-					? 'No issues match these filters.'
-					: 'No issues in this project yet.'}
+				: 'No issues match these filters.'}
 	/>
 	<IssuePagination
 		pagination={data.pagination}

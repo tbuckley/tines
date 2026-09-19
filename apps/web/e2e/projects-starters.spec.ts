@@ -213,7 +213,7 @@ test('Blank is preselected and creates a project with only the conventions promp
 	await expect(page.getByRole('link', { name: 'Next: get an agent running' })).toHaveCount(0);
 	// Context items are buttons (they open the editor), not links.
 	await expect(page.getByRole('button', { name: /^conventions/ })).toBeVisible();
-	await expect(page.getByText('No issues in this project yet.')).toBeVisible();
+	await expect(page.getByText('No issues match these filters.')).toBeVisible();
 });
 
 test('Code repository asks for a URL, previews the repo item, and creates it', async ({

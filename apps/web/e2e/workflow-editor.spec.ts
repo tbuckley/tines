@@ -64,6 +64,21 @@ const previewGeometry = async (page: Page) => {
 	});
 };
 
+async function previewFadedEdges(page: Page) {
+	const mask = await page
+		.getByRole('region', { name: 'Live preview' })
+		.evaluate((el) => getComputedStyle(el).maskImage);
+	if (mask === 'none') return { masked: false, left: false, right: false };
+	return {
+		masked: true,
+		left: /\(to right, rgba\(0, 0, 0, 0\) 0px/.test(mask),
+		right: /rgba\(0, 0, 0, 0\) 100%\)$/.test(mask)
+	};
+}
+
+const expectPreviewFade = (page: Page, edges: { left: boolean; right: boolean }) =>
+	expect.poll(() => previewFadedEdges(page)).toEqual({ masked: true, ...edges });
+
 test.beforeAll(async ({ apiFor, uniqueName }) => {
 	workflowName = uniqueName('Header', { maxLength: 32 });
 	wideWorkflowName = uniqueName('Wide preview', { maxLength: 100 });
@@ -423,6 +438,13 @@ test('a wide live preview defaults to Fit and round-trips through exact 1×', as
 	expect(fitted.svgLeft).toBeGreaterThanOrEqual(fitted.regionLeft - 1);
 	expect(fitted.svgRight).toBeLessThanOrEqual(fitted.regionRight + 1);
 	expect(fitted.documentScrollWidth - fitted.documentClientWidth).toBeLessThanOrEqual(1);
+	await expect
+		.poll(() => previewFadedEdges(page))
+		.toEqual({
+			masked: false,
+			left: false,
+			right: false
+		});
 
 	await actual.focus();
 	await page.keyboard.press('Enter');
@@ -433,11 +455,13 @@ test('a wide live preview defaults to Fit and round-trips through exact 1×', as
 	expect(intrinsic.regionScrollWidth).toBeGreaterThan(intrinsic.regionClientWidth);
 	expect(intrinsic.regionScrollLeft).toBe(0);
 	expect(intrinsic.documentScrollWidth - intrinsic.documentClientWidth).toBeLessThanOrEqual(1);
+	await expectPreviewFade(page, { left: false, right: true });
 
 	await region.focus();
 	await expect(region).toBeFocused();
 	await page.keyboard.press('ArrowRight');
 	await expect.poll(async () => (await previewGeometry(page)).regionScrollLeft).toBeGreaterThan(0);
+	await expectPreviewFade(page, { left: true, right: true });
 	expect((await previewGeometry(page)).headingLeft).toBeCloseTo(fitted.headingLeft, 1);
 
 	const renamedAction = 'Advance with a substantially longer action label';
@@ -457,11 +481,19 @@ test('a wide live preview defaults to Fit and round-trips through exact 1×', as
 	expect(refitted.svgRatio).toBeLessThan(1);
 	expect(refitted.svgLeft).toBeGreaterThanOrEqual(refitted.regionLeft - 1);
 	expect(refitted.svgRight).toBeLessThanOrEqual(refitted.regionRight + 1);
+	await expect
+		.poll(() => previewFadedEdges(page))
+		.toEqual({
+			masked: false,
+			left: false,
+			right: false
+		});
 
 	await actual.click();
 	intrinsic = await previewGeometry(page);
 	expect(intrinsic.svgRatio).toBeCloseTo(1, 2);
 	expect(intrinsic.regionScrollLeft).toBe(0);
+	await expectPreviewFade(page, { left: false, right: true });
 });
 
 test('a wide live preview toggles and remains contained on a phone', async ({ page }) => {
@@ -482,10 +514,12 @@ test('a wide live preview toggles and remains contained on a phone', async ({ pa
 	await group.getByRole('button', { name: '1×', exact: true }).click();
 	await expect.poll(async () => (await previewGeometry(page)).svgRatio).toBeCloseTo(1, 2);
 	expect((await previewGeometry(page)).regionScrollWidth).toBeGreaterThan(before.regionClientWidth);
+	await expectPreviewFade(page, { left: false, right: true });
 	await region.evaluate((el) => {
-		el.scrollLeft = 100;
+		el.scrollTo({ left: el.scrollWidth, behavior: 'instant' });
 	});
 	await expect.poll(async () => (await previewGeometry(page)).regionScrollLeft).toBeGreaterThan(0);
+	await expectPreviewFade(page, { left: true, right: false });
 	await page.setViewportSize({ width: 440, height: 844 });
 	await expect(group.getByRole('button', { name: '1×', exact: true })).toHaveAttribute(
 		'aria-pressed',
