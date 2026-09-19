@@ -99,7 +99,8 @@ through their own endpoints, the issue page's Artifacts panel, and the launch
 prompt's issue block (below). `context_summary` gains an `artifacts` count so
 the issue read can badge them.
 
-Creation and payload mutation go through dedicated artifact endpoints only —
+Creation and payload mutation go through dedicated artifact endpoints, including
+multipart issue creation for initial file artifacts —
 `POST /api/v1/context` with `kind: "artifact"` is a 422
 (`use_artifact_endpoints`) because file payloads can't ride a JSON create, and
 one creation path is saner than two. That 422 names every write endpoint —
@@ -109,6 +110,14 @@ redirect stays complete as artifact types are added. The generic context
 endpoints still **read** artifact items (list/show, payload summarized),
 still **PATCH** name/description (rename re-keys requirement matching, which
 is the point), and still **DELETE** them.
+
+The New issue form accepts up to 10 files (25 MiB each, 50 MiB combined),
+derives editable unique artifact names from filenames, and sends one multipart
+create request. The Worker stages immutable R2 objects first, then commits the
+issue, initial file artifact rows/versions/events, labels, and optional schedule
+in one D1 batch before signaling dispatch. The multipart envelope is capped at
+51 MiB and its JSON metadata at 256 KiB. A failed D1 batch can leave only
+invisible R2 orphans; an active issue is never visible without its initial files.
 
 ### Versions
 
@@ -468,6 +477,11 @@ The first binary storage in the system:
   send no Origin header), so that check is replaced by an equivalent guard
   in hooks scoped to cookie-carrying requests — the only surface CSRF can
   actually ride; bearer clients cannot be forged cross-site.
+- **Create-with-files** is the third binary entry point: one ordered manifest
+  plus indexed file parts on `POST /api/v1/projects/:id/issues`. It preserves
+  the ordinary JSON representation when no files are selected. The display
+  filename in the manifest is authoritative; the binary part supplies MIME,
+  falling back to `application/octet-stream`.
 - **Testing**: server code takes a minimal `ArtifactStore` interface
   (`put/get/delete/deletePrefix`); the Worker passes an R2-backed one, the
   unit-test harness an in-memory map. e2e uses wrangler's local R2 (already
@@ -587,6 +601,7 @@ ergonomics; run keys are allowed everywhere here.
 
 | Method & path | Purpose |
 | --- | --- |
+| `POST /api/v1/projects/:id/issues` (multipart) | Create an issue with 1–10 initial `file` artifacts. A JSON `metadata` field contains the ordinary issue request plus ordered `{ part, name, filename }` entries; indexed binary parts carry the bytes. |
 | `GET /api/v1/issues/:id/artifacts` | List: each artifact with type, description, current version summary, version count, `fresh` flag. |
 | `GET /api/v1/issues/:id/artifacts/:name` | Detail: the artifact plus its full version list (metadata only, no contents). |
 | `PUT /api/v1/issues/:id/artifacts/:name` | **JSON upsert** for `text` / `link` / `pr`: creates the artifact (body declares `type`) or appends a version to it. Payload fields per type; `description` settable alongside. Type mismatch with an existing artifact → 422 `artifact_type_mismatch`. A body with no payload fields is a metadata-only update (no version). |
