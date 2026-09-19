@@ -141,7 +141,7 @@ test.describe.serial('issue links', () => {
 		expect(cDetail.effective_state.category).toBe('done');
 		// hide_done follows the effective state, so C disappears with it.
 		const hidden = await body<ListResponse<Issue>>(
-			await api.get(`/api/v1/issues?project=${otherProjectName}&hide_done=1`)
+			await api.get(`/api/v1/issues?project=${otherProjectName}&hide_done=1&hide_duplicates=false`)
 		);
 		expect(hidden.items.map((i) => i.id)).not.toContain(c.id);
 		// A closing also unblocked B (the blocker's effective category is done).

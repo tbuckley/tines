@@ -338,6 +338,8 @@ export function createApiClient(options: ApiClientOptions) {
 				state?: string;
 				category?: StateCategory;
 				hide_done?: boolean;
+				/** Exclude duplicate issues. Defaults to true; false includes duplicates. */
+				hide_duplicates?: boolean;
 				ready?: boolean;
 				q?: string;
 				brief?: boolean;

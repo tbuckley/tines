@@ -221,7 +221,8 @@
 		const project = projectId;
 		const token = ++issuesRequest;
 		api
-			.listIssues({ project: project || undefined, limit: 100 })
+			// A duplicate remains a valid direct context scope.
+			.listIssues({ project: project || undefined, hide_duplicates: false, limit: 100 })
 			.then((res) => {
 				if (token === issuesRequest) issues = res.items;
 			})
