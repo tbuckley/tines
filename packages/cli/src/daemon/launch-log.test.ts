@@ -645,3 +645,41 @@ process.stderr.write(secret.slice(9) + '\\n');
 		expect(output).not.toContain(JSON.stringify(secret).slice(1, -1));
 	}
 }, 30_000);
+
+it.each(['provider', 'rate_limit'] as const)(
+	'masks env secrets in %s errors, finish reports and daemon diagnostics',
+	async (failure) => {
+		const secret = 'private-error-token';
+		const { server: stub, done } = stubSupervisor(30, 'claude-sonnet-5', [
+			{ name: 'E2E_SECRET', value: secret, secret: true }
+		]);
+		server = stub;
+		await new Promise<void>((resolve) => stub.listen(0, '127.0.0.1', resolve));
+		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-error-'));
+		const bin = join(configDir, 'fakebin');
+		mkdirSync(bin);
+		writeFileSync(
+			join(bin, 'writer.mjs'),
+			failure === 'provider'
+				? `console.log(JSON.stringify({ type: 'result', is_error: true, result: 'API Error: 529 ' + process.env.E2E_SECRET })); process.exitCode = 1;`
+				: `console.error("You've hit your limit: " + process.env.E2E_SECRET); process.exitCode = 1;`
+		);
+		writeFileSync(join(bin, 'claude'), '#!/bin/sh\nexec node "$(dirname "$0")/writer.mjs"\n', {
+			mode: 0o755
+		});
+		child = startDaemon((stub.address() as AddressInfo).port, configDir, { fakeClaudeDir: bin });
+		let diagnostics = '';
+		child.stderr?.on('data', (data: Buffer) => {
+			diagnostics += data.toString();
+		});
+		const harvest = await done;
+		expect(harvest.finish).toMatchObject({
+			status: 'failed',
+			judgment: failure === 'provider' ? 'interrupted' : 'rate_limited'
+		});
+		expect(harvest.finish?.error).toContain('***');
+		expect(JSON.stringify(harvest)).not.toContain(secret);
+		expect(diagnostics).not.toContain(secret);
+	},
+	30_000
+);

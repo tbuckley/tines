@@ -62,6 +62,7 @@ import {
 	buildHarnessInvocation,
 	buildSpawnEnv,
 	SecretRedactor,
+	redactSecrets,
 	CliRefresher,
 	exitLineForRun,
 	formatLaunchBanner,
@@ -827,7 +828,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				if (child.pid) setTimeout(() => killTree(child.pid!, 'SIGKILL'), 5000).unref?.();
 			}, assignment.timeout_minutes * 60_000);
 			child.on('error', (err) => {
-				const reason = `failed to launch harness: ${message(err)}`;
+				const reason = redactSecrets(`failed to launch harness: ${message(err)}`, secretEnvValues);
 				if (assignment.effort)
 					run.effortEvidence = {
 						status: 'rejected',
@@ -877,18 +878,16 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					const limited = signal ? null : (run.limiter?.signal() ?? null);
 					const providerError = signal ? null : (run.limiter?.providerError() ?? null);
 					if (limited) {
-						log(
-							`run ${runId}: harness rate limited (${limited.detail}); reporting without a strike`
-						);
-						void table.finishAndCleanup(run, 'failed', `rate limited: ${limited.detail}`, {
+						const detail = redactSecrets(limited.detail, secretEnvValues);
+						log(`run ${runId}: harness rate limited (${detail}); reporting without a strike`);
+						void table.finishAndCleanup(run, 'failed', `rate limited: ${detail}`, {
 							judgment: 'rate_limited',
 							...(limited.resumeAt !== null ? { resume_at: limited.resumeAt } : {})
 						});
 					} else if (providerError) {
-						log(
-							`run ${runId}: transient provider error (${providerError.detail}); reporting without a strike`
-						);
-						void table.finishAndCleanup(run, 'failed', `provider error: ${providerError.detail}`, {
+						const detail = redactSecrets(providerError.detail, secretEnvValues);
+						log(`run ${runId}: transient provider error (${detail}); reporting without a strike`);
+						void table.finishAndCleanup(run, 'failed', `provider error: ${detail}`, {
 							judgment: 'interrupted'
 						});
 					} else {
@@ -901,7 +900,11 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				}
 			});
 		} catch (err) {
-			void table.finishAndCleanup(run, 'failed', `workspace setup failed: ${message(err)}`);
+			void table.finishAndCleanup(
+				run,
+				'failed',
+				redactSecrets(`workspace setup failed: ${message(err)}`, secretEnvValues)
+			);
 		}
 	};
 
