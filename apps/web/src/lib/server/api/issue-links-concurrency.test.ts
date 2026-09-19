@@ -488,7 +488,7 @@ describe('commit-time issue-link graph guard', () => {
 			target: b,
 			linkId: link.id,
 			targetProject: 'prj_2',
-			peerProjectNames: { source: 'demo' }
+			peerProjectNames: { source: 'other-project' }
 		});
 
 		const diagnosticEnv = delayedBy(t, async () => {
