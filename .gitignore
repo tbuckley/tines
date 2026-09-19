@@ -5,6 +5,7 @@ node_modules/
 build/
 dist/
 vite.config.ts.timestamp-*
+apps/web/.generated/
 
 # Cloudflare
 .wrangler/

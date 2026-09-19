@@ -19,22 +19,29 @@ import { sweepSchedules } from '../src/lib/server/schedule-sweep';
 import { sweepSupervisor } from '../src/lib/server/supervisor/engine';
 import { sweepModerationRetention } from '../src/lib/server/publications/moderation-retention';
 import { handlePublicationFetch } from '../src/lib/server/publications/response';
+import { handleDeploymentFetch } from '../src/lib/server/deployment-response';
+import deploymentIdentity from '../.generated/deployment.json';
 
 export default {
 	...worker,
 	async fetch(request: Request, env: Env, ctx: ExecutionContext) {
-		return handlePublicationFetch(request, (prepared) => {
-			// The isolated E2E Worker can force outcomes the generated SvelteKit
-			// entry normally absorbs. This keeps the shipping outer wrapper
-			// behaviorally pinned without exposing a production trigger.
-			if (env.E2E_PUBLICATION_BOUNDARY_TEST === '1') {
-				const mode = prepared.headers.get('x-tines-e2e-publication-boundary');
-				if (mode === 'throw') throw new Error('e2e generated Worker failure');
-				if (mode === '304')
-					return Promise.resolve(new Response(null, { status: 304, headers: { etag: 'e2e' } }));
-			}
-			return worker.fetch(prepared, env, ctx);
-		});
+		return handleDeploymentFetch(
+			request,
+			(deploymentRequest) =>
+				handlePublicationFetch(deploymentRequest, (prepared) => {
+					// The isolated E2E Worker can force outcomes the generated SvelteKit
+					// entry normally absorbs. This keeps the shipping outer wrapper
+					// behaviorally pinned without exposing a production trigger.
+					if (env.E2E_PUBLICATION_BOUNDARY_TEST === '1') {
+						const mode = prepared.headers.get('x-tines-e2e-publication-boundary');
+						if (mode === 'throw') throw new Error('e2e generated Worker failure');
+						if (mode === '304')
+							return Promise.resolve(new Response(null, { status: 304, headers: { etag: 'e2e' } }));
+					}
+					return worker.fetch(prepared, env, ctx);
+				}),
+			deploymentIdentity
+		);
 	},
 	async scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext) {
 		const now = controller.scheduledTime || Date.now();

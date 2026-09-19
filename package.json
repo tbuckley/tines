@@ -11,7 +11,7 @@
 		"check:scripts": "node scripts/check-package-scripts.mjs",
 		"format": "prettier --write . --cache",
 		"format:check": "prettier --check . --cache",
-		"test": "pnpm -r test",
+		"test": "node --test scripts/release-version.test.mjs && pnpm -r test",
 		"test:e2e": "pnpm --filter @tines/web test:e2e",
 		"db:migrate:local": "pnpm --filter @tines/web db:migrate:local",
 		"db:seed:local": "pnpm --filter @tines/web db:seed:local",
