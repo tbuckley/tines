@@ -56,6 +56,41 @@ test('imports a nested skill folder, reviews it, and saves only retained files',
 		},
 		{ path: 'nested/readme.txt', content: 'Nested content.\n' }
 	]);
+
+	await page.getByText(name, { exact: true }).click();
+	await expect(page.getByLabel('File 1 path')).toHaveValue('SKILL.md');
+	await page.getByRole('button', { name: 'Add file' }).click();
+	await page.getByLabel('File 3 path').fill('manual.txt');
+	await page.getByLabel('File manual.txt content').fill('unsaved manual edit');
+	await page.getByLabel('File nested/readme.txt content').fill('replace me');
+	const mutationsBeforeImport = mutations.length;
+	await page
+		.getByLabel('Skill folder')
+		.setInputFiles(path.join(import.meta.dirname, 'fixtures/skill-folder'));
+	await expect(page.getByText('Added 1 file; replaced 2; skipped 0 ignored files.')).toBeVisible();
+	await expect(page.getByLabel('File nested/readme.txt content')).toHaveValue('Nested content.\n');
+	await expect(page.getByLabel('File manual.txt content')).toHaveValue('unsaved manual edit');
+	await expect(page.getByLabel(/^File \d+ path$/)).toHaveCount(4);
+	await expect.poll(() => mutations.length).toBe(mutationsBeforeImport);
+
+	const updateResponse = page.waitForResponse(
+		(response) =>
+			response.url().endsWith(`/api/v1/context/${saved.id}`) &&
+			response.request().method() === 'PATCH'
+	);
+	await page.getByRole('button', { name: 'Save' }).click();
+	await expect((await updateResponse).status()).toBe(200);
+	const updated = await body<ContextItem>(await api.get(`/api/v1/context/${saved.id}`));
+	await expect(updated.files).toEqual([
+		{
+			path: 'SKILL.md',
+			content:
+				'---\nname: folder-fixture\ndescription: Imported by the folder picker acceptance test.\n---\n\n# Folder fixture\n\nKeep this root file.\n'
+		},
+		{ path: 'manual.txt', content: 'unsaved manual edit' },
+		{ path: 'nested/readme.txt', content: 'Nested content.\n' },
+		{ path: 'notes/remove-me.txt', content: 'This row is removed before save.\n' }
+	]);
 });
 
 test('unsupported directory picking leaves manual skill editing available', async ({
