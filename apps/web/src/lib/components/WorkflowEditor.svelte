@@ -7,8 +7,11 @@
 		WorkflowResponse
 	} from '@tines/shared';
 	import { ApiError, ARTIFACT_NAME_PATTERN, ARTIFACT_TYPES, STATE_CATEGORIES } from '@tines/shared';
+	import IconArrowDown from '@tabler/icons-svelte/icons/arrow-down';
+	import IconArrowUp from '@tabler/icons-svelte/icons/arrow-up';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
+	import { flip } from 'svelte/animate';
 	import { tick, type Snippet } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
@@ -126,6 +129,17 @@
 
 	let saving = $state(false);
 	let errorMessage = $state<string | null>(null);
+	let moveAnnouncement = $state('');
+	const stateRowElements = new Map<string, HTMLDivElement>();
+
+	function registerStateRow(node: HTMLDivElement, key: string) {
+		stateRowElements.set(key, node);
+		return {
+			destroy() {
+				if (stateRowElements.get(key) === node) stateRowElements.delete(key);
+			}
+		};
+	}
 
 	function addState() {
 		const key = freshKey();
@@ -139,6 +153,29 @@
 			const fallback = states.find((s) => s.category === 'backlog' || s.category === 'active');
 			initialKey = fallback?.key ?? states[0]?.key ?? '';
 		}
+	}
+
+	async function moveState(index: number, delta: -1 | 1) {
+		const destination = index + delta;
+		if (saving || destination < 0 || destination >= states.length) return;
+		const next = [...states];
+		const [row] = next.splice(index, 1);
+		next.splice(destination, 0, row);
+		states = next;
+		moveAnnouncement = `${stateName(row.key)} moved to position ${destination + 1} of ${states.length}.`;
+
+		await tick();
+		const direction = delta === -1 ? 'up' : 'down';
+		const opposite = delta === -1 ? 'down' : 'up';
+		const rowElement = stateRowElements.get(row.key);
+		const movedButton = rowElement?.querySelector<HTMLButtonElement>(
+			`button[data-move-direction="${direction}"]`
+		);
+		if (movedButton && !movedButton.disabled) movedButton.focus();
+		else
+			rowElement
+				?.querySelector<HTMLButtonElement>(`button[data-move-direction="${opposite}"]`)
+				?.focus();
 	}
 
 	function addTransition(fromKey: string) {
@@ -296,14 +333,27 @@
 		</div>
 
 		<div class="space-y-3">
-			<div class="flex items-center justify-between">
-				<h3 class="text-sm font-semibold">States</h3>
+			<div class="flex items-start justify-between gap-3">
+				<div>
+					<h3 class="text-sm font-semibold">States</h3>
+					<p class="text-muted-foreground mt-1 text-xs">
+						Order determines which transitions count as sent back in State analysis. Saving a new
+						order also updates how past transitions are counted.
+					</p>
+				</div>
 				<Button type="button" size="sm" variant="outline" onclick={addState}>
 					<IconPlus size={14} /> Add state
 				</Button>
 			</div>
+			<div class="sr-only" role="status" aria-live="polite">{moveAnnouncement}</div>
 			{#each states as row, i (row.key)}
-				<div class="space-y-2 rounded-lg border p-3" transition:slide={{ duration: dur() }}>
+				<div
+					class="space-y-2 rounded-lg border p-3"
+					data-state-row={row.key}
+					use:registerStateRow={row.key}
+					transition:slide={{ duration: dur() }}
+					animate:flip={{ duration: dur() }}
+				>
 					<div class="flex flex-wrap items-center gap-2">
 						<Input
 							bind:value={states[i].name}
@@ -323,6 +373,34 @@
 							<input type="radio" name="initial-state" value={row.key} bind:group={initialKey} />
 							initial
 						</label>
+						<div class="flex shrink-0 items-center gap-0.5">
+							<Button
+								type="button"
+								size="icon"
+								variant="ghost"
+								class="text-muted-foreground size-8"
+								disabled={saving || i === 0}
+								aria-label={`Move ${stateName(row.key)} up`}
+								title={`Move ${stateName(row.key)} up`}
+								data-move-direction="up"
+								onclick={() => moveState(i, -1)}
+							>
+								<IconArrowUp size={14} />
+							</Button>
+							<Button
+								type="button"
+								size="icon"
+								variant="ghost"
+								class="text-muted-foreground size-8"
+								disabled={saving || i === states.length - 1}
+								aria-label={`Move ${stateName(row.key)} down`}
+								title={`Move ${stateName(row.key)} down`}
+								data-move-direction="down"
+								onclick={() => moveState(i, 1)}
+							>
+								<IconArrowDown size={14} />
+							</Button>
+						</div>
 						<Button
 							type="button"
 							size="icon"
