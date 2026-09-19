@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { APIRequestContext } from '@playwright/test';
 import { expect, test } from './fixtures';
 import type { IssueDetail, IssueLink, Project } from '@tines/shared';
-import { ALICE, ALICE_AGENT, BASE_URL } from './constants.mjs';
+import { ALICE, ALICE_AGENT, BASE_URL, CAROL } from './constants.mjs';
 import { apiClient, body, errorBody, runId } from './helpers';
 
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url));
@@ -100,8 +100,13 @@ function insertChunks(prefix: string, rows: string[]): string {
 	return statements.join('\n');
 }
 
-async function makeIssues(request: APIRequestContext, marker: string, count: number) {
-	const api = apiClient(request, ALICE.apiKey);
+async function makeIssues(
+	request: APIRequestContext,
+	marker: string,
+	count: number,
+	identity: Pick<typeof ALICE, 'apiKey'> = ALICE
+) {
+	const api = apiClient(request, identity.apiKey);
 	const project = await body<Project>(
 		await api.post('/api/v1/projects', { name: `native-links-${runId}-${marker}` })
 	);
@@ -686,7 +691,7 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 			api,
 			project,
 			issues: [source, target]
-		} = await makeIssues(request, marker, 2);
+		} = await makeIssues(request, marker, 2, CAROL);
 		const seed = await api.post(`/api/v1/issues/${target.id}/links`, {
 			kind: 'blocks',
 			issue_id: source.id
