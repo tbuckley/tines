@@ -6,6 +6,7 @@ import { recordDispatchEffects, TEST_NOOP_DISPATCH_EFFECTS } from './test-dispat
 import type { ActorContext } from './core';
 import { listArtifacts } from './artifacts';
 import { runScheduleNow } from './schedules';
+import { addIssueLink } from './issue-links';
 
 const actor: ActorContext = {
 	userId: USER,
@@ -175,5 +176,69 @@ describe('createIssue with initial relationships', () => {
 				nextId
 			)
 		).toEqual([]);
+	});
+
+	it('guards every dependent row when a competing edge wins after preflight', async () => {
+		const tables = [
+			'issue',
+			'issue_address',
+			'scheduled_task',
+			'label',
+			'issue_label',
+			'context_item',
+			'artifact_version',
+			'artifact_version_file',
+			'issue_link',
+			'event'
+		];
+		const before = Object.fromEntries(
+			tables.map((table) => [table, t.all(`SELECT * FROM ${table}`).length])
+		);
+		const delayedEnv = { ...t.env, DB: Object.create(t.env.DB) } as Env;
+		let competed = false;
+		delayedEnv.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			if (!competed) {
+				competed = true;
+				await addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, blocked, {
+					kind: 'blocks',
+					issue_id: blocker
+				});
+			}
+			return t.env.DB.batch<T>(statements);
+		};
+
+		await expect(
+			createIssue(
+				t.db,
+				delayedEnv,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				PROJECT,
+				{
+					title: 'Commit-time loser',
+					blocked_by: [blocker],
+					blocks: [blocked],
+					labels: ['commit-time-loser'],
+					schedule: { preset: { kind: 'daily', time: '09:00' } }
+				},
+				[
+					{
+						name: 'losing-file',
+						filename: 'losing.txt',
+						contentType: 'text/plain',
+						body: new Blob(['must not persist'])
+					}
+				]
+			)
+		).rejects.toMatchObject({ status: 422, code: 'link_cycle' });
+
+		expect(competed, 'the competing link committed after create preflight').toBe(true);
+		for (const table of tables) {
+			const expectedDelta = table === 'issue_link' ? 1 : table === 'event' ? 2 : 0;
+			expect(t.all(`SELECT * FROM ${table}`), table).toHaveLength(before[table] + expectedDelta);
+		}
+		expect(t.all("SELECT id FROM issue WHERE title = 'Commit-time loser'")).toEqual([]);
+		expect(t.all("SELECT id FROM label WHERE name = 'commit-time-loser'")).toEqual([]);
+		expect(t.all("SELECT id FROM context_item WHERE name = 'losing-file'")).toEqual([]);
 	});
 });

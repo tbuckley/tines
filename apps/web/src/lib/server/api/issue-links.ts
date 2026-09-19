@@ -397,48 +397,63 @@ export function createIssueLinkQueries(
 			(SELECT COUNT(*) FROM event e JOIN pending x ON x.target_event_id = e.id) AS target_events_inserted
 		FROM pending p ORDER BY p.ordinal
 	`.compile(db);
-	const diagnostic = plan.prospective
-		? sql<PlanDiagnosticEdge>`
-		WITH ${pending}, nodes AS (
-			SELECT issue.id, project.name AS project_name, issue.number, issue.title
-			FROM issue JOIN project ON project.id = issue.project_id
-			WHERE project.user_id = ${actor.userId}
-			UNION ALL
+	// Diagnostics are read only on rejection. Restrict them to the first
+	// rejected candidate's reachable subgraph: selecting every owner edge here
+	// makes a one-edge conflict scale with the whole account.
+	const writeMissing = plan.prospective
+		? sql`NOT EXISTS (SELECT 1 FROM issue WHERE id = ${plan.prospective.id})`
+		: sql`NOT EXISTS (SELECT 1 FROM issue_link JOIN pending ON pending.id = issue_link.id)`;
+	const prospectiveNode = plan.prospective
+		? sql`UNION ALL
 			SELECT ${plan.prospective.id}, project.name, ${nextIssueNumber(plan.prospective.projectId)},
 				${plan.prospective.title}
 			FROM project WHERE project.id = ${plan.prospective.projectId}
-				AND project.user_id = ${actor.userId}
+				AND project.user_id = ${actor.userId}`
+		: sql``;
+	const diagnostic = sql<PlanDiagnosticEdge>`
+		WITH RECURSIVE ${pending}, ${reachable}, rejections AS (
+			SELECT p.ordinal, p.source_issue_id, p.target_issue_id,
+				${duplicate} AS duplicate_target_id,
+				CASE WHEN EXISTS (SELECT 1 FROM reachable r
+					WHERE r.ordinal = p.ordinal AND r.issue_id = p.source_issue_id)
+					THEN 1 ELSE 0 END AS cycle_exists
+			FROM pending p
+			WHERE NOT ${prospectiveOwned} OR NOT ${ownedSource} OR NOT ${ownedTarget}
+				OR ${duplicate} IS NOT NULL OR ${exact}
+				OR EXISTS (SELECT 1 FROM reachable r
+					WHERE r.ordinal = p.ordinal AND r.issue_id = p.source_issue_id)
+		), rejected AS (
+			SELECT * FROM rejections ORDER BY ordinal LIMIT 1
 		), graph AS (
 			SELECT NULL AS ordinal, link.source_issue_id AS source, link.target_issue_id AS target
-			FROM issue_link link
-			JOIN nodes source_node ON source_node.id = link.source_issue_id
-			JOIN nodes target_node ON target_node.id = link.target_issue_id
-			WHERE link.kind IN ('blocks', 'duplicate_of')
+			FROM rejected
+			JOIN reachable ON reachable.ordinal = rejected.ordinal
+			JOIN issue_link link ON link.source_issue_id = reachable.issue_id
+			JOIN issue link_source ON link_source.id = link.source_issue_id
+			JOIN project link_source_project ON link_source_project.id = link_source.project_id
+			JOIN issue link_target ON link_target.id = link.target_issue_id
+			JOIN project link_target_project ON link_target_project.id = link_target.project_id
+			WHERE rejected.cycle_exists = 1 AND link.kind IN ('blocks', 'duplicate_of')
+				AND link_source_project.user_id = ${actor.userId}
+				AND link_target_project.user_id = ${actor.userId}
 			UNION ALL
-			SELECT ordinal, source_issue_id, target_issue_id FROM pending
-		)
-		SELECT graph.ordinal, graph.source, graph.target,
-			source_node.project_name AS source_project_name, source_node.number AS source_number,
-			source_node.title AS source_title, target_node.project_name AS target_project_name,
-			target_node.number AS target_number, target_node.title AS target_title
-		FROM graph
-		JOIN nodes source_node ON source_node.id = graph.source
-		JOIN nodes target_node ON target_node.id = graph.target
-		WHERE NOT EXISTS (SELECT 1 FROM issue WHERE id = ${plan.prospective.id})
-	`.compile(db)
-		: sql<PlanDiagnosticEdge>`
-		WITH ${pending}, nodes AS (
+			SELECT earlier.ordinal, earlier.source_issue_id, earlier.target_issue_id
+			FROM rejected
+			JOIN reachable ON reachable.ordinal = rejected.ordinal
+			JOIN pending earlier ON earlier.source_issue_id = reachable.issue_id
+				AND earlier.ordinal < rejected.ordinal
+			WHERE rejected.cycle_exists = 1
+			UNION ALL
+			SELECT ordinal, source_issue_id, target_issue_id FROM rejected
+			UNION ALL
+			SELECT ordinal, duplicate_target_id, duplicate_target_id FROM rejected
+			WHERE duplicate_target_id IS NOT NULL
+		), nodes AS (
 			SELECT issue.id, project.name AS project_name, issue.number, issue.title
 			FROM issue JOIN project ON project.id = issue.project_id
 			WHERE project.user_id = ${actor.userId}
-		), graph AS (
-			SELECT NULL AS ordinal, link.source_issue_id AS source, link.target_issue_id AS target
-			FROM issue_link link
-			JOIN nodes source_node ON source_node.id = link.source_issue_id
-			JOIN nodes target_node ON target_node.id = link.target_issue_id
-			WHERE link.kind IN ('blocks', 'duplicate_of')
-			UNION ALL
-			SELECT ordinal, source_issue_id, target_issue_id FROM pending
+				AND issue.id IN (SELECT source FROM graph UNION SELECT target FROM graph)
+			${prospectiveNode}
 		)
 		SELECT graph.ordinal, graph.source, graph.target,
 			source_node.project_name AS source_project_name, source_node.number AS source_number,
@@ -447,7 +462,7 @@ export function createIssueLinkQueries(
 		FROM graph
 		JOIN nodes source_node ON source_node.id = graph.source
 		JOIN nodes target_node ON target_node.id = graph.target
-		WHERE NOT EXISTS (SELECT 1 FROM issue_link JOIN pending ON pending.id = issue_link.id)
+		WHERE ${writeMissing}
 	`.compile(db);
 	return {
 		queries: [links, eventQuery('source'), eventQuery('target'), receipt, diagnostic],
