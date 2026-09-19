@@ -44,7 +44,20 @@ test('creates an issue with generated, editable file artifact names', async ({
 			)
 		)
 		.toBe(0);
+	let releaseCreate!: () => void;
+	const heldCreate = new Promise<void>((resolve) => (releaseCreate = resolve));
+	await page.route('**/api/v1/projects/*/issues', async (route) => {
+		if (route.request().method() !== 'POST') return route.continue();
+		await heldCreate;
+		await route.continue();
+	});
 	await dialog.getByRole('button', { name: 'Create issue' }).click();
+	await expect(dialog.getByRole('button', { name: 'Creating and attaching…' })).toBeDisabled();
+	await expect(dialog.getByLabel('Title')).toBeDisabled();
+	await expect(dialog.getByRole('button', { name: 'Close' })).toBeDisabled();
+	await page.keyboard.press('Escape');
+	await expect(dialog).toBeVisible();
+	releaseCreate();
 
 	await expect(page).toHaveURL(new RegExp(`/issues/${project.name}/\\d+$`));
 	await expect(page.getByRole('heading', { name: 'Created with references' })).toBeVisible();
