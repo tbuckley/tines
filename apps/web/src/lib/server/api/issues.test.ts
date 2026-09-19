@@ -33,6 +33,7 @@ import {
 import { createLabel, listLabels } from './labels';
 import { listArtifacts } from './artifacts';
 import { getArtifactStore } from '$lib/server/artifact-store';
+import { runScheduleNow } from './schedules';
 import { loadWorkflows } from './workflows';
 import { createTestDb, type TestDb } from './test-db';
 
@@ -841,6 +842,12 @@ describe('createIssue with initial files', () => {
 		apiKeyName: null,
 		viaSession: true
 	};
+	const file = (name: string, body = name) => ({
+		name,
+		filename: `${name}.txt`,
+		contentType: 'text/plain',
+		body: new Blob([body], { type: 'text/plain' })
+	});
 
 	it('publishes file rows, bytes, and canonical scope before signaling dispatch', async () => {
 		const t = createTestDb();
@@ -920,6 +927,165 @@ describe('createIssue with initial files', () => {
 		).rejects.toMatchObject({ code: 'duplicate_artifact_name' });
 		expect(t.all('SELECT id FROM issue')).toEqual([]);
 		expect(t.all("SELECT id FROM context_item WHERE kind = 'artifact'")).toEqual([]);
+	});
+
+	it('leaves no database rows or dispatch when a later object put fails', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		let puts = 0;
+		t.env.ARTIFACTS = {
+			put: async () => {
+				puts++;
+				if (puts === 2) throw new Error('injected second object failure');
+			}
+		} as unknown as R2Bucket;
+		const effects = recordDispatchEffects();
+		await expect(
+			createIssue(t.db, t.env, human, effects, PROJECT, { title: 'No partial publish' }, [
+				file('first'),
+				file('second')
+			])
+		).rejects.toThrow('injected second object failure');
+		expect(puts).toBe(2);
+		expect(effects.count()).toBe(0);
+		for (const table of [
+			'issue',
+			'issue_address',
+			'scheduled_task',
+			'label',
+			'context_item',
+			'artifact_version',
+			'event'
+		]) {
+			expect(t.all(`SELECT * FROM ${table}`), table).toEqual([]);
+		}
+	});
+
+	it('rolls back every composed row and stays silent on a late batch failure', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const effects = recordDispatchEffects();
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		const lateFailure = t.env.DB.prepare(
+			'INSERT INTO project (id, user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+		).bind(PROJECT, USER, 'duplicate', 0, 0);
+		t.env.DB.batch = (statements) => realBatch([...statements, lateFailure]);
+		await expect(
+			createIssue(
+				t.db,
+				t.env,
+				human,
+				effects,
+				PROJECT,
+				{
+					title: 'Composed create',
+					labels: ['new-label'],
+					schedule: { preset: { kind: 'daily', time: '09:00' } }
+				},
+				[file('reference')]
+			)
+		).rejects.toThrow();
+		expect(effects.count()).toBe(0);
+		for (const table of [
+			'issue',
+			'issue_address',
+			'scheduled_task',
+			'label',
+			'context_item',
+			'artifact_version',
+			'event'
+		]) {
+			expect(t.all(`SELECT * FROM ${table}`), table).toEqual([]);
+		}
+	});
+
+	it('signals once after files are readable and keeps the commit when response reads fail', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		let signals = 0;
+		const reads: Promise<Uint8Array | null>[] = [];
+		await expect(
+			createIssue(
+				t.db,
+				t.env,
+				human,
+				{
+					signalDispatch() {
+						signals++;
+						const versions = t.all('SELECT r2_key FROM artifact_version') as {
+							r2_key: string;
+						}[];
+						expect(versions).toHaveLength(2);
+						for (const { r2_key } of versions) {
+							reads.push(getArtifactStore(t.env).get(r2_key));
+						}
+						t.sqlite.exec('DROP TABLE comment');
+					}
+				},
+				PROJECT,
+				{ title: 'Committed despite response failure' },
+				[file('one'), file('two')]
+			)
+		).rejects.toThrow();
+		expect(signals).toBe(1);
+		expect(await Promise.all(reads)).toEqual([
+			new TextEncoder().encode('one'),
+			new TextEncoder().encode('two')
+		]);
+		expect(t.all('SELECT id FROM issue')).toHaveLength(1);
+		expect(t.all("SELECT id FROM context_item WHERE kind = 'artifact'")).toHaveLength(2);
+	});
+
+	it('composes labels and recurrence while later instances do not copy files', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const created = await createIssue(
+			t.db,
+			t.env,
+			human,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			PROJECT,
+			{
+				title: 'Daily references',
+				labels: ['new-label'],
+				schedule: { preset: { kind: 'daily', time: '09:00' } }
+			},
+			[file('reference')]
+		);
+		expect(created.labels.map((label) => label.name)).toEqual(['new-label']);
+		expect(created.schedule).toBeDefined();
+		expect(t.all("SELECT id FROM event WHERE type = 'label.created'")).toHaveLength(1);
+		expect(await listArtifacts(t.db, USER, created.id)).toHaveLength(1);
+		const nextId = await runScheduleNow(
+			t.db,
+			t.env,
+			human,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			created.schedule!.id
+		);
+		expect(await listArtifacts(t.db, USER, nextId)).toEqual([]);
+	});
+
+	it('derives each event scope from its own concurrently allocated issue number', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const [first, second] = await Promise.all([
+			createIssue(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, { title: 'A' }, [
+				file('a')
+			]),
+			createIssue(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, { title: 'B' }, [
+				file('b')
+			])
+		]);
+		expect(first.number).not.toBe(second.number);
+		const payloads = t.all(
+			"SELECT issue_id, payload FROM event WHERE type = 'context.created'"
+		) as { issue_id: string; payload: string }[];
+		const labels = new Map(
+			payloads.map((row) => [row.issue_id, JSON.parse(row.payload).scope.label as string])
+		);
+		expect(labels.get(first.id)).toBe(`issue ${first.project_name}/${first.number}`);
+		expect(labels.get(second.id)).toBe(`issue ${second.project_name}/${second.number}`);
 	});
 });
 

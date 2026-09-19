@@ -68,6 +68,12 @@ export async function readIssueCreateMultipart(request: Request): Promise<Parsed
 		}
 		invalid('Request body must be valid multipart form data');
 	}
+	if (actual !== declared) {
+		invalid('Content-Length does not match the multipart body', {
+			declared_bytes: declared,
+			actual_bytes: actual
+		});
+	}
 
 	const entries = [...form.entries()];
 	const metadataEntries = entries.filter(([key]) => key === 'metadata');
