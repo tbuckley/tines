@@ -553,6 +553,18 @@ unit tests again before shipping, but the e2e suite runs only here.
 `.github/workflows/deploy.yml` deploys on every push to `main` (and via manual
 dispatch): it builds, runs unit tests, applies pending D1 migrations with
 `wrangler d1 migrations apply tines --remote`, then runs `wrangler deploy`.
+The workflow bakes the checkout's full Git SHA and the same deterministic version used by the CLI
+publisher into the Worker before building. Inspect any running deployment without credentials:
+
+```sh
+curl -i https://tines.tbuckley.dev/api/version
+```
+
+The JSON body and the `X-Tines-Version` / `X-Tines-Commit` headers identify the server, not the
+installed CLI making the request. Local `pnpm dev` and ordinary builds report `dev` plus local HEAD
+(`unknown` only when Git metadata is unavailable). Packagers may explicitly provide the pair
+`TINES_BUILD_VERSION` and `TINES_BUILD_COMMIT`; production additionally requires
+`TINES_BUILD_CHANNEL=production` and a full-history checkout so the release number is reproducible.
 
 To enable it, add two GitHub Actions secrets (repo → Settings → Secrets and
 variables → Actions):
@@ -585,6 +597,10 @@ traffic; the upload gets a stable per-PR alias URL like
 URL for every push to the PR, always serving the latest upload — which the
 workflow posts (and keeps updated) as a PR comment. It uses the same two
 Actions secrets as the deploy workflow.
+
+Each preview reports `preview-pr-<number>-<sha12>` and the actual full commit that Actions built.
+That commit can be GitHub's synthetic merge checkout rather than the PR head; the preview comment
+names both values when they differ.
 
 Previews use the `preview` wrangler environment (`env.preview` in
 `apps/web/wrangler.jsonc`): a separate worker (`tines-web-preview`) bound to
