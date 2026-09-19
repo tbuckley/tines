@@ -501,7 +501,8 @@ export function assertCreateIssueLinksCommitted(
 	offset = 0
 ): void {
 	const receiptRows = results[offset + batch.receiptIndex]?.results;
-	const diagnosticRows = results[offset + batch.diagnosticIndex]?.results;
+	const diagnosticResult = results[offset + batch.diagnosticIndex];
+	const diagnosticRows = diagnosticResult?.results;
 	if (!Array.isArray(receiptRows) || receiptRows.length !== plan.edges.length) {
 		throw new Error('Issue create link batch returned a malformed receipt');
 	}
@@ -553,6 +554,16 @@ export function assertCreateIssueLinksCommitted(
 	if (rejected.endpoints_owned !== 1) throw notFound();
 	const diagnostics = diagnosticRows as unknown as PlanDiagnosticEdge[];
 	const details = diagnosticDetails(diagnostics);
+	const e2eDiagnostic =
+		import.meta.env.VITE_TINES_E2E === '1'
+			? {
+					e2e_diagnostic: {
+						returned_rows: diagnostics.length,
+						response_bytes: new TextEncoder().encode(JSON.stringify(diagnostics)).length,
+						rows_read: diagnosticResult?.meta?.rows_read
+					}
+				}
+			: {};
 	const source = details.get(rejected.source_issue_id);
 	const target = details.get(rejected.target_issue_id);
 	if (!source || !target) throw new Error('Issue create link diagnostic omitted an endpoint');
@@ -584,7 +595,8 @@ export function assertCreateIssueLinksCommitted(
 		const path = [rejected.source_issue_id, ...backPath].map((id) => details.get(id)!);
 		const pretty = path.map((item) => `${item.project_name}/${item.number}`).join(' → ');
 		throw new ApiFail(422, 'link_cycle', `Adding this link would create a cycle: ${pretty}`, {
-			path
+			path,
+			...e2eDiagnostic
 		});
 	}
 	throw new Error('Issue create link batch skipped insertion without a recognized reason');

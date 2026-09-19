@@ -23,7 +23,12 @@ function cliJson(args: string[]): unknown {
 	);
 }
 
-function d1(sql: string): Array<Record<string, unknown>> {
+interface NativeD1Result {
+	results?: Array<Record<string, unknown>>;
+	meta?: { rows_read?: number };
+}
+
+function d1Result(sql: string): NativeD1Result {
 	let output = '';
 	for (let attempt = 0; attempt < 3; attempt++) {
 		try {
@@ -49,8 +54,13 @@ function d1(sql: string): Array<Record<string, unknown>> {
 			if (attempt === 2) throw error;
 		}
 	}
-	const result = JSON.parse(output) as Array<{ results?: Array<Record<string, unknown>> }>;
-	return result[0]?.results ?? [];
+	const result = (JSON.parse(output) as NativeD1Result[])[0];
+	if (!result) throw new Error('Wrangler returned no D1 result');
+	return result;
+}
+
+function d1(sql: string): Array<Record<string, unknown>> {
+	return d1Result(sql).results ?? [];
 }
 
 function d1File(sql: string): void {
@@ -418,21 +428,35 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 		request
 	}) => {
 		test.setTimeout(180_000);
+		let createLosses = 0;
 		for (let iteration = 0; iteration < 10; iteration++) {
-			const marker = `create-race-${iteration}`;
+			const marker = `create-race-${runId}-${iteration}`;
+			const fileName = `${marker}-file`;
 			const {
-				api,
 				project,
 				issues: [a, b]
 			} = await makeIssues(request, marker, 2);
 			const agent = apiClient(request, ALICE_AGENT.apiKey);
 			const create = () =>
-				api.post(`/api/v1/projects/${project.id}/issues`, {
-					title: `${marker}-new`,
-					blocked_by: [a.id],
-					...(iteration % 2 === 0 ? { blocks: [b.id] } : { duplicate_of: b.id }),
-					labels: [`${marker}-label`],
-					schedule: { preset: { kind: 'daily', time: '09:00' } }
+				request.post(`/api/v1/projects/${project.id}/issues`, {
+					headers: { authorization: `Bearer ${ALICE.apiKey}` },
+					multipart: {
+						metadata: JSON.stringify({
+							issue: {
+								title: `${marker}-new`,
+								blocked_by: [a.id],
+								...(iteration % 2 === 0 ? { blocks: [b.id] } : { duplicate_of: b.id }),
+								labels: [`${marker}-label`],
+								schedule: { preset: { kind: 'daily', time: '09:00' } }
+							},
+							attachments: [{ part: 'file-0', name: fileName, filename: `${marker}.txt` }]
+						}),
+						'file-0': {
+							name: `${marker}.txt`,
+							mimeType: 'text/plain',
+							buffer: Buffer.from(`losing create ${iteration}`)
+						}
+					}
 				});
 			const close = () =>
 				agent.post(`/api/v1/issues/${b.id}/links`, { kind: 'blocks', issue_id: a.id });
@@ -445,15 +469,51 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 			expect((await errorBody(rejected)).error.code).toBe('link_cycle');
 
 			const createWon = responses[0].status() === 201;
+			if (!createWon) createLosses++;
 			const createdRows = d1(
 				`SELECT id FROM issue WHERE project_id=${literal(project.id)} AND title=${literal(`${marker}-new`)}`
 			);
 			expect(createdRows).toHaveLength(createWon ? 1 : 0);
 			if (!createWon) {
-				expect(d1(`SELECT id FROM label WHERE name=${literal(`${marker}-label`)}`)).toEqual([]);
-				expect(d1(`SELECT id FROM scheduled_task WHERE name=${literal(`${marker}-new`)}`)).toEqual(
-					[]
-				);
+				const residue = d1(
+					`SELECT
+						(SELECT COUNT(*) FROM issue WHERE project_id=${literal(project.id)}
+							AND title=${literal(`${marker}-new`)}) AS issue,
+						(SELECT COUNT(*) FROM issue_address WHERE project_id=${literal(project.id)}
+							AND issue_id NOT IN (${literal(a.id)},${literal(b.id)})) AS issue_address,
+						(SELECT COUNT(*) FROM scheduled_task WHERE name=${literal(`${marker}-new`)}) AS scheduled_task,
+						(SELECT COUNT(*) FROM label WHERE name=${literal(`${marker}-label`)}) AS label,
+						(SELECT COUNT(*) FROM issue_label JOIN label ON label.id=issue_label.label_id
+							WHERE label.name=${literal(`${marker}-label`)}) AS issue_label,
+						(SELECT COUNT(*) FROM context_item WHERE name=${literal(fileName)}) AS context_item,
+						(SELECT COUNT(*) FROM artifact_version
+							JOIN context_item ON context_item.id=artifact_version.context_item_id
+							WHERE context_item.name=${literal(fileName)}) AS artifact_version,
+						(SELECT COUNT(*) FROM artifact_version_file
+							JOIN artifact_version ON artifact_version.id=artifact_version_file.artifact_version_id
+							JOIN context_item ON context_item.id=artifact_version.context_item_id
+							WHERE context_item.name=${literal(fileName)}) AS artifact_version_file,
+						(SELECT COUNT(*) FROM issue_link
+							JOIN issue source ON source.id=issue_link.source_issue_id
+							JOIN issue target ON target.id=issue_link.target_issue_id
+							WHERE (source.project_id=${literal(project.id)} OR target.project_id=${literal(project.id)})
+								AND NOT (issue_link.source_issue_id=${literal(b.id)}
+									AND issue_link.target_issue_id=${literal(a.id)})) AS issue_link,
+						(SELECT COUNT(*) FROM event WHERE project_id=${literal(project.id)}
+							AND issue_id NOT IN (${literal(a.id)},${literal(b.id)})) AS event`
+				)[0];
+				expect(residue, 'losing create residue by table').toEqual({
+					issue: 0,
+					issue_address: 0,
+					scheduled_task: 0,
+					label: 0,
+					issue_label: 0,
+					context_item: 0,
+					artifact_version: 0,
+					artifact_version_file: 0,
+					issue_link: 0,
+					event: 0
+				});
 			}
 			const ids = [a.id, b.id, ...createdRows.map((row) => row.id as string)];
 			const rows = audit(ids);
@@ -461,6 +521,47 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 			expect(rows.filter((row) => row.row_type === 'event')).toHaveLength(createWon ? 4 : 2);
 			expectAcyclic(rows);
 		}
+		expect(createLosses, 'native race exercised the rejected create order').toBeGreaterThan(0);
+
+		const winnerMarker = `create-first-${runId}`;
+		const winnerFile = `${winnerMarker}-file`;
+		const {
+			project,
+			issues: [a, b]
+		} = await makeIssues(request, winnerMarker, 2);
+		const createdResponse = await request.post(`/api/v1/projects/${project.id}/issues`, {
+			headers: { authorization: `Bearer ${ALICE.apiKey}` },
+			multipart: {
+				metadata: JSON.stringify({
+					issue: {
+						title: `${winnerMarker}-new`,
+						blocked_by: [a.id],
+						blocks: [b.id],
+						labels: [`${winnerMarker}-label`],
+						schedule: { preset: { kind: 'daily', time: '09:00' } }
+					},
+					attachments: [{ part: 'file-0', name: winnerFile, filename: `${winnerMarker}.txt` }]
+				}),
+				'file-0': {
+					name: `${winnerMarker}.txt`,
+					mimeType: 'text/plain',
+					buffer: Buffer.from('winning create')
+				}
+			}
+		});
+		expect(createdResponse.status()).toBe(201);
+		const created = await body<IssueDetail>(createdResponse);
+		const rejectedClose = await apiClient(request, ALICE_AGENT.apiKey).post(
+			`/api/v1/issues/${b.id}/links`,
+			{ kind: 'blocks', issue_id: a.id }
+		);
+		expect(rejectedClose.status()).toBe(422);
+		expect((await errorBody(rejectedClose)).error.code).toBe('link_cycle');
+		expect(
+			d1(
+				`SELECT id FROM context_item WHERE issue_id=${literal(created.id)} AND name=${literal(winnerFile)}`
+			)
+		).toHaveLength(1);
 	});
 
 	test('a late create-link event failure rolls back every create-time row', async ({ request }) => {
@@ -584,6 +685,74 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 		expect(
 			d1(`SELECT COUNT(*) AS n FROM issue_link WHERE source_issue_id=${literal(created.id)}`)[0].n
 		).toBe(121);
+	});
+
+	test('rejection diagnostics stay bounded when the owner has a large unrelated graph', async ({
+		request
+	}) => {
+		test.setTimeout(120_000);
+		const marker = `diagnostic-bound-${runId}`;
+		const {
+			api,
+			project,
+			issues: [source, target]
+		} = await makeIssues(request, marker, 2);
+		const seed = await api.post(`/api/v1/issues/${target.id}/links`, {
+			kind: 'blocks',
+			issue_id: source.id
+		});
+		expect(seed.status()).toBe(201);
+		const diagnostic = async () => {
+			const rejected = await api.post(`/api/v1/issues/${source.id}/links`, {
+				kind: 'blocks',
+				issue_id: target.id
+			});
+			expect(rejected.status()).toBe(422);
+			const error = (await errorBody(rejected)).error;
+			expect(error.code).toBe('link_cycle');
+			const metrics = error.details?.e2e_diagnostic as
+				{ returned_rows: number; response_bytes: number; rows_read: number } | undefined;
+			expect(metrics).toMatchObject({ returned_rows: 2 });
+			expect(typeof metrics?.response_bytes).toBe('number');
+			expect(typeof metrics?.rows_read).toBe('number');
+			return metrics!;
+		};
+		const before = await diagnostic();
+
+		const unrelated = Array.from(
+			{ length: 601 },
+			(_, index) => `iss_native_${marker}_unrelated_${index}`
+		);
+		d1File(`
+			${insertChunks(
+				'INSERT INTO issue (id,project_id,number,title,description,workflow_id,state_id,created_at,updated_at)',
+				unrelated.map(
+					(id, index) =>
+						`(${literal(id)},${literal(project.id)},${index + 1000},${literal(`Unrelated ${index}`)},'',` +
+						`'wf_standard','wfs_std_open',1,1)`
+				)
+			)}
+			${insertChunks(
+				'INSERT INTO issue_link (id,source_issue_id,target_issue_id,kind,created_at)',
+				unrelated
+					.slice(0, -1)
+					.map(
+						(id, index) =>
+							`('lnk_native_${marker}_unrelated_${index}',${literal(id)},${literal(unrelated[index + 1])},'blocks',1)`
+					)
+			)}
+		`);
+
+		const after = await diagnostic();
+		expect(after.returned_rows, 'diagnostic rows').toBe(before.returned_rows);
+		expect(after.response_bytes, 'diagnostic bytes').toBe(before.response_bytes);
+		// Adding 600 rows can deepen SQLite's indexes by a page or two even when
+		// the query never traverses them. Pin constant lookup cost, not byte-for-byte
+		// equality; the account-wide mutation reads hundreds of rows here.
+		expect(after.rows_read, 'native D1 diagnostic rows read').toBeLessThanOrEqual(
+			before.rows_read + 8
+		);
+		expect(after.rows_read, 'native D1 diagnostic absolute rows-read bound').toBeLessThan(128);
 	});
 
 	test('native traversal handles 1,000-node chain and converging fan-out fixtures', async ({
