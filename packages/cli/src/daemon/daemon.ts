@@ -61,6 +61,8 @@ import {
 	AMBIENT_CLI,
 	buildHarnessInvocation,
 	buildSpawnEnv,
+	SecretRedactor,
+	redactSecrets,
 	CliRefresher,
 	exitLineForRun,
 	formatLaunchBanner,
@@ -406,7 +408,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					status
 				};
 				run.batcher.append(`[usage] ${JSON.stringify(accounting)}\n`);
-				await run.batcher.flush();
+				await run.batcher.finish();
 				const ended = await client.finishRun(run.runId, {
 					status,
 					...(run.effortEvidence ? { effort_application: run.effortEvidence } : {}),
@@ -549,6 +551,9 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 	// -- launching one assignment ---------------------------------------------
 	const launch = async (assignment: RunnerAssignment) => {
+		// Env items live in this closure only: never the workspace files, the
+		// banner, or daemon-state.json. Secret values also drive log masking.
+		const secretEnvValues = (assignment.env ?? []).filter((e) => e.secret).map((e) => e.value);
 		const runId = assignment.run.id;
 		if (table.has(runId)) return;
 		// A resumed run reuses its predecessor's workspace — the repositories,
@@ -579,10 +584,13 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			keepForResume: false,
 			batcher: new LogBatcher(
 				(chunk, seq) => client.appendRunLog(runId, { chunk, seq }).then(() => {}),
-				{ onError: (err) => log(`log append for run ${runId} failed: ${message(err)}`) }
+				{
+					onError: (err) => log(`log append for run ${runId} failed: ${message(err)}`),
+					...(secretEnvValues.length > 0 ? { redact: secretEnvValues } : {})
+				}
 			)
 		};
-		run.flush = () => run.batcher.flush();
+		run.flush = () => run.batcher.finish();
 		table.track(run);
 		// Enforced effort never trusts the catalog advertised by an earlier probe.
 		// Reprobe the same PATH/environment used below and require the assignment's
@@ -700,8 +708,16 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			const spawnEnv = buildSpawnEnv(process.env, {
 				binDir: cli.binDir,
 				apiKey: assignment.run_key,
-				apiUrl: baseUrl
+				apiUrl: baseUrl,
+				...(assignment.env ? { extra: assignment.env } : {})
 			});
+			if (assignment.env?.length) {
+				run.batcher.append(
+					`[env] ${assignment.env.length} environment variable(s) set: ${assignment.env
+						.map((e) => `${e.name}${e.secret ? ' (secret)' : ''}`)
+						.join(', ')}\n`
+				);
+			}
 			if (opts.harness === 'codex') run.codexHome = resolveCodexHome(spawnEnv, workspace);
 			const child = spawn(invocation.file, invocation.args, {
 				cwd: workspace,
@@ -749,14 +765,22 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				run.rawSpool = createWriteStream(spoolPath);
 				run.rawUpload = (body) => client.putRunLogRaw(runId, body);
 				const decoder = new StringDecoder('utf8');
+				const rawRedactor = new SecretRedactor(secretEnvValues);
 				run.drain = () => {
 					const trailing = decoder.end();
-					if (trailing) renderer.write(trailing);
+					if (trailing) {
+						run.rawSpool?.write(rawRedactor.write(trailing));
+						renderer.write(trailing);
+					}
+					run.rawSpool?.write(rawRedactor.end());
 					renderer.finish();
 				};
 				child.stdout?.on('data', (data: Buffer) => {
-					run.rawSpool?.write(data);
-					renderer.write(decoder.write(data));
+					// The raw spool is uploaded verbatim, so it is masked too
+					// (text, not the Buffer — the decoder owns partial code points).
+					const text = decoder.write(data);
+					run.rawSpool?.write(rawRedactor.write(text));
+					renderer.write(text);
 				});
 			} else if (opts.harness === 'codex') {
 				const renderer = new CodexStreamRenderer((line) => run.batcher.append(line));
@@ -769,13 +793,29 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				};
 				child.stdout?.on('data', (data: Buffer) => renderer.write(decoder.write(data)));
 			} else {
-				child.stdout?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
+				const decoder = new StringDecoder('utf8');
+				const redactor = new SecretRedactor(secretEnvValues);
+				child.stdout?.on('data', (data: Buffer) =>
+					run.batcher.append(redactor.write(decoder.write(data)))
+				);
+				run.drain = () => {
+					run.batcher.append(redactor.write(decoder.end()) + redactor.end());
+				};
 			}
+			// Each pipe owns its decoder/redactor: stderr may interrupt stdout in
+			// the middle of a secret, so their pending prefixes cannot be shared.
+			const stderrDecoder = new StringDecoder('utf8');
+			const stderrRedactor = new SecretRedactor(secretEnvValues);
+			const drainStdout = run.drain;
+			run.drain = () => {
+				drainStdout?.();
+				run.batcher.append(stderrRedactor.write(stderrDecoder.end()) + stderrRedactor.end());
+			};
 			// stderr is never stream-json — it is the harness's own diagnostics,
 			// and it goes to the log verbatim for every harness.
 			child.stderr?.on('data', (data: Buffer) => {
-				const text = data.toString('utf8');
-				run.batcher.append(text);
+				const text = stderrDecoder.write(data);
+				run.batcher.append(stderrRedactor.write(text));
 				// Usage exhaustion at process start and some provider/transport
 				// failures only appear here; stdout is empty in those cases.
 				run.limiter?.noteStderr(text);
@@ -788,7 +828,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				if (child.pid) setTimeout(() => killTree(child.pid!, 'SIGKILL'), 5000).unref?.();
 			}, assignment.timeout_minutes * 60_000);
 			child.on('error', (err) => {
-				const reason = `failed to launch harness: ${message(err)}`;
+				const reason = redactSecrets(`failed to launch harness: ${message(err)}`, secretEnvValues);
 				if (assignment.effort)
 					run.effortEvidence = {
 						status: 'rejected',
@@ -838,18 +878,16 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					const limited = signal ? null : (run.limiter?.signal() ?? null);
 					const providerError = signal ? null : (run.limiter?.providerError() ?? null);
 					if (limited) {
-						log(
-							`run ${runId}: harness rate limited (${limited.detail}); reporting without a strike`
-						);
-						void table.finishAndCleanup(run, 'failed', `rate limited: ${limited.detail}`, {
+						const detail = redactSecrets(limited.detail, secretEnvValues);
+						log(`run ${runId}: harness rate limited (${detail}); reporting without a strike`);
+						void table.finishAndCleanup(run, 'failed', `rate limited: ${detail}`, {
 							judgment: 'rate_limited',
 							...(limited.resumeAt !== null ? { resume_at: limited.resumeAt } : {})
 						});
 					} else if (providerError) {
-						log(
-							`run ${runId}: transient provider error (${providerError.detail}); reporting without a strike`
-						);
-						void table.finishAndCleanup(run, 'failed', `provider error: ${providerError.detail}`, {
+						const detail = redactSecrets(providerError.detail, secretEnvValues);
+						log(`run ${runId}: transient provider error (${detail}); reporting without a strike`);
+						void table.finishAndCleanup(run, 'failed', `provider error: ${detail}`, {
 							judgment: 'interrupted'
 						});
 					} else {
@@ -862,7 +900,11 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				}
 			});
 		} catch (err) {
-			void table.finishAndCleanup(run, 'failed', `workspace setup failed: ${message(err)}`);
+			void table.finishAndCleanup(
+				run,
+				'failed',
+				redactSecrets(`workspace setup failed: ${message(err)}`, secretEnvValues)
+			);
 		}
 	};
 
@@ -908,6 +950,8 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					? { declined_assignments: [...declinedAssignments].slice(0, 100) }
 					: {}),
 				...(effortCapabilities ? { effort_capabilities: effortCapabilities } : {}),
+				// Capability: this daemon merges assignment.env into the harness environment.
+				env_delivery: 1,
 				// Stated on every poll while pending; absent otherwise, which
 				// the server reads as "not draining" — so a daemon that died
 				// mid-drain cannot pin its runner shut past its relaunch.

@@ -23,6 +23,19 @@ export interface PreambleInput {
 	apiUrl?: string;
 	/** Managed variants: repos already mounted into the workspace, by directory. */
 	repoDirs?: string[];
+	/**
+	 * Managed variants: non-secret env items, rendered as `export` lines the
+	 * agent runs (the `TINES_API_URL` precedent — the SDK has no plaintext
+	 * env channel). Secret items arrive as vault credentials instead.
+	 */
+	envExports?: { name: string; value: string }[];
+	/** Managed variants: names of secret env items delivered through the vault. */
+	envSecretNames?: string[];
+}
+
+/** Single-quoted POSIX shell literal. */
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /** Environment-specific sections, keyed so future variants replace only these. */
@@ -72,6 +85,20 @@ const VARIANTS: Record<
 						'sandbox boundary — no credentials to configure.'
 					]
 				: ['No repositories are attached to this issue.']),
+			...(input.envExports && input.envExports.length > 0
+				? [
+						'',
+						'Also exported for this run — run these before anything else:',
+						'',
+						...input.envExports.map((e) => `\`export ${e.name}=${shellQuote(e.value)}\``)
+					]
+				: []),
+			...(input.envSecretNames && input.envSecretNames.length > 0
+				? [
+						'',
+						`Secret environment variables (${input.envSecretNames.map((n) => `\`${n}\``).join(', ')}) are vault credentials: they show as opaque placeholders and are substituted only when a request leaves the sandbox.`
+					]
+				: []),
 			'',
 			'Skills attached to this issue are not pre-seeded; fetch them when needed:',
 			'`tines issues context <ref> --json` (or `GET /api/v1/issues/:id/context`) lists each',

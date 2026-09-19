@@ -796,6 +796,9 @@ export function register(program: Command): void {
 			if (context.skills.length > 0) {
 				console.log(`\nskills: ${context.skills.map((s) => s.name).join(', ')}`);
 			}
+			for (const e of context.env ?? []) {
+				console.log(`env: ${e.name}${e.secret ? ' (secret)' : ''}`);
+			}
 			for (const repo of context.repos) {
 				console.log(
 					`repo: ${repo.name} ${repo.url}${repo.branch ? `#${repo.branch}` : ''} → ${repo.dir}/`

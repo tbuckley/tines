@@ -491,7 +491,8 @@
 		const parts = [
 			[c.prompts, 'prompt'],
 			[c.skills, 'skill'],
-			[c.repos, 'repo']
+			[c.repos, 'repo'],
+			[c.envs, 'env']
 		]
 			.filter(([n]) => (n as number) > 0)
 			.map(([n, word]) => `${n} ${word}${n === 1 ? '' : 's'}`);
@@ -712,7 +713,8 @@
 	const contextTotal = $derived(
 		data.issue.context_summary.prompts +
 			data.issue.context_summary.skills +
-			data.issue.context_summary.repos
+			data.issue.context_summary.repos +
+			(data.issue.context_summary.envs ?? 0)
 	);
 
 	let editingDescription = $state(false);

@@ -880,14 +880,21 @@ export interface IssueFilters {
 // ---------------------------------------------------------------------------
 // Context items
 
-export type ContextKind = 'prompt' | 'skill' | 'repo' | 'artifact';
+export type ContextKind = 'prompt' | 'skill' | 'repo' | 'artifact' | 'env';
 
-export const CONTEXT_KINDS: readonly ContextKind[] = ['prompt', 'skill', 'repo', 'artifact'];
+export const CONTEXT_KINDS: readonly ContextKind[] = ['prompt', 'skill', 'repo', 'artifact', 'env'];
 
 /** Byte caps (UTF-8), enforced at the API layer with structured 422s. */
 export const PROMPT_MAX_BYTES = 32 * 1024;
 export const SKILL_MAX_FILES = 20;
 export const SKILL_MAX_TOTAL_BYTES = 100 * 1024;
+/** Env items: the item name is the variable name; the value is byte-capped. */
+export const ENV_NAME_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
+export const ENV_VALUE_MAX_BYTES = 16 * 1024;
+export const ENV_HINT_MAX_CHARS = 200;
+/** Names the runner owns; an env item can never shadow them. */
+export const ENV_RESERVED_PREFIX = 'TINES_';
+export const ENV_RESERVED_NAMES: readonly string[] = ['PATH'];
 
 /** Skill names double as workspace directory names. */
 export const SKILL_NAME_PATTERN = /^[a-z0-9-]+$/;
@@ -975,6 +982,15 @@ export interface ContextItem {
 	repo_dir?: string | null;
 	/** Artifact payload summary (full detail lives on the artifact endpoints). */
 	artifact_type?: ArtifactType;
+	/**
+	 * Env payload (all present iff `kind === 'env'`). `value` is emitted only
+	 * for non-secret items; a secret is write-only and shows `value_set`
+	 * plus its user-supplied `hint`.
+	 */
+	value?: string;
+	secret?: boolean;
+	value_set?: boolean;
+	hint?: string | null;
 	/** Ordering within the same exact scope tuple. */
 	position: number;
 	/** Monotonic write counter for optimistic concurrency (not history). */
@@ -1000,6 +1016,10 @@ export interface CreateContextItemRequest {
 	repo_url?: string;
 	repo_branch?: string | null;
 	repo_dir?: string | null;
+	/** env: the variable's value; `secret` (default false) encrypts it at rest. */
+	value?: string;
+	secret?: boolean;
+	hint?: string | null;
 }
 
 /**
@@ -1020,6 +1040,13 @@ export interface UpdateContextItemRequest {
 	repo_url?: string;
 	repo_branch?: string | null;
 	repo_dir?: string | null;
+	/**
+	 * env: `value` replaces (write-only for secrets); `secret: true` encrypts
+	 * in place; `secret: false` on a secret item is a 422 (delete and recreate).
+	 */
+	value?: string;
+	secret?: boolean;
+	hint?: string | null;
 	/**
 	 * Compare-and-swap: reject with a 409 (carrying the current item) when
 	 * the item's version no longer matches. Omit for last-write-wins.
@@ -1104,6 +1131,20 @@ export interface EffectiveRepo {
 	dir: string;
 	version: number;
 	/** Set when the repo matched through an ancestor of the issue's state. */
+	inherited_from: InheritedFrom | null;
+}
+
+/** One effective environment variable. Secret values never travel here. */
+export interface EffectiveEnv {
+	item_id: string;
+	name: string;
+	secret: boolean;
+	hint: string | null;
+	/** Present for non-secret items only. */
+	value?: string;
+	scope: ContextScope;
+	version: number;
+	/** Set when the item matched through an ancestor of the issue's state. */
 	inherited_from: InheritedFrom | null;
 }
 
@@ -1293,6 +1334,8 @@ export interface EffectiveContext {
 	};
 	skills: EffectiveSkill[];
 	repos: EffectiveRepo[];
+	/** Effective environment variables (names, hints, non-secret values). */
+	env: EffectiveEnv[];
 	overridden: OverriddenContextItem[];
 	conflicts: RepoDirConflict[];
 }
@@ -1304,6 +1347,8 @@ export interface ContextSummary {
 	repos: number;
 	/** Artifacts attached to the issue (issue-scoped by construction). */
 	artifacts: number;
+	/** Distinct effective env variable names. */
+	envs: number;
 }
 
 /** `GET /api/v1/issues/:id/prompt` — stitched context plus the issue block. */
@@ -2023,6 +2068,11 @@ export interface RunnerPollRequest {
 	draining?: boolean;
 	/** V1 exact-model effort support discovered by this daemon boot. */
 	effort_capabilities?: EffortCapabilities;
+	/**
+	 * Capability: this daemon merges `RunnerAssignment.env` into the harness
+	 * environment. Absent → the server delivers no env and logs a warning.
+	 */
+	env_delivery?: 1;
 }
 
 /** One delivered assignment: everything the daemon needs to launch. */
@@ -2045,6 +2095,13 @@ export interface RunnerAssignment {
 	bundle: EffectiveContext;
 	/** The ephemeral run key — the harness's TINES_API_KEY. Never logged. */
 	run_key: string;
+	/**
+	 * Resolved env context items for the harness process environment. Sent
+	 * only to daemons that polled with `env_delivery: 1`; never inside
+	 * `bundle`, never written to the workspace. Secret values are masked
+	 * from the run log by the daemon.
+	 */
+	env?: RunnerAssignmentEnv[];
 	/** Minutes until the daemon must kill the harness. */
 	timeout_minutes: number;
 	/**
@@ -2055,6 +2112,12 @@ export interface RunnerAssignment {
 	 * launch prompt. Absent = launch fresh exactly as before.
 	 */
 	resume?: RunnerAssignmentResume;
+}
+
+export interface RunnerAssignmentEnv {
+	name: string;
+	value: string;
+	secret: boolean;
 }
 
 /** The continuation instructions delivered with a resumed assignment. */

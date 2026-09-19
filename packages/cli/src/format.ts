@@ -48,6 +48,10 @@ export function contextItemSummary(item: ContextItem): string {
 			return `${item.repo_url}${item.repo_branch ? `#${item.repo_branch}` : ''}`;
 		case 'artifact':
 			return item.artifact_type ?? 'artifact';
+		case 'env':
+			return item.secret
+				? `secret · set${item.hint ? ` · ${item.hint}` : ''}`
+				: `= ${item.value ?? ''}`;
 	}
 }
 
