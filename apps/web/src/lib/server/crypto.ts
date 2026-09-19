@@ -17,6 +17,16 @@ export async function sha256Hex(input: string): Promise<string> {
 
 const SECRET_VERSION = 'v1';
 
+/** The key material, or a plain Error when the binding is absent. */
+export function requireEncryptionKey(env: { SECRET_ENCRYPTION_KEY?: string }): string {
+	if (!env.SECRET_ENCRYPTION_KEY) {
+		throw new Error(
+			'SECRET_ENCRYPTION_KEY is not configured; cannot use stored provider credentials'
+		);
+	}
+	return env.SECRET_ENCRYPTION_KEY;
+}
+
 /** Derives the AES-GCM key from the binding's string material. */
 async function aesKey(keyMaterial: string): Promise<CryptoKey> {
 	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(keyMaterial));

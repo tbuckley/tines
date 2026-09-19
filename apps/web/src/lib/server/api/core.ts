@@ -274,6 +274,7 @@ export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 		403,
 		'run_key_forbidden',
 		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys, ' +
+			'cannot create, edit or delete env context items, ' +
 			'cannot import a library or install a workflow package, cannot archive or unarchive projects, cannot create, rename, or delete ' +
 			'labels, and cannot apply or remove a label a routing rule is scoped to (reading the library and ' +
 			'applying other existing labels is fine). ' +

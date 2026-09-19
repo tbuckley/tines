@@ -155,6 +155,14 @@ export interface ContextItemTable {
 	repo_dir: string | null;
 	/** JSON kind-specific config; artifacts store {"artifact_type": …}. */
 	config: string | null;
+	/**
+	 * Env payload: exactly one of `env_value` (plaintext, non-secret) and
+	 * `env_value_enc` (AES-GCM under SECRET_ENCRYPTION_KEY) is set; the hint
+	 * is user-supplied display text, never derived from the value.
+	 */
+	env_value: string | null;
+	env_value_enc: string | null;
+	env_hint: string | null;
 	/** Ordering within the same exact scope tuple. */
 	position: number;
 	/** Monotonic write counter — a CAS token, not history. */

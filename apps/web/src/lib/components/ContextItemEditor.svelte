@@ -57,7 +57,8 @@
 		prompt: 'Prompt — Markdown stitched into the agent prompt',
 		skill: 'Skill — text files seeded into the workspace',
 		repo: 'Repo — a repository to check out',
-		artifact: 'Artifact — a versioned attachment (created from an issue page)'
+		artifact: 'Artifact — a versioned attachment (created from an issue page)',
+		env: 'Env — an environment variable delivered to runs (optionally secret)'
 	};
 	// Artifacts are created through their own endpoints/panel, never here.
 	const CREATABLE_KINDS = CONTEXT_KINDS.filter((k) => k !== 'artifact');

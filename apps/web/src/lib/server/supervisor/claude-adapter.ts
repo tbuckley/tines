@@ -30,7 +30,7 @@ import {
 	LAUNCH_STALL_MS
 } from '@tines/shared';
 import { sql, type Kysely } from 'kysely';
-import { decryptSecret } from '../crypto';
+import { decryptSecret, requireEncryptionKey } from '../crypto';
 import { getDb, newId, type Database } from '../db';
 import type {
 	AdapterEndInput,
@@ -94,15 +94,6 @@ export interface ClaudeAdapterOptions {
 
 // ---------------------------------------------------------------------------
 // Environment plumbing
-
-function requireEncryptionKey(env: Env): string {
-	if (!env.SECRET_ENCRYPTION_KEY) {
-		throw new Error(
-			'SECRET_ENCRYPTION_KEY is not configured; cannot use stored provider credentials'
-		);
-	}
-	return env.SECRET_ENCRYPTION_KEY;
-}
 
 /**
  * Canonicalizes a repo context item's URL to the one form the Managed

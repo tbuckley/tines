@@ -225,7 +225,7 @@ const issue: IssueDetail = {
 		}
 	],
 	state_entered_at: 0,
-	context_summary: { prompts: 0, skills: 0, repos: 0, artifacts: 0 }
+	context_summary: { prompts: 0, skills: 0, repos: 0, artifacts: 0, envs: 0 }
 };
 
 const emptyScope = {
@@ -250,6 +250,7 @@ const emptyContext: EffectiveContext = {
 	prompt: { text: '', parts: [], journal: noJournal },
 	skills: [],
 	repos: [],
+	env: [],
 	overridden: [],
 	conflicts: []
 };
@@ -334,6 +335,7 @@ const richContext: EffectiveContext = {
 			inherited_from: null
 		}
 	],
+	env: [],
 	overridden: [],
 	conflicts: []
 };

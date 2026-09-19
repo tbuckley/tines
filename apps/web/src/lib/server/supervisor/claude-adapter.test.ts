@@ -61,6 +61,7 @@ function fakeNetwork(overrides: Record<string, (call: RecordedCall) => unknown> 
 					version: 1
 				}
 			],
+			env: [],
 			overridden: [],
 			conflicts: []
 		})
@@ -607,6 +608,7 @@ describe('claude adapter launch', () => {
 						version: 1
 					}
 				],
+				env: [],
 				overridden: [],
 				conflicts: []
 			})
@@ -635,6 +637,7 @@ describe('claude adapter launch', () => {
 						version: 1
 					}
 				],
+				env: [],
 				overridden: [],
 				conflicts: []
 			})
