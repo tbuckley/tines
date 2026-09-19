@@ -23,7 +23,7 @@ import {
 	setSettings,
 	USER
 } from '../supervisor/test-fixtures';
-import { sha256Hex } from '../crypto';
+import { encryptSecret, sha256Hex } from '../crypto';
 import { ApiFail, type ActorContext } from './core';
 import {
 	appendLogTail,
@@ -901,6 +901,114 @@ describe('pollRunner', () => {
 		);
 		expect(second.response.assignments).toEqual([]);
 	});
+
+	it('delivers env items only to daemons that advertise env_delivery, never inside the bundle', async () => {
+		const t = world();
+		t.env.SECRET_ENCRYPTION_KEY = 'unit-test-key';
+		const runnerId = addRunner(t, { name: 'laptop-m4' });
+		const issue = addIssue(t);
+		const insert = t.sqlite.prepare(
+			`INSERT INTO context_item
+				(id, user_id, kind, name, description, env_value, env_value_enc, env_hint, position, version, created_at, updated_at)
+			 VALUES (?, ?, 'env', ?, '', ?, ?, ?, 0, 1, 0, 0)`
+		);
+		insert.run('ctx_env_pub', USER, 'NPM_REGISTRY', 'https://r.example', null, null);
+		insert.run(
+			'ctx_env_sec',
+			USER,
+			'GH_TOKEN',
+			null,
+			await encryptSecret('github_pat_plaintext', 'unit-test-key'),
+			'github_pat_…text'
+		);
+
+		// Old daemon: no capability, no env, warning line even without a decryption key.
+		delete t.env.SECRET_ENCRYPTION_KEY;
+		addRun(t, { id: 'run_old', issueId: issue, runnerId });
+		const old = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [] },
+			NOW + 1
+		);
+		expect(old.response.assignments).toHaveLength(1);
+		expect(old.response.assignments[0].env).toBeUndefined();
+		expect(JSON.stringify(old.response)).not.toContain('github_pat_plaintext');
+		// The run log says why, without a value or hint — and the run is still
+		// `launching`: nothing has started, so the stall guard must keep watching.
+		const oldRun = runById(t, 'run_old');
+		expect(oldRun?.log).toContain(
+			"[env] 2 environment variable(s) are configured for this issue but this runner's tines CLI is too old"
+		);
+		expect(oldRun?.log).not.toContain('github_pat');
+		expect(oldRun?.status).toBe('launching');
+		expect(oldRun?.started_at).toBeNull();
+
+		// New daemon: env rides beside the bundle; secrets never enter prompt or bundle.
+		t.env.SECRET_ENCRYPTION_KEY = 'unit-test-key';
+		addRun(t, { id: 'run_new', issueId: issue, runnerId });
+		const fresh = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [], env_delivery: 1 },
+			NOW + 2
+		);
+		expect(fresh.response.assignments).toHaveLength(1);
+		const a = fresh.response.assignments[0];
+		const byName = (x: { name: string }, y: { name: string }) => x.name.localeCompare(y.name);
+		expect([...(a.env ?? [])].sort(byName)).toEqual([
+			{ name: 'GH_TOKEN', value: 'github_pat_plaintext', secret: true },
+			{ name: 'NPM_REGISTRY', value: 'https://r.example', secret: false }
+		]);
+		expect(JSON.stringify(a.bundle)).not.toContain('github_pat_plaintext');
+		expect(a.prompt).not.toContain('github_pat_plaintext');
+		expect(a.prompt).toMatch(/Environment variables set for this run: .*`GH_TOKEN` \(secret\)/);
+		expect(a.prompt).toMatch(/Environment variables set for this run: .*`NPM_REGISTRY`/);
+		expect([...a.bundle.env].sort(byName).map((e) => [e.name, e.secret, e.value ?? null])).toEqual([
+			['GH_TOKEN', true, null],
+			['NPM_REGISTRY', false, 'https://r.example']
+		]);
+	});
+
+	it.each(['missing', 'rotated'] as const)(
+		'settles an env decryption failure with a safe error and revoked key (%s key)',
+		async (keyState) => {
+			const t = world();
+			if (keyState === 'rotated') t.env.SECRET_ENCRYPTION_KEY = 'new-key';
+			const runnerId = addRunner(t);
+			const issueId = addIssue(t);
+			const runId = addRun(t, { issueId, runnerId });
+			const ciphertext = await encryptSecret('private-value', 'original-key');
+			t.sqlite
+				.prepare(
+					`INSERT INTO context_item
+			(id, user_id, kind, name, description, env_value_enc, position, version, created_at, updated_at)
+			VALUES ('ctx_broken_env', ?, 'env', 'GH_TOKEN', '', ?, 0, 1, 0, 0)`
+				)
+				.run(USER, ciphertext);
+			const result = await pollRunner(
+				t.db,
+				t.env,
+				await runnerRow(t, runnerId),
+				TEST_NOOP_DISPATCH_EFFECTS,
+				{ owned_runs: [], env_delivery: 1 },
+				NOW + 1
+			);
+			expect(result.response.assignments).toEqual([]);
+			const run = runById(t, runId);
+			expect(run).toMatchObject({ status: 'failed', started_at: null, ended_at: NOW + 1 });
+			expect(run?.error).toContain('Cannot decrypt secret env item "GH_TOKEN" (ctx_broken_env)');
+			expect(keyForRun(t, runId)?.revoked_at).toBe(NOW + 1);
+			expect(runnerById(t, runnerId).backoff_until).toBeGreaterThan(NOW + 1);
+			const observable = JSON.stringify([run, result, eventsOfType(t, 'runner.errored')]);
+			expect(observable).not.toContain('private-value');
+			expect(observable).not.toContain(ciphertext);
+		}
+	);
 
 	it('selects essential comments in the locally delivered cold prompt', async () => {
 		const t = world();

@@ -31,6 +31,12 @@
 		if (item.kind === 'repo') {
 			return `${item.repo_url}${item.repo_branch ? ` · ${item.repo_branch}` : ''}`;
 		}
+		if (item.kind === 'env') {
+			// A secret's value never reaches the client; show that it is set plus its hint.
+			return item.secret
+				? `${item.name} · secret · set${item.hint ? ` · ${item.hint}` : ''}`
+				: `${item.name} = ${item.value ?? ''}`;
+		}
 		return item.description;
 	}
 </script>

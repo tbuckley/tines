@@ -35,7 +35,7 @@ export async function buildLibraryV3Document(
 			.execute(),
 		contextItemQuery(db, userId)
 			.where('context_item.issue_id', 'is', null)
-			.where('context_item.kind', '!=', 'artifact')
+			.where('context_item.kind', 'not in', ['artifact', 'env'])
 			.orderBy('context_item.position')
 			.orderBy('context_item.created_at')
 			.orderBy('context_item.id')

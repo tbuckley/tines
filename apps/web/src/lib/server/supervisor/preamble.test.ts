@@ -50,3 +50,38 @@ describe('buildResumePreamble', () => {
 		expect(managed).not.toContain('in your environment has been replaced');
 	});
 });
+
+describe('buildSupervisorPreamble env delivery (managed)', () => {
+	it('renders public values as single-quoted export lines and names secrets without values', () => {
+		const text = buildSupervisorPreamble({
+			...base,
+			variant: 'claude_managed',
+			envExports: [
+				{ name: 'NPM_REGISTRY', value: 'https://r.example' },
+				{ name: 'GREETING', value: "it's $HOME `here`" }
+			],
+			envSecretNames: ['GH_TOKEN']
+		});
+		expect(text).toContain("`export NPM_REGISTRY='https://r.example'`");
+		// A quote inside the value closes, escapes and reopens the literal; $ and
+		// backticks stay inert inside single quotes.
+		expect(text).toContain("`export GREETING='it'\\''s $HOME `here`'`");
+		expect(text).toContain('Secret environment variables (`GH_TOKEN`) are vault credentials');
+		expect(text.indexOf('Also exported for this run')).toBeGreaterThan(
+			text.indexOf('## Workspace')
+		);
+	});
+
+	it('adds nothing when there are no env items', () => {
+		const bare = buildSupervisorPreamble({ ...base, variant: 'claude_managed' });
+		const empty = buildSupervisorPreamble({
+			...base,
+			variant: 'claude_managed',
+			envExports: [],
+			envSecretNames: []
+		});
+		expect(empty).toBe(bare);
+		expect(bare).not.toContain('`export ');
+		expect(bare).not.toContain('vault credentials');
+	});
+});

@@ -1,10 +1,15 @@
 # Adding a context kind
 
-Context items are typed — `prompt`, `skill`, `repo`, `artifact` — and the
+Context items are typed — `prompt`, `skill`, `repo`, `artifact`, `env` — and the
 type set is designed to grow ([specs/context/SPEC.md](../specs/context/SPEC.md)).
-`artifact` is the one kind added since this doc was written
-([specs/artifacts/SPEC.md](../specs/artifacts/SPEC.md)); it is cited below
-wherever it makes a step concrete.
+`artifact` and `env` are the kinds added since this doc was written
+([specs/artifacts/SPEC.md](../specs/artifacts/SPEC.md); env in
+[specs/context/SPEC.md](../specs/context/SPEC.md) "Env items"). `artifact` is
+cited below wherever it makes a step concrete. `env` chose nullable columns
+over `config` deliberately: publication snapshots and the library exporters
+copy `config` wholesale, so a payload that must never leave the deployment
+(a secret's ciphertext, its hint) has to live in columns those paths do not
+select — and it is excluded from every export by kind as well.
 `kind` is an open string with a per-kind payload, so a new kind is an
 **additive** change: no row migration, and no changes to scoping, layer
 ordering, name uniqueness, events, list filters, lifecycle guards, or the
@@ -102,9 +107,11 @@ an opaque string.
 - **`contextSummaryForIssue`**: add the post-dedupe count (distinct names
   among matching rows of the kind).
 
-Nothing else in the server changes: `requireKind`, scope resolution,
-name-uniqueness, positions, events, and the deletion guards are all
-payload-agnostic.
+`requireKind`, scope resolution, name-uniqueness, positions, events, and
+scope discovery are payload-agnostic. A kind with a write restriction must
+also enforce it in `sweepAttachedContext`: forced project/workflow/state
+deletions otherwise bypass direct item-write checks. Env run-key fencing
+is the precedent.
 
 ### CLI — `packages/cli/src/`
 
@@ -151,8 +158,9 @@ If a new kind requires edits to any of these, the change is off the rails
 - Name-uniqueness or position handling (per exact scope, kind-aware
   already).
 - Event emission (`context.*` payloads carry `kind` as-is).
-- Lifecycle guards (`findAttachedContext` / `sweepAttachedContext` sweep
-  by scope, not payload).
+- Lifecycle scope discovery (`findAttachedContext` sweeps by scope).
+  Kind-specific authorization still belongs in `sweepAttachedContext` before
+  it builds any forced-delete statements; env run-key fencing is the precedent.
 - List filtering, pagination, or the launch-prompt/journal machinery.
 - Existing rows or existing clients: old rows never match the new kind,
   and clients that don't know it simply see items whose payload fields

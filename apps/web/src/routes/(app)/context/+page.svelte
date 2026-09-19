@@ -143,6 +143,7 @@
 		<option value="skill">Skills</option>
 		<option value="repo">Repos</option>
 		<option value="artifact">Artifacts</option>
+		<option value="env">Environment</option>
 	</Select>
 	<Select
 		value={data.filters.workflow ?? ''}

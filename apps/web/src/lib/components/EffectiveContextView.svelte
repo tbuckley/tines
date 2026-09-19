@@ -12,7 +12,10 @@
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
 	const empty = $derived(
-		context.prompt.parts.length === 0 && context.skills.length === 0 && context.repos.length === 0
+		context.prompt.parts.length === 0 &&
+			context.skills.length === 0 &&
+			context.repos.length === 0 &&
+			(context.env ?? []).length === 0
 	);
 </script>
 
@@ -84,6 +87,35 @@
 			</div>
 		{/if}
 
+		{#if (context.env ?? []).length > 0}
+			<div>
+				<h4 class="text-muted-foreground mb-1.5 text-xs font-semibold tracking-wide uppercase">
+					Environment
+				</h4>
+				<ul class="space-y-1">
+					{#each context.env as v (v.item_id)}
+						<li
+							class="flex flex-wrap items-center gap-2 text-sm"
+							transition:slide={{ duration: dur() }}
+						>
+							<span class="text-muted-foreground"><ContextKindIcon kind="env" size={14} /></span>
+							<span class="max-w-full min-w-0 font-mono font-medium wrap-anywhere">{v.name}</span>
+							<span class="text-muted-foreground truncate font-mono text-xs">
+								{#if v.secret}
+									secret · set{v.hint ? ` · ${v.hint}` : ''}
+								{:else}
+									= {v.value ?? ''}
+								{/if}
+							</span>
+							<span class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs"
+								>{v.scope.label}</span
+							>
+						</li>
+					{/each}
+				</ul>
+			</div>
+		{/if}
+
 		{#if context.overridden.length > 0}
 			<div>
 				<h4 class="text-muted-foreground mb-1.5 text-xs font-semibold tracking-wide uppercase">
@@ -94,7 +126,9 @@
 						{@const winner =
 							o.kind === 'skill'
 								? context.skills.find((s) => s.item_id === o.overridden_by)
-								: context.repos.find((r) => r.item_id === o.overridden_by)}
+								: o.kind === 'env'
+									? (context.env ?? []).find((e) => e.item_id === o.overridden_by)
+									: context.repos.find((r) => r.item_id === o.overridden_by)}
 						<li
 							class="text-muted-foreground flex flex-wrap items-center gap-2 text-sm"
 							transition:slide={{ duration: dur() }}

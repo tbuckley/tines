@@ -94,7 +94,7 @@ export async function buildLibraryDocument(
 			// travel); artifacts are issue-scoped by construction, but the
 			// kind is excluded on its own account too.
 			.where('context_item.issue_id', 'is', null)
-			.where('context_item.kind', '!=', 'artifact')
+			.where('context_item.kind', 'not in', ['artifact', 'env'])
 			.orderBy('context_item.position asc')
 			.orderBy('context_item.created_at asc')
 			.execute()
@@ -349,6 +349,14 @@ export function assertImportableDocument(doc: LibraryDocument | undefined | null
 	] as const) {
 		if (!Array.isArray(entries))
 			throw new ApiFail(422, 'invalid_field', `document.${name} must be an array`);
+	}
+	if (context.some((entry) => (entry?.kind as string) === 'env')) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'env items are deployment configuration and do not travel in library documents',
+			{ field: 'document.context' }
+		);
 	}
 	const total = projects.length + workflows.length + context.length;
 	if (total > LIBRARY_MAX_ENTRIES) {

@@ -30,7 +30,7 @@ import {
 	LAUNCH_STALL_MS
 } from '@tines/shared';
 import { sql, type Kysely } from 'kysely';
-import { decryptSecret } from '../crypto';
+import { decryptSecret, requireEncryptionKey } from '../crypto';
 import { getDb, newId, type Database } from '../db';
 import type {
 	AdapterEndInput,
@@ -53,6 +53,7 @@ import {
 	setTransferPhase
 } from './resume';
 import { buildResumePreamble, buildSupervisorPreamble } from './preamble';
+import { envDigest, resolvedEnvForIssue, type ResolvedEnvEntry } from '../api/context';
 
 // ---------------------------------------------------------------------------
 // Config shapes (runner.config / agent_run.provider_meta are adapter-owned)
@@ -77,6 +78,8 @@ export interface ClaudeRunMeta {
 	credential_id?: string;
 	/** Set once end-of-run provider resources were garbage-collected. */
 	gc_done?: boolean;
+	/** Digest of the env items the vault was built for (names/versions, no values). */
+	env_digest?: string;
 	/**
 	 * Set when the end finalizer retained this run's session for a resume:
 	 * the session is deliberately left idle and its vault alive, so the GC
@@ -94,15 +97,6 @@ export interface ClaudeAdapterOptions {
 
 // ---------------------------------------------------------------------------
 // Environment plumbing
-
-function requireEncryptionKey(env: Env): string {
-	if (!env.SECRET_ENCRYPTION_KEY) {
-		throw new Error(
-			'SECRET_ENCRYPTION_KEY is not configured; cannot use stored provider credentials'
-		);
-	}
-	return env.SECRET_ENCRYPTION_KEY;
-}
 
 /**
  * Canonicalizes a repo context item's URL to the one form the Managed
@@ -196,7 +190,8 @@ interface ProviderContext {
 		ctx: RunnerContext,
 		runId: string,
 		runKey: string,
-		apiHost: string
+		apiHost: string,
+		secrets?: { name: string; value: string }[]
 	): Promise<{ vaultId: string; credentialId: string }>;
 }
 
@@ -428,7 +423,8 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		ctx: RunnerContext,
 		runId: string,
 		runKey: string,
-		apiHost: string
+		apiHost: string,
+		secrets: { name: string; value: string }[] = []
 	): Promise<{ vaultId: string; credentialId: string }> {
 		const vault = await ctx.client.beta.vaults.create({
 			display_name: `tines-run-${runId}`,
@@ -447,6 +443,20 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 					injection_location: { header: true }
 				}
 			});
+			// One credential per secret env item; the agent sees a placeholder
+			// and the value is substituted at egress (v1: any host).
+			for (const secret of secrets) {
+				await ctx.client.beta.vaults.credentials.create(vault.id, {
+					display_name: `${secret.name} for ${runId}`,
+					auth: {
+						type: 'environment_variable',
+						secret_name: secret.name,
+						secret_value: secret.value,
+						networking: { type: 'unrestricted' },
+						injection_location: { header: true }
+					}
+				});
+			}
 			return { vaultId: vault.id, credentialId: credential.id };
 		} catch (e) {
 			await ctx.client.beta.vaults.delete(vault.id).catch(() => {});
@@ -793,6 +803,17 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 
 		const issueRef = `${issue.project_name}/${issue.number}`;
 
+		// Env items, decrypted server-side: secrets become vault credentials,
+		// public values become preamble exports. The digest (no values) joins
+		// the resume fingerprint so an env change forces a fresh vault.
+		const resolvedEnv: ResolvedEnvEntry[] = await resolvedEnvForIssue(
+			db,
+			env,
+			ctx.row.user_id,
+			input.issueId
+		);
+		const currentEnvDigest = resolvedEnv.length > 0 ? await envDigest(resolvedEnv) : null;
+
 		// Continuation: the idle session this issue's previous run left on this
 		// runner, when every guard passes. Ownership moves to this run — the
 		// vault credential is rotated to its key and the session retagged —
@@ -814,6 +835,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			runId: input.runId,
 			model: input.model,
 			effort: input.effort,
+			envDigest: currentEnvDigest,
 			now: Date.now()
 		});
 		if (resume) {
@@ -887,6 +909,8 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				const resumedMeta: ClaudeRunMeta = {
 					vault_id: resume.vault_id,
 					credential_id: resume.credential_id,
+					// The fingerprint matched, so the retained vault holds exactly this env set.
+					...(currentEnvDigest ? { env_digest: currentEnvDigest } : {}),
 					// Start the log after the predecessor's last rendered event, so
 					// its conversation does not replay into this run's log — and so
 					// its `end_turn` cannot be read as this run completing.
@@ -912,7 +936,8 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			ctx,
 			input.runId,
 			input.runKey,
-			apiHost
+			apiHost,
+			resolvedEnv.filter((e) => e.secret).map((e) => ({ name: e.name, value: e.value }))
 		);
 
 		const preamble = buildSupervisorPreamble({
@@ -922,7 +947,11 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			issueRef,
 			timeoutMinutes: input.runner.max_run_minutes,
 			apiUrl: base,
-			repoDirs: repos.map((r) => r.dir)
+			repoDirs: repos.map((r) => r.dir),
+			envExports: resolvedEnv
+				.filter((e) => !e.secret)
+				.map((e) => ({ name: e.name, value: e.value })),
+			envSecretNames: resolvedEnv.filter((e) => e.secret).map((e) => e.name)
 		});
 
 		const budget = parseJson<RunnerBudget>(ctx.row.budget);
@@ -969,7 +998,11 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			throw e;
 		}
 
-		const meta: ClaudeRunMeta = { vault_id: vaultId, credential_id: credentialId };
+		const meta: ClaudeRunMeta = {
+			vault_id: vaultId,
+			credential_id: credentialId,
+			...(currentEnvDigest ? { env_digest: currentEnvDigest } : {})
+		};
 		return {
 			provider_session_id: session.id,
 			// Best-effort console link: correct for default-workspace keys; the
@@ -1095,6 +1128,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				harness: 'claude_managed',
 				model: input.model,
 				effort: input.effort,
+				envDigest: meta.env_digest ?? null,
 				preambleVariant: 'claude_managed'
 			}),
 			expiresAt,
