@@ -13,7 +13,7 @@ test('imports a nested skill folder, reviews it, and saves only retained files',
 	await signIn(context, ALICE.sessionToken);
 	await gotoHydrated(page, '/context');
 	await page.getByRole('button', { name: 'New item' }).click();
-	await page.getByLabel(/^Skill —/).check();
+	await page.getByText('Skill — text files seeded into the workspace', { exact: true }).click();
 	await page.getByLabel('Name').fill(name);
 
 	const mutations: string[] = [];
@@ -68,7 +68,7 @@ test('unsupported directory picking leaves manual skill editing available', asyn
 	await signIn(context, ALICE.sessionToken);
 	await gotoHydrated(page, '/context');
 	await page.getByRole('button', { name: 'New item' }).click();
-	await page.getByLabel(/^Skill —/).check();
+	await page.getByText('Skill — text files seeded into the workspace', { exact: true }).click();
 	await expect(page.getByRole('button', { name: 'Add from folder' })).toBeDisabled();
 	await expect(
 		page.getByText('Folder selection is not supported by this browser; add files individually.')
