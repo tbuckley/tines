@@ -190,7 +190,13 @@ test.describe.serial('context attachments', () => {
 
 		// context_summary on the issue read is post-dedupe per-kind counts.
 		const issue = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
-		expect(issue.context_summary).toEqual({ prompts: 1, skills: 1, repos: 0, artifacts: 0 });
+		expect(issue.context_summary).toEqual({
+			prompts: 1,
+			skills: 1,
+			repos: 0,
+			artifacts: 0,
+			envs: 0
+		});
 	});
 
 	test('more specific items override by name; repo dirs conflict-check', async ({ request }) => {
@@ -413,8 +419,8 @@ test.describe.serial('env context items', () => {
 		);
 		// A secret cannot be made public again.
 		expect(
-			(await errorBody(await api.put(`/api/v1/context/${secretItem.id}`, { secret: false }))).error
-				.code
+			(await errorBody(await api.patch(`/api/v1/context/${secretItem.id}`, { secret: false })))
+				.error.code
 		).toBe('secret_irreversible');
 	});
 
@@ -471,7 +477,7 @@ test.describe.serial('env context items', () => {
 		});
 		expect(create.status()).toBe(403);
 		expect((await errorBody(create)).error.code).toBe('run_key_forbidden');
-		const edit = await runKeyed.put(`/api/v1/context/${publicItem.id}`, { value: 'y' });
+		const edit = await runKeyed.patch(`/api/v1/context/${publicItem.id}`, { value: 'y' });
 		expect(edit.status()).toBe(403);
 		const del = await runKeyed.delete(`/api/v1/context/${publicItem.id}`);
 		expect(del.status()).toBe(403);
