@@ -121,6 +121,41 @@ test('the mobile layout swaps the header tabs for a bottom bar', async ({ page }
 	await expect(page.locator('header').getByRole('link', { name: 'Workflows' })).toBeHidden();
 });
 
+test('workflow actions form a full-width group below the intro on a phone', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await page.goto('/workflows');
+
+	const intro = page.getByText('Your library of state machines.');
+	const actions = [
+		page.getByRole('link', { name: 'Public snapshots' }),
+		page.getByRole('link', { name: 'Install package' }),
+		page.getByRole('link', { name: 'New workflow' })
+	];
+	await expect(intro).toBeVisible();
+	await expect(actions[0]).toBeVisible();
+
+	const introBox = (await intro.boundingBox())!;
+	const actionBoxes = await Promise.all(actions.map((action) => action.boundingBox()));
+	for (const [index, actionBox] of actionBoxes.entries()) {
+		expect(actionBox).not.toBeNull();
+		expect(actionBox!.y, `action ${index + 1} follows the intro`).toBeGreaterThan(
+			introBox.y + introBox.height
+		);
+		expect(actionBox!.x, `action ${index + 1} left edge`).toBe(actionBoxes[0]!.x);
+		expect(actionBox!.width, `action ${index + 1} width`).toBe(actionBoxes[0]!.width);
+		expect(
+			actionBox!.x + actionBox!.width,
+			`action ${index + 1} stays in the viewport`
+		).toBeLessThanOrEqual(390);
+	}
+	for (let index = 1; index < actionBoxes.length; index += 1) {
+		expect(actionBoxes[index]!.y, `action ${index + 1} follows action ${index}`).toBeGreaterThan(
+			actionBoxes[index - 1]!.y + actionBoxes[index - 1]!.height
+		);
+	}
+	expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+});
+
 test('the app chrome stays inside both responsive breakpoint boundaries', async ({ page }) => {
 	const api = apiClient(page.request, ALICE.apiKey);
 	await body(await api.patch('/api/v1/preferences', { focused_project_id: longProject.id }));

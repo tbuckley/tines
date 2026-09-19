@@ -60,23 +60,25 @@
 
 <svelte:head><title>Workflows · Tines</title></svelte:head>
 
-<div class="mb-2 flex items-center justify-between">
-	<h1 class="text-2xl font-semibold tracking-tight">Workflows</h1>
-	<div class="flex flex-wrap gap-2">
-		<Button href="/publications" variant="outline">
+<div class="mb-6 flex flex-col items-start gap-4 lg:flex-row lg:justify-between">
+	<div>
+		<h1 class="text-2xl font-semibold tracking-tight">Workflows</h1>
+		<p class="text-muted-foreground mt-1 max-w-2xl text-sm">
+			Your library of state machines. Any workflow can drive issues in any project.
+		</p>
+	</div>
+	<div class="grid w-full gap-2 sm:w-auto sm:grid-cols-3 lg:flex lg:flex-wrap lg:justify-end">
+		<Button class="w-full" href="/publications" variant="outline">
 			<IconWorld size={16} /> Public snapshots
 		</Button>
-		<Button href="/workflows/import" variant="outline">
+		<Button class="w-full" href="/workflows/import" variant="outline">
 			<IconUpload size={16} /> Install package
 		</Button>
-		<Button href="/workflows/new">
+		<Button class="w-full" href="/workflows/new">
 			<IconPlus size={16} /> New workflow
 		</Button>
 	</div>
 </div>
-<p class="text-muted-foreground mb-6 max-w-2xl text-sm">
-	Your library of state machines. Any workflow can drive issues in any project.
-</p>
 
 {#if data.focusedOpenCounts}
 	{#if used.length === 0}<p class="text-muted-foreground mb-4 text-sm">
