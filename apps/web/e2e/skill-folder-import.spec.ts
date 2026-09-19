@@ -6,6 +6,17 @@ import { expect, test } from '@playwright/test';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
 
+function barrier() {
+	let release!: () => void;
+	const promise = new Promise<void>((resolve) => (release = resolve));
+	return { promise, release };
+}
+
+type DelayedFolderReadWindow = Window & {
+	__folderReadStarted?: boolean;
+	__releaseFolderRead?: () => Promise<void>;
+};
+
 test('imports a nested skill folder, reviews it, and saves only retained files', async ({
 	page,
 	context,
@@ -93,6 +104,111 @@ test('imports a nested skill folder, reviews it, and saves only retained files',
 		{ path: 'nested/readme.txt', content: 'Nested content.\n' },
 		{ path: 'notes/remove-me.txt', content: 'This row is removed before save.\n' }
 	]);
+	expect((await api.delete(`/api/v1/context/${saved.id}`)).status()).toBe(204);
+});
+
+test('a completed folder read cannot enter a reopened draft', async ({ page, context }) => {
+	await page.addInitScript(() => {
+		const state = window as DelayedFolderReadWindow;
+		const originalArrayBuffer = File.prototype.arrayBuffer;
+		let held = false;
+		File.prototype.arrayBuffer = function () {
+			if (held) return originalArrayBuffer.call(this);
+			held = true;
+			return new Promise<ArrayBuffer>((resolve, reject) => {
+				state.__folderReadStarted = true;
+				state.__releaseFolderRead = async () => {
+					try {
+						resolve(await originalArrayBuffer.call(this));
+					} catch (error) {
+						reject(error);
+					}
+				};
+			});
+		};
+	});
+
+	await signIn(context, ALICE.sessionToken);
+	await gotoHydrated(page, '/context');
+	await page.getByRole('button', { name: 'New item' }).click();
+	await page.getByText('Skill — text files seeded into the workspace', { exact: true }).click();
+	await page
+		.getByLabel('Skill folder')
+		.setInputFiles(path.join(import.meta.dirname, 'fixtures/skill-folder'));
+	await expect(page.locator('[aria-live="polite"]', { hasText: 'Reading folder…' })).toBeVisible();
+	await expect
+		.poll(() =>
+			page.evaluate(() => Boolean((window as DelayedFolderReadWindow).__folderReadStarted))
+		)
+		.toBe(true);
+	await page.getByRole('button', { name: 'Cancel' }).click();
+
+	await page.getByRole('button', { name: 'New item' }).click();
+	await page.getByText('Skill — text files seeded into the workspace', { exact: true }).click();
+	await page.getByLabel('Name').fill(`current-folder-draft-${runId}`);
+	await page.getByRole('button', { name: 'Add file' }).click();
+	await page.getByLabel('File 1 path').fill('current.txt');
+	await page.getByLabel('File current.txt content').fill('current draft');
+
+	await page.evaluate(() => (window as DelayedFolderReadWindow).__releaseFolderRead?.());
+	await expect(page.getByLabel('File current.txt content')).toHaveValue('current draft');
+	await expect(page.getByLabel(/^File \d+ path$/)).toHaveCount(1);
+	await expect(page.getByText(/Added \d+ files?/)).toHaveCount(0);
+	await expect(page.getByRole('alert')).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Add file' })).toBeEnabled();
+	await expect(page.getByRole('button', { name: 'Create' })).toBeEnabled();
+});
+
+test('a stale edit response cannot replace files loaded after reopening', async ({
+	page,
+	context,
+	request
+}) => {
+	const api = apiClient(request, ALICE.apiKey);
+	const name = `folder-detail-race-${runId}`;
+	const item = await body<ContextItem>(
+		await api.post('/api/v1/context', {
+			kind: 'skill',
+			name,
+			files: [{ path: 'server.txt', content: 'server content' }]
+		})
+	);
+	try {
+		const first = barrier();
+		const second = barrier();
+		let requests = 0;
+		await page.route(`**/api/v1/context/${item.id}`, async (route) => {
+			const requestNumber = ++requests;
+			await (requestNumber === 1 ? first.promise : second.promise);
+			await route.fulfill({
+				json: {
+					...item,
+					files:
+						requestNumber === 1
+							? [{ path: 'stale.txt', content: 'stale response' }]
+							: [{ path: 'current.txt', content: 'current response' }]
+				}
+			});
+		});
+
+		await signIn(context, ALICE.sessionToken);
+		await gotoHydrated(page, '/context');
+		await page.getByText(name, { exact: true }).click();
+		await expect.poll(() => requests).toBe(1);
+		await page.getByRole('button', { name: 'Cancel' }).click();
+		await page.getByText(name, { exact: true }).click();
+		await expect.poll(() => requests).toBe(2);
+
+		second.release();
+		await expect(page.getByLabel('File current.txt content')).toHaveValue('current response');
+		first.release();
+		await expect(page.getByLabel('File current.txt content')).toHaveValue('current response');
+		await expect(page.getByLabel('File stale.txt content')).toHaveCount(0);
+		await expect(page.getByLabel(/^File \d+ path$/)).toHaveCount(1);
+		await expect(page.getByRole('button', { name: 'Save' })).toBeEnabled();
+	} finally {
+		expect((await api.delete(`/api/v1/context/${item.id}`)).status()).toBe(204);
+	}
 });
 
 test('unsupported directory picking leaves manual skill editing available', async ({
