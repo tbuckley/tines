@@ -38,6 +38,7 @@
 	} = $props();
 
 	let input = $state<HTMLInputElement | null>(null);
+	let dragOver = $state(false);
 	let selectionError = $state<string | null>(null);
 	const totalBytes = $derived(attachments.reduce((sum, a) => sum + a.file.size, 0));
 	const errors = $derived(
@@ -97,6 +98,7 @@
 
 	function dropped(event: DragEvent) {
 		event.preventDefault();
+		dragOver = false;
 		if (disabled || !event.dataTransfer) return;
 		const hasDirectory = [...event.dataTransfer.items].some((item) => {
 			const entry = (
@@ -142,33 +144,44 @@
 </script>
 
 <section class="space-y-2" aria-labelledby="issue-attachments-label">
-	<div class="flex flex-wrap items-center justify-between gap-2">
-		<div>
-			<span id="issue-attachments-label" class="text-sm font-medium">Attachments (optional)</span>
-			<p class="text-muted-foreground text-xs">Up to 10 files · 25 MiB each · 50 MiB total</p>
-		</div>
-		<Button type="button" size="sm" variant="outline" {disabled} onclick={() => input?.click()}>
-			<IconPaperclip size={15} /> Add files
-		</Button>
-		<input
-			bind:this={input}
-			class="sr-only"
-			type="file"
-			multiple
-			onchange={picked}
-			{disabled}
-			aria-label="Add attachment files"
-		/>
+	<div>
+		<span id="issue-attachments-label" class="text-sm font-medium">Attachments (optional)</span>
+		<p class="text-muted-foreground text-xs">Up to 10 files · 25 MiB each · 50 MiB total</p>
 	</div>
-	<div
-		class="border-muted-foreground/40 rounded-md border border-dashed p-3 text-center text-xs"
-		role="group"
-		aria-label="Attachment drop area"
-		ondragover={(event) => event.preventDefault()}
+	<Button
+		type="button"
+		variant="outline"
+		{disabled}
+		class="border-muted-foreground/40 h-auto w-full border-dashed px-3 py-4 text-center {dragOver
+			? 'bg-muted/50 border-foreground/50'
+			: ''}"
+		aria-label="Add files or drag files here"
+		onclick={() => input?.click()}
+		ondragenter={() => {
+			if (!disabled) dragOver = true;
+		}}
+		ondragover={(event) => {
+			event.preventDefault();
+			if (!disabled) dragOver = true;
+		}}
+		ondragleave={() => (dragOver = false)}
 		ondrop={dropped}
 	>
-		Drop files here
-	</div>
+		<IconPaperclip size={17} />
+		<span>
+			<span class="font-medium">Add files</span>
+			<span class="text-muted-foreground ml-1 font-normal">or drag them here</span>
+		</span>
+	</Button>
+	<input
+		bind:this={input}
+		class="sr-only"
+		type="file"
+		multiple
+		onchange={picked}
+		{disabled}
+		aria-label="Add attachment files"
+	/>
 	{#if selectionError}<p class="text-destructive text-sm" role="alert">{selectionError}</p>{/if}
 	{#if attachments.length > 0}
 		<ul class="space-y-2">

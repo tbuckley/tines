@@ -235,12 +235,13 @@ test('a navigation failure after 201 offers only the created-issue recovery link
 	await expect(dialog.getByRole('link', { name: 'Check project issues' })).toHaveCount(0);
 });
 
-test('keyboard add, edit, remove, and invalid batches leave existing rows intact', async ({
+test('the combined picker supports keyboard selection, drops, and invalid batches', async ({
 	page
 }) => {
 	const dialog = await openListDialog(page);
+	const picker = dialog.getByRole('button', { name: 'Add files or drag files here' });
 	const chooserPromise = page.waitForEvent('filechooser');
-	await dialog.getByRole('button', { name: 'Add files' }).press('Enter');
+	await picker.press('Enter');
 	const chooser = await chooserPromise;
 	await chooser.setFiles({
 		name: 'keyboard.txt',
@@ -264,6 +265,15 @@ test('keyboard add, edit, remove, and invalid batches leave existing rows intact
 
 	await dialog.getByRole('button', { name: 'Remove keyboard.txt' }).press('Enter');
 	await expect(dialog.getByRole('listitem')).toHaveCount(0);
+	await picker.evaluate((element) => {
+		const transfer = new DataTransfer();
+		transfer.items.add(new File(['dropped'], 'dropped.txt', { type: 'text/plain' }));
+		element.dispatchEvent(
+			new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer })
+		);
+	});
+	await expect(dialog.getByText('dropped.txt', { exact: true })).toBeVisible();
+	await dialog.getByRole('button', { name: 'Remove dropped.txt' }).press('Enter');
 	await addTextFile(dialog, 'keyboard.txt');
 	await expect(dialog.getByText('keyboard', { exact: true })).toBeVisible();
 });
@@ -271,8 +281,8 @@ test('keyboard add, edit, remove, and invalid batches leave existing rows intact
 test('rejects a directory drop without disturbing an existing attachment', async ({ page }) => {
 	const dialog = await openListDialog(page);
 	await addTextFile(dialog, 'kept.txt');
-	const dropArea = dialog.getByRole('group', { name: 'Attachment drop area' });
-	await dropArea.evaluate((element) => {
+	const picker = dialog.getByRole('button', { name: 'Add files or drag files here' });
+	await picker.evaluate((element) => {
 		const event = new Event('drop', { bubbles: true, cancelable: true });
 		Object.defineProperty(event, 'dataTransfer', {
 			value: {
