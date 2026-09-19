@@ -29,6 +29,20 @@ describe('createIssue with initial relationships', () => {
 		canonical = addIssue(t, { id: 'iss_canonical', title: 'Canonical' });
 	});
 
+	it('keeps the no-link query path identical for absent fields and explicit empty arrays', async () => {
+		const capture = async (relationships: { blocked_by?: string[]; blocks?: string[] }) => {
+			const db = createTestDb();
+			seedBase(db);
+			const queries = db.spyOnQueries();
+			await createIssue(db.db, db.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+				title: 'Plain',
+				...relationships
+			});
+			return queries();
+		};
+		expect(await capture({ blocked_by: [], blocks: [] })).toEqual(await capture({}));
+	});
+
 	it('atomically creates all orientations, events, response links, and one dispatch', async () => {
 		const effects = recordDispatchEffects();
 		const created = await createIssue(t.db, t.env, actor, effects, PROJECT, {
