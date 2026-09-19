@@ -5,6 +5,8 @@ import { getAuth } from '$lib/server/auth';
 import type { Handle, RequestEvent } from '@sveltejs/kit';
 import { svelteKitHandler } from 'better-auth/svelte-kit';
 import { finalizePublicationResponse } from '$lib/server/publications/response';
+import { deploymentIdentity } from '$lib/server/deployment';
+import { finalizeDeploymentResponse } from '$lib/server/deployment-response';
 
 const FORM_CONTENT_TYPES = new Set([
 	'application/x-www-form-urlencoded',
@@ -117,4 +119,8 @@ const handleRequest: Handle = async ({ event, resolve }) => {
 };
 
 export const handle: Handle = async ({ event, resolve }) =>
-	finalizePublicationResponse(event.request, await handleRequest({ event, resolve }));
+	finalizeDeploymentResponse(
+		event.request,
+		finalizePublicationResponse(event.request, await handleRequest({ event, resolve })),
+		deploymentIdentity
+	);

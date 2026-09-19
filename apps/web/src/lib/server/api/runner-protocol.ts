@@ -37,6 +37,7 @@ import { sha256Hex } from '$lib/server/crypto';
 import { getDb, newId, type Database } from '$lib/server/db';
 import {
 	endRun,
+	failLaunch,
 	loadEndableRun,
 	markRunRunning,
 	mintRunKeyAndFlip,
@@ -63,7 +64,13 @@ import { effectiveAutomationEnabled } from '$lib/server/supervisor/settings';
 import { priceCodexUsage } from '$lib/server/supervisor/codex-pricing';
 import { listArtifacts } from './artifacts';
 import { listLabels } from './labels';
-import { buildLaunchPrompt, buildResumePrompt, effectiveContextForIssue } from './context';
+import {
+	buildLaunchPrompt,
+	buildResumePrompt,
+	effectiveContextForIssue,
+	resolvedEnvForIssue,
+	type ResolvedEnvEntry
+} from './context';
 import { ApiFail, notFound, optionalString, runAtomic } from './core';
 import { requestDispatchEffects } from './core';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
@@ -625,7 +632,9 @@ export async function pollRunner(
 	if (runner.status === 'active') {
 		for (const run of active) {
 			if (run.status !== 'assigned') continue;
-			const assignment = await deliverAssignedRun(db, env, runner, effects, run, now);
+			const assignment = await deliverAssignedRun(db, env, runner, effects, run, now, {
+				envDelivery: body.env_delivery === 1
+			});
 			if (assignment) assignments.push(assignment);
 		}
 	}
@@ -666,7 +675,8 @@ async function deliverAssignedRun(
 	runner: RunnerRow,
 	effects: DispatchEffects,
 	run: Database['agent_run'],
-	now: number
+	now: number,
+	caps: { envDelivery: boolean } = { envDelivery: false }
 ): Promise<RunnerAssignment | null> {
 	const [eligibility, settings] = await Promise.all([
 		db
@@ -752,6 +762,24 @@ async function deliverAssignedRun(
 	});
 	if (!minted) return null;
 
+	let resolvedEnv: ResolvedEnvEntry[] = [];
+	if (caps.envDelivery) {
+		try {
+			resolvedEnv = await resolvedEnvForIssue(db, env, run.user_id, run.issue_id);
+		} catch (error) {
+			// Match managed launch failures: keep the item-specific error, revoke
+			// the minted key and back off instead of stranding a launching run.
+			await failLaunch(db, env, {
+				userId: run.user_id,
+				runId: run.id,
+				runner,
+				error: error instanceof Error ? error.message : String(error),
+				now
+			});
+			effects.signalDispatch();
+			return null;
+		}
+	}
 	const [issue, bundle, artifacts, labels] = await Promise.all([
 		getIssueDetail(db, run.user_id, { id: run.issue_id }, { round: true, launchComments: true }),
 		effectiveContextForIssue(db, run.user_id, run.issue_id),
@@ -759,6 +787,32 @@ async function deliverAssignedRun(
 		listLabels(db, run.user_id)
 	]);
 	const issueRef = `${issue.project_name}/${issue.number}`;
+	// Env items ride beside the bundle, never inside it (the bundle is written
+	// to the workspace). A daemon that has not advertised the capability gets
+	// nothing and the run log says why — a resumed run gets a fresh spawn
+	// environment too, so both branches below carry the same field.
+	let envField: { env: RunnerAssignment['env'] } | Record<string, never> = {};
+	if (bundle.env.length > 0) {
+		if (caps.envDelivery) {
+			envField = {
+				env: resolvedEnv.map(({ name, value, secret }) => ({ name, value, secret }))
+			};
+		} else {
+			// Written straight to the tail, not through `appendRunLog`: that path
+			// marks the run running, and nothing has started yet — the launch
+			// stall guard must still see `launching`.
+			const appended = appendLogTail(
+				run.log,
+				run.log_bytes_dropped,
+				`[env] ${bundle.env.length} environment variable(s) are configured for this issue but this runner's tines CLI is too old to receive them; update it (npm i -g tines)\n`
+			);
+			await db
+				.updateTable('agent_run')
+				.set({ log: appended.log, log_bytes_dropped: appended.dropped })
+				.where('id', '=', run.id)
+				.execute();
+		}
+	}
 
 	// Continuation, when the previous run on this runner left a live session
 	// for this issue and every guard passes. A failure anywhere here — an
@@ -794,6 +848,7 @@ async function deliverAssignedRun(
 			)}`,
 			bundle,
 			run_key: minted.secret,
+			...envField,
 			timeout_minutes: runner.max_run_minutes,
 			resume
 		};
@@ -825,6 +880,7 @@ async function deliverAssignedRun(
 		)}`,
 		bundle,
 		run_key: minted.secret,
+		...envField,
 		timeout_minutes: runner.max_run_minutes
 	};
 }

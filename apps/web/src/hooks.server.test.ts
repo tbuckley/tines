@@ -104,6 +104,21 @@ describe('handle', () => {
 		const response = await run(request('/issues'));
 		expect(response.headers.get('Server-Timing')).toMatch(/auth;dur=[\d.]+, app;dur=[\d.]+/);
 	});
+
+	it.each(['/api/time', '/api/auth/get-session', '/api/unknown'])(
+		'decorates %s with the server build identity',
+		async (path) => {
+			const response = await run(request(path));
+			expect(response.headers.get('x-tines-version')).toBe('dev');
+			expect(response.headers.get('x-tines-commit')).toMatch(/^(?:[0-9a-f]{40}|unknown)$/);
+		}
+	);
+
+	it('does not decorate non-API pages', async () => {
+		const response = await run(request('/issues'));
+		expect(response.headers.has('x-tines-version')).toBe(false);
+		expect(response.headers.has('x-tines-commit')).toBe(false);
+	});
 });
 
 describe('artifact sandbox hostname boundary', () => {
@@ -123,6 +138,9 @@ describe('artifact sandbox hostname boundary', () => {
 			expect(response.status).toBe(404);
 			expect(await response.text()).toBe('Not found');
 			expect(getSession).not.toHaveBeenCalled();
+			if (path.startsWith('/api/')) {
+				expect(response.headers.get('x-tines-version')).toBe('dev');
+			}
 		}
 	);
 

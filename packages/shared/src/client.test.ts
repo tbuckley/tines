@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ApiError, ApiNetworkError, createApiClient } from './client.js';
 
 /** undici's shape: a bare `TypeError: fetch failed` carrying the real cause. */
@@ -179,5 +179,22 @@ describe('createIssueWithFiles', () => {
 			'content-type': 'application/json'
 		});
 		expect(captured?.body).toBe(JSON.stringify({ title: 'Plain' }));
+	});
+});
+
+describe('getVersion', () => {
+	it('calls the public unversioned endpoint without requiring an API key', async () => {
+		const fetch = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ version: '0.0.1234', commit: 'a'.repeat(40) }), {
+					headers: { 'content-type': 'application/json' }
+				})
+		) as unknown as typeof globalThis.fetch;
+		const client = createApiClient({ baseUrl: 'https://tines.example', fetch });
+		expect(await client.getVersion()).toEqual({ version: '0.0.1234', commit: 'a'.repeat(40) });
+		expect(fetch).toHaveBeenCalledWith(
+			'https://tines.example/api/version',
+			expect.objectContaining({ method: 'GET', headers: { accept: 'application/json' } })
+		);
 	});
 });

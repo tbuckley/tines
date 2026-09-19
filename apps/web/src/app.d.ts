@@ -12,6 +12,7 @@ import type {
 import type { getAuth } from '$lib/server/auth';
 
 declare global {
+	const __TINES_DEPLOYMENT__: Readonly<import('@tines/shared').VersionResponse>;
 	/** Bindings and vars available on `platform.env` (see wrangler.jsonc). */
 	interface Env {
 		DB: D1Database;

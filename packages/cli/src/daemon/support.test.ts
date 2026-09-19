@@ -5,6 +5,8 @@ import {
 	AMBIENT_CLI,
 	buildHarnessInvocation,
 	buildSpawnEnv,
+	redactSecrets,
+	SecretRedactor,
 	CliRefresher,
 	isNewerVersion,
 	pathWithin,
@@ -802,5 +804,100 @@ describe('pathWithin', () => {
 		expect(pathWithin('/opt/homebrew/lib/node_modules/tines/dist/index.js', '/cfg/cli')).toBe(
 			false
 		);
+	});
+});
+
+describe('buildSpawnEnv env items', () => {
+	it('an empty env override replaces the inherited host value', () => {
+		const env = buildSpawnEnv(
+			{ EMPTY: 'host value' },
+			{
+				binDir: null,
+				apiKey: 'key',
+				apiUrl: 'https://tines.test',
+				extra: [{ name: 'EMPTY', value: '' }]
+			}
+		);
+		expect(env).toHaveProperty('EMPTY', '');
+	});
+
+	it('merges extra variables but Tines-owned ones and PATH always win', () => {
+		const env = buildSpawnEnv(
+			{ PATH: '/usr/bin', KEEP: 'base' },
+			{
+				binDir: '/managed/bin',
+				apiKey: 'rk_real',
+				apiUrl: 'https://tines.test/',
+				extra: [
+					{ name: 'GH_TOKEN', value: 'ghp_x' },
+					{ name: 'KEEP', value: 'override' },
+					{ name: 'TINES_API_KEY', value: 'rk_planted' },
+					{ name: 'TINES_API_URL', value: 'https://evil.test' },
+					{ name: 'PATH', value: '/evil' }
+				]
+			}
+		);
+		expect(env.GH_TOKEN).toBe('ghp_x');
+		expect(env.KEEP).toBe('override');
+		expect(env.TINES_API_KEY).toBe('rk_real');
+		expect(env.TINES_API_URL).toBe('https://tines.test');
+		expect(env.PATH).toBe(`/managed/bin${delimiter}/usr/bin`);
+	});
+});
+
+describe('redactSecrets', () => {
+	it('masks each secret and its JSON-escaped form, including short ones', () => {
+		const text = 'token=s3cr"et\\n {"text":"s3cr\\"et"} pin=ab ab';
+		expect(redactSecrets(text, ['s3cr"et', 'ab'])).toBe('token=***\\n {"text":"***"} pin=*** ***');
+	});
+
+	it('is applied by LogBatcher.append when configured', async () => {
+		const chunks: string[] = [];
+		const batcher = new LogBatcher(
+			async (chunk) => {
+				chunks.push(chunk);
+			},
+			{ redact: ['ghp_secretvalue'] }
+		);
+		batcher.append('GH_TOKEN=ghp_secretvalue exported\n');
+		await batcher.flush();
+		expect(chunks.join('')).toBe('GH_TOKEN=*** exported\n');
+		expect(chunks.join('')).not.toContain('ghp_secretvalue');
+	});
+});
+
+describe('streaming secret masking', () => {
+	it('masks every split of literal and JSON-escaped secrets, including overlapping values', async () => {
+		const secrets = ['abc', 'abcdef', 'quote"and\nnewline', 'xy', ''];
+		const input = 'before abcdef / quote"and\nnewline / "quote\\"and\\nnewline" / xy after';
+		const expected = 'before *** / *** / "***" / *** after';
+		for (let split = 0; split <= input.length; split++) {
+			const raw = new SecretRedactor(secrets);
+			expect(raw.write(input.slice(0, split)) + raw.write(input.slice(split)) + raw.end()).toBe(
+				expected
+			);
+			const chunks: string[] = [];
+			const batcher = new LogBatcher(async (chunk) => void chunks.push(chunk), {
+				redact: secrets,
+				maxBytes: 1
+			});
+			batcher.append(input.slice(0, split));
+			await batcher.flush();
+			batcher.append(input.slice(split));
+			await batcher.finish();
+			expect(chunks.join('')).toBe(expected);
+		}
+	});
+
+	it('holds a possible secret prefix through flush and releases unmatched final text', async () => {
+		const chunks: string[] = [];
+		const batcher = new LogBatcher(async (chunk) => void chunks.push(chunk), {
+			redact: ['secret']
+		});
+		batcher.append('value=sec');
+		await batcher.flush();
+		expect(chunks.join('')).toBe('value=');
+		await batcher.finish();
+		expect(chunks.join('')).toBe('value=sec');
 	});
 });

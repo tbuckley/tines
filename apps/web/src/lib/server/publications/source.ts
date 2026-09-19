@@ -118,7 +118,7 @@ export function publicationSourceExpression(
 	WHERE c.user_id = ${userId}
 		AND c.workflow_state_id IN ${stateIds}
 		AND c.project_id IS NULL AND c.label_id IS NULL AND c.issue_id IS NULL
-		AND c.kind != 'artifact'
+		AND c.kind NOT IN ('artifact', 'env')
 	ORDER BY c.position, c.created_at, c.id`);
 	const project = selection.projectId
 		? sql`(SELECT json_object('id', p.id, 'user_id', p.user_id, 'name', p.name)

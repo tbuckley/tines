@@ -112,6 +112,13 @@ export interface TimeResponse {
 	unix: number;
 }
 
+export interface VersionResponse {
+	/** Build or release label of the running server. */
+	version: string;
+	/** Source commit baked into the running server build. */
+	commit: string;
+}
+
 export interface ApiClientOptions {
 	/** Base URL of the Tines API, e.g. "http://localhost:5173". */
 	baseUrl: string;
@@ -279,6 +286,7 @@ export function createApiClient(options: ApiClientOptions) {
 
 	return {
 		getTime: () => get<TimeResponse>('/api/time'),
+		getVersion: () => get<VersionResponse>('/api/version'),
 
 		// Projects
 		listProjects: (params: ProjectListFilters & PageParams = {}) =>

@@ -94,7 +94,7 @@ const issue = {
 	comments,
 	allowed_transitions: [],
 	state_entered_at: input.fixed_clock - 5000,
-	context_summary: { prompts: 0, skills: 1, repos: 0, artifacts: 1 },
+	context_summary: { prompts: 0, skills: 1, repos: 0, artifacts: 1, envs: 0 },
 	launch_comments: input.issue.launch_comments
 } as IssueDetail;
 
@@ -133,6 +133,7 @@ const context = {
 		}
 	],
 	repos: [],
+	env: [],
 	overridden: [],
 	conflicts: []
 } as EffectiveContext;

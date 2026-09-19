@@ -1,4 +1,5 @@
-/** `tines context` — context items (prompts, skills, repo pointers) and their scopes. */
+import { readFileSync } from 'node:fs';
+/** `tines context` — context items (prompts, skills, repo pointers, environment variables) and their scopes. */
 import { readBodyValue } from '../body-value.js';
 import {
 	client,
@@ -56,6 +57,14 @@ async function resolveScopeFlags(api: ApiClient, opts: ScopeFlagOpts): Promise<S
 	return scope;
 }
 
+/** `--value`: inline, `@file`, or `-` for stdin; a trailing newline from a file/stdin is dropped. */
+function readEnvValue(raw: string): string {
+	if (raw === '-') return readFileSync(0, 'utf8').replace(/\r?\n$/, '');
+	if (raw.startsWith('@@')) return raw.slice(1);
+	if (raw.startsWith('@')) return readFileSync(raw.slice(1), 'utf8').replace(/\r?\n$/, '');
+	return raw;
+}
+
 function printContextItem(item: ContextItem): void {
 	console.log(`${item.kind} "${item.name}"  [${item.id}]  v${item.version}`);
 	if (item.description) console.log(item.description);
@@ -75,6 +84,13 @@ function printContextItem(item: ContextItem): void {
 			console.log(`  ${f.path}  (${Buffer.byteLength(f.content, 'utf8')} bytes)`);
 		}
 		if ((item.files ?? []).length === 0) console.log('  (none)');
+	} else if (item.kind === 'env') {
+		if (item.secret) {
+			console.log(`\nvalue: (secret, set)${item.hint ? `  hint: ${item.hint}` : ''}`);
+		} else {
+			console.log(`\nvalue: ${item.value ?? ''}`);
+			if (item.hint) console.log(`hint: ${item.hint}`);
+		}
 	} else {
 		console.log(`\nurl: ${item.repo_url}`);
 		if (item.repo_branch) console.log(`branch: ${item.repo_branch}`);
@@ -105,7 +121,7 @@ export function register(program: Command): void {
 	const context = program
 		.command('context')
 		.description(
-			'Manage context items (prompts, skills, repo pointers) scoped to projects, states, and issues'
+			'Manage context items (prompts, skills, repo pointers, environment variables) scoped to projects, states, and issues'
 		);
 
 	withList(
@@ -115,7 +131,7 @@ export function register(program: Command): void {
 				.description(
 					'List context items (scope filters match every item whose scope includes the element)'
 				)
-				.option('-k, --kind <kind>', 'filter by kind: prompt, skill, or repo')
+				.option('-k, --kind <kind>', 'filter by kind: prompt, skill, repo, artifact, or env')
 				.option('--exact', 'only items whose scope sets exactly the given dimensions')
 				.option('-q, --search <text>', 'search names and descriptions')
 		)
@@ -167,10 +183,10 @@ export function register(program: Command): void {
 			context
 				.command('create')
 				.description('Create a context item scoped to a project, state, and/or issue')
-				.requiredOption('-k, --kind <kind>', 'prompt, skill, or repo')
+				.requiredOption('-k, --kind <kind>', 'prompt, skill, repo, or env')
 				.requiredOption(
 					'-n, --name <name>',
-					'item name (slug-like for skills; the dedup/override key)'
+					'item name (slug-like for skills, the variable name for env; the dedup/override key)'
 				)
 				.option('-d, --description <text>', 'one-liner shown in lists')
 				.option('--body <md>', 'prompt body: inline Markdown or @file (escape a literal @ as @@)')
@@ -183,6 +199,12 @@ export function register(program: Command): void {
 				.option('--repo-url <url>', 'repo: clone URL')
 				.option('--branch <branch>', 'repo: branch to check out')
 				.option('--dir <dir>', "repo: checkout directory (defaults to the URL's basename)")
+				.option(
+					'--value <v>',
+					'env: the value — inline, @file, or - for stdin (keeps a secret out of shell history)'
+				)
+				.option('--secret', 'env: encrypt the value at rest; it is write-only afterwards')
+				.option('--hint <text>', 'env: a safe display hint for a secret (e.g. "github_pat_…abcd")')
 		)
 	).action(
 		async (
@@ -196,10 +218,16 @@ export function register(program: Command): void {
 					repoUrl?: string;
 					branch?: string;
 					dir?: string;
+					value?: string;
+					secret?: boolean;
+					hint?: string;
 				}
 		) => {
 			if (opts.kind === 'repo' && opts.repoUrl === undefined) {
 				die('--kind repo needs --repo-url <clone-url> (--url is the API base URL)');
+			}
+			if (opts.kind === 'env' && opts.value === undefined) {
+				die('--kind env needs --value <value|@file|->');
 			}
 			const api = client(opts);
 			const scope = await resolveScopeFlags(api, opts);
@@ -215,6 +243,9 @@ export function register(program: Command): void {
 			if (opts.repoUrl !== undefined) body.repo_url = opts.repoUrl;
 			if (opts.branch !== undefined) body.repo_branch = opts.branch;
 			if (opts.dir !== undefined) body.repo_dir = opts.dir;
+			if (opts.value !== undefined) body.value = readEnvValue(opts.value);
+			if (opts.secret) body.secret = true;
+			if (opts.hint !== undefined) body.hint = opts.hint;
 			const item = await api.createContextItem(body);
 			if (opts.json) return printJson(item);
 			console.log(`created ${item.kind} "${item.name}" (${item.id}) — scope: ${item.scope.label}`);
@@ -234,6 +265,9 @@ export function register(program: Command): void {
 				.option('--repo-url <url>', 'repo: clone URL')
 				.option('--branch <branch>', 'repo: branch (empty string clears it)')
 				.option('--dir <dir>', 'repo: checkout directory (empty string restores the URL default)')
+				.option('--value <v>', 'env: replace the value (inline, @file, or - for stdin)')
+				.option('--secret', 'env: encrypt the stored value (irreversible; delete to make public)')
+				.option('--hint <text>', 'env: display hint for a secret (empty string clears it)')
 				.option(
 					'--unset <dimension>',
 					'drop a scope dimension: project, state, issue, or label (repeatable)',
@@ -259,6 +293,9 @@ export function register(program: Command): void {
 					repoUrl?: string;
 					branch?: string;
 					dir?: string;
+					value?: string;
+					secret?: boolean;
+					hint?: string;
 					unset: string[];
 					expectVersion?: number;
 				}
@@ -305,6 +342,9 @@ export function register(program: Command): void {
 			if (opts.repoUrl !== undefined) body.repo_url = opts.repoUrl;
 			if (opts.branch !== undefined) body.repo_branch = opts.branch === '' ? null : opts.branch;
 			if (opts.dir !== undefined) body.repo_dir = opts.dir === '' ? null : opts.dir;
+			if (opts.value !== undefined) body.value = readEnvValue(opts.value);
+			if (opts.secret) body.secret = true;
+			if (opts.hint !== undefined) body.hint = opts.hint === '' ? null : opts.hint;
 			if (Object.keys(body).length === 0) {
 				die(
 					'nothing to update: pass payload flags, --name/--description, scope flags, and/or --unset'
