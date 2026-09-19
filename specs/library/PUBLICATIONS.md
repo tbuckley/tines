@@ -56,6 +56,11 @@ the Worker boundary: no-store, no referrer, nosniff, no validators, and a comple
 CSP apply to successes, failures, redirects, HEAD, data requests, and unknown suffixes. HTML keeps
 only nonce-backed application scripts and same-origin styles/fonts/connect/form actions.
 
+The deployment-identity boundary added by Tines/598 wraps both publication boundaries. Public
+publication API responses therefore retain the complete publication policy while also receiving
+the server's `X-Tines-Version` and `X-Tines-Commit`; neither finalizer weakens or replaces the
+other's headers, including on Worker-level fallback failures.
+
 Accepted remote entry, legacy download, and API download URLs normalize to the real API download
 endpoint. Each redirect resolves once to a validated address set and connects through that pinned
 set; plaintext HTTP is limited to exact `localhost` or literal loopback hosts. Saved-plan recovery

@@ -10,7 +10,8 @@ import {
 describe('public publication response boundary', () => {
 	it('is wired around the shipping Worker fetch entry', () => {
 		const source = readFileSync(new URL('../../../../worker/index.ts', import.meta.url), 'utf8');
-		expect(source).toMatch(/return handlePublicationFetch\(request, \(prepared\) =>/);
+		expect(source).toMatch(/return handleDeploymentFetch\(/);
+		expect(source).toMatch(/handlePublicationFetch\(deploymentRequest, \(prepared\) =>/);
 		expect(source).toContain('return worker.fetch(prepared, env, ctx)');
 	});
 

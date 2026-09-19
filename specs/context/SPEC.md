@@ -21,7 +21,7 @@ Issues tell an agent *what* to do; context tells it *how*. This spec adds **cont
 - **Agent delivery**: no workspace seeding, no automatic prompt injection, no launching. The CLI can print/export the effective context; nothing acts on it.
 - **Roles as entities**: the scope model is designed so a role dimension slots in later as one more column, but no role table, no role UI, no role filtering ships now.
 - **Sharing/reuse across users**, and no library of shareable context bundles. Items belong to one user and are generally written for one scope.
-- **Binary or large files**: skill files are small text files stored in D1. Uploads, binaries, and R2-backed bundles are future work.
+- **Binary or large files**: skill files are small text files stored in D1. The web editor can read local text files from a selected folder, but uploads, binaries, and R2-backed bundles are future work.
 - **Versioning**: items are mutable and live-referenced, like workflows. Edits emit events; no history.
 - **Inheritance beyond states**: inheritance ships on the **state** dimension only (Tines/238). Projects are still flat; when nesting lands (Tines/185) the project dimension applies the same rule stated below, unchanged. **Item-to-item inheritance** — one item extending another regardless of scope — is the reserved path for sharing between unrelated projects and is deliberately not built.
 
@@ -41,10 +41,10 @@ A typed, user-owned unit of context. Every item has:
 #### Kind payloads
 
 - **`prompt`** — a Markdown body. The atom of prompt stitching. Capped at 32 KB.
-- **`skill`** — a set of text files, each with a workspace-relative **path** and **content**. Paths are validated: relative, forward slashes, no `..` or leading `/`, no `=`, no duplicates within the skill. Caps: ≤ 20 files, ≤ 100 KB total per skill. This matches the SKILL.md-style pattern: a directory of instructions/scripts seeded into an agent's workspace at `skills/<name>/…`.
+- **`skill`** — a set of text files, each with a workspace-relative **path** and **content**. Paths are validated: relative, forward slashes, no `..` or leading `/`, no `=`, no duplicates within the skill. Caps: ≤ 20 files, ≤ 100 KiB total per skill, including the UTF-8 bytes of paths and contents. This matches the SKILL.md-style pattern: a directory of instructions/scripts seeded into an agent's workspace at `skills/<name>/…`.
 - **`repo`** — a pointer: **URL** (required), **branch** (optional), **checkout directory** (optional; defaults at read time to the URL's basename with any trailing `.git` stripped). Tines stores no repository content — the consumer checks it out.
 
-All caps are measured in bytes of UTF-8 and enforced at the API layer with structured 422s; clients (including the CLI) just relay the error.
+All caps are measured in bytes of UTF-8 and enforced at the API layer with structured 422s. The web skill editor preflights file count and total bytes so a folder import can be reduced before save; other clients, including the CLI, relay API errors.
 
 ### Scope: intersection of dimensions
 
@@ -287,7 +287,7 @@ Which scopes appear where: each element's page lists items whose scope **include
 One dialog/page for all kinds — kind picker up front (locked when editing), then:
 
 - **Prompt**: name, description, Markdown editor with preview (same component as issue descriptions).
-- **Skill**: name (slug-validated), description, and a small file editor — a file list (add/rename/remove paths) with a text editor per file; validation errors (bad path, size caps) inline.
+- **Skill**: name (slug-validated), description, and a small file editor — a file list (add/rename/remove paths) with a text editor per file; validation errors (bad path, size caps) inline. “Add from folder” recursively reads a locally selected directory, requires its root `SKILL.md`, and merges text files by exact relative path. The draft shows ignored noise and live count/byte limits, and every imported row remains editable or removable before the existing save request.
 - **Repo**: name, URL, branch, checkout dir (placeholder showing the derived default).
 
 Plus the scope picker: three optional selectors (project, workflow → state, issue) rendered as removable chips, with the coherence rules enforced live (picking an issue constrains the state list to its workflow, etc.).
@@ -342,6 +342,8 @@ From the spec review:
 - **Launch prompt**: context items are context; the issue itself (title, description, state, comments, transitions) is appended as a generated issue block to form the full prompt an agent would run with. Exposed as `GET /api/v1/issues/:id/prompt`, `tines issues prompt`, and a copyable dialog on the issue page — kept out of the effective-context preview, which stays context-only. The issue block includes the runnable CLI commands for each available transition and for commenting, so the prompt alone tells an agent how to act, not just what its options are.
 
 From later work:
+
+- **2026-09-19, Tines/602 — folder import is a draft merge, not an upload**: the browser reads strict UTF-8 text locally and merges by exact relative path; matching rows are replaced and unrelated edits survive. A picked folder must contain root `SKILL.md`; `.git`, `node_modules`, and `.DS_Store` entries are ignored, while other dotfiles remain reviewable. Nothing reaches the API until Save, and the existing 20-file / 100 KiB path-plus-content limits remain authoritative.
 
 - **2026-09-01, Tines/92 — repo clone URL is `--repo-url`, not `--url`**: `-u, --url` is the API base URL on every CLI command without exception. The repo kind originally took `--url` for the clone URL and suppressed the base-URL flag, which left `context create` unable to target a non-default deployment except via `TINES_API_URL`. Payload flags that happen to hold a URL are named for what they hold.
 
