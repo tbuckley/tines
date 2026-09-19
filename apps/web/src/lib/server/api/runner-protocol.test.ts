@@ -922,7 +922,8 @@ describe('pollRunner', () => {
 			'github_pat_…text'
 		);
 
-		// Old daemon: no capability, no env, warning line in the run log.
+		// Old daemon: no capability, no env, warning line even without a decryption key.
+		delete t.env.SECRET_ENCRYPTION_KEY;
 		addRun(t, { id: 'run_old', issueId: issue, runnerId });
 		const old = await pollRunner(
 			t.db,
@@ -946,6 +947,7 @@ describe('pollRunner', () => {
 		expect(oldRun?.started_at).toBeNull();
 
 		// New daemon: env rides beside the bundle; secrets never enter prompt or bundle.
+		t.env.SECRET_ENCRYPTION_KEY = 'unit-test-key';
 		addRun(t, { id: 'run_new', issueId: issue, runnerId });
 		const fresh = await pollRunner(
 			t.db,
@@ -971,6 +973,42 @@ describe('pollRunner', () => {
 			['NPM_REGISTRY', false, 'https://r.example']
 		]);
 	});
+
+	it.each(['missing', 'rotated'] as const)(
+		'settles an env decryption failure with a safe error and revoked key (%s key)',
+		async (keyState) => {
+			const t = world();
+			if (keyState === 'rotated') t.env.SECRET_ENCRYPTION_KEY = 'new-key';
+			const runnerId = addRunner(t);
+			const issueId = addIssue(t);
+			const runId = addRun(t, { issueId, runnerId });
+			const ciphertext = await encryptSecret('private-value', 'original-key');
+			t.sqlite
+				.prepare(
+					`INSERT INTO context_item
+			(id, user_id, kind, name, description, env_value_enc, position, version, created_at, updated_at)
+			VALUES ('ctx_broken_env', ?, 'env', 'GH_TOKEN', '', ?, 0, 1, 0, 0)`
+				)
+				.run(USER, ciphertext);
+			const result = await pollRunner(
+				t.db,
+				t.env,
+				await runnerRow(t, runnerId),
+				TEST_NOOP_DISPATCH_EFFECTS,
+				{ owned_runs: [], env_delivery: 1 },
+				NOW + 1
+			);
+			expect(result.response.assignments).toEqual([]);
+			const run = runById(t, runId);
+			expect(run).toMatchObject({ status: 'failed', started_at: null, ended_at: NOW + 1 });
+			expect(run?.error).toContain('Cannot decrypt secret env item "GH_TOKEN" (ctx_broken_env)');
+			expect(keyForRun(t, runId)?.revoked_at).toBe(NOW + 1);
+			expect(runnerById(t, runnerId).backoff_until).toBeGreaterThan(NOW + 1);
+			const observable = JSON.stringify([run, result, eventsOfType(t, 'runner.errored')]);
+			expect(observable).not.toContain('private-value');
+			expect(observable).not.toContain(ciphertext);
+		}
+	);
 
 	it('selects essential comments in the locally delivered cold prompt', async () => {
 		const t = world();

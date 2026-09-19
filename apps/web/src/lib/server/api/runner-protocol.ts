@@ -37,6 +37,7 @@ import { sha256Hex } from '$lib/server/crypto';
 import { getDb, newId, type Database } from '$lib/server/db';
 import {
 	endRun,
+	failLaunch,
 	loadEndableRun,
 	markRunRunning,
 	mintRunKeyAndFlip,
@@ -67,7 +68,8 @@ import {
 	buildLaunchPrompt,
 	buildResumePrompt,
 	effectiveContextForIssue,
-	resolvedEnvForIssue
+	resolvedEnvForIssue,
+	type ResolvedEnvEntry
 } from './context';
 import { ApiFail, notFound, optionalString, runAtomic } from './core';
 import { requestDispatchEffects } from './core';
@@ -760,12 +762,29 @@ async function deliverAssignedRun(
 	});
 	if (!minted) return null;
 
-	const [issue, bundle, artifacts, labels, resolvedEnv] = await Promise.all([
+	let resolvedEnv: ResolvedEnvEntry[] = [];
+	if (caps.envDelivery) {
+		try {
+			resolvedEnv = await resolvedEnvForIssue(db, env, run.user_id, run.issue_id);
+		} catch (error) {
+			// Match managed launch failures: keep the item-specific error, revoke
+			// the minted key and back off instead of stranding a launching run.
+			await failLaunch(db, env, {
+				userId: run.user_id,
+				runId: run.id,
+				runner,
+				error: error instanceof Error ? error.message : String(error),
+				now
+			});
+			effects.signalDispatch();
+			return null;
+		}
+	}
+	const [issue, bundle, artifacts, labels] = await Promise.all([
 		getIssueDetail(db, run.user_id, { id: run.issue_id }, { round: true, launchComments: true }),
 		effectiveContextForIssue(db, run.user_id, run.issue_id),
 		listArtifacts(db, run.user_id, run.issue_id),
-		listLabels(db, run.user_id),
-		resolvedEnvForIssue(db, env, run.user_id, run.issue_id)
+		listLabels(db, run.user_id)
 	]);
 	const issueRef = `${issue.project_name}/${issue.number}`;
 	// Env items ride beside the bundle, never inside it (the bundle is written
@@ -773,7 +792,7 @@ async function deliverAssignedRun(
 	// nothing and the run log says why — a resumed run gets a fresh spawn
 	// environment too, so both branches below carry the same field.
 	let envField: { env: RunnerAssignment['env'] } | Record<string, never> = {};
-	if (resolvedEnv.length > 0) {
+	if (bundle.env.length > 0) {
 		if (caps.envDelivery) {
 			envField = {
 				env: resolvedEnv.map(({ name, value, secret }) => ({ name, value, secret }))
@@ -785,7 +804,7 @@ async function deliverAssignedRun(
 			const appended = appendLogTail(
 				run.log,
 				run.log_bytes_dropped,
-				`[env] ${resolvedEnv.length} environment variable(s) are configured for this issue but this runner's tines CLI is too old to receive them; update it (npm i -g tines)\n`
+				`[env] ${bundle.env.length} environment variable(s) are configured for this issue but this runner's tines CLI is too old to receive them; update it (npm i -g tines)\n`
 			);
 			await db
 				.updateTable('agent_run')
