@@ -167,145 +167,147 @@
 	dismissible={!creating}
 >
 	<form bind:this={form} onsubmit={create} class="space-y-4">
-		{#if !project}
-			<div class="space-y-1.5">
-				<label class="text-sm font-medium" for="issue-project">Project</label>
-				<Select id="issue-project" bind:value={projectId} required>
-					<option value="" disabled>Choose a project…</option>
-					{#each projects as p (p.id)}
-						<option value={p.id}>{p.name}</option>
-					{/each}
-				</Select>
-			</div>
-		{/if}
-		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="issue-title">Title</label>
-			<Input id="issue-title" bind:value={title} placeholder="What needs doing?" required />
-		</div>
-		<IssueAttachmentPicker
-			bind:attachments
-			disabled={creating}
-			transitions={outgoingTransitions}
-			onvalidchange={(valid) => (attachmentValid = valid)}
-		/>
-		<div class="space-y-1.5">
-			<label class="text-sm font-medium" for="issue-description">Description (Markdown)</label>
-			<Textarea id="issue-description" bind:value={description} rows={4} />
-		</div>
-		<div class="space-y-1.5">
-			<span class="text-sm font-medium">Labels</span>
-			<div class="flex flex-wrap items-center gap-1.5">
-				{#each pickerLabels.filter((l) => labelIds.includes(l.id)) as label (label.id)}
-					<LabelChip
-						{label}
-						size="sm"
-						onremove={() => (labelIds = labelIds.filter((id) => id !== label.id))}
-					/>
-				{/each}
-				<LabelPicker
-					labels={pickerLabels}
-					selected={labelIds}
-					onchange={(ids) => (labelIds = ids)}
-					allowCreate
-					oncreated={(l) => (minted = [...minted, l])}
-				>
-					{#snippet trigger({ props })}
-						<Button {...props} type="button" size="sm" variant="outline" class="h-7 px-2 text-xs">
-							<IconTag size={14} /> Add label
-						</Button>
-					{/snippet}
-				</LabelPicker>
-			</div>
-		</div>
-		<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-			<div class="space-y-1.5">
-				<label class="text-sm font-medium" for="issue-workflow">Workflow</label>
-				<Select id="issue-workflow" bind:value={workflowId}>
-					{#each workflows as workflow (workflow.id)}
-						<option value={workflow.id}>
-							{workflow.name}{workflow.is_system ? ' (standard)' : ''}{workflow.id ===
-							defaultWorkflowId
-								? ' — default'
-								: ''}
-						</option>
-					{/each}
-				</Select>
-			</div>
-			<div class="space-y-1.5">
-				<label class="text-sm font-medium" for="issue-state">Starting state</label>
-				<Select id="issue-state" bind:value={stateId}>
-					{#each pickedWorkflow?.states ?? [] as state (state.id)}
-						<option value={state.id}>
-							{state.name}{state.id === pickedWorkflow?.initial_state_id ? ' — default' : ''}
-						</option>
-					{/each}
-				</Select>
-			</div>
-		</div>
-		{#if pickedWorkflow}
-			<div class="bg-muted/40 rounded-md border p-2">
-				<WorkflowGraph workflow={pickedWorkflow} currentStateId={stateId || null} compact />
-			</div>
-		{/if}
-		<div class="rounded-md border">
-			<button
-				type="button"
-				class="hover:bg-accent/50 flex w-full items-center gap-2 px-3 py-2 text-sm font-medium transition-colors"
-				aria-expanded={repeatOpen}
-				onclick={() => (repeatOpen = !repeatOpen)}
-			>
-				<IconChevronRight
-					size={16}
-					class="text-muted-foreground transition-transform {repeatOpen ? 'rotate-90' : ''}"
-				/>
-				<IconRepeat size={16} class="text-muted-foreground" />
-				Repeat
-				{#if hasRepeat && !repeatOpen}
-					<span class="text-muted-foreground ml-auto truncate text-xs font-normal">
-						{repeatSummary(repeat).text}
-					</span>
-				{/if}
-			</button>
-			{#if repeatOpen}
-				<div class="border-t px-3 py-3" transition:slide={{ duration: dur() }}>
-					<RepeatFields state={repeat} idPrefix="issue-repeat" />
+		<fieldset disabled={creating} class="contents">
+			{#if !project}
+				<div class="space-y-1.5">
+					<label class="text-sm font-medium" for="issue-project">Project</label>
+					<Select id="issue-project" bind:value={projectId} required>
+						<option value="" disabled>Choose a project…</option>
+						{#each projects as p (p.id)}
+							<option value={p.id}>{p.name}</option>
+						{/each}
+					</Select>
 				</div>
 			{/if}
-		</div>
-		{#if hasRepeat && attachments.length > 0}
-			<p class="text-muted-foreground text-sm">
-				Attachments are added to this issue only. Future repeats won’t include them.
-			</p>
-		{/if}
-		{#if errorMessage}
-			<div class="text-destructive space-y-1 text-sm" role="alert">
-				<p>{errorMessage}</p>
-				{#if uncertain && selectedProject}
-					<a
-						class="underline"
-						href="/projects/{selectedProject.id}"
-						target="_blank"
-						rel="noreferrer">Check project issues</a
-					>
-				{/if}
-				{#if createdHref}<a class="underline" href={createdHref}>Open created issue</a>{/if}
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="issue-title">Title</label>
+				<Input id="issue-title" bind:value={title} placeholder="What needs doing?" required />
 			</div>
-		{/if}
-		<div class="flex flex-wrap justify-end gap-2">
-			<Button type="button" variant="ghost" disabled={creating} onclick={() => (open = false)}>
-				Cancel
-			</Button>
-			<PendingButton
-				type="submit"
-				pending={creating}
-				pendingLabel={attachments.length > 0 ? 'Creating and attaching…' : 'Creating…'}
-				disabled={!title.trim() ||
-					!selectedProject ||
-					(hasRepeat && !repeatValid) ||
-					!attachmentValid}
-			>
-				{hasRepeat ? 'Create issue + schedule' : 'Create issue'}
-			</PendingButton>
-		</div>
+			<IssueAttachmentPicker
+				bind:attachments
+				disabled={creating}
+				transitions={outgoingTransitions}
+				onvalidchange={(valid) => (attachmentValid = valid)}
+			/>
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="issue-description">Description (Markdown)</label>
+				<Textarea id="issue-description" bind:value={description} rows={4} />
+			</div>
+			<div class="space-y-1.5">
+				<span class="text-sm font-medium">Labels</span>
+				<div class="flex flex-wrap items-center gap-1.5">
+					{#each pickerLabels.filter((l) => labelIds.includes(l.id)) as label (label.id)}
+						<LabelChip
+							{label}
+							size="sm"
+							onremove={() => (labelIds = labelIds.filter((id) => id !== label.id))}
+						/>
+					{/each}
+					<LabelPicker
+						labels={pickerLabels}
+						selected={labelIds}
+						onchange={(ids) => (labelIds = ids)}
+						allowCreate
+						oncreated={(l) => (minted = [...minted, l])}
+					>
+						{#snippet trigger({ props })}
+							<Button {...props} type="button" size="sm" variant="outline" class="h-7 px-2 text-xs">
+								<IconTag size={14} /> Add label
+							</Button>
+						{/snippet}
+					</LabelPicker>
+				</div>
+			</div>
+			<div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+				<div class="space-y-1.5">
+					<label class="text-sm font-medium" for="issue-workflow">Workflow</label>
+					<Select id="issue-workflow" bind:value={workflowId}>
+						{#each workflows as workflow (workflow.id)}
+							<option value={workflow.id}>
+								{workflow.name}{workflow.is_system ? ' (standard)' : ''}{workflow.id ===
+								defaultWorkflowId
+									? ' — default'
+									: ''}
+							</option>
+						{/each}
+					</Select>
+				</div>
+				<div class="space-y-1.5">
+					<label class="text-sm font-medium" for="issue-state">Starting state</label>
+					<Select id="issue-state" bind:value={stateId}>
+						{#each pickedWorkflow?.states ?? [] as state (state.id)}
+							<option value={state.id}>
+								{state.name}{state.id === pickedWorkflow?.initial_state_id ? ' — default' : ''}
+							</option>
+						{/each}
+					</Select>
+				</div>
+			</div>
+			{#if pickedWorkflow}
+				<div class="bg-muted/40 rounded-md border p-2">
+					<WorkflowGraph workflow={pickedWorkflow} currentStateId={stateId || null} compact />
+				</div>
+			{/if}
+			<div class="rounded-md border">
+				<button
+					type="button"
+					class="hover:bg-accent/50 flex w-full items-center gap-2 px-3 py-2 text-sm font-medium transition-colors"
+					aria-expanded={repeatOpen}
+					onclick={() => (repeatOpen = !repeatOpen)}
+				>
+					<IconChevronRight
+						size={16}
+						class="text-muted-foreground transition-transform {repeatOpen ? 'rotate-90' : ''}"
+					/>
+					<IconRepeat size={16} class="text-muted-foreground" />
+					Repeat
+					{#if hasRepeat && !repeatOpen}
+						<span class="text-muted-foreground ml-auto truncate text-xs font-normal">
+							{repeatSummary(repeat).text}
+						</span>
+					{/if}
+				</button>
+				{#if repeatOpen}
+					<div class="border-t px-3 py-3" transition:slide={{ duration: dur() }}>
+						<RepeatFields state={repeat} idPrefix="issue-repeat" />
+					</div>
+				{/if}
+			</div>
+			{#if hasRepeat && attachments.length > 0}
+				<p class="text-muted-foreground text-sm">
+					Attachments are added to this issue only. Future repeats won’t include them.
+				</p>
+			{/if}
+			{#if errorMessage}
+				<div class="text-destructive space-y-1 text-sm" role="alert">
+					<p>{errorMessage}</p>
+					{#if uncertain && selectedProject}
+						<a
+							class="underline"
+							href="/projects/{selectedProject.id}"
+							target="_blank"
+							rel="noreferrer">Check project issues</a
+						>
+					{/if}
+					{#if createdHref}<a class="underline" href={createdHref}>Open created issue</a>{/if}
+				</div>
+			{/if}
+			<div class="flex flex-wrap justify-end gap-2">
+				<Button type="button" variant="ghost" disabled={creating} onclick={() => (open = false)}>
+					Cancel
+				</Button>
+				<PendingButton
+					type="submit"
+					pending={creating}
+					pendingLabel={attachments.length > 0 ? 'Creating and attaching…' : 'Creating…'}
+					disabled={!title.trim() ||
+						!selectedProject ||
+						(hasRepeat && !repeatValid) ||
+						!attachmentValid}
+				>
+					{hasRepeat ? 'Create issue + schedule' : 'Create issue'}
+				</PendingButton>
+			</div>
+		</fieldset>
 	</form>
 </Modal>
