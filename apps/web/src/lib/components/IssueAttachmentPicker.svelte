@@ -8,6 +8,7 @@
 		suggestArtifactName,
 		type WorkflowTransition
 	} from '@tines/shared';
+	import { tick } from 'svelte';
 	import IconFile from '@tabler/icons-svelte/icons/file';
 	import IconPaperclip from '@tabler/icons-svelte/icons/paperclip';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -129,6 +130,15 @@
 			return null;
 		return `This file won’t satisfy the ${gates[0].transition} requirement for “${attachment.name.trim()}”.`;
 	}
+
+	async function toggleEditing(attachment: IssueAttachmentDraft, index: number) {
+		oninteract?.(index);
+		attachment.editing = !attachment.editing;
+		if (attachment.editing) {
+			await tick();
+			document.getElementById(`attachment-name-${attachment.id}`)?.focus();
+		}
+	}
 </script>
 
 <section class="space-y-2" aria-labelledby="issue-attachments-label">
@@ -203,10 +213,7 @@
 								variant="ghost"
 								{disabled}
 								aria-label={`Edit name for ${attachment.file.name}`}
-								onclick={() => {
-									oninteract?.(index);
-									attachment.editing = !attachment.editing;
-								}}>Edit name</Button
+								onclick={() => toggleEditing(attachment, index)}>Edit name</Button
 							>
 							<Button
 								type="button"

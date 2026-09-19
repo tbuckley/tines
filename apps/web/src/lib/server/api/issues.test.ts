@@ -938,7 +938,7 @@ describe('createIssue with initial files', () => {
 				puts++;
 				if (puts === 2) throw new Error('injected second object failure');
 			}
-		} as unknown as R2Bucket;
+		} as unknown as NonNullable<Env['ARTIFACTS']>;
 		const effects = recordDispatchEffects();
 		await expect(
 			createIssue(t.db, t.env, human, effects, PROJECT, { title: 'No partial publish' }, [

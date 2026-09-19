@@ -4,6 +4,7 @@
 	import IconChevronRight from '@tabler/icons-svelte/icons/chevron-right';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import IconTag from '@tabler/icons-svelte/icons/tag';
+	import { tick } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
@@ -117,6 +118,7 @@
 			return;
 		}
 		creating = true;
+		let attachmentToFocus: string | null = null;
 		errorMessage = null;
 		uncertain = false;
 		createdHref = null;
@@ -160,10 +162,7 @@
 			if (err instanceof ApiError && attachmentIndex !== null && attachments[attachmentIndex]) {
 				attachments[attachmentIndex].editing = true;
 				attachmentServerError = { index: attachmentIndex, message: err.message };
-				await new Promise((resolve) => setTimeout(resolve));
-				form
-					?.querySelector<HTMLElement>(`#attachment-name-${attachments[attachmentIndex].id}`)
-					?.focus();
+				attachmentToFocus = attachments[attachmentIndex].id;
 			}
 			errorMessage = uncertain
 				? 'We couldn’t confirm whether the issue was created. Check the project’s issues before submitting again.'
@@ -172,6 +171,10 @@
 					: 'Something went wrong.';
 		} finally {
 			creating = false;
+			if (attachmentToFocus) {
+				await tick();
+				form?.querySelector<HTMLElement>(`#attachment-name-${attachmentToFocus}`)?.focus();
+			}
 		}
 	}
 </script>

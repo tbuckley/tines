@@ -82,7 +82,7 @@ async function post(request: Request) {
 		put: async () => {
 			puts++;
 		}
-	} as unknown as R2Bucket;
+	} as unknown as NonNullable<Env['ARTIFACTS']>;
 	const event = {
 		locals: { user: { id: USER, name: 'alice' } },
 		platform: { env: t.env, ctx: { waitUntil: () => {} } },
