@@ -103,3 +103,13 @@ canonical substitution, and never enter drafts, downloads, public views or insta
 passage text and open variable forms are bound edits: they invalidate proof and reviews and block
 rebuild, file checks and Preview. The declaration inventory keeps declaration-only creation,
 zero-use variables, selection and editing, and has no global field selector or replacement action.
+
+## Decision update — 2026-09-19 publisher completion receipt (Tines/556)
+
+A confirmed owned-workflow publication replaces its review controls with a terminal share receipt.
+The server-returned public URL is authoritative for the readonly share field, one-click Copy action,
+selectable clipboard fallback, and public Preview; no render, copy, theme, or timer event republishes
+the candidate. The focused responsive receipt names the frozen workflow and public visibility, while
+reduced motion skips its opacity-only entrance. A lost-response or other recoverable failure keeps
+the same candidate and confirmation behind Retry. Leaving through the workflow and explicitly
+publishing a revision prepares a new candidate and stable URL; the prior public bytes never change.

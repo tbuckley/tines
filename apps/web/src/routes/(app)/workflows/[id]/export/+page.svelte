@@ -16,11 +16,13 @@
 		type WorkflowPackageDocument
 	} from '@tines/shared';
 	import IconArrowLeft from '@tabler/icons-svelte/icons/arrow-left';
+	import IconCircleCheck from '@tabler/icons-svelte/icons/circle-check';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconRefresh from '@tabler/icons-svelte/icons/refresh';
-	import { tick } from 'svelte';
+	import { onDestroy, tick } from 'svelte';
+	import { fade } from 'svelte/transition';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import {
@@ -39,6 +41,7 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
+	import { prefersReducedMotion } from '$lib/format';
 
 	let { data } = $props();
 	function initialCandidate(): WorkflowPackageDocument {
@@ -65,10 +68,16 @@
 	let displayName = $state('');
 	let publicationProof = $state<PublicationProof | null>(null);
 	let publicationResult = $state<PublicationOwnerResult | null>(null);
+	let publishFailed = $state(false);
 	let shareConsent = $state(false);
 	let step = $state<'customize' | 'preview' | 'share' | 'complete'>('customize');
 	const publicationFlow = new PublicationFlowController();
 	let stepHeading = $state<HTMLElement | null>(null);
+	let shareLinkInput = $state<HTMLInputElement | null>(null);
+	let copyState = $state<'idle' | 'copying' | 'copied' | 'failed'>('idle');
+	let copyAnnouncement = $state('');
+	let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
+	let destroyed = false;
 	let displayNameInput = $state<HTMLInputElement | null>(null);
 	let displayNameError = $state('');
 
@@ -139,6 +148,7 @@
 		status = `${note} Review included skills and repositories again.`;
 		publicationProof = null;
 		publicationResult = null;
+		publishFailed = false;
 		shareConsent = false;
 		step = 'customize';
 	}
@@ -175,6 +185,7 @@
 		if (!publicationProof && !busy) return;
 		publicationProof = null;
 		publicationResult = null;
+		publishFailed = false;
 		shareConsent = false;
 		step = 'customize';
 		status = 'Your display name changed. Preview this version again.';
@@ -275,6 +286,7 @@
 		}
 	}
 	async function prepareForPublication() {
+		if (busy) return;
 		if (!(await guardInlineEdits('previewing'))) return;
 		if (editingInputId) {
 			status = 'Save or cancel the variable edit before previewing.';
@@ -341,6 +353,7 @@
 			}
 			publicationProof = proof;
 			publicationResult = null;
+			publishFailed = false;
 			shareConsent = false;
 			status = 'Ready to review.';
 			step = 'preview';
@@ -372,11 +385,15 @@
 	}
 	async function focusStep() {
 		await tick();
-		stepHeading?.focus();
-		stepHeading?.scrollIntoView({ block: 'start' });
+		stepHeading?.focus({ preventScroll: step === 'complete' });
+		stepHeading?.scrollIntoView({
+			block: 'start',
+			inline: 'nearest',
+			...(step === 'complete' ? { behavior: 'instant' as ScrollBehavior } : {})
+		});
 	}
 	async function reviewIncludedAndShare() {
-		if (!publicationProof) return;
+		if (busy || !publicationProof) return;
 		publicationFlow.reviewIncluded();
 		reviewed = new Set(publicationFlow.reviewedIds);
 		shareConsent = false;
@@ -385,21 +402,26 @@
 		await focusStep();
 	}
 	async function goTo(next: 'customize' | 'preview' | 'share') {
+		if (busy) return;
 		step = next;
 		await focusStep();
 	}
 	function consentChanged(event: Event) {
+		if (busy) return;
 		shareConsent = (event.currentTarget as HTMLInputElement).checked;
 		publicationFlow.setConsent(shareConsent);
 	}
 	async function publish() {
+		if (busy || step !== 'share' || publicationResult) return;
 		const request = publicationFlow.publishRequest();
 		if (!publicationProof || !request) return;
 		busy = true;
+		publishFailed = false;
 		status = 'Publishing…';
 		try {
 			publicationResult = await api.publishPublication(publicationProof.candidate_id, request);
-			status = 'Shared.';
+			publishFailed = false;
+			status = 'Published.';
 			step = 'complete';
 			await focusStep();
 		} catch (error) {
@@ -408,10 +430,12 @@
 				(error.code === 'publication_source_changed' ||
 					error.code === 'publication_source_changing' ||
 					error.code === 'publication_proof_expired' ||
+					error.code === 'publication_proof_stale' ||
 					error.code === 'publication_policy_changed')
 			) {
 				publicationFlow.invalidate();
 				publicationProof = null;
+				publishFailed = false;
 				reviewed = new Set();
 				shareConsent = false;
 				step = 'customize';
@@ -421,14 +445,54 @@
 						? 'The source changed. Your edits to this copy are still here. Review the latest source before sharing.'
 						: 'Preview this version again before sharing.';
 				await focusStep();
-			} else if (error instanceof ApiError && error.code !== 'publication_outcome_unknown')
+			} else if (error instanceof ApiError && error.code !== 'publication_outcome_unknown') {
 				status = error.message;
-			else
+				publishFailed = true;
+			} else {
 				status = 'We could not confirm whether sharing finished. Retry publishing to check safely.';
+				publishFailed = true;
+			}
 		} finally {
 			busy = false;
 		}
 	}
+	function clearCopyReset() {
+		if (copyResetTimer) clearTimeout(copyResetTimer);
+		copyResetTimer = null;
+	}
+	async function copyLink() {
+		const url = publicationResult?.receipt.public_url;
+		if (!url || copyState === 'copying') return;
+		clearCopyReset();
+		copyState = 'copying';
+		copyAnnouncement = '';
+		const write = navigator.clipboard?.writeText?.bind(navigator.clipboard);
+		try {
+			if (!write) throw new Error('Clipboard API unavailable');
+			const copy = write(url);
+			await tick();
+			await copy;
+			if (destroyed) return;
+			copyState = 'copied';
+			copyAnnouncement = 'Link copied.';
+			copyResetTimer = setTimeout(() => {
+				copyState = 'idle';
+				copyResetTimer = null;
+			}, 2_000);
+		} catch {
+			if (destroyed) return;
+			copyState = 'failed';
+			copyAnnouncement = 'Copy unavailable. Select the link and copy it.';
+			await tick();
+			shareLinkInput?.focus();
+			shareLinkInput?.select();
+			shareLinkInput?.setSelectionRange(0, url.length);
+		}
+	}
+	onDestroy(() => {
+		destroyed = true;
+		clearCopyReset();
+	});
 	async function addInput() {
 		if (candidateUpdating) return;
 		let normalized;
@@ -828,24 +892,27 @@
 <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
 	<div>
 		<h1 class="text-2xl font-semibold tracking-tight">Share {data.workflow.name}</h1>
-		<p class="text-muted-foreground mt-1 max-w-2xl text-sm">
-			Create a reusable copy for others. Review it before making it public.
-		</p>
+		{#if step !== 'complete'}<p class="text-muted-foreground mt-1 max-w-2xl text-sm">
+				Create a reusable copy for others. Review it before making it public.
+			</p>{/if}
 	</div>
 </div>
 
-<ol class="mb-6 grid grid-cols-3 gap-2 text-sm" aria-label="Sharing progress">
-	{#each ['customize', 'preview', 'share'] as item, index}
-		<li
-			class="rounded-md border px-3 py-2 capitalize {step === item
-				? 'border-primary bg-primary/10 font-medium'
-				: 'text-muted-foreground'}"
-			aria-current={step === item ? 'step' : undefined}
-		>
-			{index + 1}. {item}
-		</li>
-	{/each}
-</ol>
+{#if step !== 'complete'}<ol
+		class="mb-6 grid grid-cols-3 gap-2 text-sm"
+		aria-label="Sharing progress"
+	>
+		{#each ['customize', 'preview', 'share'] as item, index}
+			<li
+				class="rounded-md border px-3 py-2 capitalize {step === item
+					? 'border-primary bg-primary/10 font-medium'
+					: 'text-muted-foreground'}"
+				aria-current={step === item ? 'step' : undefined}
+			>
+				{index + 1}. {item}
+			</li>
+		{/each}
+	</ol>{/if}
 
 {#if step === 'customize'}
 	<section class="mb-6 rounded-lg border p-4" aria-labelledby="customize-title">
@@ -1265,32 +1332,85 @@
 			</li>
 		</ol>
 		<label class="mt-5 flex min-h-11 items-start gap-3 text-sm"
-			><input class="mt-1" type="checkbox" checked={shareConsent} onchange={consentChanged} /> I have
-			the right to share all included content, have reviewed this version, and agree to make it public
-			under the MIT license.</label
+			><input
+				class="mt-1"
+				type="checkbox"
+				checked={shareConsent}
+				disabled={busy}
+				onchange={consentChanged}
+			/> I have the right to share all included content, have reviewed this version, and agree to make
+			it public under the MIT license.</label
 		>
 		<button
 			type="button"
-			class="text-primary mt-3 min-h-10 underline"
+			class="text-primary mt-3 min-h-10 underline disabled:pointer-events-none disabled:opacity-50"
+			disabled={busy}
 			onclick={() => goTo('preview')}>Review included content again</button
 		>
 	</section>
 {:else if step === 'complete' && publicationResult}
 	<section
-		class="border-primary/40 bg-primary/5 rounded-lg border p-5"
-		aria-labelledby="shared-title"
+		class="border-primary/40 bg-primary/5 min-w-0 rounded-lg border p-5"
+		aria-labelledby="published-title"
+		transition:fade={{ duration: prefersReducedMotion() ? 0 : 180 }}
 	>
-		<h2 id="shared-title" class="text-xl font-semibold" tabindex="-1" bind:this={stepHeading}>
-			Shared
-		</h2>
-		<p class="text-muted-foreground mt-1 text-sm">Your workflow is public and ready to install.</p>
-		<a
-			class="text-primary mt-4 block break-all underline"
-			href={publicationResult.receipt.public_url}>{publicationResult.receipt.public_url}</a
-		>
-		<a class="text-primary mt-3 inline-flex min-h-10 items-center underline" href="/publications"
-			>Manage sharing</a
-		>
+		<div class="flex min-w-0 items-start gap-3">
+			<IconCircleCheck class="text-primary mt-0.5 shrink-0" size={24} aria-hidden="true" />
+			<div class="min-w-0">
+				<h2
+					id="published-title"
+					class="focus:ring-ring/50 scroll-mt-20 rounded-sm text-xl font-semibold focus:ring-3 focus:outline-none"
+					tabindex="-1"
+					bind:this={stepHeading}
+				>
+					Your workflow is ready to share
+				</h2>
+				<p class="mt-3 font-medium break-words">{proofWorkflowName}</p>
+				<p class="mt-1 text-sm font-medium">Public</p>
+				<p class="text-muted-foreground mt-0.5 text-sm">
+					Anyone with this link can view, download and install a copy.
+				</p>
+			</div>
+		</div>
+
+		<div class="mt-5 min-w-0">
+			<label class="text-sm font-medium" for="published-share-link">Share link</label>
+			<div class="mt-1.5 flex min-w-0 flex-col gap-2 sm:flex-row">
+				<Input
+					id="published-share-link"
+					class="min-w-0 flex-1"
+					bind:ref={shareLinkInput}
+					value={publicationResult.receipt.public_url}
+					readonly
+					aria-describedby={copyState === 'failed' ? 'copy-help' : undefined}
+				/>
+				<Button
+					data-testid="copy-share-link"
+					class="min-h-11 w-full min-w-24 sm:w-auto"
+					onclick={copyLink}
+					disabled={copyState === 'copying'}
+				>
+					{copyState === 'copied' ? 'Copied' : 'Copy link'}
+				</Button>
+			</div>
+			<p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+				{copyAnnouncement}
+			</p>
+			{#if copyState === 'failed'}<p id="copy-help" class="text-destructive mt-2 text-sm">
+					Copy unavailable. Select the link and copy it.
+				</p>{/if}
+		</div>
+
+		<div class="mt-4 flex flex-wrap gap-2">
+			<Button
+				variant="outline"
+				href={publicationResult.receipt.public_url}
+				target="_blank"
+				rel="noopener noreferrer"
+				>Preview public page<span class="sr-only"> (opens in a new tab)</span></Button
+			>
+			<Button variant="outline" href="/publications">Manage sharing</Button>
+		</div>
 		<TechnicalDetails
 			items={[{ label: 'Receipt', value: publicationResult.receipt.snapshot_id }]}
 		/>
@@ -1318,9 +1438,11 @@
 			{:else if step === 'preview'}<Button
 					class="w-full sm:w-auto"
 					variant="outline"
+					disabled={busy}
 					onclick={() => goTo('customize')}>Back to Customize</Button
 				><Button
 					class="h-auto min-h-9 w-full whitespace-normal sm:w-auto"
+					disabled={busy}
 					onclick={reviewIncludedAndShare}
 					>{requiredReviews.length === 1
 						? 'I reviewed the included skill — Continue to Share'
@@ -1328,9 +1450,10 @@
 							? 'I reviewed the included items — Continue to Share'
 							: 'Continue to Share'}</Button
 				>
-			{:else}<Button variant="outline" onclick={() => goTo('preview')}>Back to Preview</Button
+			{:else}<Button variant="outline" disabled={busy} onclick={() => goTo('preview')}
+					>Back to Preview</Button
 				><Button onclick={publish} disabled={busy || !shareConsent}
-					>{busy ? 'Publishing…' : 'Publish workflow'}</Button
+					>{busy ? 'Publishing…' : publishFailed ? 'Retry' : 'Publish workflow'}</Button
 				>{/if}
 		</div>
 	</div>
