@@ -13,6 +13,7 @@ import { apiClient, body, gotoHydrated, signIn } from './helpers';
 
 let workflowName: string;
 let wideWorkflowName: string;
+let reorderWorkflowName: string;
 /** As long as a real workflow's: six lines on a desktop, nine on a phone. */
 const description =
 	'Backlog → Research → Design → Implementation → Automated Review → Human Review → Merging → Closed (or Canceled). Small, fully-specified tasks may go straight from Backlog to Implementation. Research, Design, and Implementation can park in Needs Clarification to ask a human a blocking question. After human approval, a Merging run brings the PR up to date with main and lands it.';
@@ -25,6 +26,19 @@ const SYSTEM_WORKFLOW = {
 
 let workflowId: string;
 let wideWorkflowId: string;
+let reorderWorkflowId: string;
+let reorderStateIds: Record<string, string>;
+
+const stateOrder = (page: Page) =>
+	page
+		.getByLabel('State name', { exact: true })
+		.evaluateAll((inputs) => inputs.map((input) => (input as HTMLInputElement).value));
+
+const stateRow = (page: Page, name: string) =>
+	page
+		.getByRole('button', { name: new RegExp(`^Move ${name} (up|down)$`) })
+		.first()
+		.locator('xpath=ancestor::*[@data-state-row]');
 
 const previewGeometry = async (page: Page) => {
 	const region = page.getByRole('region', { name: 'Live preview' });
@@ -53,6 +67,7 @@ const previewGeometry = async (page: Page) => {
 test.beforeAll(async ({ apiFor, uniqueName }) => {
 	workflowName = uniqueName('Header', { maxLength: 32 });
 	wideWorkflowName = uniqueName('Wide preview', { maxLength: 100 });
+	reorderWorkflowName = uniqueName('Reorder states', { maxLength: 100 });
 	const api = apiFor(ALICE);
 	const created = await body<{ id: string }>(
 		await api.post('/api/v1/workflows', {
@@ -99,6 +114,40 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 		})
 	);
 	wideWorkflowId = wide.id;
+
+	const reorder = await body<{
+		id: string;
+		states: { id: string; name: string }[];
+	}>(
+		await api.post('/api/v1/workflows', {
+			name: reorderWorkflowName,
+			description: 'A workflow used to verify persisted state ordering.',
+			initial_state: 'Open',
+			states: [
+				{ name: 'Open', category: 'active' },
+				{ name: 'Review', category: 'awaiting_human' },
+				{ name: 'Closed', category: 'done' }
+			],
+			transitions: [
+				{ name: 'Submit', from: 'Open', to: 'Review' },
+				{
+					name: 'Approve',
+					from: 'Review',
+					to: 'Closed',
+					requires: [
+						{
+							artifact: 'approval',
+							type: 'text',
+							content_type: 'text/markdown',
+							description: 'The approval record'
+						}
+					]
+				}
+			]
+		})
+	);
+	reorderWorkflowId = reorder.id;
+	reorderStateIds = Object.fromEntries(reorder.states.map((state) => [state.name, state.id]));
 });
 
 test.use({ signedIn: ALICE });
@@ -143,6 +192,173 @@ test('an editable workflow can save parallel named actions to one state', async 
 		'aria-pressed',
 		'true'
 	);
+});
+
+test('state moves preserve references and persist the displayed order through reload', async ({
+	page
+}) => {
+	await gotoHydrated(page, `/workflows/${reorderWorkflowId}`);
+	expect(await stateOrder(page)).toEqual(['Open', 'Review', 'Closed']);
+	await expect(page.getByRole('button', { name: 'Move Open up' })).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Move Closed down' })).toBeDisabled();
+	await expect(stateRow(page, 'Open').getByRole('radio')).toBeChecked();
+	await expect(stateRow(page, 'Open').getByLabel('Target state')).toHaveValue(
+		reorderStateIds.Review
+	);
+	await expect(stateRow(page, 'Review').getByLabel('Target state')).toHaveValue(
+		reorderStateIds.Closed
+	);
+	await expect(stateRow(page, 'Review').getByLabel('Required artifact name')).toHaveValue(
+		'approval'
+	);
+
+	const reviewUp = page.getByRole('button', { name: 'Move Review up' });
+	await reviewUp.focus();
+	await page.keyboard.press('Space');
+	expect(await stateOrder(page)).toEqual(['Review', 'Open', 'Closed']);
+	await expect(page.getByRole('status')).toHaveText('Review moved to position 1 of 3.');
+	await expect(page.getByRole('button', { name: 'Move Review down' })).toBeFocused();
+
+	await page.getByRole('button', { name: 'Move Review down' }).click();
+	expect(await stateOrder(page)).toEqual(['Open', 'Review', 'Closed']);
+	await expect(page.getByRole('button', { name: 'Move Review down' })).toBeFocused();
+	await page.getByRole('button', { name: 'Move Closed up' }).click();
+	expect(await stateOrder(page)).toEqual(['Open', 'Closed', 'Review']);
+	await expect(page.getByRole('button', { name: 'Move Closed up' })).toBeFocused();
+
+	await stateRow(page, 'Closed').getByLabel('State name').fill('Archived');
+	await expect(stateRow(page, 'Open').getByRole('radio')).toBeChecked();
+	await expect(stateRow(page, 'Open').getByLabel('Target state')).toHaveValue(
+		reorderStateIds.Review
+	);
+	await expect(stateRow(page, 'Review').getByLabel('Target state')).toHaveValue(
+		reorderStateIds.Closed
+	);
+
+	const responsePromise = page.waitForResponse(
+		(response) =>
+			response.request().method() === 'PATCH' &&
+			response.url().endsWith(`/api/v1/workflows/${reorderWorkflowId}`)
+	);
+	await page.getByRole('button', { name: 'Save workflow' }).click();
+	const response = await responsePromise;
+	expect(response.ok()).toBe(true);
+	const request = response.request().postDataJSON();
+	expect(request.states.map((state: { id: string }) => state.id)).toEqual([
+		reorderStateIds.Open,
+		reorderStateIds.Closed,
+		reorderStateIds.Review
+	]);
+	expect(request.initial_state).toBe(reorderStateIds.Open);
+	expect(request.transitions).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				name: 'Submit',
+				from: reorderStateIds.Open,
+				to: reorderStateIds.Review
+			}),
+			expect.objectContaining({
+				name: 'Approve',
+				from: reorderStateIds.Review,
+				to: reorderStateIds.Closed,
+				requires: [
+					{
+						artifact: 'approval',
+						type: 'text',
+						content_type: 'text/markdown',
+						description: 'The approval record'
+					}
+				]
+			})
+		])
+	);
+	const saved = (await response.json()) as {
+		states: { id: string; position: number }[];
+	};
+	expect(saved.states.map(({ id, position }) => ({ id, position }))).toEqual([
+		{ id: reorderStateIds.Open, position: 0 },
+		{ id: reorderStateIds.Closed, position: 1 },
+		{ id: reorderStateIds.Review, position: 2 }
+	]);
+	await expect.poll(() => stateOrder(page)).toEqual(['Open', 'Archived', 'Review']);
+	await page.reload();
+	await expect(page.getByRole('heading', { level: 1, name: reorderWorkflowName })).toBeVisible();
+	expect(await stateOrder(page)).toEqual(['Open', 'Archived', 'Review']);
+	await expect(stateRow(page, 'Open').getByRole('radio')).toBeChecked();
+	await expect(stateRow(page, 'Open').getByLabel('Target state')).toHaveValue(
+		reorderStateIds.Review
+	);
+});
+
+test('a rejected save keeps the reordered draft available for retry', async ({ page }) => {
+	await gotoHydrated(page, `/workflows/${reorderWorkflowId}`);
+	await page.getByRole('button', { name: 'Move Review up' }).click();
+	expect(await stateOrder(page)).toEqual(['Open', 'Review', 'Archived']);
+	await page.route(`**/api/v1/workflows/${reorderWorkflowId}`, async (route) => {
+		if (route.request().method() !== 'PATCH') return route.continue();
+		await route.fulfill({
+			status: 500,
+			contentType: 'application/json',
+			body: JSON.stringify({ error: { code: 'forced_failure', message: 'Forced save failure' } })
+		});
+	});
+	await page.getByRole('button', { name: 'Save workflow' }).click();
+	await expect(page.getByText('Forced save failure', { exact: true })).toBeVisible();
+	expect(await stateOrder(page)).toEqual(['Open', 'Review', 'Archived']);
+});
+
+test('new-state moves preserve draft prompts and resolve references on create', async ({
+	page,
+	uniqueName
+}) => {
+	await page.emulateMedia({ reducedMotion: 'no-preference' });
+	await gotoHydrated(page, '/workflows/new');
+	const name = uniqueName('New reordered workflow', { maxLength: 100 });
+	await page.getByLabel('Name', { exact: true }).fill(name);
+	await page.getByRole('button', { name: 'Add state' }).click();
+	await page.getByLabel('State name', { exact: true }).last().fill('Review');
+	const review = stateRow(page, 'Review');
+	await review.getByRole('radio').check();
+	await review.getByRole('button', { name: 'Add stage instructions' }).click();
+	await review.getByLabel(/Stage instructions/).fill('Check the implementation carefully.');
+	await stateRow(page, 'Open').getByLabel('Target state').selectOption({ label: 'Review' });
+	await page.getByRole('button', { name: 'Move Review up' }).click();
+	await page.getByRole('button', { name: 'Move Review up' }).click();
+	expect(await stateOrder(page)).toEqual(['Review', 'Open', 'Done']);
+	await expect(page.getByRole('button', { name: 'Move Review down' })).toBeFocused();
+
+	const requestPromise = page.waitForRequest(
+		(request) => request.method() === 'POST' && request.url().endsWith('/api/v1/workflows')
+	);
+	await page.getByRole('button', { name: 'Create workflow' }).click();
+	const request = (await requestPromise).postDataJSON();
+	expect(request.states.map((state: { name: string }) => state.name)).toEqual([
+		'Review',
+		'Open',
+		'Done'
+	]);
+	expect(request.states[0].prompt).toBe('Check the implementation carefully.');
+	expect(request.initial_state).toBe('Review');
+	expect(request.transitions[0]).toMatchObject({ from: 'Open', to: 'Review' });
+	await expect(page).toHaveURL(/\/workflows\/wf_/);
+});
+
+test('move controls stay contained and show both boundaries for one state on a phone', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 375, height: 812 });
+	await gotoHydrated(page, '/workflows/new');
+	const removeButtons = page.getByRole('button', { name: 'Remove state' });
+	await removeButtons.last().click();
+	await expect(page.getByRole('button', { name: 'Move Open up' })).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Move Open down' })).toBeDisabled();
+	const geometry = await page.locator('form').evaluate((form) => ({
+		formRight: form.getBoundingClientRect().right,
+		documentWidth: document.documentElement.scrollWidth,
+		viewportWidth: document.documentElement.clientWidth
+	}));
+	expect(geometry.formRight).toBeLessThanOrEqual(375);
+	expect(geometry.documentWidth - geometry.viewportWidth).toBeLessThanOrEqual(1);
 });
 
 test('Delete sits in the save row rather than the header', async ({ page }) => {

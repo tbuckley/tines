@@ -13,6 +13,9 @@ vi.mock('$lib/server/supervisor/stats', async (importOriginal) => {
 });
 import { createTestDb, type TestDb } from './test-db';
 import { loadSentBackDrilldown, loadStageStats, parseStatsWindow } from './supervisor';
+import { TEST_NOOP_DISPATCH_EFFECTS } from './test-dispatch-effects';
+import { updateWorkflow } from './workflows';
+import type { ActorContext } from './core';
 import {
 	addIssue,
 	addComment,
@@ -34,6 +37,14 @@ import {
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
+
+const actor: ActorContext = {
+	userId: USER,
+	userName: 'Alice',
+	apiKeyId: null,
+	apiKeyName: null,
+	viaSession: true
+};
 
 beforeEach(() => {
 	statsCalls.preparations = 0;
@@ -67,6 +78,42 @@ describe('parseStatsWindow', () => {
 });
 
 describe('loadStageStats', () => {
+	it('reclassifies historical send-backs after the workflow order is saved', async () => {
+		const t = setup();
+		const issue = addIssue(t, { id: 'iss_reordered', state: STAGE_A, workflow: 'wf_two' });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - DAY,
+			from: STAGE_B,
+			to: STAGE_A
+		});
+
+		const before = await loadStageStats(t.db, USER, {}, NOW);
+		expect(before.states.find((state) => state.state_id === STAGE_B)?.current).toMatchObject({
+			exits: 1,
+			sent_back: { count: 1 }
+		});
+		expect((await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW)).items).toHaveLength(
+			1
+		);
+
+		await updateWorkflow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'wf_two', {
+			states: [
+				{ id: STAGE_B, name: 'Stage B', category: 'active' },
+				{ id: STAGE_A, name: 'Stage A', category: 'active' },
+				{ id: 'wfs_two_done', name: 'Done', category: 'done' }
+			]
+		});
+
+		const after = await loadStageStats(t.db, USER, {}, NOW);
+		expect(after.states.find((state) => state.state_id === STAGE_B)?.current).toMatchObject({
+			exits: 1,
+			sent_back: { count: 0 }
+		});
+		expect((await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW)).items).toEqual([]);
+	});
+
 	it('builds visits, queue wait and the agent-attributed sent back from stored rows', async () => {
 		const t = setup();
 		const issue = addIssue(t, { id: 'iss_1', state: STAGE_B, workflow: 'wf_two' });
