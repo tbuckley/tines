@@ -805,10 +805,16 @@ export async function launchClaimedRun(
  * stalled-launch reconciliation: error recorded on the run, key revoked,
  * runner backed off (2× per consecutive failure, max 1 h) and flagged.
  */
-async function failLaunch(
+export async function failLaunch(
 	db: Kysely<Database>,
 	env: Env,
-	input: { userId: string; runId: string; runner: EngineRunner; error: string; now: number }
+	input: {
+		userId: string;
+		runId: string;
+		runner: Pick<EngineRunner, 'id' | 'name' | 'launch_failures'>;
+		error: string;
+		now: number;
+	}
 ): Promise<void> {
 	const failures = input.runner.launch_failures + 1;
 	await runBatch(env, [

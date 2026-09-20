@@ -50,6 +50,91 @@ const previewGeometry = async (page: Page) => {
 	});
 };
 
+async function previewFadedEdges(page: Page) {
+	const mask = await page
+		.getByRole('region', { name: 'Live preview' })
+		.evaluate((el) => getComputedStyle(el).maskImage);
+	if (mask === 'none') return { masked: false, left: false, right: false };
+	return {
+		masked: true,
+		left: /\(to right, rgba\(0, 0, 0, 0\) 0px/.test(mask),
+		right: /rgba\(0, 0, 0, 0\) 100%\)$/.test(mask)
+	};
+}
+
+const expectPreviewFade = (page: Page, edges: { left: boolean; right: boolean }) =>
+	expect.poll(() => previewFadedEdges(page)).toEqual({ masked: true, ...edges });
+
+async function renderedGraphText(page: Page) {
+	return page.getByRole('region', { name: 'Live preview' }).evaluate(async (region) => {
+		await document.fonts.ready;
+		const svg = region.querySelector('svg')!;
+		const viewBox = svg.viewBox.baseVal;
+		const box = (element: SVGGraphicsElement, padding = 0) => {
+			const value = element.getBBox();
+			return {
+				x: value.x - padding,
+				y: value.y - padding,
+				w: value.width + padding * 2,
+				h: value.height + padding * 2
+			};
+		};
+		const intersects = (a: ReturnType<typeof box>, b: ReturnType<typeof box>) =>
+			Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 0.01 &&
+			Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > 0.01;
+		const stateBodies = [...svg.querySelectorAll<SVGRectElement>('[data-graph-state]')].map(
+			(element) => ({ id: element.dataset.graphState!, box: box(element) })
+		);
+		const stateLabels = [...svg.querySelectorAll<SVGTextElement>('[data-graph-state-label]')].map(
+			(element) => ({
+				id: element.dataset.graphStateLabel!,
+				text: element.textContent,
+				box: box(element, 0.5)
+			})
+		);
+		const actionLabels = [
+			...svg.querySelectorAll<SVGTextElement>('[data-graph-transition-label]')
+		].map((element) => box(element, 1.5));
+		const actionStateIntersections = actionLabels.flatMap((label, labelIndex) =>
+			stateBodies.flatMap((state) =>
+				intersects(label, state.box) ? [`${labelIndex}:${state.id}`] : []
+			)
+		);
+		const actionActionIntersections: string[] = [];
+		for (let index = 0; index < actionLabels.length; index += 1) {
+			for (let other = index + 1; other < actionLabels.length; other += 1) {
+				if (intersects(actionLabels[index], actionLabels[other]))
+					actionActionIntersections.push(`${index}:${other}`);
+			}
+		}
+		const stateTextOutsideBody = stateLabels.flatMap((label) => {
+			const body = stateBodies.find((candidate) => candidate.id === label.id)?.box;
+			if (
+				!body ||
+				label.box.x < body.x - 0.01 ||
+				label.box.y < body.y - 0.01 ||
+				label.box.x + label.box.w > body.x + body.w + 0.01 ||
+				label.box.y + label.box.h > body.y + body.h + 0.01
+			)
+				return [{ id: label.id, text: label.text, label: label.box, body }];
+			return [];
+		});
+		const textOutsideViewBox = [...actionLabels, ...stateLabels.map(({ box }) => box)].filter(
+			(value) =>
+				value.x < viewBox.x - 0.01 ||
+				value.y < viewBox.y - 0.01 ||
+				value.x + value.w > viewBox.x + viewBox.width + 0.01 ||
+				value.y + value.h > viewBox.y + viewBox.height + 0.01
+		).length;
+		return {
+			actionStateIntersections,
+			actionActionIntersections,
+			stateTextOutsideBody,
+			textOutsideViewBox
+		};
+	});
+}
+
 test.beforeAll(async ({ apiFor, uniqueName }) => {
 	workflowName = uniqueName('Header', { maxLength: 32 });
 	wideWorkflowName = uniqueName('Wide preview', { maxLength: 100 });
@@ -145,6 +230,27 @@ test('an editable workflow can save parallel named actions to one state', async 
 	);
 });
 
+test('the preview keeps a transition path keyed across action rename and reorder', async ({
+	page
+}) => {
+	await gotoHydrated(page, `/workflows/${workflowId}`);
+	const preview = page.getByRole('region', { name: 'Live preview' });
+	const abandonLabel = preview.getByText('Abandon', { exact: true });
+	const transitionKey = await abandonLabel.getAttribute('data-graph-transition-label');
+	const tracked = await preview
+		.locator(`path[data-graph-transition=${JSON.stringify(transitionKey)}]`)
+		.elementHandle();
+	expect(tracked).not.toBeNull();
+
+	await page.getByLabel('Action name').nth(1).fill('Escalate');
+	await page.getByRole('button', { name: 'Remove action from Open' }).first().click();
+	await expect(page.getByLabel('Action name')).toHaveCount(1);
+	await expect(page.getByLabel('Action name')).toHaveValue('Escalate');
+	await expect(preview.getByText('Escalate', { exact: true })).toBeVisible();
+	expect(await tracked!.evaluate((path) => path.isConnected)).toBe(true);
+	expect(await tracked!.getAttribute('data-graph-transition')).toBe(transitionKey);
+});
+
 test('Delete sits in the save row rather than the header', async ({ page }) => {
 	await page.goto(`/workflows/${workflowId}`);
 	const form = page.locator('form');
@@ -207,6 +313,13 @@ test('a wide live preview defaults to Fit and round-trips through exact 1×', as
 	expect(fitted.svgLeft).toBeGreaterThanOrEqual(fitted.regionLeft - 1);
 	expect(fitted.svgRight).toBeLessThanOrEqual(fitted.regionRight + 1);
 	expect(fitted.documentScrollWidth - fitted.documentClientWidth).toBeLessThanOrEqual(1);
+	await expect
+		.poll(() => previewFadedEdges(page))
+		.toEqual({
+			masked: false,
+			left: false,
+			right: false
+		});
 
 	await actual.focus();
 	await page.keyboard.press('Enter');
@@ -217,11 +330,13 @@ test('a wide live preview defaults to Fit and round-trips through exact 1×', as
 	expect(intrinsic.regionScrollWidth).toBeGreaterThan(intrinsic.regionClientWidth);
 	expect(intrinsic.regionScrollLeft).toBe(0);
 	expect(intrinsic.documentScrollWidth - intrinsic.documentClientWidth).toBeLessThanOrEqual(1);
+	await expectPreviewFade(page, { left: false, right: true });
 
 	await region.focus();
 	await expect(region).toBeFocused();
 	await page.keyboard.press('ArrowRight');
 	await expect.poll(async () => (await previewGeometry(page)).regionScrollLeft).toBeGreaterThan(0);
+	await expectPreviewFade(page, { left: true, right: true });
 	expect((await previewGeometry(page)).headingLeft).toBeCloseTo(fitted.headingLeft, 1);
 
 	const renamedAction = 'Advance with a substantially longer action label';
@@ -241,11 +356,42 @@ test('a wide live preview defaults to Fit and round-trips through exact 1×', as
 	expect(refitted.svgRatio).toBeLessThan(1);
 	expect(refitted.svgLeft).toBeGreaterThanOrEqual(refitted.regionLeft - 1);
 	expect(refitted.svgRight).toBeLessThanOrEqual(refitted.regionRight + 1);
+	await expect
+		.poll(() => previewFadedEdges(page))
+		.toEqual({
+			masked: false,
+			left: false,
+			right: false
+		});
 
 	await actual.click();
 	intrinsic = await previewGeometry(page);
 	expect(intrinsic.svgRatio).toBeCloseTo(1, 2);
 	expect(intrinsic.regionScrollLeft).toBe(0);
+	await expectPreviewFade(page, { left: false, right: true });
+});
+
+test('browser text bounds stay inside reserved boxes without collisions', async ({ page }) => {
+	await gotoHydrated(page, `/workflows/${wideWorkflowId}`);
+	await page
+		.getByLabel('State name')
+		.first()
+		.fill(`${'W'.repeat(45)} <script>`);
+	await page
+		.getByLabel('State name')
+		.nth(1)
+		.fill(`境界テスト ${'界'.repeat(20)} 👩‍💻 e\u0301`);
+	await page
+		.getByLabel('Action name')
+		.first()
+		.fill(`Route ${'W'.repeat(38)} 界 😀 <b>literal</b>`);
+	await expect(page.getByRole('region', { name: 'Live preview' }).locator('svg')).toBeVisible();
+	expect(await renderedGraphText(page)).toEqual({
+		actionStateIntersections: [],
+		actionActionIntersections: [],
+		stateTextOutsideBody: [],
+		textOutsideViewBox: 0
+	});
 });
 
 test('a wide live preview toggles and remains contained on a phone', async ({ page }) => {
@@ -266,10 +412,12 @@ test('a wide live preview toggles and remains contained on a phone', async ({ pa
 	await group.getByRole('button', { name: '1×', exact: true }).click();
 	await expect.poll(async () => (await previewGeometry(page)).svgRatio).toBeCloseTo(1, 2);
 	expect((await previewGeometry(page)).regionScrollWidth).toBeGreaterThan(before.regionClientWidth);
+	await expectPreviewFade(page, { left: false, right: true });
 	await region.evaluate((el) => {
-		el.scrollLeft = 100;
+		el.scrollTo({ left: el.scrollWidth, behavior: 'instant' });
 	});
 	await expect.poll(async () => (await previewGeometry(page)).regionScrollLeft).toBeGreaterThan(0);
+	await expectPreviewFade(page, { left: true, right: false });
 	await page.setViewportSize({ width: 440, height: 844 });
 	await expect(group.getByRole('button', { name: '1×', exact: true })).toHaveAttribute(
 		'aria-pressed',

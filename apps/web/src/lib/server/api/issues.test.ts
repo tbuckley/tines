@@ -32,6 +32,8 @@ import {
 } from './issues';
 import { createLabel, listLabels } from './labels';
 import { listArtifacts } from './artifacts';
+import { getArtifactStore } from '$lib/server/artifact-store';
+import { runScheduleNow } from './schedules';
 import { loadWorkflows } from './workflows';
 import { createTestDb, type TestDb } from './test-db';
 
@@ -545,6 +547,104 @@ describe('listIssues search', () => {
 	});
 });
 
+describe('listIssues duplicate visibility', () => {
+	const PROJECT2 = 'prj_duplicates_other';
+	let t: TestDb;
+	let ordinary: string;
+	let canonical: string;
+	let duplicate: string;
+	let chain: string;
+
+	beforeEach(() => {
+		t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(
+			`INSERT INTO project (id, user_id, name, created_at, updated_at)
+			 VALUES ('${PROJECT2}', '${USER}', 'duplicate targets', 0, 0)`
+		);
+		ordinary = addIssue(t, { title: 'Ordinary' });
+		canonical = addIssue(t, { title: 'Canonical', project: PROJECT2 });
+		duplicate = addIssue(t, { title: 'Duplicate' });
+		chain = addIssue(t, { title: 'Chain source' });
+		t.sqlite
+			.prepare(
+				`INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at)
+				 VALUES (?, ?, ?, 'duplicate_of', 0), (?, ?, ?, 'duplicate_of', 0)`
+			)
+			.run('lnk_duplicate', duplicate, canonical, 'lnk_chain', chain, duplicate);
+	});
+
+	const list = async (filters: Parameters<typeof listIssues>[2] = {}, limit = 50) =>
+		listIssues(t.db, USER, filters, { cursor: null, limit });
+
+	it('hides every duplicate source by default and includes them only when requested', async () => {
+		expect((await list({ projectId: PROJECT })).items.map((item) => item.id)).toEqual([ordinary]);
+		expect(
+			(await list({ projectId: PROJECT, hideDuplicates: true })).items.map((item) => item.id)
+		).toEqual([ordinary]);
+		expect(
+			(await list({ projectId: PROJECT, hideDuplicates: false })).items
+				.map((item) => item.id)
+				.sort()
+		).toEqual([ordinary, duplicate, chain].sort());
+		// An incoming duplicate link does not hide the canonical target.
+		expect((await list({ projectId: PROJECT2 })).items.map((item) => item.id)).toEqual([canonical]);
+	});
+
+	it('restores an issue when its outgoing duplicate link is removed', async () => {
+		t.sqlite.prepare('DELETE FROM issue_link WHERE source_issue_id = ?').run(duplicate);
+		expect((await list({ projectId: PROJECT })).items.map((item) => item.id).sort()).toEqual(
+			[ordinary, duplicate].sort()
+		);
+	});
+
+	it('keeps counts, workflow counts, Ready, and brief rows on the same population', async () => {
+		expect(await countIssuesByCategory(t.db, USER, { projectId: PROJECT })).toMatchObject({
+			active: 1
+		});
+		expect(
+			await countIssuesByCategory(t.db, USER, { projectId: PROJECT, hideDuplicates: false })
+		).toMatchObject({ active: 3 });
+		expect(await countOpenIssuesByWorkflow(t.db, USER, PROJECT)).toEqual({ wf_standard: 1 });
+		expect(
+			(await list({ projectId: PROJECT, hideDuplicates: false, ready: true })).items.map(
+				(item) => item.id
+			)
+		).toEqual([ordinary]);
+		const shown = await list({ projectId: PROJECT, hideDuplicates: false, brief: true });
+		expect(shown.items.find((item) => item.id === duplicate)?.duplicate_of).toMatchObject({
+			project_name: 'duplicate targets'
+		});
+		expect(shown.items.every((item) => !Object.hasOwn(item, 'description'))).toBe(true);
+	});
+
+	it('filters duplicates before cursor pagination', async () => {
+		for (const [id, createdAt] of [
+			[ordinary, 50],
+			[duplicate, 40],
+			[canonical, 30],
+			[chain, 20]
+		] as const) {
+			t.sqlite.prepare('UPDATE issue SET created_at = ? WHERE id = ?').run(createdAt, id);
+		}
+		const first = await list({}, 1);
+		expect(first.items.map((item) => item.id)).toEqual([ordinary]);
+		expect(first.hasMore).toBe(true);
+		const second = await listIssues(
+			t.db,
+			USER,
+			{},
+			{
+				cursor: { createdAt: first.items[0].created_at, id: first.items[0].id },
+				direction: 'after',
+				limit: 1
+			}
+		);
+		expect(second.items.map((item) => item.id)).toEqual([canonical]);
+		expect(second.hasMore).toBe(false);
+	});
+});
+
 describe('listIssues workflow filtering', () => {
 	let t: TestDb;
 	let ids: Record<string, string>;
@@ -600,19 +700,21 @@ describe('listIssues workflow filtering', () => {
 		).items.map((item) => item.id);
 
 	it('matches workflow and state by id or exact name, including duplicate semantics', async () => {
-		expect((await list({ workflow: 'wf_alpha' })).sort()).toEqual(
+		expect((await list({ workflow: 'wf_alpha', hideDuplicates: false })).sort()).toEqual(
 			[ids.alphaReview, ids.alphaDone, ids.alphaDuplicate].sort()
 		);
-		expect((await list({ workflow: 'Shared workflow' })).sort()).toEqual(Object.values(ids).sort());
+		expect((await list({ workflow: 'Shared workflow', hideDuplicates: false })).sort()).toEqual(
+			Object.values(ids).sort()
+		);
 		expect(await list({ workflow: 'wf_alpha', state: 's_alpha_review' })).toEqual([
 			ids.alphaReview
 		]);
-		expect(await list({ workflow: 'wf_alpha', state: 's_beta_review' })).toEqual([
-			ids.alphaDuplicate
-		]);
-		expect((await list({ workflow: 'Shared workflow', state: 'Review' })).sort()).toEqual(
-			[ids.alphaReview, ids.betaReview, ids.alphaDuplicate].sort()
-		);
+		expect(
+			await list({ workflow: 'wf_alpha', state: 's_beta_review', hideDuplicates: false })
+		).toEqual([ids.alphaDuplicate]);
+		expect(
+			(await list({ workflow: 'Shared workflow', state: 'Review', hideDuplicates: false })).sort()
+		).toEqual([ids.alphaReview, ids.betaReview, ids.alphaDuplicate].sort());
 		expect(await list({ workflow: 'WF_ALPHA' })).toEqual([]);
 	});
 
@@ -639,7 +741,8 @@ describe('listIssues workflow filtering', () => {
 				workflow: 'wf_alpha',
 				state: 'Review',
 				category: 'done',
-				hideDone: true
+				hideDone: true,
+				hideDuplicates: false
 			})
 		).toEqual({ backlog: 0, active: 1, awaiting_human: 1, done: 0 });
 		expect(
@@ -829,6 +932,261 @@ describe('createIssue with labels', () => {
 			{ cursor: null, limit: 50 }
 		);
 		expect(items.map((i) => i.id)).toEqual([labelled.id]);
+	});
+});
+
+describe('createIssue with initial files', () => {
+	const human: ActorContext = {
+		userId: USER,
+		userName: 'alice',
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	};
+	const file = (name: string, body = name) => ({
+		name,
+		filename: `${name}.txt`,
+		contentType: 'text/plain',
+		body: new Blob([body], { type: 'text/plain' })
+	});
+
+	it('publishes file rows, bytes, and canonical scope before signaling dispatch', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		let visibleAtSignal: unknown[] = [];
+		const issue = await createIssue(
+			t.db,
+			t.env,
+			human,
+			{
+				signalDispatch() {
+					visibleAtSignal = t.all("SELECT name FROM context_item WHERE kind = 'artifact'");
+				}
+			},
+			PROJECT,
+			{ title: 'With files', labels: ['reference'] },
+			[
+				{
+					name: 'screen',
+					filename: 'Screen.png',
+					contentType: 'image/png',
+					body: new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })
+				},
+				{
+					name: 'notes',
+					filename: 'notes.txt',
+					contentType: 'text/plain',
+					body: new Blob(['hello'], { type: 'text/plain' })
+				}
+			]
+		);
+		expect(visibleAtSignal).toHaveLength(2);
+		const artifacts = await listArtifacts(t.db, USER, issue.id);
+		expect(
+			artifacts
+				.map((artifact) => [artifact.name, artifact.artifact_type])
+				.sort(([a], [b]) => a.localeCompare(b))
+		).toEqual([
+			['notes', 'file'],
+			['screen', 'file']
+		]);
+		const versions = t.all(
+			'SELECT filename, content_type, size_bytes, r2_key FROM artifact_version ORDER BY filename'
+		) as { filename: string; content_type: string; size_bytes: number; r2_key: string }[];
+		expect(
+			versions.map((version) => [version.filename, version.content_type, version.size_bytes])
+		).toEqual([
+			['Screen.png', 'image/png', 3],
+			['notes.txt', 'text/plain', 5]
+		]);
+		expect(await getArtifactStore(t.env).get(versions[0].r2_key)).toEqual(
+			new Uint8Array([1, 2, 3])
+		);
+		const payloads = t.all("SELECT payload FROM event WHERE type = 'context.created'") as {
+			payload: string;
+		}[];
+		expect(payloads.map((row) => JSON.parse(row.payload).scope.label)).toEqual([
+			`issue ${issue.project_name}/${issue.number}`,
+			`issue ${issue.project_name}/${issue.number}`
+		]);
+	});
+
+	it('rejects duplicate names before creating an issue or writing bytes', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const file = (name: string) => ({
+			name,
+			filename: `${name}.txt`,
+			contentType: 'text/plain',
+			body: new Blob(['x'])
+		});
+		await expect(
+			createIssue(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, { title: 'Nope' }, [
+				file('same'),
+				file('same')
+			])
+		).rejects.toMatchObject({ code: 'duplicate_artifact_name' });
+		expect(t.all('SELECT id FROM issue')).toEqual([]);
+		expect(t.all("SELECT id FROM context_item WHERE kind = 'artifact'")).toEqual([]);
+	});
+
+	it('leaves no database rows or dispatch when a later object put fails', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		let puts = 0;
+		t.env.ARTIFACTS = {
+			put: async () => {
+				puts++;
+				if (puts === 2) throw new Error('injected second object failure');
+			}
+		} as unknown as NonNullable<Env['ARTIFACTS']>;
+		const effects = recordDispatchEffects();
+		await expect(
+			createIssue(t.db, t.env, human, effects, PROJECT, { title: 'No partial publish' }, [
+				file('first'),
+				file('second')
+			])
+		).rejects.toThrow('injected second object failure');
+		expect(puts).toBe(2);
+		expect(effects.count()).toBe(0);
+		for (const table of [
+			'issue',
+			'issue_address',
+			'scheduled_task',
+			'label',
+			'context_item',
+			'artifact_version',
+			'event'
+		]) {
+			expect(t.all(`SELECT * FROM ${table}`), table).toEqual([]);
+		}
+	});
+
+	it('rolls back every composed row and stays silent on a late batch failure', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const effects = recordDispatchEffects();
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		const lateFailure = t.env.DB.prepare(
+			'INSERT INTO project (id, user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+		).bind(PROJECT, USER, 'duplicate', 0, 0);
+		t.env.DB.batch = (statements) => realBatch([...statements, lateFailure]);
+		await expect(
+			createIssue(
+				t.db,
+				t.env,
+				human,
+				effects,
+				PROJECT,
+				{
+					title: 'Composed create',
+					labels: ['new-label'],
+					schedule: { preset: { kind: 'daily', time: '09:00' } }
+				},
+				[file('reference')]
+			)
+		).rejects.toThrow();
+		expect(effects.count()).toBe(0);
+		for (const table of [
+			'issue',
+			'issue_address',
+			'scheduled_task',
+			'label',
+			'context_item',
+			'artifact_version',
+			'event'
+		]) {
+			expect(t.all(`SELECT * FROM ${table}`), table).toEqual([]);
+		}
+	});
+
+	it('signals once after files are readable and keeps the commit when response reads fail', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		let signals = 0;
+		const reads: Promise<Uint8Array | null>[] = [];
+		await expect(
+			createIssue(
+				t.db,
+				t.env,
+				human,
+				{
+					signalDispatch() {
+						signals++;
+						const versions = t.all('SELECT r2_key FROM artifact_version') as {
+							r2_key: string;
+						}[];
+						expect(versions).toHaveLength(2);
+						for (const { r2_key } of versions) {
+							reads.push(getArtifactStore(t.env).get(r2_key));
+						}
+						t.sqlite.exec('DROP TABLE comment');
+					}
+				},
+				PROJECT,
+				{ title: 'Committed despite response failure' },
+				[file('one'), file('two')]
+			)
+		).rejects.toThrow();
+		expect(signals).toBe(1);
+		expect(await Promise.all(reads)).toEqual([
+			new TextEncoder().encode('one'),
+			new TextEncoder().encode('two')
+		]);
+		expect(t.all('SELECT id FROM issue')).toHaveLength(1);
+		expect(t.all("SELECT id FROM context_item WHERE kind = 'artifact'")).toHaveLength(2);
+	});
+
+	it('composes labels and recurrence while later instances do not copy files', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const created = await createIssue(
+			t.db,
+			t.env,
+			human,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			PROJECT,
+			{
+				title: 'Daily references',
+				labels: ['new-label'],
+				schedule: { preset: { kind: 'daily', time: '09:00' } }
+			},
+			[file('reference')]
+		);
+		expect(created.labels.map((label) => label.name)).toEqual(['new-label']);
+		expect(created.schedule).toBeDefined();
+		expect(t.all("SELECT id FROM event WHERE type = 'label.created'")).toHaveLength(1);
+		expect(await listArtifacts(t.db, USER, created.id)).toHaveLength(1);
+		const nextId = await runScheduleNow(
+			t.db,
+			t.env,
+			human,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			created.schedule!.id
+		);
+		expect(await listArtifacts(t.db, USER, nextId)).toEqual([]);
+	});
+
+	it('derives each event scope from its own concurrently allocated issue number', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const [first, second] = await Promise.all([
+			createIssue(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, { title: 'A' }, [
+				file('a')
+			]),
+			createIssue(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, { title: 'B' }, [
+				file('b')
+			])
+		]);
+		expect(first.number).not.toBe(second.number);
+		const payloads = t.all(
+			"SELECT issue_id, payload FROM event WHERE type = 'context.created'"
+		) as { issue_id: string; payload: string }[];
+		const labels = new Map(
+			payloads.map((row) => [row.issue_id, JSON.parse(row.payload).scope.label as string])
+		);
+		expect(labels.get(first.id)).toBe(`issue ${first.project_name}/${first.number}`);
+		expect(labels.get(second.id)).toBe(`issue ${second.project_name}/${second.number}`);
 	});
 });
 

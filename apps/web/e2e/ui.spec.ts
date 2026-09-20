@@ -19,15 +19,47 @@ import {
 // unambiguous.
 
 let projectName: string;
+let graphProjectName: string;
 const issueTitle = `UI smoke ${runId}`;
 let project: Project;
 let longProject: Project;
 let issue: IssueDetail;
+let firstParallelTransitionId: string;
+const wideReviewState = 'Extended Human Review 👩‍💻 界界界界界';
 
 test.beforeAll(async ({ apiFor, uniqueName }) => {
 	projectName = uniqueName('ui');
+	graphProjectName = uniqueName('ui graph');
 	const api = apiFor(ALICE);
+	const graphWorkflow = await body<{ id: string; transitions: { id: string; name: string }[] }>(
+		await api.post('/api/v1/workflows', {
+			name: uniqueName('UI graph'),
+			initial_state: 'Open',
+			states: [
+				{ name: 'Open', category: 'active' },
+				{ name: 'Human Review', category: 'awaiting_human' },
+				{ name: wideReviewState, category: 'awaiting_human' },
+				{ name: 'Closed', category: 'done' }
+			],
+			transitions: [
+				{ name: 'Approve', from: 'Open', to: 'Human Review' },
+				{ name: 'First parallel route', from: 'Open', to: wideReviewState },
+				{ name: 'Second parallel route', from: 'Open', to: wideReviewState },
+				{ name: 'Close reviewed', from: 'Human Review', to: 'Closed' },
+				{ name: 'Close extended review', from: wideReviewState, to: 'Closed' }
+			]
+		})
+	);
+	firstParallelTransitionId = graphWorkflow.transitions.find(
+		(transition) => transition.name === 'First parallel route'
+	)!.id;
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
+	await body<Project>(
+		await api.post('/api/v1/projects', {
+			name: graphProjectName,
+			default_workflow_id: graphWorkflow.id
+		})
+	);
 	longProject = await body<Project>(
 		await api.post('/api/v1/projects', {
 			name: `A deliberately long focused project name for chrome ${runId}`
@@ -86,6 +118,103 @@ test('an issue can be created from the issues list, picking project and starting
 	await expect(stateBadge(page)).toHaveText(/Human Review/);
 });
 
+test('the new-issue graph animates one connected route and updates disconnected states immediately', async ({
+	page
+}) => {
+	await page.emulateMedia({ reducedMotion: 'no-preference' });
+	await gotoHydrated(page, '/issues');
+	const dialog = page.getByRole('dialog', { name: 'New issue' });
+	await clickToOpen(page.getByRole('button', { name: /New issue/ }), dialog);
+	await dialog.getByLabel('Project', { exact: true }).selectOption({ label: graphProjectName });
+	const graph = dialog.getByRole('img', { name: 'Workflow graph' });
+	const state = dialog.getByLabel('Starting state');
+
+	await state.selectOption({ label: wideReviewState });
+	const activeRoute = graph.locator('path[data-graph-transition][style*="--cat-active"]');
+	await expect(activeRoute).toHaveCount(1);
+	await expect(activeRoute).toHaveAttribute(
+		'data-graph-transition',
+		`id:${JSON.stringify(firstParallelTransitionId)}#0`
+	);
+	const motion = graph.locator('animateMotion');
+	await expect(motion).toHaveCount(1);
+	expect(await motion.getAttribute('path')).toBe(await activeRoute.getAttribute('d'));
+	await expect
+		.poll(async () =>
+			graph
+				.getByText(wideReviewState, { exact: true })
+				.locator('xpath=..')
+				.locator('rect[data-graph-state]')
+				.getAttribute('stroke-width')
+		)
+		.toBe('2');
+	const compactText = await graph.evaluate(async (svg, stateName) => {
+		await document.fonts.ready;
+		const label = [...svg.querySelectorAll<SVGTextElement>('[data-graph-state-label]')].find(
+			(element) => element.textContent === stateName
+		)!;
+		const body = label.parentElement!.querySelector<SVGRectElement>('[data-graph-state]')!;
+		const text = label.getBBox();
+		const rect = body.getBBox();
+		return {
+			fontWeight: getComputedStyle(label).fontWeight,
+			inside:
+				text.x >= rect.x - 0.01 &&
+				text.y >= rect.y - 0.01 &&
+				text.x + text.width <= rect.x + rect.width + 0.01 &&
+				text.y + text.height <= rect.y + rect.height + 0.01
+		};
+	}, wideReviewState);
+	expect(compactText).toEqual({ fontWeight: '600', inside: true });
+
+	await state.selectOption({ label: 'Closed' });
+	await expect(graph.locator('animateMotion')).toHaveCount(1);
+	await expect
+		.poll(async () =>
+			graph
+				.getByText('Closed', { exact: true })
+				.locator('xpath=..')
+				.locator('rect[data-graph-state]')
+				.getAttribute('stroke-width')
+		)
+		.toBe('2');
+
+	// Closed has no route back to Open, so there is no stale travel animation.
+	await state.selectOption({ label: 'Open — default' });
+	await expect(graph.locator('animateMotion')).toHaveCount(0);
+	await expect(
+		graph.getByText('Open', { exact: true }).locator('xpath=..').locator('rect[data-graph-state]')
+	).toHaveAttribute('stroke-width', '2');
+
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await state.selectOption({ label: 'Human Review' });
+	await expect(graph.locator('animateMotion')).toHaveCount(0);
+	await expect(
+		graph
+			.getByText('Human Review', { exact: true })
+			.locator('xpath=..')
+			.locator('rect[data-graph-state]')
+	).toHaveAttribute('stroke-width', '2');
+	const highlightedHumanReview = await graph.evaluate(async (svg) => {
+		await document.fonts.ready;
+		const label = [...svg.querySelectorAll<SVGTextElement>('[data-graph-state-label]')].find(
+			(element) => element.textContent === 'Human Review'
+		)!;
+		const body = label.parentElement!.querySelector<SVGRectElement>('[data-graph-state]')!;
+		const text = label.getBBox();
+		const rect = body.getBBox();
+		return {
+			fontWeight: getComputedStyle(label).fontWeight,
+			inside:
+				text.x >= rect.x - 0.01 &&
+				text.y >= rect.y - 0.01 &&
+				text.x + text.width <= rect.x + rect.width + 0.01 &&
+				text.y + text.height <= rect.y + rect.height + 0.01
+		};
+	});
+	expect(highlightedHumanReview).toEqual({ fontWeight: '600', inside: true });
+});
+
 test('the issues list search box round-trips through the q URL param', async ({ page }) => {
 	await gotoHydrated(page, '/issues');
 	const box = page.getByLabel('Search issues');
@@ -119,6 +248,72 @@ test('the mobile layout swaps the header tabs for a bottom bar', async ({ page }
 	await expect(bottomNav.getByRole('link', { name: 'Workflows' })).toBeVisible();
 	// The desktop tab strip is hidden at this width.
 	await expect(page.locator('header').getByRole('link', { name: 'Workflows' })).toBeHidden();
+});
+
+test('workflow actions fill the phone content and form a compact desktop row', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await page.goto('/workflows');
+
+	const intro = page.getByText('Your library of state machines.');
+	const pageIntro = page.getByTestId('workflow-page-intro');
+	const actionGroup = page.getByTestId('workflow-actions');
+	const actions = [
+		page.getByRole('link', { name: 'Public snapshots' }),
+		page.getByRole('link', { name: 'Install package' }),
+		page.getByRole('link', { name: 'New workflow' })
+	];
+	await expect(intro).toBeVisible();
+	await expect(actions[0]).toBeVisible();
+
+	const introBox = (await intro.boundingBox())!;
+	const pageIntroBox = (await pageIntro.boundingBox())!;
+	const actionGroupBox = (await actionGroup.boundingBox())!;
+	const actionBoxes = await Promise.all(actions.map((action) => action.boundingBox()));
+	expect(actionGroupBox.x, 'phone action group left edge').toBeCloseTo(pageIntroBox.x, 0);
+	expect(actionGroupBox.width, 'phone action group fills the content width').toBeCloseTo(
+		pageIntroBox.width,
+		0
+	);
+	for (const [index, actionBox] of actionBoxes.entries()) {
+		expect(actionBox).not.toBeNull();
+		expect(actionBox!.y, `action ${index + 1} follows the intro`).toBeGreaterThan(
+			introBox.y + introBox.height
+		);
+		expect(actionBox!.x, `action ${index + 1} left edge`).toBe(actionBoxes[0]!.x);
+		expect(actionBox!.width, `phone action ${index + 1} fills the group`).toBeCloseTo(
+			actionGroupBox.width,
+			0
+		);
+		expect(
+			actionBox!.x + actionBox!.width,
+			`action ${index + 1} stays in the viewport`
+		).toBeLessThanOrEqual(390);
+	}
+	for (let index = 1; index < actionBoxes.length; index += 1) {
+		expect(actionBoxes[index]!.y, `action ${index + 1} follows action ${index}`).toBeGreaterThan(
+			actionBoxes[index - 1]!.y + actionBoxes[index - 1]!.height
+		);
+	}
+
+	await page.setViewportSize({ width: 1440, height: 900 });
+	const desktopPageIntroBox = (await pageIntro.boundingBox())!;
+	const desktopActionGroupBox = (await actionGroup.boundingBox())!;
+	const desktopActionBoxes = await Promise.all(actions.map((action) => action.boundingBox()));
+	for (const [index, actionBox] of desktopActionBoxes.entries()) {
+		expect(actionBox).not.toBeNull();
+		expect(actionBox!.y, `desktop action ${index + 1} shares one row`).toBeCloseTo(
+			desktopActionBoxes[0]!.y,
+			0
+		);
+		expect(
+			actionBox!.width,
+			`desktop action ${index + 1} does not span the action region`
+		).toBeLessThan(desktopActionGroupBox.width / 2);
+	}
+	expect(
+		desktopActionGroupBox.x + desktopActionGroupBox.width,
+		'desktop action row is right-aligned'
+	).toBeCloseTo(desktopPageIntroBox.x + desktopPageIntroBox.width, 0);
 });
 
 test('the app chrome stays inside both responsive breakpoint boundaries', async ({ page }) => {

@@ -19,6 +19,7 @@ export const GET: RequestHandler = api(async (event) => {
 			workflow: params.get('workflow') ?? undefined,
 			schedule: params.get('schedule') ?? undefined,
 			hideDone: ['1', 'true'].includes(params.get('hide_done') ?? ''),
+			hideDuplicates: !['false', '0'].includes(params.get('hide_duplicates') ?? ''),
 			ready: ['1', 'true'].includes(params.get('ready') ?? ''),
 			q: params.get('q') ?? undefined,
 			labels: params.getAll('label'),

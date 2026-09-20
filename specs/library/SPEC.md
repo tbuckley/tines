@@ -141,6 +141,11 @@ error codes remain available only in closed, allowlisted Technical details discl
 
 ## Decision update — Tines/485 declared-input selection feedback
 
+Workflow-package passages render declared occurrences declaratively: a label, default, key or
+removal change re-renders every affected occurrence and its accessible name without reload, and the
+author preview uses the same substitution rule as installation. Variables are created from a selected
+range beside the passage; the inventory declares, selects and edits but never chooses a field.
+
 Workflow-package authoring keeps its existing candidate-local declared-input selection semantics. The active declaration remains visibly marked after focus moves to the candidate editor, every declaration exposes its pressed state, and the replacement action repeats the selected key. Adding a declaration and navigating from a rendered token continue to select it; rebuilding retains a surviving input ID and clears a stale one. This feedback does not change candidate data, package tokens, exact text uses, or downloaded bytes.
 
 # Immutable public snapshots (Tines/436)

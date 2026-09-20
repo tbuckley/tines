@@ -158,7 +158,23 @@ Notes:
 
 ## API
 
+Issue creation accepts the existing JSON request and an equivalent multipart
+representation for a new issue with initial file artifacts. Either form may include
+initial issue relationships. Creation publishes the issue, relationships, and artifact metadata atomically after file bytes are staged,
+then signals dispatch; clients without files continue to send JSON unchanged.
+
 JSON over HTTP under `/api/v1/*`, served by the SvelteKit app; shared request/response types live in `@tines/shared`. Auth: Better Auth session cookie or bearer API key. All resources are scoped to the authenticated user; cross-user access is a 404.
+
+### Decision update — 2026-09-19 deployment identity (Tines/598)
+
+`GET /api/version` is a public utility endpoint reporting the running server build's `version`
+and full source `commit`; it is distinct from an installed caller's CLI version. Every response at
+the exact `/api` root or below carries the same values in `X-Tines-Version` and
+`X-Tines-Commit`, including auth failures, unknown paths, method errors and bodyless responses.
+Production uses the CLI release formula for the same checkout, previews name the PR and actual
+built commit, and local builds report `dev` plus local HEAD (or `unknown` without Git metadata).
+The endpoint and headers are non-secret build metadata and are the only unauthenticated exception
+recorded here; resource APIs keep their existing authentication rules.
 
 | Method & path | Purpose |
 | --- | --- |
@@ -179,6 +195,8 @@ All list endpoints use the same cursor-pagination convention (`?cursor=…&limit
 
 Issue `q` is a complete literal substring match over title and description, case-insensitive for ASCII. Characters such as `%` and `_` have no wildcard meaning, and ordinary queries longer than 48 characters are supported. Both issue-list routes share the same predicate.
 
+Issue lists exclude duplicates by default. Both list routes accept `hide_duplicates=false` (or `0`) to include them; direct issue reads are unchanged. The web issue lists expose this as a URL-backed **Show duplicates** filter and apply the same visibility predicate to rows, category counts, and pagination.
+
 Validation failures (workflow editing rules, illegal transitions) return structured errors naming what was violated and, where applicable, what *is* allowed — agents should be able to recover from a 422 without human help.
 
 Markdown (descriptions, comments) is stored raw and sanitized at render time in the web UI — agents post arbitrary Markdown, so rendering must be XSS-safe.
@@ -190,8 +208,8 @@ Markdown (descriptions, comments) is stored raw and sanitized at render time in 
 ```
 tines projects list | create <name>
 tines workflows list | show <id-or-name>
-tines issues list [--project <name>] [--state <name>] [--category <cat>] [--all]
-                                          # hides done issues unless --all
+tines issues list [--project <name>] [--state <name>] [--category <cat>] [--all] [--show-duplicates]
+                                          # hides done and duplicate issues by default
 tines issues create <project> --title <t> [--description <md>] [--workflow <id-or-name>]
 tines issues show <project>/<number>
 tines issues move <project>/<number> <action>       # transition name, e.g. "approve"
@@ -264,5 +282,5 @@ Formerly open, now decided:
 - **Standard workflow initial state**: named **Open** — implies "ready to be taken on / being worked" without a separate backlog state.
 - **`workflow.updated` payload**: a **summary diff** — a compact record of what changed (rename, states added/removed by name, transition count deltas, initial-state change), computed at update time. Workflows stay mutable (live-referenced, no versioning), so the event payload is the change record.
 - **Issue description edits**: event only (`issue.updated`), no revision history in phase one.
-- **Graph rendering**: the workflow graph view is a hand-rolled Svelte SVG component with a simple layered auto-layout computed client-side — no graph library dependency. Sufficient for phase-one FSM sizes and gives full control over category color-coding and the transition animation.
+- **Graph rendering (superseded 2026-09-20)**: the original hand-rolled layered geometry was replaced by Dagre behind a pure synchronous adapter after action labels overlapped nodes and one another. Tines retains its Svelte/SVG renderer, category styling, transition animation, form-only editing, and unstored automatic positions. Complete state/action text boxes are reserved before layout; compact previews still elide action labels. All fitted surfaces keep their behavior, while the public snapshot graph retains its intrinsic 1.3× horizontal-scroller exception.
 - **Named transitions**: every transition has a required action name ("approve", "send back"), unique per source state, so agents act on their current state instead of aiming at target states. The transition API takes the action (or transition id); `issue.transitioned` events record it.

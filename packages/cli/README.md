@@ -35,6 +35,7 @@ stored config. `--url` and `--api-key` on any command win over both.
 tines projects list
 tines issues list --project <project>
 tines issues create <project> --title "…" -d @description.md
+tines issues create <project> --title "Linked" --blocked-by Other/12 --blocks Other/14 --duplicate-of Other/9
 tines issues show <project>/<number>
 tines issues move <project>/<number> <action>        # a workflow transition
 tines issues transfer <project>/<number> --project <dest>   # move to another project (keeps ID, record and old refs)
@@ -50,6 +51,12 @@ tines events list --project Tines --all-pages --max-items 20000 --json
 tines supervisor stats --window 7d --project Tines
 ```
 
+`issues list` hides done issues and issues marked as duplicates by default. Use `--all` to include done issues and `--show-duplicates` to include duplicates; use both flags together when both populations are needed.
+
+```sh
+tines issues list --all --show-duplicates --all-pages --json
+```
+
 Issues are addressed as `<project>/<number>`; schedules as `<project>/<name>`; workflow
 states as `<workflow>/<state>`. Every `list` command returns one page — add `--all-pages`
 for the whole list — and every command takes `--json` for machine-readable output. Complete
@@ -60,6 +67,11 @@ more output in memory and makes more requests, so increase it deliberately or na
 list's filters.
 `tines <noun> --help` lists the rest: `workflows`, `context`, `journal`, `schedules`,
 `runners`, `runs`, `routing`, `supervisor`.
+
+`issues create` accepts repeatable `--blocked-by` and `--blocks` references plus one
+`--duplicate-of` reference. The issue and all initial relationships are created atomically.
+When a recurrence is also supplied, the relationships apply only to the first issue; later
+scheduled instances start without copied relationships.
 
 ## Workflow package files
 

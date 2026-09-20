@@ -1,7 +1,15 @@
 # Adding a context kind
 
-Context items are typed — `prompt`, `skill`, `repo` — and the type set is
-designed to grow ([specs/context/SPEC.md](../specs/context/SPEC.md)).
+Context items are typed — `prompt`, `skill`, `repo`, `artifact`, `env` — and the
+type set is designed to grow ([specs/context/SPEC.md](../specs/context/SPEC.md)).
+`artifact` and `env` are the kinds added since this doc was written
+([specs/artifacts/SPEC.md](../specs/artifacts/SPEC.md); env in
+[specs/context/SPEC.md](../specs/context/SPEC.md) "Env items"). `artifact` is
+cited below wherever it makes a step concrete. `env` chose nullable columns
+over `config` deliberately: publication snapshots and the library exporters
+copy `config` wholesale, so a payload that must never leave the deployment
+(a secret's ciphertext, its hint) has to live in columns those paths do not
+select — and it is excluded from every export by kind as well.
 `kind` is an open string with a per-kind payload, so a new kind is an
 **additive** change: no row migration, and no changes to scoping, layer
 ordering, name uniqueness, events, list filters, lifecycle guards, or the
@@ -22,10 +30,12 @@ a kind accepts arbitrary payload.
    - **Nullable columns** for flat payloads — how `repo` stores
      `repo_url` / `repo_branch` / `repo_dir`.
    - **A JSON `config` column** for structured payloads. The parent spec
-     reserves this deliberately ("a future kind with a structured payload
-     can use a JSON `config` column added at that time"). The first
-     structured kind adds it — one `ALTER TABLE ADD COLUMN` — and later
-     kinds reuse it. `mcp` (command, args, env) would take this route.
+     reserved this deliberately ("a future kind with a structured payload
+     can use a JSON `config` column added at that time"); `artifact` was
+     the first structured kind and added it in
+     `0011_issue_artifacts.sql`, so `context_item.config` already exists
+     and a new kind just reuses it — no migration needed for the payload
+     itself. `mcp` (command, args, env) would take this route.
    - Child tables are for repeated sub-entities only (`context_item_file`
      for skill files); don't reach for one unless the payload is a
      collection with per-row identity.
@@ -52,13 +62,16 @@ shape, caps, merge rule, bundle form) as part of the change.
 In dependency order. Roughly 150–250 lines total; most of it is the two
 UI panels.
 
-### Migration — `apps/web/migrations/000N_….sql`
+### Migration — `apps/web/migrations/000N_….sql` (often none)
 
-- Add the payload column(s) (`config TEXT` for the first structured kind).
-- The `kind` CHECK constraint must admit the new value. SQLite can't alter
-  a CHECK in place; either rebuild the table or, simpler, drop the CHECK
-  during the rebuild and rely on the API layer, which is the real gate
-  (the same trade the spec already makes for name uniqueness).
+- **`kind` needs no migration.** The original `CHECK (kind IN (…))` was
+  dropped when `0006_context_versioning_global.sql` rebuilt the table
+  ("the kind CHECK moves to the API"), so `context_item.kind` is an
+  unconstrained `TEXT` column and the API layer is the only gate. Adding
+  `artifact` in `0011` touched no constraint.
+- **Payload usually needs none either**: `config TEXT` already exists
+  (see decision 1). Add nullable columns only if you chose the flat shape,
+  and a child table only for repeated sub-entities.
 
 ### Shared types — `packages/shared/src/types.ts`
 
@@ -94,9 +107,11 @@ an opaque string.
 - **`contextSummaryForIssue`**: add the post-dedupe count (distinct names
   among matching rows of the kind).
 
-Nothing else in the server changes: `requireKind`, scope resolution,
-name-uniqueness, positions, events, and the deletion guards are all
-payload-agnostic.
+`requireKind`, scope resolution, name-uniqueness, positions, events, and
+scope discovery are payload-agnostic. A kind with a write restriction must
+also enforce it in `sweepAttachedContext`: forced project/workflow/state
+deletions otherwise bypass direct item-write checks. Env run-key fencing
+is the precedent.
 
 ### CLI — `packages/cli/src/`
 
@@ -115,11 +130,15 @@ payload-agnostic.
 - `ContextItemList.svelte`: the row's payload summary.
 - `EffectiveContextView.svelte`: a section in the effective preview.
 
-### Agent-editing surface (once AGENT_EDITING.md is implemented)
+### Agent-editing surface ([AGENT_EDITING.md](../specs/context/AGENT_EDITING.md), shipped)
 
-- Artifact kinds join the "Attached to this issue: …" footnote line in
-  the launch prompt's Journal section. The journal, proposal, and append
-  machinery are kind-agnostic — no other changes.
+- A kind whose payload an agent fetches into its workspace joins the
+  "Attached to this issue: …" footnote in the launch prompt (`issueBlock`
+  in `apps/web/src/lib/server/api/context.ts`). Today that line is built
+  from `context.repos` alone: skills get their own `### Skills` section
+  above it, and issue artifacts arrive as a separate `issueArtifacts`
+  argument with a block of their own, so neither is on it. The journal,
+  proposal, and append machinery are kind-agnostic — no other changes.
 
 ### Tests and docs
 
@@ -139,8 +158,9 @@ If a new kind requires edits to any of these, the change is off the rails
 - Name-uniqueness or position handling (per exact scope, kind-aware
   already).
 - Event emission (`context.*` payloads carry `kind` as-is).
-- Lifecycle guards (`findAttachedContext` / `sweepAttachedContext` sweep
-  by scope, not payload).
+- Lifecycle scope discovery (`findAttachedContext` sweeps by scope).
+  Kind-specific authorization still belongs in `sweepAttachedContext` before
+  it builds any forced-delete statements; env run-key fencing is the precedent.
 - List filtering, pagination, or the launch-prompt/journal machinery.
 - Existing rows or existing clients: old rows never match the new kind,
   and clients that don't know it simply see items whose payload fields
@@ -149,7 +169,8 @@ If a new kind requires edits to any of these, the change is off the rails
 ## 4. Definition of done
 
 - [ ] Spec section written (shape, caps, merge rule, bundle form).
-- [ ] Migration applies on a fresh DB and on one carrying existing items.
+- [ ] Migration, if the kind needed one, applies on a fresh DB and on one
+      carrying existing items.
 - [ ] Unknown-field and wrong-kind payloads 422 in both directions.
 - [ ] Item round-trips through API, CLI, and the web editor.
 - [ ] Appears in the effective context with dedupe-by-name override

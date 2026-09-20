@@ -21,8 +21,9 @@ Commands:
   workflows         Manage the workflow library
   issues            Work with issues
   labels            Manage the label library
-  context           Manage context items (prompts, skills, repo pointers) scoped
-                    to projects, states, and issues
+  context           Manage context items (prompts, skills, repo pointers,
+                    environment variables) scoped to projects, states, and
+                    issues
   journal           An issue's stage journal: shared notes for its project + the
                     stage your run was launched in
   schedules         Manage scheduled tasks (addressed as <project>/<name>)
@@ -49,8 +50,8 @@ Options:
 ",
   "tines context": "Usage: tines context [options] [command]
 
-Manage context items (prompts, skills, repo pointers) scoped to projects,
-states, and issues
+Manage context items (prompts, skills, repo pointers, environment variables)
+scoped to projects, states, and issues
 
 Options:
   -h, --help             display help for command
@@ -73,9 +74,9 @@ Commands:
 Create a context item scoped to a project, state, and/or issue
 
 Options:
-  -k, --kind <kind>             prompt, skill, or repo
-  -n, --name <name>             item name (slug-like for skills; the
-                                dedup/override key)
+  -k, --kind <kind>             prompt, skill, repo, or env
+  -n, --name <name>             item name (slug-like for skills, the variable
+                                name for env; the dedup/override key)
   -d, --description <text>      one-liner shown in lists
   --body <md>                   prompt body: inline Markdown or @file (escape a
                                 literal @ as @@)
@@ -85,6 +86,12 @@ Options:
   --branch <branch>             repo: branch to check out
   --dir <dir>                   repo: checkout directory (defaults to the URL's
                                 basename)
+  --value <v>                   env: the value — inline, @file, or - for stdin
+                                (keeps a secret out of shell history)
+  --secret                      env: encrypt the value at rest; it is write-only
+                                afterwards
+  --hint <text>                 env: a safe display hint for a secret (e.g.
+                                "github_pat_…abcd")
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
   -i, --issue <ref>             scope: issue (<project>/<number>)
@@ -124,6 +131,12 @@ Options:
   --branch <branch>             repo: branch (empty string clears it)
   --dir <dir>                   repo: checkout directory (empty string restores
                                 the URL default)
+  --value <v>                   env: replace the value (inline, @file, or - for
+                                stdin)
+  --secret                      env: encrypt the stored value (irreversible;
+                                delete to make public)
+  --hint <text>                 env: display hint for a secret (empty string
+                                clears it)
   --unset <dimension>           drop a scope dimension: project, state, issue,
                                 or label (repeatable) (default: [])
   --expect-version <n>          fail (409) unless the item is still at this
@@ -157,7 +170,8 @@ List context items (scope filters match every item whose scope includes the
 element)
 
 Options:
-  -k, --kind <kind>             filter by kind: prompt, skill, or repo
+  -k, --kind <kind>             filter by kind: prompt, skill, repo, artifact,
+                                or env
   --exact                       only items whose scope sets exactly the given
                                 dimensions
   -q, --search <text>           search names and descriptions
@@ -235,7 +249,7 @@ Options:
   -h, --help                                            display help for command
 
 Commands:
-  list [options]                                        List issues across projects (hides done issues unless --all)
+  list [options]                                        List issues across projects (hides done and duplicate issues unless included)
   create [options] <project>                            Create an issue in a project, optionally with a recurrence (a scheduled task)
   show [options] <ref>                                  Show an issue (<project>/<number>), including allowed transitions
   edit [options] <ref>                                  Edit an issue: title, description, workflow, or force-set state
@@ -479,6 +493,11 @@ Options:
                                 the title)
   -l, --label <name>            attach a label; repeat for several (created if
                                 new) (default: [])
+  --blocked-by <ref>            issue that blocks the new issue; repeatable
+                                (default: [])
+  --blocks <ref>                issue that the new issue blocks; repeatable
+                                (default: [])
+  --duplicate-of <ref>          canonical issue that the new issue duplicates
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)
@@ -543,7 +562,7 @@ Options:
 ",
   "tines issues list": "Usage: tines issues list [options]
 
-List issues across projects (hides done issues unless --all)
+List issues across projects (hides done and duplicate issues unless included)
 
 Options:
   -p, --project <name>         filter by project name or id
@@ -551,6 +570,7 @@ Options:
   -c, --category <cat>         filter by state category
   -w, --workflow <id-or-name>  filter by workflow
   -a, --all                    include issues in done states
+  --show-duplicates            include issues marked as duplicates
   --ready                      only issues that are actionable now (not done,
                                not a duplicate, no open blockers)
   -q, --search <text>          search titles and descriptions

@@ -1,11 +1,20 @@
 import { repoDirFromUrl, type EffectiveContext, type IssueDetail } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import { getDb } from '$lib/server/db';
-import { USER, seedBase } from '../supervisor/test-fixtures';
+import { OPEN, PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
+import type { ActorContext } from './core';
 import {
 	buildLaunchPrompt,
 	buildResumePrompt,
+	contextSummaryForIssue,
 	countSharedContextItems,
+	createContextItem,
+	deleteContextItem,
+	effectiveContextForIssue,
+	envDigest,
+	getContextItem,
+	resolvedEnvForIssue,
+	updateContextItem,
 	isJournal,
 	issueBlock,
 	layerRank,
@@ -225,7 +234,7 @@ const issue: IssueDetail = {
 		}
 	],
 	state_entered_at: 0,
-	context_summary: { prompts: 0, skills: 0, repos: 0, artifacts: 0 }
+	context_summary: { prompts: 0, skills: 0, repos: 0, artifacts: 0, envs: 0 }
 };
 
 const emptyScope = {
@@ -250,6 +259,7 @@ const emptyContext: EffectiveContext = {
 	prompt: { text: '', parts: [], journal: noJournal },
 	skills: [],
 	repos: [],
+	env: [],
 	overridden: [],
 	conflicts: []
 };
@@ -334,6 +344,7 @@ const richContext: EffectiveContext = {
 			inherited_from: null
 		}
 	],
+	env: [],
 	overridden: [],
 	conflicts: []
 };
@@ -957,5 +968,376 @@ describe('loadFiles D1 parameter budget', () => {
 			)
 			.run('ctx_fileless', USER, 'fileless');
 		expect(await loadFiles(getDb(t.env), ['ctx_fileless', 'ctx_unknown'])).toEqual(new Map());
+	});
+});
+
+describe('env context items', () => {
+	const ENC_KEY = 'test-encryption-key';
+	const human: ActorContext = {
+		userId: USER,
+		userName: 'alice',
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	};
+	const runKey: ActorContext = { ...human, viaSession: false, agentRunId: 'run_1' };
+	const fail = async (p: Promise<unknown>) => {
+		try {
+			await p;
+		} catch (e) {
+			return e as ApiFail;
+		}
+		throw new Error('expected a failure');
+	};
+	function setup(withKey = true) {
+		const t = createTestDb();
+		seedBase(t);
+		if (withKey) t.env.SECRET_ENCRYPTION_KEY = ENC_KEY;
+		return { t, db: getDb(t.env) };
+	}
+
+	it('validates names: variable pattern and reserved names', async () => {
+		const { t, db } = setup();
+		for (const name of ['lower', '1ABC', 'A-B']) {
+			const e = await fail(
+				createContextItem(db, t.env, human, { kind: 'env', name, value: 'x', project_id: PROJECT })
+			);
+			expect(e).toMatchObject({ status: 422, code: 'invalid_field' });
+		}
+		for (const name of ['TINES_API_KEY', 'TINES_X', 'PATH']) {
+			const e = await fail(
+				createContextItem(db, t.env, human, { kind: 'env', name, value: 'x', project_id: PROJECT })
+			);
+			expect(e).toMatchObject({ status: 422, code: 'reserved_name' });
+		}
+	});
+
+	it('requires a value, caps it, and rejects foreign fields both ways', async () => {
+		const { t, db } = setup();
+		expect(
+			await fail(
+				createContextItem(db, t.env, human, { kind: 'env', name: 'A', project_id: PROJECT })
+			)
+		).toMatchObject({ status: 422, code: 'invalid_field' });
+		expect(
+			await fail(
+				createContextItem(db, t.env, human, {
+					kind: 'env',
+					name: 'A',
+					value: 'x'.repeat(16 * 1024 + 1),
+					project_id: PROJECT
+				})
+			)
+		).toMatchObject({ status: 422, code: 'invalid_field' });
+		expect(
+			await fail(
+				createContextItem(db, t.env, human, {
+					kind: 'env',
+					name: 'A',
+					value: 'x',
+					body: 'nope',
+					project_id: PROJECT
+				})
+			)
+		).toMatchObject({ status: 422, code: 'kind_payload_mismatch' });
+		expect(
+			await fail(
+				createContextItem(db, t.env, human, {
+					kind: 'prompt',
+					name: 'p',
+					body: 'b',
+					value: 'x',
+					project_id: PROJECT
+				})
+			)
+		).toMatchObject({ status: 422, code: 'kind_payload_mismatch' });
+	});
+
+	it('rejects NUL bytes before they can reach process spawning', async () => {
+		const { t, db } = setup();
+		for (const secret of [false, true]) {
+			expect(
+				await fail(
+					createContextItem(db, t.env, human, { kind: 'env', name: 'BAD', value: 'a\0b', secret })
+				)
+			).toMatchObject({ status: 422, code: 'invalid_field' });
+		}
+		const item = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'GOOD',
+			value: 'ok'
+		});
+		expect(
+			await fail(updateContextItem(db, t.env, human, item.id, { value: 'a\0b' }))
+		).toMatchObject({ status: 422, code: 'invalid_field' });
+	});
+
+	it.each(['', '   ', '\n', ' \t\n '])(
+		'preserves exact public env bytes %j on create and update',
+		async (value) => {
+			const { t, db } = setup();
+			const creation = createContextItem(db, t.env, human, { kind: 'env', name: 'EMPTY', value });
+			await expect(creation).resolves.toMatchObject({ value, value_set: true });
+			const created = await creation;
+			expect(created).toMatchObject({ value, value_set: true });
+			expect(await getContextItem(db, USER, created.id)).toMatchObject({ value, value_set: true });
+			await updateContextItem(db, t.env, human, created.id, { value: 'replacement' });
+			expect(await updateContextItem(db, t.env, human, created.id, { value })).toMatchObject({
+				value,
+				value_set: true
+			});
+			expect(t.all('SELECT env_value FROM context_item WHERE id = ?', created.id)[0]).toEqual({
+				env_value: value
+			});
+		}
+	);
+
+	it.each([
+		['null', null],
+		['number', 12],
+		['boolean', false],
+		['object', {}],
+		['UTF-8 overflow', 'é'.repeat(8193)]
+	])('rejects invalid env value %s on create and update', async (_label, invalid) => {
+		// Exercise untyped API input that intentionally violates the public request type.
+		const value = invalid as unknown as string;
+		const { t, db } = setup();
+		expect(
+			await fail(createContextItem(db, t.env, human, { kind: 'env', name: 'INVALID', value }))
+		).toMatchObject({ status: 422, code: 'invalid_field' });
+		const item = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'VALID',
+			value: 'ok'
+		});
+		expect(await fail(updateContextItem(db, t.env, human, item.id, { value }))).toMatchObject({
+			status: 422,
+			code: 'invalid_field'
+		});
+	});
+
+	it('rejects empty secrets on create, replacement and public-to-secret conversion', async () => {
+		const { t, db } = setup();
+		expect(
+			await fail(
+				createContextItem(db, t.env, human, {
+					kind: 'env',
+					name: 'SECRET',
+					value: '',
+					secret: true
+				})
+			)
+		).toMatchObject({ status: 422, code: 'invalid_field' });
+		const item = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'SECRET',
+			value: 'ok',
+			secret: true
+		});
+		expect(await fail(updateContextItem(db, t.env, human, item.id, { value: '' }))).toMatchObject({
+			status: 422,
+			code: 'invalid_field'
+		});
+		const empty = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'EMPTY',
+			value: ''
+		});
+		expect(
+			await fail(updateContextItem(db, t.env, human, empty.id, { secret: true }))
+		).toMatchObject({ status: 422, code: 'invalid_field' });
+	});
+
+	it.each(['', '   ', '\n', null])(
+		'normalizes an empty env hint %j on create and update',
+		async (hint) => {
+			const { t, db } = setup();
+			const item = await createContextItem(db, t.env, human, {
+				kind: 'env',
+				name: 'HINT',
+				value: 'ok',
+				hint
+			});
+			expect(item.hint).toBeNull();
+			await updateContextItem(db, t.env, human, item.id, { hint: '  safe hint  ' });
+			expect((await getContextItem(db, USER, item.id)).hint).toBe('safe hint');
+			expect((await updateContextItem(db, t.env, human, item.id, { hint })).hint).toBeNull();
+		}
+	);
+
+	it('stores a public value in the clear and a secret encrypted, serializing only the hint', async () => {
+		const { t, db } = setup();
+		const pub = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'NPM_REGISTRY',
+			value: 'https://registry.example',
+			project_id: PROJECT
+		});
+		expect(pub).toMatchObject({
+			kind: 'env',
+			secret: false,
+			value_set: true,
+			hint: null,
+			value: 'https://registry.example'
+		});
+		const sec = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'GH_TOKEN',
+			value: 'github_pat_supersecret',
+			secret: true,
+			hint: 'github_pat_…cret',
+			project_id: PROJECT
+		});
+		expect(sec).toMatchObject({ secret: true, value_set: true, hint: 'github_pat_…cret' });
+		expect(JSON.stringify(sec)).not.toContain('supersecret');
+		const row = t.sqlite
+			.prepare('SELECT env_value, env_value_enc FROM context_item WHERE id = ?')
+			.get(sec.id) as { env_value: string | null; env_value_enc: string | null };
+		expect(row.env_value).toBeNull();
+		expect(row.env_value_enc).toMatch(/^v1:/);
+		expect(row.env_value_enc).not.toContain('supersecret');
+		const read = await getContextItem(db, USER, sec.id);
+		expect(JSON.stringify(read)).not.toContain('supersecret');
+	});
+
+	it('is a 503 to store a secret without an encryption key', async () => {
+		const { t, db } = setup(false);
+		const e = await fail(
+			createContextItem(db, t.env, human, {
+				kind: 'env',
+				name: 'S',
+				value: 'v',
+				secret: true,
+				project_id: PROJECT
+			})
+		);
+		expect(e).toMatchObject({ status: 503, code: 'encryption_unavailable' });
+	});
+
+	it('updates: encrypts in place, refuses secret→public and value: null, replaces write-only', async () => {
+		const { t, db } = setup();
+		const item = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'A',
+			value: 'plain',
+			project_id: PROJECT
+		});
+		const secret = await updateContextItem(db, t.env, human, item.id, { secret: true });
+		expect(secret).toMatchObject({ secret: true, value_set: true, version: 2 });
+		expect(secret.value).toBeUndefined();
+		expect(
+			await fail(updateContextItem(db, t.env, human, item.id, { secret: false }))
+		).toMatchObject({ status: 422, code: 'secret_irreversible' });
+		expect(
+			await fail(
+				updateContextItem(db, t.env, human, item.id, {
+					value: null as unknown as string
+				})
+			)
+		).toMatchObject({ status: 422, code: 'invalid_field' });
+		const replaced = await updateContextItem(db, t.env, human, item.id, {
+			value: 'newsecret',
+			hint: 'new…ret'
+		});
+		expect(replaced).toMatchObject({ secret: true, hint: 'new…ret', version: 3 });
+		expect(JSON.stringify(replaced)).not.toContain('newsecret');
+		const events = t.sqlite
+			.prepare("SELECT payload FROM event WHERE type = 'context.updated'")
+			.all() as { payload: string }[];
+		expect(events.map((e) => e.payload).join('')).not.toContain('newsecret');
+		expect(events.map((e) => e.payload).join('')).not.toContain('plain');
+	});
+
+	it('fences run keys out of env writes but not reads', async () => {
+		const { t, db } = setup();
+		expect(
+			await fail(
+				createContextItem(db, t.env, runKey, {
+					kind: 'env',
+					name: 'A',
+					value: 'x',
+					project_id: PROJECT
+				})
+			)
+		).toMatchObject({ status: 403, code: 'run_key_forbidden', details: { reason: 'env_context' } });
+		const item = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'A',
+			value: 'x',
+			project_id: PROJECT
+		});
+		expect(await fail(updateContextItem(db, t.env, runKey, item.id, { value: 'y' }))).toMatchObject(
+			{
+				status: 403
+			}
+		);
+		expect(await fail(deleteContextItem(db, t.env, runKey, item.id))).toMatchObject({
+			status: 403
+		});
+		expect((await getContextItem(db, USER, item.id)).value).toBe('x');
+		// A run key can still write the other kinds.
+		await createContextItem(db, t.env, runKey, {
+			kind: 'prompt',
+			name: 'p',
+			body: 'b',
+			project_id: PROJECT
+		});
+	});
+
+	it('resolves per variable with override by name, counts, decrypts for delivery, and names only in the prompt', async () => {
+		const { t, db } = setup();
+		const issueId = addIssue(t, { state: OPEN });
+		const globalTok = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'GH_TOKEN',
+			value: 'global-secret',
+			secret: true
+		});
+		const projTok = await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'GH_TOKEN',
+			value: 'project-secret',
+			secret: true,
+			hint: 'proj',
+			project_id: PROJECT
+		});
+		await createContextItem(db, t.env, human, {
+			kind: 'env',
+			name: 'NPM_REGISTRY',
+			value: 'https://r.example',
+			project_id: PROJECT
+		});
+		const ctx = await effectiveContextForIssue(db, USER, issueId);
+		expect(ctx.env.map((e) => [e.name, e.secret, e.value ?? null, e.hint])).toEqual([
+			['GH_TOKEN', true, null, 'proj'],
+			['NPM_REGISTRY', false, 'https://r.example', null]
+		]);
+		expect(ctx.overridden).toContainEqual(
+			expect.objectContaining({ item_id: globalTok.id, kind: 'env', overridden_by: projTok.id })
+		);
+		expect(JSON.stringify(ctx)).not.toContain('-secret');
+		const summary = await contextSummaryForIssue(db, USER, {
+			projectId: PROJECT,
+			stateId: OPEN,
+			issueId
+		});
+		expect(summary.envs).toBe(2);
+
+		const resolved = await resolvedEnvForIssue(db, t.env, USER, issueId);
+		expect(resolved.map((e) => [e.name, e.value, e.secret])).toEqual([
+			['GH_TOKEN', 'project-secret', true],
+			['NPM_REGISTRY', 'https://r.example', false]
+		]);
+		const digest = await envDigest(resolved);
+		expect(digest).toMatch(/^[0-9a-f]{64}$/);
+		expect(await envDigest(resolved.map((e) => ({ ...e, value: 'other' })))).toBe(digest);
+		expect(await envDigest(resolved.slice(1))).not.toBe(digest);
+
+		const block = issueBlock({ ...issue, id: issueId }, ctx, [], []);
+		expect(block).toContain(
+			'Environment variables set for this run: `GH_TOKEN` (secret), `NPM_REGISTRY`.'
+		);
+		expect(block).not.toContain('project-secret');
+		expect(block).not.toContain('r.example');
 	});
 });

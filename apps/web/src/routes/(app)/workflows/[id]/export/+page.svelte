@@ -16,26 +16,32 @@
 		type WorkflowPackageDocument
 	} from '@tines/shared';
 	import IconArrowLeft from '@tabler/icons-svelte/icons/arrow-left';
+	import IconCircleCheck from '@tabler/icons-svelte/icons/circle-check';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconRefresh from '@tabler/icons-svelte/icons/refresh';
-	import { tick } from 'svelte';
+	import { onDestroy, tick } from 'svelte';
+	import { fade } from 'svelte/transition';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import {
+		listEditableFields,
 		normalizeInputDraft,
+		readField,
+		replaceSelectionWithVariable,
+		saveAuthoredField,
 		updateAuthoredInput,
-		writeField,
 		type InputDraft
 	} from '$lib/components/library/package-input-editor';
 	import PackageReview from '$lib/components/library/PackageReview.svelte';
+	import { declaredOccurrences } from '$lib/components/library/package-text';
 	import TechnicalDetails from '$lib/components/publications/TechnicalDetails.svelte';
 	import { PublicationFlowController } from '$lib/components/publications/publication-flow';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
-	import { Textarea } from '$lib/components/ui/textarea/index.js';
+	import { prefersReducedMotion } from '$lib/format';
 
 	let { data } = $props();
 	function initialCandidate(): WorkflowPackageDocument {
@@ -62,10 +68,16 @@
 	let displayName = $state('');
 	let publicationProof = $state<PublicationProof | null>(null);
 	let publicationResult = $state<PublicationOwnerResult | null>(null);
+	let publishFailed = $state(false);
 	let shareConsent = $state(false);
 	let step = $state<'customize' | 'preview' | 'share' | 'complete'>('customize');
 	const publicationFlow = new PublicationFlowController();
 	let stepHeading = $state<HTMLElement | null>(null);
+	let shareLinkInput = $state<HTMLInputElement | null>(null);
+	let copyState = $state<'idle' | 'copying' | 'copied' | 'failed'>('idle');
+	let copyAnnouncement = $state('');
+	let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
+	let destroyed = false;
 	let displayNameInput = $state<HTMLInputElement | null>(null);
 	let displayNameError = $state('');
 
@@ -80,13 +92,16 @@
 	let addDraftSnapshot = $state<InputDraft | null>(null);
 	let inputFormError = $state('');
 	let selectedInputId = $state('');
-	let selectedTarget = $state('');
-	let fieldEditor = $state<HTMLTextAreaElement | null>(null);
-	let fieldEditPending = $state(false);
 	let inputPanel = $state<HTMLElement | null>(null);
 	let keyEditor = $state<HTMLInputElement | null>(null);
 	let tokenInvoker = $state<HTMLElement | null>(null);
 	let diagnosticsPanel = $state<HTMLElement | null>(null);
+	let samples = $state<Record<string, string>>({});
+	let changedInputIds = $state<Set<string>>(new Set());
+	let changedOccurrenceIds = $state<Set<string>>(new Set());
+	let inlineStates = $state<
+		Record<string, { active: boolean; bound: boolean; inputIds: string[] }>
+	>({});
 
 	const requiredReviews = $derived(
 		candidate.context
@@ -107,68 +122,7 @@
 	const availableSchedules = $derived(
 		data.schedules.filter((schedule) => schedule.project_id === sourceProjectId)
 	);
-	const editableFields = $derived.by(() => {
-		const fields: {
-			key: string;
-			recordId: string;
-			field: TextUseField;
-			label: string;
-			value: string;
-		}[] = [];
-		for (const workflow of candidate.workflows)
-			fields.push({
-				key: `${workflow.id}:description`,
-				recordId: workflow.id,
-				field: 'description',
-				label: `${workflow.name} — description`,
-				value: workflow.description
-			});
-		for (const item of candidate.context) {
-			if (item.description)
-				fields.push({
-					key: `${item.id}:description`,
-					recordId: item.id,
-					field: 'description',
-					label: `${item.name} — description`,
-					value: item.description
-				});
-			if (item.kind === 'prompt')
-				fields.push({
-					key: `${item.id}:body`,
-					recordId: item.id,
-					field: 'body',
-					label: `${item.name} — prompt body`,
-					value: item.body
-				});
-			if (item.kind === 'skill')
-				for (const file of item.files)
-					fields.push({
-						key: `${file.id}:content`,
-						recordId: file.id,
-						field: 'content',
-						label: `${item.name} / ${file.path}`,
-						value: file.content
-					});
-		}
-		for (const schedule of candidate.schedules) {
-			fields.push({
-				key: `${schedule.id}:title_template`,
-				recordId: schedule.id,
-				field: 'title_template',
-				label: `${schedule.name} — title template`,
-				value: schedule.title_template
-			});
-			fields.push({
-				key: `${schedule.id}:description_template`,
-				recordId: schedule.id,
-				field: 'description_template',
-				label: `${schedule.name} — description template`,
-				value: schedule.description_template
-			});
-		}
-		return fields;
-	});
-	const selectedField = $derived(editableFields.find((field) => field.key === selectedTarget));
+	const editableFields = $derived(listEditableFields(candidate));
 	const selectedInput = $derived(candidate.inputs.find((input) => input.id === selectedInputId));
 	const diagnosticFieldKeys = $derived(
 		new Set(
@@ -194,8 +148,35 @@
 		status = `${note} Review included skills and repositories again.`;
 		publicationProof = null;
 		publicationResult = null;
+		publishFailed = false;
 		shareConsent = false;
 		step = 'customize';
+	}
+	function inlineStateChanged(
+		key: string,
+		state: { active: boolean; bound: boolean; inputIds: string[] }
+	) {
+		const previous = inlineStates[key];
+		inlineStates = { ...inlineStates, [key]: state };
+		// A bare Edit/Preview toggle changes no bytes, so it keeps the review acknowledgments;
+		// typed text or an open variable form is a bound edit and invalidates them.
+		if (state.bound && !previous?.bound)
+			resetReview('Finish or cancel the passage edit before continuing.');
+	}
+	async function guardInlineEdits(action: string, inputId?: string, exceptKey?: string) {
+		const blocked = Object.entries(inlineStates).find(
+			([key, state]) =>
+				key !== exceptKey && state.active && (!inputId || state.inputIds.includes(inputId))
+		);
+		if (!blocked) return true;
+		status = `Save or cancel the passage edit before ${action}.`;
+		await tick();
+		const section = document.querySelector<HTMLElement>(
+			`[data-field-key="${CSS.escape(blocked[0])}"]`
+		);
+		(section?.querySelector<HTMLElement>('[data-inline-action]') ?? section)?.focus();
+		section?.scrollIntoView({ block: 'center' });
+		return false;
 	}
 	function displayNameChanged(event: Event) {
 		displayName = (event.currentTarget as HTMLInputElement).value;
@@ -204,6 +185,7 @@
 		if (!publicationProof && !busy) return;
 		publicationProof = null;
 		publicationResult = null;
+		publishFailed = false;
 		shareConsent = false;
 		step = 'customize';
 		status = 'Your display name changed. Preview this version again.';
@@ -256,12 +238,9 @@
 	}
 	async function rebuild() {
 		if (candidateUpdating || busy) return;
+		if (!(await guardInlineEdits('rebuilding'))) return;
 		if (editingInputId) {
 			status = 'Save or cancel the variable edit before applying automation.';
-			return;
-		}
-		if (fieldEditPending || (fieldEditor && fieldEditor.value !== selectedField?.value)) {
-			status = 'Save or cancel the text edit before applying automation.';
 			return;
 		}
 		if (
@@ -278,6 +257,9 @@
 			const rebuilt = await api.exportWorkflowPackage(data.workflow.id, options);
 			if (!rebuilt.inputs.some((input) => input.id === selectedInputId)) selectedInputId = '';
 			candidate = rebuilt;
+			samples = {};
+			changedInputIds = new Set();
+			changedOccurrenceIds = new Set();
 			baseline = { document_digest: rebuilt.digest, exported_at: rebuilt.exported_at };
 			appliedSourceOptions = JSON.parse(
 				canonicalizeLibraryValue(options)
@@ -304,12 +286,10 @@
 		}
 	}
 	async function prepareForPublication() {
+		if (busy) return;
+		if (!(await guardInlineEdits('previewing'))) return;
 		if (editingInputId) {
 			status = 'Save or cancel the variable edit before previewing.';
-			return;
-		}
-		if (fieldEditPending || (fieldEditor && fieldEditor.value !== selectedField?.value)) {
-			status = 'Save or cancel the text edit before previewing.';
 			return;
 		}
 		if (candidateUpdating) {
@@ -373,6 +353,7 @@
 			}
 			publicationProof = proof;
 			publicationResult = null;
+			publishFailed = false;
 			shareConsent = false;
 			status = 'Ready to review.';
 			step = 'preview';
@@ -404,11 +385,15 @@
 	}
 	async function focusStep() {
 		await tick();
-		stepHeading?.focus();
-		stepHeading?.scrollIntoView({ block: 'start' });
+		stepHeading?.focus({ preventScroll: step === 'complete' });
+		stepHeading?.scrollIntoView({
+			block: 'start',
+			inline: 'nearest',
+			...(step === 'complete' ? { behavior: 'instant' as ScrollBehavior } : {})
+		});
 	}
 	async function reviewIncludedAndShare() {
-		if (!publicationProof) return;
+		if (busy || !publicationProof) return;
 		publicationFlow.reviewIncluded();
 		reviewed = new Set(publicationFlow.reviewedIds);
 		shareConsent = false;
@@ -417,21 +402,26 @@
 		await focusStep();
 	}
 	async function goTo(next: 'customize' | 'preview' | 'share') {
+		if (busy) return;
 		step = next;
 		await focusStep();
 	}
 	function consentChanged(event: Event) {
+		if (busy) return;
 		shareConsent = (event.currentTarget as HTMLInputElement).checked;
 		publicationFlow.setConsent(shareConsent);
 	}
 	async function publish() {
+		if (busy || step !== 'share' || publicationResult) return;
 		const request = publicationFlow.publishRequest();
 		if (!publicationProof || !request) return;
 		busy = true;
+		publishFailed = false;
 		status = 'Publishing…';
 		try {
 			publicationResult = await api.publishPublication(publicationProof.candidate_id, request);
-			status = 'Shared.';
+			publishFailed = false;
+			status = 'Published.';
 			step = 'complete';
 			await focusStep();
 		} catch (error) {
@@ -440,10 +430,12 @@
 				(error.code === 'publication_source_changed' ||
 					error.code === 'publication_source_changing' ||
 					error.code === 'publication_proof_expired' ||
+					error.code === 'publication_proof_stale' ||
 					error.code === 'publication_policy_changed')
 			) {
 				publicationFlow.invalidate();
 				publicationProof = null;
+				publishFailed = false;
 				reviewed = new Set();
 				shareConsent = false;
 				step = 'customize';
@@ -453,14 +445,54 @@
 						? 'The source changed. Your edits to this copy are still here. Review the latest source before sharing.'
 						: 'Preview this version again before sharing.';
 				await focusStep();
-			} else if (error instanceof ApiError && error.code !== 'publication_outcome_unknown')
+			} else if (error instanceof ApiError && error.code !== 'publication_outcome_unknown') {
 				status = error.message;
-			else
+				publishFailed = true;
+			} else {
 				status = 'We could not confirm whether sharing finished. Retry publishing to check safely.';
+				publishFailed = true;
+			}
 		} finally {
 			busy = false;
 		}
 	}
+	function clearCopyReset() {
+		if (copyResetTimer) clearTimeout(copyResetTimer);
+		copyResetTimer = null;
+	}
+	async function copyLink() {
+		const url = publicationResult?.receipt.public_url;
+		if (!url || copyState === 'copying') return;
+		clearCopyReset();
+		copyState = 'copying';
+		copyAnnouncement = '';
+		const write = navigator.clipboard?.writeText?.bind(navigator.clipboard);
+		try {
+			if (!write) throw new Error('Clipboard API unavailable');
+			const copy = write(url);
+			await tick();
+			await copy;
+			if (destroyed) return;
+			copyState = 'copied';
+			copyAnnouncement = 'Link copied.';
+			copyResetTimer = setTimeout(() => {
+				copyState = 'idle';
+				copyResetTimer = null;
+			}, 2_000);
+		} catch {
+			if (destroyed) return;
+			copyState = 'failed';
+			copyAnnouncement = 'Copy unavailable. Select the link and copy it.';
+			await tick();
+			shareLinkInput?.focus();
+			shareLinkInput?.select();
+			shareLinkInput?.setSelectionRange(0, url.length);
+		}
+	}
+	onDestroy(() => {
+		destroyed = true;
+		clearCopyReset();
+	});
 	async function addInput() {
 		if (candidateUpdating) return;
 		let normalized;
@@ -566,28 +598,10 @@
 		}
 		const tokenChanges =
 			inputToken(current.key, current.default) !== inputToken(normalized.key, normalized.default);
-		const selectedFieldIsAffected = Boolean(
-			tokenChanges &&
-			selectedField &&
-			candidate.text_uses.some(
-				(use) =>
-					use.input_id === inputId &&
-					use.target.record_id === selectedField?.recordId &&
-					use.target.field === selectedField.field
-			)
-		);
-		if (selectedFieldIsAffected && fieldEditor && fieldEditor.value !== selectedField?.value) {
+		if (tokenChanges && !(await guardInlineEdits('updating this variable', inputId))) {
 			inputFormError = 'Save text before changing this variable’s key or default.';
 			return;
 		}
-		const pendingField =
-			!selectedFieldIsAffected && fieldEditor
-				? {
-						value: fieldEditor.value,
-						start: fieldEditor.selectionStart,
-						end: fieldEditor.selectionEnd
-					}
-				: null;
 		const snapshot = candidate;
 		let updated: WorkflowPackageDocument;
 		try {
@@ -612,62 +626,127 @@
 		}
 		if (!saved) return;
 		await finishInputEdit(inputId);
-		await tick();
-		if (fieldEditor) {
-			if (selectedFieldIsAffected && selectedField) fieldEditor.value = selectedField.value;
-			else if (pendingField) {
-				fieldEditor.value = pendingField.value;
-				fieldEditor.setSelectionRange(pendingField.start, pendingField.end);
-			}
-		}
 	}
-	async function saveCandidateField(addUse = false) {
-		if (!selectedField || !fieldEditor) return;
-		const input = addUse ? selectedInput : undefined;
-		if (addUse && !input) {
-			status = 'Choose a variable first.';
-			return;
+	async function saveInlineText(recordId: string, field: TextUseField, value: string) {
+		if (candidateUpdating) return false;
+		let next: WorkflowPackageDocument;
+		try {
+			next = saveAuthoredField(candidate, { recordId, field }, value);
+		} catch (error) {
+			status = message(error);
+			return false;
 		}
-		const next = JSON.parse(JSON.stringify(candidate)) as WorkflowPackageDocument;
-		resetReview('Saving text.');
+		resetReview('Saving the passage text.');
 		candidateUpdating = true;
-		let value = fieldEditor.value;
-		if (input) {
-			const token = inputToken(input.key, input.default);
-			const start = fieldEditor.selectionStart;
-			const end = fieldEditor.selectionEnd;
-			value = `${value.slice(0, start)}${token}${value.slice(end)}`;
-			next.text_uses.push({
-				id: `use:author:${next.text_uses.length + 1}`,
-				target: { record_id: selectedField.recordId, field: selectedField.field },
-				input_id: input.id,
-				token
-			});
-		}
-		writeField(next, selectedField.recordId, selectedField.field, value);
 		try {
 			candidate = await withLibraryDocumentDigest(next);
 			dirty = true;
-			fieldEditPending = false;
-			resetReview(
-				addUse
-					? 'Variable added at the selected location.'
-					: 'Text saved in this copy. Your private workflow is unchanged.'
-			);
-			await tick();
-			if (fieldEditor) fieldEditor.value = value;
+			changedInputIds = new Set();
+			changedOccurrenceIds = new Set();
+			resetReview('Text saved in this copy.');
+			return true;
 		} catch (error) {
 			status = message(error);
+			return false;
 		} finally {
 			candidateUpdating = false;
 		}
 	}
-	function cancelCandidateField() {
-		if (!selectedField || !fieldEditor || candidateUpdating) return;
-		fieldEditor.value = selectedField.value;
-		fieldEditPending = false;
-		status = 'Text edit canceled.';
-		fieldEditor.focus();
+	async function createInlineVariable(request: {
+		recordId: string;
+		field: TextUseField;
+		sourceSnapshot: string;
+		value: string;
+		start: number;
+		end: number;
+		direction: 'forward' | 'backward' | 'none';
+		inputId?: string;
+		draft?: InputDraft;
+	}) {
+		if (candidateUpdating) return null;
+		let result;
+		try {
+			result = replaceSelectionWithVariable(candidate, {
+				ref: { recordId: request.recordId, field: request.field },
+				sourceSnapshot: request.sourceSnapshot,
+				value: request.value,
+				start: request.start,
+				end: request.end,
+				inputId: request.inputId,
+				newInput: request.draft
+			});
+		} catch (error) {
+			status = message(error);
+			return { error: message(error) };
+		}
+		resetReview('Saving the new variable use.');
+		candidateUpdating = true;
+		try {
+			candidate = await withLibraryDocumentDigest(result.document);
+			selectedInputId = result.inputId;
+			dirty = true;
+			changedInputIds = new Set();
+			changedOccurrenceIds = new Set([`${result.useId}:${result.occurrence.ordinal}`]);
+			resetReview('1 use updated.');
+			return {
+				inputId: result.inputId,
+				useId: result.useId,
+				ordinal: result.occurrence.ordinal
+			};
+		} catch (error) {
+			status = message(error);
+			return null;
+		} finally {
+			candidateUpdating = false;
+		}
+	}
+	async function editInlineVariable(
+		inputId: string,
+		draft: InputDraft,
+		recordId: string,
+		field: TextUseField
+	) {
+		if (candidateUpdating) return false;
+		if (!(await guardInlineEdits('updating this variable', inputId, `${recordId}:${field}`)))
+			return false;
+		let next: WorkflowPackageDocument;
+		try {
+			next = updateAuthoredInput(candidate, inputId, draft);
+		} catch (error) {
+			status = message(error);
+			return false;
+		}
+		resetReview('Saving the variable changes.');
+		candidateUpdating = true;
+		try {
+			candidate = await withLibraryDocumentDigest(next);
+			dirty = true;
+			changedInputIds = new Set([inputId]);
+			changedOccurrenceIds = new Set();
+			resetReview('Variable updated in this copy.');
+			return true;
+		} catch (error) {
+			status = message(error);
+			return false;
+		} finally {
+			candidateUpdating = false;
+		}
+	}
+	function setSample(inputId: string, value: string | undefined) {
+		const next = { ...samples };
+		if (value === undefined) delete next[inputId];
+		else next[inputId] = value;
+		if (JSON.stringify(next) === JSON.stringify(samples)) return;
+		samples = next;
+		changedInputIds = new Set([inputId]);
+		changedOccurrenceIds = new Set();
+		const count = candidate.text_uses
+			.filter((use) => use.input_id === inputId)
+			.reduce((total, use) => {
+				const source = readField(candidate, use.target.record_id, use.target.field) ?? '';
+				return total + declaredOccurrences(source, [{ token: use.token, inputId }]).length;
+			}, 0);
+		status = `${count} ${count === 1 ? 'use' : 'uses'} updated. Sample values do not change the reusable file.`;
 	}
 	type InputRepairField = 'key' | 'default' | 'label' | 'description';
 	function diagnosticInput(path: string) {
@@ -711,6 +790,7 @@
 		return editableFields.find((item) => item.key === key) ?? null;
 	}
 	async function validate(expectedGeneration = candidateGeneration) {
+		if (!(await guardInlineEdits('checking the file'))) return null;
 		if (candidateUpdating) {
 			status = 'Wait for the edit to finish before checking this copy.';
 			return null;
@@ -787,10 +867,12 @@
 		tokenInvoker = null;
 	}
 	async function beginEdit(recordId: string, field: string) {
-		selectedTarget = `${recordId}:${field}`;
-		fieldEditPending = false;
 		await tick();
-		fieldEditor?.focus();
+		const section = document.querySelector<HTMLElement>(
+			`[data-field-key="${CSS.escape(`${recordId}:${field}`)}"]`
+		);
+		section?.querySelector<HTMLButtonElement>('[data-inline-edit]')?.click();
+		section?.scrollIntoView({ block: 'center' });
 	}
 </script>
 
@@ -810,24 +892,27 @@
 <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
 	<div>
 		<h1 class="text-2xl font-semibold tracking-tight">Share {data.workflow.name}</h1>
-		<p class="text-muted-foreground mt-1 max-w-2xl text-sm">
-			Create a reusable copy for others. Review it before making it public.
-		</p>
+		{#if step !== 'complete'}<p class="text-muted-foreground mt-1 max-w-2xl text-sm">
+				Create a reusable copy for others. Review it before making it public.
+			</p>{/if}
 	</div>
 </div>
 
-<ol class="mb-6 grid grid-cols-3 gap-2 text-sm" aria-label="Sharing progress">
-	{#each ['customize', 'preview', 'share'] as item, index}
-		<li
-			class="rounded-md border px-3 py-2 capitalize {step === item
-				? 'border-primary bg-primary/10 font-medium'
-				: 'text-muted-foreground'}"
-			aria-current={step === item ? 'step' : undefined}
-		>
-			{index + 1}. {item}
-		</li>
-	{/each}
-</ol>
+{#if step !== 'complete'}<ol
+		class="mb-6 grid grid-cols-3 gap-2 text-sm"
+		aria-label="Sharing progress"
+	>
+		{#each ['customize', 'preview', 'share'] as item, index}
+			<li
+				class="rounded-md border px-3 py-2 capitalize {step === item
+					? 'border-primary bg-primary/10 font-medium'
+					: 'text-muted-foreground'}"
+				aria-current={step === item ? 'step' : undefined}
+			>
+				{index + 1}. {item}
+			</li>
+		{/each}
+	</ol>{/if}
 
 {#if step === 'customize'}
 	<section class="mb-6 rounded-lg border p-4" aria-labelledby="customize-title">
@@ -860,6 +945,31 @@
 		{#if displayNameError}<p class="text-destructive mt-1 text-sm" role="alert">
 				{displayNameError}
 			</p>{/if}
+	</section>
+
+	<section class="mb-6 rounded-lg border p-4" aria-labelledby="passage-review-title">
+		<h2 id="passage-review-title" class="font-semibold">Review and customize passages</h2>
+		<p class="text-muted-foreground mt-1 mb-4 text-xs">
+			Edit beside the passage, select exact text, then make or reuse a variable. Preview values
+			never change the reusable file.
+		</p>
+		<PackageReview
+			document={candidate}
+			{reviewed}
+			onReview={setReviewed}
+			onToken={focusInput}
+			expandedFields={diagnosticFieldKeys}
+			contextFirst
+			{samples}
+			{selectedInputId}
+			{changedInputIds}
+			{changedOccurrenceIds}
+			onSaveText={saveInlineText}
+			onCreate={createInlineVariable}
+			onEditVariable={editInlineVariable}
+			onSample={setSample}
+			onStateChange={inlineStateChanged}
+		/>
 	</section>
 
 	<details class="mb-6 rounded-lg border p-4">
@@ -1095,62 +1205,10 @@
 						</div>
 					{/each}
 				</div>{/if}
-			<div class="mt-4 border-t pt-4">
-				<label class="text-xs"
-					>Edit instructions<Select
-						class="mt-1"
-						bind:value={selectedTarget}
-						onchange={() => (fieldEditPending = false)}
-						><option value="">Choose a text field</option>{#each editableFields as field}<option
-								value={field.key}>{field.label}</option
-							>{/each}</Select
-					></label
-				>{#if selectedField}<Textarea
-						class="mt-2 min-h-40 font-mono text-xs"
-						bind:ref={fieldEditor}
-						value={selectedField.value}
-						oninput={(event) =>
-							(fieldEditPending = event.currentTarget.value !== selectedField?.value)}
-					></Textarea>
-					<div class="mt-2 flex flex-wrap gap-2">
-						<Button
-							size="sm"
-							variant="outline"
-							onclick={() => saveCandidateField(false)}
-							disabled={candidateUpdating}>Save text</Button
-						>
-						<Button
-							size="sm"
-							variant="outline"
-							onclick={cancelCandidateField}
-							disabled={candidateUpdating || !fieldEditPending}>Cancel text edit</Button
-						>
-						<div
-							class="flex max-w-full min-w-0 flex-wrap items-center gap-2"
-							data-testid="input-replacement"
-						>
-							<Button
-								size="sm"
-								onclick={() => saveCandidateField(true)}
-								disabled={!selectedInput || candidateUpdating}>Use selected variable here</Button
-							>
-							{#if selectedInput}<span
-									class="text-muted-foreground max-w-full min-w-0 text-xs [overflow-wrap:anywhere]"
-									>Using <code class="[overflow-wrap:anywhere]">{selectedInput.key}</code></span
-								>{/if}
-						</div>
-						<a
-							class="text-primary inline-flex min-h-9 items-center px-2 text-xs underline"
-							href="/workflows/{data.workflow.id}"
-							title="Applying automation afterward replaces the edits in this copy"
-							>Edit private source instead</a
-						>
-					</div>
-					<p class="text-muted-foreground mt-2 text-xs">
-						This opens your private workflow. Return here and choose Apply automation to include its
-						latest changes. That replaces instruction and variable edits made in this copy.
-					</p>{/if}
-			</div>
+			<p class="text-muted-foreground mt-4 border-t pt-4 text-xs">
+				Edit passage text and place variables only beside the passage above. The inventory keeps
+				declarations, including variables with no current uses.
+			</p>
 		</section>
 	</details>
 
@@ -1200,14 +1258,6 @@
 		<p class="text-muted-foreground mb-4 text-sm">
 			Review included content, then download a private file.
 		</p>
-		<PackageReview
-			document={candidate}
-			{reviewed}
-			onReview={setReviewed}
-			onToken={focusInput}
-			onEdit={beginEdit}
-			expandedFields={diagnosticFieldKeys}
-		/>
 		<div class="mt-4 flex flex-wrap gap-2">
 			<Button variant="outline" onclick={() => validate()} disabled={busy || candidateUpdating}
 				>Check file</Button
@@ -1282,32 +1332,85 @@
 			</li>
 		</ol>
 		<label class="mt-5 flex min-h-11 items-start gap-3 text-sm"
-			><input class="mt-1" type="checkbox" checked={shareConsent} onchange={consentChanged} /> I have
-			the right to share all included content, have reviewed this version, and agree to make it public
-			under the MIT license.</label
+			><input
+				class="mt-1"
+				type="checkbox"
+				checked={shareConsent}
+				disabled={busy}
+				onchange={consentChanged}
+			/> I have the right to share all included content, have reviewed this version, and agree to make
+			it public under the MIT license.</label
 		>
 		<button
 			type="button"
-			class="text-primary mt-3 min-h-10 underline"
+			class="text-primary mt-3 min-h-10 underline disabled:pointer-events-none disabled:opacity-50"
+			disabled={busy}
 			onclick={() => goTo('preview')}>Review included content again</button
 		>
 	</section>
 {:else if step === 'complete' && publicationResult}
 	<section
-		class="border-primary/40 bg-primary/5 rounded-lg border p-5"
-		aria-labelledby="shared-title"
+		class="border-primary/40 bg-primary/5 min-w-0 rounded-lg border p-5"
+		aria-labelledby="published-title"
+		transition:fade={{ duration: prefersReducedMotion() ? 0 : 180 }}
 	>
-		<h2 id="shared-title" class="text-xl font-semibold" tabindex="-1" bind:this={stepHeading}>
-			Shared
-		</h2>
-		<p class="text-muted-foreground mt-1 text-sm">Your workflow is public and ready to install.</p>
-		<a
-			class="text-primary mt-4 block break-all underline"
-			href={publicationResult.receipt.public_url}>{publicationResult.receipt.public_url}</a
-		>
-		<a class="text-primary mt-3 inline-flex min-h-10 items-center underline" href="/publications"
-			>Manage sharing</a
-		>
+		<div class="flex min-w-0 items-start gap-3">
+			<IconCircleCheck class="text-primary mt-0.5 shrink-0" size={24} aria-hidden="true" />
+			<div class="min-w-0">
+				<h2
+					id="published-title"
+					class="focus:ring-ring/50 scroll-mt-20 rounded-sm text-xl font-semibold focus:ring-3 focus:outline-none"
+					tabindex="-1"
+					bind:this={stepHeading}
+				>
+					Your workflow is ready to share
+				</h2>
+				<p class="mt-3 font-medium break-words">{proofWorkflowName}</p>
+				<p class="mt-1 text-sm font-medium">Public</p>
+				<p class="text-muted-foreground mt-0.5 text-sm">
+					Anyone with this link can view, download and install a copy.
+				</p>
+			</div>
+		</div>
+
+		<div class="mt-5 min-w-0">
+			<label class="text-sm font-medium" for="published-share-link">Share link</label>
+			<div class="mt-1.5 flex min-w-0 flex-col gap-2 sm:flex-row">
+				<Input
+					id="published-share-link"
+					class="min-w-0 flex-1"
+					bind:ref={shareLinkInput}
+					value={publicationResult.receipt.public_url}
+					readonly
+					aria-describedby={copyState === 'failed' ? 'copy-help' : undefined}
+				/>
+				<Button
+					data-testid="copy-share-link"
+					class="min-h-11 w-full min-w-24 sm:w-auto"
+					onclick={copyLink}
+					disabled={copyState === 'copying'}
+				>
+					{copyState === 'copied' ? 'Copied' : 'Copy link'}
+				</Button>
+			</div>
+			<p class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+				{copyAnnouncement}
+			</p>
+			{#if copyState === 'failed'}<p id="copy-help" class="text-destructive mt-2 text-sm">
+					Copy unavailable. Select the link and copy it.
+				</p>{/if}
+		</div>
+
+		<div class="mt-4 flex flex-wrap gap-2">
+			<Button
+				variant="outline"
+				href={publicationResult.receipt.public_url}
+				target="_blank"
+				rel="noopener noreferrer"
+				>Preview public page<span class="sr-only"> (opens in a new tab)</span></Button
+			>
+			<Button variant="outline" href="/publications">Manage sharing</Button>
+		</div>
 		<TechnicalDetails
 			items={[{ label: 'Receipt', value: publicationResult.receipt.snapshot_id }]}
 		/>
@@ -1335,9 +1438,11 @@
 			{:else if step === 'preview'}<Button
 					class="w-full sm:w-auto"
 					variant="outline"
+					disabled={busy}
 					onclick={() => goTo('customize')}>Back to Customize</Button
 				><Button
 					class="h-auto min-h-9 w-full whitespace-normal sm:w-auto"
+					disabled={busy}
 					onclick={reviewIncludedAndShare}
 					>{requiredReviews.length === 1
 						? 'I reviewed the included skill — Continue to Share'
@@ -1345,9 +1450,10 @@
 							? 'I reviewed the included items — Continue to Share'
 							: 'Continue to Share'}</Button
 				>
-			{:else}<Button variant="outline" onclick={() => goTo('preview')}>Back to Preview</Button
+			{:else}<Button variant="outline" disabled={busy} onclick={() => goTo('preview')}
+					>Back to Preview</Button
 				><Button onclick={publish} disabled={busy || !shareConsent}
-					>{busy ? 'Publishing…' : 'Publish workflow'}</Button
+					>{busy ? 'Publishing…' : publishFailed ? 'Retry' : 'Publish workflow'}</Button
 				>{/if}
 		</div>
 	</div>

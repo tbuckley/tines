@@ -2,8 +2,17 @@ import adapter from '@sveltejs/adapter-cloudflare';
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { configDefaults, defineConfig } from 'vitest/config';
+import {
+	deploymentIdentityPlugins,
+	resolveDeploymentIdentity
+} from './scripts/deployment-identity.mjs';
+
+const deploymentIdentity = resolveDeploymentIdentity();
 
 export default defineConfig({
+	define: {
+		__TINES_DEPLOYMENT__: JSON.stringify(deploymentIdentity)
+	},
 	server: {
 		// The simulated EMAIL binding writes each message under .wrangler/tmp/,
 		// and D1/R2 state lives under .wrangler/state/: neither is source, and
@@ -60,6 +69,7 @@ export default defineConfig({
 		]
 	},
 	plugins: [
+		...deploymentIdentityPlugins(deploymentIdentity),
 		tailwindcss(),
 		sveltekit({
 			compilerOptions: {

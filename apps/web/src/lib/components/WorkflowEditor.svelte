@@ -47,6 +47,22 @@
 	const previewRegionId = `workflow-preview-region-${previewUid}`;
 	let previewFit = $state(true);
 	let previewRegion: HTMLDivElement | undefined = $state();
+	const PREVIEW_FADE = 24;
+	const PREVIEW_EDGE = 2;
+	let previewHiddenLeft = $state(false);
+	let previewHiddenRight = $state(false);
+	const previewMask = $derived(
+		previewHiddenLeft || previewHiddenRight
+			? `linear-gradient(to right, ${previewHiddenLeft ? 'transparent' : '#000'} 0, #000 ${PREVIEW_FADE}px, #000 calc(100% - ${PREVIEW_FADE}px), ${previewHiddenRight ? 'transparent' : '#000'} 100%)`
+			: undefined
+	);
+
+	function measurePreviewOverflow() {
+		const el = previewRegion;
+		if (!el) return;
+		previewHiddenLeft = el.scrollLeft > PREVIEW_EDGE;
+		previewHiddenRight = el.scrollLeft < el.scrollWidth - el.clientWidth - PREVIEW_EDGE;
+	}
 
 	async function setPreviewFit(fit: boolean) {
 		if (fit === previewFit) return;
@@ -179,11 +195,32 @@
 			category: s.category
 		})),
 		transitions: transitions.map((t) => ({
+			id: t.key,
 			name: t.name.trim() || undefined,
 			from_state_id: t.from,
 			to_state_id: t.to
 		})),
 		initial_state_id: initialKey
+	});
+
+	$effect(() => {
+		// Editing the workflow can change the graph's intrinsic width without
+		// changing the scroller. Keep each fade matched to the content still
+		// hidden beyond that edge, including after switching zoom modes.
+		void preview;
+		void previewFit;
+		const el = previewRegion;
+		if (!el) return;
+		const sync = () => measurePreviewOverflow();
+		sync();
+		const frame = requestAnimationFrame(sync);
+		const observer = new ResizeObserver(sync);
+		observer.observe(el);
+		if (el.firstElementChild) observer.observe(el.firstElementChild);
+		return () => {
+			cancelAnimationFrame(frame);
+			observer.disconnect();
+		};
 	});
 
 	// Inline validation, mirroring the server rules.
@@ -556,6 +593,9 @@
 			<div
 				bind:this={previewRegion}
 				id={previewRegionId}
+				onscroll={measurePreviewOverflow}
+				style:mask-image={previewMask}
+				style:-webkit-mask-image={previewMask}
 				class="focus-visible:outline-ring max-w-full overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2"
 				role="region"
 				tabindex="0"

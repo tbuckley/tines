@@ -56,6 +56,11 @@ the Worker boundary: no-store, no referrer, nosniff, no validators, and a comple
 CSP apply to successes, failures, redirects, HEAD, data requests, and unknown suffixes. HTML keeps
 only nonce-backed application scripts and same-origin styles/fonts/connect/form actions.
 
+The deployment-identity boundary added by Tines/598 wraps both publication boundaries. Public
+publication API responses therefore retain the complete publication policy while also receiving
+the server's `X-Tines-Version` and `X-Tines-Commit`; neither finalizer weakens or replaces the
+other's headers, including on Worker-level fallback failures.
+
 Accepted remote entry, legacy download, and API download URLs normalize to the real API download
 endpoint. Each redirect resolves once to a validated address set and connects through that pinned
 set; plaintext HTTP is limited to exact `localhost` or literal loopback hosts. Saved-plan recovery
@@ -92,3 +97,24 @@ requests retain their existing interpretation.
 This normal-view language rule also covers optional authoring controls and installation recovery
 alerts: they name the task and the next action, while diagnostic identifiers stay inside closed
 Technical details.
+
+## Decision update — 2026-09-16 inline variables beside passages (Tines/554)
+
+Owned-workflow Customize authors variables beside each passage. A field workbench toggles Edit and
+Preview, retains the selection and text across the toggle, and offers Make variable on the selected
+range: the compact form atomically creates or reuses a declaration plus that exact text use, and
+Done/Cancel return focus to the occurrence. Sample values are ephemeral, use the installer's
+canonical substitution, and never enter drafts, downloads, public views or installs. Unsaved
+passage text and open variable forms are bound edits: they invalidate proof and reviews and block
+rebuild, file checks and Preview. The declaration inventory keeps declaration-only creation,
+zero-use variables, selection and editing, and has no global field selector or replacement action.
+
+## Decision update — 2026-09-19 publisher completion receipt (Tines/556)
+
+A confirmed owned-workflow publication replaces its review controls with a terminal share receipt.
+The server-returned public URL is authoritative for the readonly share field, one-click Copy action,
+selectable clipboard fallback, and public Preview; no render, copy, theme, or timer event republishes
+the candidate. The focused responsive receipt names the frozen workflow and public visibility, while
+reduced motion skips its opacity-only entrance. A lost-response or other recoverable failure keeps
+the same candidate and confirmation behind Retry. Leaving through the workflow and explicitly
+publishing a revision prepares a new candidate and stable URL; the prior public bytes never change.

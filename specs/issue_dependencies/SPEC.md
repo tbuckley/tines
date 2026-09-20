@@ -19,7 +19,11 @@ Links are advisory, not gates — a blocked issue can still be started or closed
 - **Other relation kinds**: no "relates to", no parent/child, no epics. The schema leaves room (a `kind` column) but only `blocks` and `duplicate_of` exist.
 - **A `blocked` filter**: only `ready` ships now; a symmetric "show blocked" filter is an easy follow-up.
 - **Cross-user links**: everything remains user-scoped; you can only link issues you own (cross-project is fine, cross-user is a 404 like every other cross-user reference).
-- **Bulk operations**: links are created and removed one at a time.
+- **Bulk operations**: links are created and removed one at a time, except that issue creation may declare its initial `blocked_by[]`, `blocks[]`, and singular `duplicate_of` relationships.
+
+### Amendment — initial relationships (2026-09-19)
+
+`POST /api/v1/projects/:projectId/issues` accepts issue IDs in `blocked_by[]`, `blocks[]`, and `duplicate_of`. The create batch evaluates candidates in that order against the stored graph plus earlier candidates, using the same ownership, archive, exact-duplicate, outgoing-duplicate, and commit-time cycle rules as the one-link endpoint. The issue, schedule, labels, initial artifacts, links, and all events commit together or not at all. A rejected prospective issue uses its next-number candidate in `link_cycle` diagnostics; that number is not reserved. CLI flags `--blocked-by` and `--blocks` are repeatable and `--duplicate-of` is singular. Recurring instances do not copy these relationships.
 
 ## Concepts
 
@@ -43,6 +47,8 @@ Reads stay defensive anyway: every traversal (duplicate resolution, readiness, c
 The preceding tolerance for a theoretical concurrent-write race is superseded. Acyclicity is a commit-time invariant for API-created links, including concurrent additions with disjoint endpoint pairs. The authoritative `INSERT` performs account-scoped recursive reachability inside the same D1 batch as the link and its two events. Events are conditional on that request's fresh link ID. A skipped insert is classified from an in-batch receipt; cycle diagnostics use an in-batch edge/ref snapshot, so the losing request reports the canonical closed path even if a later removal changes the graph. Concurrent additions whose union remains acyclic both commit; no graph revision or logical retry is involved. Defensive read caps and visited sets remain for legacy or out-of-band corruption.
 
 ### Effective state (duplicate passthrough)
+
+**2026-09-19 amendment — duplicate list visibility.** Ordinary API, CLI, and web issue lists now hide every issue with an outgoing `duplicate_of` link by default. Callers can explicitly include them with `hide_duplicates=false`, CLI `--show-duplicates`, or the web **Show duplicates** filter. Filtering still uses the effective state when duplicates are included, while direct detail reads and relationship/context selectors continue to reach duplicates. This supersedes the unconditional list visibility described below and in acceptance criterion 2; the effective-state, chain-resolution, and readiness rules are unchanged.
 
 An issue's **effective state** is its own state unless it has a `duplicate_of` edge, in which case it is the effective state of its canonical issue — i.e. the state of the duplicate chain's terminus. Because chains are acyclic and each issue has at most one outgoing duplicate edge, the terminus is unique.
 

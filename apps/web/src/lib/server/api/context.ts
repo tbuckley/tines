@@ -11,6 +11,11 @@ import {
 	SKILL_MAX_FILES,
 	SKILL_MAX_TOTAL_BYTES,
 	SKILL_NAME_PATTERN,
+	ENV_NAME_PATTERN,
+	ENV_VALUE_MAX_BYTES,
+	ENV_HINT_MAX_CHARS,
+	ENV_RESERVED_PREFIX,
+	ENV_RESERVED_NAMES,
 	type AppendContextRequest,
 	type ArchivedFilter,
 	type Artifact,
@@ -28,6 +33,7 @@ import {
 	type EffectiveJournalTarget,
 	type EffectivePromptPart,
 	type EffectiveRepo,
+	type EffectiveEnv,
 	type EffectiveSkill,
 	type SinceLastRun,
 	type IssueDetail,
@@ -49,9 +55,11 @@ import {
 	requireString,
 	runAtomic,
 	type ActorContext,
+	runKeyForbidden,
 	type Page
 } from './core';
 import { artifactTypeOf } from './artifacts';
+import { decryptSecret, encryptSecret, sha256Hex } from '../crypto';
 import { assertScopeWritable } from './archive';
 import { eventInsert } from './events';
 import { substringMatch } from './search';
@@ -86,6 +94,24 @@ function validateName(kind: ContextKind, value: unknown): string {
 		throw new ApiFail(422, 'invalid_field', '"name" must be non-empty and at most 100 characters', {
 			field: 'name'
 		});
+	}
+	if (kind === 'env') {
+		if (!ENV_NAME_PATTERN.test(name)) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`Env item names are environment variable names ([A-Z_][A-Z0-9_]*); got "${name}"`,
+				{ field: 'name' }
+			);
+		}
+		if (name.startsWith(ENV_RESERVED_PREFIX) || ENV_RESERVED_NAMES.includes(name)) {
+			throw new ApiFail(
+				422,
+				'reserved_name',
+				`"${name}" is reserved: the runner owns ${ENV_RESERVED_PREFIX}* and ${ENV_RESERVED_NAMES.join(', ')}`,
+				{ field: 'name', reserved: true }
+			);
+		}
 	}
 	if ((kind === 'skill' || kind === 'artifact') && !SKILL_NAME_PATTERN.test(name)) {
 		throw new ApiFail(
@@ -192,7 +218,8 @@ const KIND_FIELDS: Record<ContextKind, readonly string[]> = {
 	repo: ['repo_url', 'repo_branch', 'repo_dir'],
 	// Artifact payloads (versions) never ride the generic context endpoints;
 	// they go through the dedicated artifact routes only.
-	artifact: []
+	artifact: [],
+	env: ['value', 'secret', 'hint']
 };
 const ALL_PAYLOAD_FIELDS = [...new Set(Object.values(KIND_FIELDS).flat())];
 
@@ -208,6 +235,115 @@ function rejectForeignPayload(kind: ContextKind, body: Record<string, unknown>) 
 			{ kind, rejected_fields: foreign, allowed_fields: [...KIND_FIELDS[kind]] }
 		);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Env payloads
+
+/** The validated shape of an env write, before encryption. */
+export interface EnvPayload {
+	/** Plaintext value; null when an update leaves the stored value alone. */
+	value: string | null;
+	secret: boolean;
+	hint: string | null;
+}
+
+function validateEnvValue(value: unknown, secret: boolean): string {
+	if (typeof value !== 'string') {
+		throw new ApiFail(422, 'invalid_field', '"value" must be a string', { field: 'value' });
+	}
+	const v = value;
+	if (v.includes('\0')) {
+		throw new ApiFail(422, 'invalid_field', 'Environment values cannot contain NUL bytes', {
+			field: 'value'
+		});
+	}
+	if (byteLength(v) > ENV_VALUE_MAX_BYTES) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			`"value" exceeds ${ENV_VALUE_MAX_BYTES} bytes (UTF-8)`,
+			{ field: 'value', max_bytes: ENV_VALUE_MAX_BYTES }
+		);
+	}
+	if (secret && v.length === 0) {
+		throw new ApiFail(422, 'invalid_field', 'A secret env item needs a non-empty value', {
+			field: 'value'
+		});
+	}
+	return v;
+}
+
+function validateEnvHint(value: unknown): string | null {
+	if (value === undefined || value === null) return null;
+	if (typeof value !== 'string') {
+		throw new ApiFail(422, 'invalid_field', '"hint" must be a string', { field: 'hint' });
+	}
+	const hint = value.trim();
+	if (hint.length > ENV_HINT_MAX_CHARS) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			`"hint" must be at most ${ENV_HINT_MAX_CHARS} characters`,
+			{ field: 'hint' }
+		);
+	}
+	return hint.length === 0 ? null : hint;
+}
+
+/**
+ * Validates an env create (no `existing`) or merge-patch (`existing` = the
+ * stored row). `secret: false` on a stored secret is irreversible — the
+ * plaintext is not recoverable into a public field; delete and recreate.
+ */
+export function validateEnvPayload(
+	body: { value?: unknown; secret?: unknown; hint?: unknown },
+	existing?: { secret: boolean; hint: string | null }
+): EnvPayload {
+	if (body.secret !== undefined && typeof body.secret !== 'boolean') {
+		throw new ApiFail(422, 'invalid_field', '"secret" must be a boolean', { field: 'secret' });
+	}
+	if (body.value === null) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'An env item always has a value; delete the item to unset the variable',
+			{ field: 'value' }
+		);
+	}
+	const secret = body.secret === undefined ? (existing?.secret ?? false) : body.secret;
+	if (existing?.secret && secret === false) {
+		throw new ApiFail(
+			422,
+			'secret_irreversible',
+			'A secret env item cannot be made non-secret; delete it and create a public item instead',
+			{ field: 'secret' }
+		);
+	}
+	let value: string | null = null;
+	if (body.value !== undefined) value = validateEnvValue(body.value, secret);
+	else if (!existing) {
+		throw new ApiFail(422, 'invalid_field', 'An env item requires a "value"', { field: 'value' });
+	}
+	const hint = body.hint === undefined ? (existing?.hint ?? null) : validateEnvHint(body.hint);
+	return { value, secret, hint };
+}
+
+/** 503 when a secret is requested and the Worker cannot encrypt it. */
+function encryptionKeyOr503(env: Env): string {
+	if (!env.SECRET_ENCRYPTION_KEY) {
+		throw new ApiFail(
+			503,
+			'encryption_unavailable',
+			'SECRET_ENCRYPTION_KEY is not configured on this deployment; secret env items cannot be stored'
+		);
+	}
+	return env.SECRET_ENCRYPTION_KEY;
+}
+
+/** Env items are a write only a human (or a user API key) may make: a run key cannot plant variables for later runs. */
+function fenceRunKeyEnvWrite(actor: ActorContext, kind: string) {
+	if (kind === 'env' && actor.agentRunId) throw runKeyForbidden({ reason: 'env_context' });
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +431,15 @@ function serializeItem(row: ItemRow, files?: ContextFile[]): ContextItem {
 	// Artifacts: payload summarized — versions/contents live on the
 	// dedicated artifact endpoints.
 	if (kind === 'artifact') item.artifact_type = artifactTypeOf(row.config);
+	// Env: this is the only serializer behind every item read, so the
+	// secret gate lives here — a secret's value never leaves the row.
+	if (kind === 'env') {
+		const secret = row.env_value_enc !== null && row.env_value_enc !== undefined;
+		item.secret = secret;
+		item.value_set = true;
+		item.hint = row.env_hint ?? null;
+		if (!secret) item.value = row.env_value ?? '';
+	}
 	return item;
 }
 
@@ -693,10 +838,13 @@ export function validateContextCreateFields(body: CreateContextItemRequest) {
 	let repoUrl: string | null = null;
 	let repoBranch: string | null = null;
 	let repoDir: string | null = null;
+	let envPayload: EnvPayload | null = null;
 	if (kind === 'prompt') {
 		promptBody = validatePromptBody(body.body);
 	} else if (kind === 'skill') {
 		files = validateFiles(body.files ?? []);
+	} else if (kind === 'env') {
+		envPayload = validateEnvPayload(body);
 	} else {
 		repoUrl = requireString(body.repo_url, 'repo_url', { max: 1000 }).trim();
 		repoBranch = optionalString(body.repo_branch, 'repo_branch', { max: 200 })?.trim() || null;
@@ -706,7 +854,19 @@ export function validateContextCreateFields(body: CreateContextItemRequest) {
 				: validateWorkspacePath(body.repo_dir, 'repo_dir');
 	}
 
-	return { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir };
+	return {
+		kind,
+		name,
+		description,
+		promptBody,
+		files,
+		repoUrl,
+		repoBranch,
+		repoDir,
+		envPayload,
+		/** Set by `createContextItem` once a secret value has been encrypted. */
+		envValueEnc: null as string | null
+	};
 }
 
 /** Validated ordinary payload plus a resolved prospective scope. No writes or lookups. */
@@ -726,6 +886,9 @@ export function contextItemInsertQueries(
 ): CompiledQuery[] {
 	const { id, fields, scope, position, now } = options;
 	const { kind, name, description, promptBody, files, repoUrl, repoBranch, repoDir } = fields;
+	const envPayload = fields.envPayload ?? null;
+	if (envPayload?.secret && !fields.envValueEnc)
+		throw new Error('A secret env item must be encrypted before insert');
 	if (options.fileIds && options.fileIds.length !== files.length)
 		throw new Error('Context file ID allocation must match the validated files');
 	return [
@@ -746,6 +909,9 @@ export function contextItemInsertQueries(
 				repo_url: repoUrl,
 				repo_branch: repoBranch,
 				repo_dir: repoDir,
+				env_value: envPayload && !envPayload.secret ? envPayload.value : null,
+				env_value_enc: envPayload?.secret ? fields.envValueEnc : null,
+				env_hint: envPayload?.hint ?? null,
 				position,
 				version: 1,
 				created_at: now,
@@ -791,6 +957,13 @@ export async function createContextItem(
 ): Promise<ContextItem> {
 	const fields = validateContextCreateFields(body);
 	const { kind, name } = fields;
+	fenceRunKeyEnvWrite(actor, kind);
+	if (fields.envPayload?.secret) {
+		fields.envValueEnc = await encryptSecret(
+			fields.envPayload.value ?? '',
+			encryptionKeyOr503(env)
+		);
+	}
 
 	const scope = await resolveScope(db, actor.userId, {
 		projectId: body.project_id ?? null,
@@ -868,6 +1041,7 @@ export async function updateContextItem(
 	if (!row) throw notFound();
 	await assertScopeWritable(db, actor, rowScope(row));
 	const kind = row.kind as ContextKind;
+	fenceRunKeyEnvWrite(actor, kind);
 
 	if (body.expected_version !== undefined && body.expected_version !== row.version) {
 		throw versionConflict(row);
@@ -949,6 +1123,39 @@ export async function updateContextItem(
 	}
 	let files: ContextFile[] | undefined;
 	if (kind === 'skill' && body.files !== undefined) files = validateFiles(body.files);
+	let envValue = row.env_value;
+	let envValueEnc = row.env_value_enc;
+	let envHint = row.env_hint;
+	const envChanged: string[] = [];
+	if (
+		kind === 'env' &&
+		(body.value !== undefined || body.secret !== undefined || body.hint !== undefined)
+	) {
+		const wasSecret = row.env_value_enc !== null;
+		const next = validateEnvPayload(body, { secret: wasSecret, hint: row.env_hint });
+		if (next.hint !== row.env_hint) envChanged.push('hint');
+		if (next.secret && !wasSecret) envChanged.push('secret');
+		if (next.value !== null) {
+			// A public value is comparable; a secret replacement always counts.
+			if (next.secret || next.value !== row.env_value) envChanged.push('value');
+		}
+		if (next.value !== null || next.secret !== wasSecret) {
+			const plaintext = next.value ?? row.env_value ?? '';
+			if (next.secret) {
+				if (plaintext.length === 0) {
+					throw new ApiFail(422, 'invalid_field', 'A secret env item needs a non-empty value', {
+						field: 'value'
+					});
+				}
+				envValueEnc = await encryptSecret(plaintext, encryptionKeyOr503(env));
+				envValue = null;
+			} else {
+				envValue = plaintext;
+				envValueEnc = null;
+			}
+		}
+		envHint = next.hint;
+	}
 
 	// Position: re-scoping re-appends at the end of the target scope's
 	// sequence; an explicit position (with or without a re-scope) wins.
@@ -975,6 +1182,8 @@ export async function updateContextItem(
 		if (repoBranch !== row.repo_branch) changed.push('repo_branch');
 		if (repoDir !== row.repo_dir) changed.push('repo_dir');
 	}
+	// Env: field names only — the event never carries a value.
+	changed.push(...envChanged);
 
 	const payload: Record<string, unknown> = { context_id: id, kind, name, changed };
 	if (name !== row.name) payload.renamed = { from: row.name, to: name };
@@ -1027,6 +1236,9 @@ export async function updateContextItem(
 				repo_url: repoUrl,
 				repo_branch: repoBranch,
 				repo_dir: repoDir,
+				env_value: envValue,
+				env_value_enc: envValueEnc,
+				env_hint: envHint,
 				position,
 				version: newVersion,
 				updated_at: now
@@ -1089,6 +1301,7 @@ export async function deleteContextItem(
 		.where('context_item.id', '=', id)
 		.executeTakeFirst();
 	if (!row) throw notFound();
+	fenceRunKeyEnvWrite(actor, row.kind);
 	const scope = rowScope(row);
 	await assertScopeWritable(db, actor, scope);
 	await runAtomic(env, [
@@ -1733,6 +1946,22 @@ export async function effectiveContextForTarget(
 		rows.filter((r) => r.kind === 'repo'),
 		leafStateId
 	);
+	const envDedupe = dedupeByName(
+		rows.filter((r) => r.kind === 'env'),
+		leafStateId
+	);
+	const envEntries: EffectiveEnv[] = envDedupe.winners.map((r) => {
+		const secret = r.env_value_enc !== null && r.env_value_enc !== undefined;
+		return {
+			item_id: r.id,
+			name: r.name,
+			secret,
+			hint: r.env_hint ?? null,
+			...(secret ? {} : { value: r.env_value ?? '' }),
+			...describeRow(r, leafStateId),
+			version: r.version
+		};
+	});
 
 	const fileMap = skillFiles
 		? await loadFiles(
@@ -1773,9 +2002,69 @@ export async function effectiveContextForTarget(
 		prompt: { text, parts, journal: await journalTarget(db, rows, target) },
 		skills,
 		repos,
-		overridden: [...skillDedupe.overridden, ...repoDedupe.overridden],
+		env: envEntries,
+		overridden: [...skillDedupe.overridden, ...repoDedupe.overridden, ...envDedupe.overridden],
 		conflicts
 	};
+}
+
+/** One resolved env variable with its plaintext — server-internal only. */
+export interface ResolvedEnvEntry {
+	name: string;
+	value: string;
+	secret: boolean;
+	itemId: string;
+	version: number;
+}
+
+/**
+ * The env variables a run of this issue receives, decrypted. Never reaches a
+ * route: only the runner poll (`runner-protocol.ts`) and the managed-runner
+ * adapters call it, and both hand the values straight to the harness side.
+ * A decrypt failure (rotated key) names the item, never the ciphertext.
+ */
+export async function resolvedEnvForIssue(
+	db: Kysely<Database>,
+	env: Env,
+	userId: string,
+	issueId: string
+): Promise<ResolvedEnvEntry[]> {
+	const target = await issueMatchTarget(db, userId, issueId);
+	const leafStateId = target.stateChain[target.stateChain.length - 1];
+	const rows = sortMatched(
+		await matchingItemsQuery(db, userId, target).execute(),
+		target.stateChain
+	);
+	const { winners } = dedupeByName(
+		rows.filter((r) => r.kind === 'env'),
+		leafStateId
+	);
+	const out: ResolvedEnvEntry[] = [];
+	for (const r of winners) {
+		let value: string;
+		const secret = r.env_value_enc !== null && r.env_value_enc !== undefined;
+		if (secret) {
+			try {
+				value = await decryptSecret(r.env_value_enc ?? '', encryptionKeyOr503(env));
+			} catch (e) {
+				throw new Error(
+					`Cannot decrypt secret env item "${r.name}" (${r.id}): ${e instanceof Error ? e.message : String(e)}`
+				);
+			}
+		} else {
+			value = r.env_value ?? '';
+		}
+		out.push({ name: r.name, value, secret, itemId: r.id, version: r.version });
+	}
+	return out;
+}
+
+/** Value-independent digest of an env set: names, item ids, versions, secrecy. */
+export async function envDigest(entries: ResolvedEnvEntry[]): Promise<string> {
+	const tuples = entries
+		.map((e) => `${e.name}:${e.itemId}:${e.version}:${e.secret ? 1 : 0}`)
+		.sort();
+	return sha256Hex(tuples.join('\n'));
 }
 
 /**
@@ -1843,7 +2132,8 @@ export async function contextSummaryForIssue(
 		repos: new Set(rows.filter((r) => r.kind === 'repo').map((r) => r.name)).size,
 		// Artifacts are issue-scoped by construction, so the matching rows are
 		// exactly this issue's attachments (a badge count, not effective context).
-		artifacts: rows.filter((r) => r.kind === 'artifact').length
+		artifacts: rows.filter((r) => r.kind === 'artifact').length,
+		envs: new Set(rows.filter((r) => r.kind === 'env').map((r) => r.name)).size
 	};
 }
 
@@ -2206,6 +2496,15 @@ export function issueBlock(
 			`Attached to this issue: ${artifacts.join(', ')}. Fetch them: \`tines issues context ${ref} --out <dir>\``
 		);
 	}
+	// Names only: values (and hints) never enter the prompt.
+	if ((context.env ?? []).length > 0) {
+		lines.push(
+			'',
+			`Environment variables set for this run: ${context.env
+				.map((e) => `\`${e.name}\`${e.secret ? ' (secret)' : ''}`)
+				.join(', ')}.`
+		);
+	}
 	const shared = context.prompt.parts.filter((p) => !p.is_journal && p.scope.issue_id === null);
 	if (shared.length > 0) {
 		lines.push(
@@ -2324,6 +2623,8 @@ export function sweepAttachedContext(
 			{ context_items: items.map(toDeleted) }
 		);
 	}
+	// Apply the same write boundary as direct deletion before building any cascade.
+	for (const item of items) fenceRunKeyEnvWrite(actor, item.kind);
 	const queries = items.flatMap((item) => [
 		db.deleteFrom('context_item_file').where('context_item_id', '=', item.id).compile(),
 		db.deleteFrom('context_item').where('id', '=', item.id).compile(),

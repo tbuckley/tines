@@ -404,6 +404,7 @@ export function scheduleInsertQueries(
 		now: number;
 		mode?: 'paused' | 'initial-issue';
 		guard?: QueryGuard;
+		eventGuard?: QueryGuard;
 		eventId?: string;
 	}
 ): [CompiledQuery, CompiledQuery] {
@@ -452,7 +453,7 @@ export function scheduleInsertQueries(
 					...(!initial ? { enabled: false, initial_issue_created: false } : {})
 				}
 			},
-			options.guard
+			options.eventGuard ?? options.guard
 		)
 	];
 }

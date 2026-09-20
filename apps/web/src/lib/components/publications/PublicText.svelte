@@ -9,18 +9,31 @@
 		linkMode = 'confirm',
 		format = 'markdown',
 		uses = [],
+		labelImages = false,
 		occurrenceScope,
-		onToken
+		onToken,
+		tokenDetails
 	}: {
 		source: string;
 		maxWords?: number;
 		linkMode?: 'confirm' | 'inert';
 		format?: 'markdown' | 'text';
 		uses?: PublicTextUse[];
+		labelImages?: boolean;
 		occurrenceScope?: string;
 		onToken?: (inputId: string, useId: string, trigger: HTMLElement) => void;
+		tokenDetails?: (
+			inputId: string,
+			useId: string,
+			occurrenceId: string
+		) => {
+			text: string;
+			label: string;
+			count: number;
+			changed?: boolean;
+		};
 	} = $props();
-	const fullBlocks = $derived(publicTextModel(source, { format, uses }));
+	const fullBlocks = $derived(publicTextModel(source, { format, uses, labelImages }));
 	const blocks = $derived(maxWords ? truncatePublicTextModel(fullBlocks, maxWords) : fullBlocks);
 	let destination = $state<string | null>(null);
 	let destinationOpen = $state(false);
@@ -43,6 +56,7 @@
 					{occurrenceScope}
 					onlink={confirmDestination}
 					ontoken={onToken}
+					{tokenDetails}
 				/>
 			</div>
 		{:else if block.kind === 'paragraph'}
@@ -57,17 +71,21 @@
 					{occurrenceScope}
 					onlink={confirmDestination}
 					ontoken={onToken}
+					{tokenDetails}
 				/>
 			</p>
 		{:else if block.kind === 'code'}
 			<pre
-				class="bg-muted max-w-full overflow-x-auto rounded p-3 font-mono text-xs whitespace-pre-wrap"><PublicTextSpans
-					spans={block.spans}
-					{linkMode}
-					{occurrenceScope}
-					onlink={confirmDestination}
-					ontoken={onToken}
-				/></pre>
+				class="bg-muted max-w-full overflow-x-auto rounded p-3 font-mono text-xs whitespace-pre-wrap"><code
+					><PublicTextSpans
+						spans={block.spans}
+						{linkMode}
+						{occurrenceScope}
+						onlink={confirmDestination}
+						ontoken={onToken}
+						{tokenDetails}
+					/></code
+				></pre>
 		{:else if block.kind === 'list_item'}
 			<div class="flex gap-2" style:padding-left="{block.depth * 1.25}rem">
 				<span aria-hidden="true">{block.ordered ? `${block.index}.` : '•'}</span><span
@@ -77,6 +95,7 @@
 						{occurrenceScope}
 						onlink={confirmDestination}
 						ontoken={onToken}
+						{tokenDetails}
 					/></span
 				>
 			</div>
@@ -94,6 +113,7 @@
 												{occurrenceScope}
 												onlink={confirmDestination}
 												ontoken={onToken}
+												{tokenDetails}
 											/></th
 										>{:else}<td class="border p-2 break-words"
 											><PublicTextSpans
@@ -102,6 +122,7 @@
 												{occurrenceScope}
 												onlink={confirmDestination}
 												ontoken={onToken}
+												{tokenDetails}
 											/></td
 										>{/if}{/each}</tr
 							>{/each}</tbody

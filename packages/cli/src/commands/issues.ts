@@ -255,12 +255,13 @@ export function register(program: Command): void {
 	withList(
 		issues
 			.command('list')
-			.description('List issues across projects (hides done issues unless --all)')
+			.description('List issues across projects (hides done and duplicate issues unless included)')
 			.option('-p, --project <name>', 'filter by project name or id')
 			.option('-s, --state <name>', 'filter by state name or id')
 			.option('-c, --category <cat>', 'filter by state category')
 			.option('-w, --workflow <id-or-name>', 'filter by workflow')
 			.option('-a, --all', 'include issues in done states')
+			.option('--show-duplicates', 'include issues marked as duplicates')
 			.option(
 				'--ready',
 				'only issues that are actionable now (not done, not a duplicate, no open blockers)'
@@ -276,6 +277,7 @@ export function register(program: Command): void {
 				category?: StateCategory;
 				workflow?: string;
 				all?: boolean;
+				showDuplicates?: boolean;
 				ready?: boolean;
 				search?: string;
 				label?: string[];
@@ -290,6 +292,7 @@ export function register(program: Command): void {
 					category: opts.category,
 					workflow: opts.workflow,
 					hide_done: !opts.all,
+					hide_duplicates: !opts.showDuplicates,
 					ready: opts.ready,
 					q: opts.search,
 					label: opts.label,
@@ -382,6 +385,9 @@ export function register(program: Command): void {
 				collect,
 				[]
 			)
+			.option('--blocked-by <ref>', 'issue that blocks the new issue; repeatable', collect, [])
+			.option('--blocks <ref>', 'issue that the new issue blocks; repeatable', collect, [])
+			.option('--duplicate-of <ref>', 'canonical issue that the new issue duplicates')
 	).action(
 		async (
 			projectRef: string,
@@ -394,6 +400,9 @@ export function register(program: Command): void {
 					ifClosed?: boolean;
 					scheduleName?: string;
 					label?: string[];
+					blockedBy?: string[];
+					blocks?: string[];
+					duplicateOf?: string;
 				}
 		) => {
 			// Resolved before any lookup, like the <markdown> positionals: an
@@ -416,13 +425,25 @@ export function register(program: Command): void {
 						require_all_closed: opts.ifClosed ?? false
 					}
 				: undefined;
+			const blockedBy = await Promise.all(
+				(opts.blockedBy ?? []).map(async (ref) => (await resolveIssue(api, ref)).id)
+			);
+			const blocks = await Promise.all(
+				(opts.blocks ?? []).map(async (ref) => (await resolveIssue(api, ref)).id)
+			);
+			const duplicateOf = opts.duplicateOf
+				? (await resolveIssue(api, opts.duplicateOf)).id
+				: undefined;
 			const issue = await api.createIssue(project.id, {
 				title: opts.title,
 				description,
 				workflow_id: workflowId,
 				state: opts.state,
 				schedule,
-				labels: opts.label
+				labels: opts.label,
+				...(blockedBy.length > 0 ? { blocked_by: blockedBy } : {}),
+				...(blocks.length > 0 ? { blocks } : {}),
+				...(duplicateOf ? { duplicate_of: duplicateOf } : {})
 			});
 			if (opts.json) return printJson(issue);
 			console.log(
@@ -795,6 +816,9 @@ export function register(program: Command): void {
 			if (context.prompt.text) console.log(context.prompt.text);
 			if (context.skills.length > 0) {
 				console.log(`\nskills: ${context.skills.map((s) => s.name).join(', ')}`);
+			}
+			for (const e of context.env ?? []) {
+				console.log(`env: ${e.name}${e.secret ? ' (secret)' : ''}`);
 			}
 			for (const repo of context.repos) {
 				console.log(
