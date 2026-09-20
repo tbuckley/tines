@@ -49,7 +49,7 @@
 					{#each context.skills as skill (skill.item_id)}
 						<li class="flex items-center gap-2 text-sm" transition:slide={{ duration: dur() }}>
 							<span class="text-muted-foreground"><ContextKindIcon kind="skill" size={14} /></span>
-							<span class="font-mono text-xs">skills/{skill.name}/</span>
+							<span class="font-mono text-xs">.agents/skills/{skill.name}/</span>
 							<span class="text-muted-foreground text-xs">
 								{skill.file_count} file{skill.file_count === 1 ? '' : 's'}
 							</span>

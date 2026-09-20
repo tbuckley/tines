@@ -826,6 +826,7 @@ async function deliverAssignedRun(
 			runnerName: runner.name,
 			issueRef,
 			timeoutMinutes: runner.max_run_minutes,
+			skills: bundle.skills.map(({ name, description }) => ({ name, description })),
 			previousRunId: resume.previous_run_id
 		});
 		return {
@@ -858,7 +859,8 @@ async function deliverAssignedRun(
 		runId: run.id,
 		runnerName: runner.name,
 		issueRef,
-		timeoutMinutes: runner.max_run_minutes
+		timeoutMinutes: runner.max_run_minutes,
+		skills: bundle.skills.map(({ name, description }) => ({ name, description }))
 	});
 	return {
 		run: await serializedRun(db, run.user_id, run.id),

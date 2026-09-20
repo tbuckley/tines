@@ -440,6 +440,8 @@ From the spec review (adversarial pass, findings triaged with the user):
 
 From later work:
 
+- **2026-09-20, Tines/642 — local skill discovery is generated and resume-aware**: this supersedes the original local `skills/…` workspace and shared catalog decisions. Cold and resumed local launches replace only `.agents/skills` with the current effective set; retained repositories and edits survive. Local preambles use a count-only discovery/recovery cue. Managed Claude still receives current names and normalized descriptions plus the concrete context fetch command because its workspace does not seed skill files; on resume that current list replaces prior lists and cached copies.
+
 - **2026-09-05, Tines/169 — the run-key fence is per method, not per path**: the fence entries gained an optional `readable` flag (GET/HEAD pass; default is still every method fenced, so a forgotten flag fails closed), and the label library — fenced wholesale when labels shipped — is the one entry that sets it. Reading the vocabulary is classification, which is exactly what agents are asked to do; minting, renaming, and deleting terms is taxonomy and stays fenced. The launch prompt already points agents at `tines labels list` when the library is too large to inline, and label *names* were reachable anyway via the unfenced `GET /issues/:id/prompt` — only each label's `description` was genuinely unreachable. Every other fenced surface, `GET /api/v1/api-keys` included, stays closed to reads; opening those is Tines/93's call, now a flag per entry.
 
 ### Issue transfer and the claim fence (Tines/392)

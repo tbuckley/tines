@@ -862,6 +862,20 @@ describe('pollRunner', () => {
 		const t = world();
 		const runnerId = addRunner(t, { name: 'laptop-m4' });
 		const issue = addIssue(t);
+		t.sqlite
+			.prepare(
+				`INSERT INTO context_item
+					(id, user_id, kind, name, description, position, version, created_at, updated_at)
+				 VALUES ('ctx_skill', ?, 'skill', 'review-checklist', 'Check before review.', 0, 1, 0, 0)`
+			)
+			.run(USER);
+		t.sqlite
+			.prepare(
+				`INSERT INTO context_item_file
+					(id, context_item_id, path, content, created_at, updated_at)
+				 VALUES ('ctx_skill_file', 'ctx_skill', 'SKILL.md', 'SECRET SKILL BODY', 0, 0)`
+			)
+			.run();
 		const runId = addRun(t, { issueId: issue, runnerId });
 
 		const { response } = await pollRunner(
@@ -882,6 +896,11 @@ describe('pollRunner', () => {
 		expect(a.prompt).toContain(`This is run ${runId} on runner "laptop-m4" for issue demo/`);
 		expect(a.prompt).toContain('TINES_API_KEY');
 		expect(a.prompt).toContain('## Issue: demo/');
+		expect(a.prompt).toContain('1 skill is attached at `.agents/skills`');
+		expect(a.prompt).not.toContain('review-checklist');
+		expect(a.prompt).not.toContain('Check before review.');
+		expect(a.prompt).not.toContain('SECRET SKILL BODY');
+		expect(a.bundle.skills.map((skill) => skill.name)).toEqual(['review-checklist']);
 		expect(a.bundle.repos).toEqual([]);
 		// The run key is live, bound to the run, and hashed at rest.
 		expect(a.run_key).toMatch(/^tines_/);

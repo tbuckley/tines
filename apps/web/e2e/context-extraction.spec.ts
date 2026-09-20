@@ -331,11 +331,11 @@ test('four scoped extractions execute destination-first and retain sources on ev
 
 		const exportDir = mkdtempSync(join(tmpdir(), `tines-528-${caseId}-`));
 		cli(['issues', 'context', `${project.name}/${issue.number}`, '--out', exportDir]);
-		expect(readFileSync(join(exportDir, 'skills/planning-procedures/SKILL.md'), 'utf8')).toBe(
-			skillBody
-		);
+		expect(
+			readFileSync(join(exportDir, '.agents/skills/planning-procedures/SKILL.md'), 'utf8')
+		).toBe(skillBody);
 		record(caseId, 'fresh_directory_export', 'ok', {
-			path: 'skills/planning-procedures/SKILL.md',
+			path: '.agents/skills/planning-procedures/SKILL.md',
 			body: skillBody
 		});
 		const neededReads: string[] = ['effective-context'];
@@ -344,10 +344,13 @@ test('four scoped extractions execute destination-first and retain sources on ev
 			return readFileSync(join(exportDir, relative), 'utf8');
 		};
 		expect(winner.description).toBe(READ_CONDITION[caseId]);
-		const neededSkill = neededRead('skills/planning-procedures/SKILL.md');
+		const neededSkill = neededRead('.agents/skills/planning-procedures/SKILL.md');
 		const plan = planningProcedure(caseId as ExtractionCase, neededSkill);
 		expect(plan).toEqual(expectedPlanningProcedure(caseId as ExtractionCase));
-		expect(neededReads).toEqual(['effective-context', 'skills/planning-procedures/SKILL.md']);
+		expect(neededReads).toEqual([
+			'effective-context',
+			'.agents/skills/planning-procedures/SKILL.md'
+		]);
 		record(caseId, 'needed_task_runtime_read', 'ok', {
 			task: `${caseId} needs planning procedure`,
 			reads: neededReads,
@@ -503,14 +506,14 @@ test('four scoped extractions execute destination-first and retain sources on ev
 		});
 		const resumeExportDir = mkdtempSync(join(tmpdir(), `tines-528-resume-${caseId}-`));
 		cli(['issues', 'context', `${project.name}/${issue.number}`, '--out', resumeExportDir]);
-		expect(readFileSync(join(resumeExportDir, 'skills/planning-procedures/SKILL.md'), 'utf8')).toBe(
-			skillBody
-		);
+		expect(
+			readFileSync(join(resumeExportDir, '.agents/skills/planning-procedures/SKILL.md'), 'utf8')
+		).toBe(skillBody);
 		expect((await body<ContextItem>(await api.get(`/api/v1/context/${source.id}`))).body).toBe(
 			before
 		);
 		record(caseId, 'resume_fresh_directory_export', 'ok', {
-			path: 'skills/planning-procedures/SKILL.md'
+			path: '.agents/skills/planning-procedures/SKILL.md'
 		});
 
 		let applied: ContextItem;

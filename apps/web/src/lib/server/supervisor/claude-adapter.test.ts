@@ -231,7 +231,37 @@ describe('claude adapter launch', () => {
 	});
 
 	it('provisions lazily, delivers the key via a per-run vault, and caps the session', async () => {
-		const net = fakeNetwork();
+		const net = fakeNetwork({
+			'GET /api/v1/issues/iss_1/context': () => ({
+				prompt: { text: '', parts: [] },
+				skills: [
+					{
+						item_id: 'ctx_skill',
+						name: 'review-checklist',
+						description: ' Check the\n implementation   before review. ',
+						scope: {},
+						files: [{ path: 'SKILL.md', content: 'SECRET SKILL BODY' }],
+						file_count: 1,
+						version: 1,
+						inherited_from: null
+					}
+				],
+				repos: [
+					{
+						item_id: 'ctx_1',
+						name: 'web',
+						scope: {},
+						url: 'https://github.com/o/web',
+						branch: 'main',
+						dir: 'web',
+						version: 1
+					}
+				],
+				env: [],
+				overridden: [],
+				conflicts: []
+			})
+		});
 		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
 		const result = await adapter.launch(launchInput(runnerId));
 
@@ -291,6 +321,11 @@ describe('claude adapter launch', () => {
 		expect(events[0].content[0].text).toContain('# Supervisor run');
 		expect(events[0].content[0].text).toContain('demo/12');
 		expect(events[0].content[0].text).toContain('THE LAUNCH PROMPT');
+		expect(events[0].content[0].text).toContain(
+			'`review-checklist`: Check the implementation before review.'
+		);
+		expect(events[0].content[0].text).toContain('tines issues context demo/12 --json');
+		expect(events[0].content[0].text).not.toContain('SECRET SKILL BODY');
 		// The run key never appears in prompt text.
 		expect(events[0].content[0].text).not.toContain('tines_runkey_secret');
 
