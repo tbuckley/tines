@@ -36,10 +36,27 @@ async function selectRecoveryLabel(
 	dialog: import('@playwright/test').Locator
 ) {
 	await dialog.getByRole('button', { name: 'Add label' }).click();
+	const filter = page.getByRole('textbox', { name: 'Filter labels', exact: true });
+	await expect(filter).toBeFocused();
+	// Bits UI moves focus to the filter in a deferred frame. Let that lifecycle
+	// settle before focusing the option so it cannot reclaim focus before Enter.
+	await page.evaluate(
+		() =>
+			new Promise<void>((resolve) => {
+				requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+			})
+	);
+	await expect(filter).toBeFocused();
+	await filter.fill(recoveryLabel.name);
 	const option = page.getByRole('button', { name: recoveryLabel.name, exact: true });
-	await option.press('Enter');
+	await expect(option).toHaveAttribute('aria-pressed', 'false');
+	await option.focus();
+	await expect(option).toBeFocused();
+	await page.keyboard.press('Enter');
 	await expect(option).toHaveAttribute('aria-pressed', 'true');
 	await page.keyboard.press('Escape');
+	await expect(filter).toBeHidden();
+	await expect(dialog.getByText(recoveryLabel.name, { exact: true })).toBeVisible();
 }
 
 test.beforeAll(async ({ apiFor, uniqueName }) => {
