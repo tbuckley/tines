@@ -47,6 +47,112 @@ async function expandState(page: Page, name: string) {
 	return row;
 }
 
+type TransitionPhase = {
+	startedAt: number | null;
+	endedAt: number | null;
+	durations: number[];
+};
+
+type StateTransitionMotion = {
+	intro: TransitionPhase;
+	outro: TransitionPhase;
+};
+
+async function observeStateTransition(page: Page, name: string): Promise<void> {
+	await page.evaluate((stateName) => {
+		const motion: StateTransitionMotion = {
+			intro: { startedAt: null, endedAt: null, durations: [] },
+			outro: { startedAt: null, endedAt: null, durations: [] }
+		};
+		(window as unknown as { stateTransitionMotion: StateTransitionMotion }).stateTransitionMotion =
+			motion;
+
+		const matches = (event: Event): event is CustomEvent & { target: Element } =>
+			event.target instanceof Element &&
+			event.target.matches(`[role="region"][aria-label="Edit ${CSS.escape(stateName)} state"]`);
+		const start = (phase: TransitionPhase, event: Event) => {
+			if (!matches(event)) return;
+			phase.startedAt = performance.now();
+			const target = event.target;
+			requestAnimationFrame(() => {
+				phase.durations = target.getAnimations().flatMap((animation) => {
+					const duration = animation.effect?.getTiming().duration;
+					return typeof duration === 'number' ? [duration] : [];
+				});
+			});
+		};
+		const end = (phase: TransitionPhase, event: Event) => {
+			if (matches(event)) phase.endedAt = performance.now();
+		};
+
+		document.addEventListener('introstart', (event) => start(motion.intro, event), true);
+		document.addEventListener('introend', (event) => end(motion.intro, event), true);
+		document.addEventListener('outrostart', (event) => start(motion.outro, event), true);
+		document.addEventListener('outroend', (event) => end(motion.outro, event), true);
+	}, name);
+}
+
+const stateTransitionMotion = (page: Page) =>
+	page.evaluate(
+		() =>
+			(window as unknown as { stateTransitionMotion: StateTransitionMotion }).stateTransitionMotion
+	);
+
+async function moveWithAnimationProbe(page: Page, name: string, direction: 'up' | 'down') {
+	return page.evaluate(
+		async ({ stateName, moveDirection }) => {
+			const findRow = () =>
+				[...document.querySelectorAll<HTMLElement>('[data-state-row]')].find(
+					(row) => row.dataset.stateName === stateName
+				);
+			const row = findRow();
+			if (!row) throw new Error(`No state row named ${stateName}`);
+			const button = row.querySelector<HTMLButtonElement>(
+				`button[data-move-direction="${moveDirection}"]`
+			);
+			if (!button) throw new Error(`No ${moveDirection} button for ${stateName}`);
+
+			const before = row.getBoundingClientRect().top;
+			const positions = [before];
+			let duration = 0;
+			let sawAnimation = false;
+			let idleFrames = 0;
+			button.click();
+
+			for (let frame = 0; frame < 90; frame += 1) {
+				await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+				const movedRow = findRow();
+				if (!movedRow) throw new Error(`State row ${stateName} disappeared`);
+				positions.push(movedRow.getBoundingClientRect().top);
+				const animations = movedRow.getAnimations();
+				for (const animation of animations) {
+					const animationDuration = animation.effect?.getTiming().duration;
+					if (typeof animationDuration === 'number')
+						duration = Math.max(duration, animationDuration);
+				}
+				if (animations.some((animation) => ['pending', 'running'].includes(animation.playState))) {
+					sawAnimation = true;
+					idleFrames = 0;
+				} else {
+					idleFrames += 1;
+				}
+				if ((sawAnimation && idleFrames >= 2) || (!sawAnimation && idleFrames >= 3)) break;
+			}
+
+			return {
+				before,
+				duration,
+				positions,
+				final: findRow()!.getBoundingClientRect().top,
+				order: [...document.querySelectorAll<HTMLElement>('[data-state-row]')].map(
+					(candidate) => candidate.dataset.stateName
+				)
+			};
+		},
+		{ stateName: name, moveDirection: direction }
+	);
+}
+
 const previewGeometry = async (page: Page) => {
 	const region = page.getByRole('region', { name: 'Live preview' });
 	return region.evaluate((regionEl) => {
@@ -285,6 +391,67 @@ test('state rows summarize the workflow and expand one inline editor at a time',
 	const open = stateRow(page, 'Open');
 	await open.getByRole('button', { name: 'Collapse Open', exact: true }).click();
 	await expect(open.getByRole('button', { name: 'Edit Open state' })).toBeFocused();
+});
+
+test('state expansion, collapse, and reordering visibly animate when motion is enabled', async ({
+	page
+}) => {
+	await page.emulateMedia({ reducedMotion: 'no-preference' });
+	await gotoHydrated(page, `/workflows/${reorderWorkflowId}`);
+	await observeStateTransition(page, 'Open');
+
+	const open = stateRow(page, 'Open');
+	await open.getByRole('button', { name: 'Edit Open state' }).click();
+	await page.waitForFunction(
+		() =>
+			(window as unknown as { stateTransitionMotion: StateTransitionMotion }).stateTransitionMotion
+				.intro.endedAt !== null
+	);
+	await open.getByRole('button', { name: 'Collapse Open state' }).click();
+	await page.waitForFunction(
+		() =>
+			(window as unknown as { stateTransitionMotion: StateTransitionMotion }).stateTransitionMotion
+				.outro.endedAt !== null
+	);
+
+	const motion = await stateTransitionMotion(page);
+	expect(Math.max(0, ...motion.intro.durations)).toBeGreaterThanOrEqual(350);
+	expect(motion.intro.endedAt! - motion.intro.startedAt!).toBeGreaterThanOrEqual(300);
+	expect(Math.max(0, ...motion.outro.durations)).toBeGreaterThanOrEqual(230);
+	expect(motion.outro.endedAt! - motion.outro.startedAt!).toBeGreaterThanOrEqual(180);
+
+	const move = await moveWithAnimationProbe(page, 'Review', 'up');
+	expect(move.order).toEqual(['Review', 'Open', 'Closed']);
+	expect(move.duration).toBeGreaterThanOrEqual(400);
+	expect(move.final).toBeLessThan(move.before);
+	const lower = Math.min(move.before, move.final) + 1;
+	const upper = Math.max(move.before, move.final) - 1;
+	expect(move.positions.some((position) => position > lower && position < upper)).toBe(true);
+});
+
+test('reduced motion makes state expansion, collapse, and reordering immediate', async ({
+	page
+}) => {
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await gotoHydrated(page, `/workflows/${reorderWorkflowId}`);
+	await observeStateTransition(page, 'Open');
+
+	const open = stateRow(page, 'Open');
+	await open.getByRole('button', { name: 'Edit Open state' }).click();
+	await expect(open.getByRole('region', { name: 'Edit Open state' })).toBeVisible();
+	await open.getByRole('button', { name: 'Collapse Open state' }).click();
+	await expect(open.getByRole('region', { name: 'Edit Open state' })).toHaveCount(0);
+
+	const motion = await stateTransitionMotion(page);
+	expect(Math.max(0, ...motion.intro.durations)).toBe(0);
+	expect(motion.intro.endedAt! - motion.intro.startedAt!).toBeLessThan(50);
+	expect(Math.max(0, ...motion.outro.durations)).toBe(0);
+	expect(motion.outro.endedAt! - motion.outro.startedAt!).toBeLessThan(50);
+
+	const move = await moveWithAnimationProbe(page, 'Review', 'up');
+	expect(move.order).toEqual(['Review', 'Open', 'Closed']);
+	expect(move.duration).toBe(0);
+	for (const position of move.positions.slice(1)) expect(position).toBeCloseTo(move.final, 1);
 });
 
 test('an editable workflow can save parallel named actions to one state', async ({ page }) => {
