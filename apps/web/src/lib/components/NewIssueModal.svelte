@@ -198,8 +198,8 @@
 	title={project ? `New issue in ${project.name}` : 'New issue'}
 	dismissible={!creating}
 >
-	<form bind:this={form} onsubmit={create} class="space-y-4">
-		<fieldset disabled={creating} class="contents">
+	<form bind:this={form} onsubmit={create}>
+		<fieldset disabled={creating} class="min-w-0 space-y-4">
 			{#if !project}
 				<div class="space-y-1.5">
 					<label class="text-sm font-medium" for="issue-project">Project</label>
