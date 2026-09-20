@@ -409,6 +409,7 @@ test('folder errors preserve the draft and an over-limit import remains removabl
 	const temp = await mkdtemp(path.join(tmpdir(), 'tines-skill-folder-'));
 	const missingRoot = path.join(temp, 'missing-root');
 	const malformed = path.join(temp, 'malformed');
+	const validAfterFailure = path.join(temp, 'valid-after-failure');
 	const tooMany = path.join(temp, 'too-many');
 	try {
 		await mkdir(missingRoot);
@@ -416,6 +417,11 @@ test('folder errors preserve the draft and an over-limit import remains removabl
 		await mkdir(malformed);
 		await writeFile(path.join(malformed, 'SKILL.md'), '# Valid root');
 		await writeFile(path.join(malformed, 'bad.bin'), Buffer.from([0xff]));
+		await mkdir(validAfterFailure);
+		await writeFile(
+			path.join(validAfterFailure, 'SKILL.md'),
+			'---\nname: ignored-because-touched\ndescription: Filled after a failed read\n---\n# Valid\n'
+		);
 		await mkdir(tooMany);
 		await writeFile(path.join(tooMany, 'SKILL.md'), '# Big skill');
 		await Promise.all(
@@ -440,10 +446,14 @@ test('folder errors preserve the draft and an over-limit import remains removabl
 		await page.getByLabel('Skill folder').setInputFiles(malformed);
 		await expect(page.getByRole('alert')).toContainText('bad.bin');
 		await expect(page.getByLabel('File draft.txt content')).toHaveValue('keep me');
+		await page.getByLabel('Skill folder').setInputFiles(validAfterFailure);
+		await expect(page.getByLabel('Name')).toHaveValue(`folder-validation-${runId}`);
+		await expect(page.getByLabel('Description')).toHaveValue('Filled after a failed read');
+		await expect(page.getByText('From SKILL.md')).toHaveCount(1);
 
 		await page.getByLabel('Skill folder').setInputFiles(tooMany);
 		await expect(
-			page.getByText('Added 21 files; replaced 0; skipped 0 ignored files.')
+			page.getByText('Added 20 files; replaced 1; skipped 0 ignored files.')
 		).toBeVisible();
 		await expect(page.getByText(/22 \/ 20 files/)).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Create' })).toBeDisabled();
