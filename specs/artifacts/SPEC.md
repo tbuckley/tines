@@ -114,7 +114,7 @@ is the point), and still **DELETE** them.
 The New issue form accepts up to 10 files (25 MiB each, 50 MiB combined),
 derives editable unique artifact names from filenames, and sends one multipart
 create request. The Worker stages immutable R2 objects first, then commits the
-issue, initial file artifact rows/versions/events, labels, and optional schedule
+issue, initial file artifact rows/versions/events, labels, optional relationships, and optional schedule
 in one D1 batch before signaling dispatch. The multipart envelope is capped at
 51 MiB and its JSON metadata at 256 KiB. A failed D1 batch can leave only
 invisible R2 orphans; an active issue is never visible without its initial files.

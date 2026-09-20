@@ -385,6 +385,9 @@ export function register(program: Command): void {
 				collect,
 				[]
 			)
+			.option('--blocked-by <ref>', 'issue that blocks the new issue; repeatable', collect, [])
+			.option('--blocks <ref>', 'issue that the new issue blocks; repeatable', collect, [])
+			.option('--duplicate-of <ref>', 'canonical issue that the new issue duplicates')
 	).action(
 		async (
 			projectRef: string,
@@ -397,6 +400,9 @@ export function register(program: Command): void {
 					ifClosed?: boolean;
 					scheduleName?: string;
 					label?: string[];
+					blockedBy?: string[];
+					blocks?: string[];
+					duplicateOf?: string;
 				}
 		) => {
 			// Resolved before any lookup, like the <markdown> positionals: an
@@ -419,13 +425,25 @@ export function register(program: Command): void {
 						require_all_closed: opts.ifClosed ?? false
 					}
 				: undefined;
+			const blockedBy = await Promise.all(
+				(opts.blockedBy ?? []).map(async (ref) => (await resolveIssue(api, ref)).id)
+			);
+			const blocks = await Promise.all(
+				(opts.blocks ?? []).map(async (ref) => (await resolveIssue(api, ref)).id)
+			);
+			const duplicateOf = opts.duplicateOf
+				? (await resolveIssue(api, opts.duplicateOf)).id
+				: undefined;
 			const issue = await api.createIssue(project.id, {
 				title: opts.title,
 				description,
 				workflow_id: workflowId,
 				state: opts.state,
 				schedule,
-				labels: opts.label
+				labels: opts.label,
+				...(blockedBy.length > 0 ? { blocked_by: blockedBy } : {}),
+				...(blocks.length > 0 ? { blocks } : {}),
+				...(duplicateOf ? { duplicate_of: duplicateOf } : {})
 			});
 			if (opts.json) return printJson(issue);
 			console.log(

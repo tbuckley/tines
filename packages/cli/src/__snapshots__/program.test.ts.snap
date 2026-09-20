@@ -493,6 +493,11 @@ Options:
                                 the title)
   -l, --label <name>            attach a label; repeat for several (created if
                                 new) (default: [])
+  --blocked-by <ref>            issue that blocks the new issue; repeatable
+                                (default: [])
+  --blocks <ref>                issue that the new issue blocks; repeatable
+                                (default: [])
+  --duplicate-of <ref>          canonical issue that the new issue duplicates
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)

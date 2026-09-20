@@ -159,8 +159,8 @@ Notes:
 ## API
 
 Issue creation accepts the existing JSON request and an equivalent multipart
-representation for a new issue with initial file artifacts. Multipart creation
-publishes the issue and artifact metadata atomically after file bytes are staged,
+representation for a new issue with initial file artifacts. Either form may include
+initial issue relationships. Creation publishes the issue, relationships, and artifact metadata atomically after file bytes are staged,
 then signals dispatch; clients without files continue to send JSON unchanged.
 
 JSON over HTTP under `/api/v1/*`, served by the SvelteKit app; shared request/response types live in `@tines/shared`. Auth: Better Auth session cookie or bearer API key. All resources are scoped to the authenticated user; cross-user access is a 404.
