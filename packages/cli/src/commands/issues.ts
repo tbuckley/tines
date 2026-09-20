@@ -58,6 +58,7 @@ import {
 import { helpGuard } from '../help-guard.js';
 import { buildRecurrence, type RecurrenceOpts } from '../recurrence-flags.js';
 import { parseTargetSpec } from '../refs.js';
+import { assertNoSkillRepoOverlap, materializeSkills } from '../skills.js';
 import {
 	actorLabel,
 	ApiError,
@@ -804,7 +805,7 @@ export function register(program: Command): void {
 			)
 			.option(
 				'--out <dir>',
-				'write the bundle to a directory: prompt.md, skills/<name>/…, repos.json'
+				'write the bundle to a directory: prompt.md, .agents/skills/<name>/…, repos.json'
 			)
 			.option('--force', 'allow --out into a non-empty directory')
 	).action(async (ref: string, opts: CommonOpts & { out?: string; force?: boolean }) => {
@@ -849,18 +850,13 @@ export function register(program: Command): void {
 		if (existsSync(opts.out) && readdirSync(opts.out).length > 0 && !opts.force) {
 			die(`refusing to write into non-empty directory ${opts.out} (pass --force to override)`);
 		}
+		assertNoSkillRepoOverlap(context.repos.map((repo) => repo.dir));
 		mkdirSync(opts.out, { recursive: true });
+		materializeSkills(opts.out, context.skills);
 		writeFileSync(
 			join(opts.out, 'prompt.md'),
 			context.prompt.text ? `${context.prompt.text}\n` : ''
 		);
-		for (const skill of context.skills) {
-			for (const file of skill.files) {
-				const target = join(opts.out, 'skills', skill.name, file.path);
-				mkdirSync(dirname(target), { recursive: true });
-				writeFileSync(target, file.content);
-			}
-		}
 		writeFileSync(join(opts.out, 'repos.json'), `${JSON.stringify(context.repos, null, 2)}\n`);
 		console.log(
 			`wrote ${opts.out}/prompt.md, ${context.skills.length} skill${context.skills.length === 1 ? '' : 's'}, repos.json (${context.repos.length} repo${context.repos.length === 1 ? '' : 's'})`

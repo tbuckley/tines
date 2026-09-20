@@ -33,6 +33,7 @@ let daemonOut = '';
 function stubSupervisor(opts: {
 	resume?: Record<string, unknown>;
 	repos?: unknown[];
+	skills?: unknown[];
 	finishReply?: Record<string, unknown>;
 }): { server: Server; done: Promise<Harvest> } {
 	const harvest: Harvest = { log: '', finish: null };
@@ -65,7 +66,7 @@ function stubSupervisor(opts: {
 									status: 'launching'
 								},
 								prompt: 'THE CONTINUATION PROMPT',
-								bundle: { skills: [], repos: opts.repos ?? [] },
+								bundle: { skills: opts.skills ?? [], repos: opts.repos ?? [] },
 								run_key: 'trk_stub_run_key',
 								timeout_minutes: 30,
 								...(opts.resume ? { resume: opts.resume } : {})
@@ -151,8 +152,15 @@ afterEach(async () => {
 function keptWorkspace(dir: string): string {
 	const ws = join(workspacesDir(dir), PREV_RUN_ID);
 	mkdirSync(join(ws, 'repo'), { recursive: true });
+	mkdirSync(join(ws, '.agents/skills/stale'), { recursive: true });
+	mkdirSync(join(ws, 'skills/legacy'), { recursive: true });
 	writeFileSync(join(ws, 'repo', 'edit.txt'), 'work in progress');
-	writeFileSync(join(ws, 'repos.json'), 'PREVIOUS RUN REPOS\n');
+	writeFileSync(join(ws, '.agents/skills/stale/SKILL.md'), 'stale');
+	writeFileSync(join(ws, 'skills/legacy/SKILL.md'), 'legacy');
+	writeFileSync(
+		join(ws, 'repos.json'),
+		`${JSON.stringify([{ name: 'repo', dir: 'repo', url: 'https://example.test/repo.git' }], null, 2)}\n`
+	);
 	writeFileSync(join(ws, 'prompt.md'), 'THE OLD PROMPT\n');
 	writeFileSync(keptMarkerPath(ws), JSON.stringify({ run_id: PREV_RUN_ID, status: 'completed' }));
 	return ws;
@@ -161,6 +169,7 @@ function keptWorkspace(dir: string): string {
 async function runOnce(opts: {
 	resume?: (ws: string) => Record<string, unknown>;
 	repos?: unknown[];
+	skills?: unknown[];
 	finishReply?: Record<string, unknown>;
 	command?: string;
 	prepare?: (dir: string) => string;
@@ -171,6 +180,7 @@ async function runOnce(opts: {
 	const stub = stubSupervisor({
 		...(opts.resume ? { resume: opts.resume(prevWs) } : {}),
 		...(opts.repos ? { repos: opts.repos } : {}),
+		...(opts.skills ? { skills: opts.skills } : {}),
 		...(opts.finishReply ? { finishReply: opts.finishReply } : {})
 	});
 	server = stub.server;
@@ -192,12 +202,21 @@ const resumeBlock = (ws: string) => ({
 });
 
 describe('resumed launch', () => {
-	it('launches in the kept workspace: no wipe, no re-clone, only prompt.md rewritten', async () => {
+	it('refreshes skills in the kept workspace without wiping repositories or legacy files', async () => {
 		const { harvest, prevWs, freshWs } = await runOnce({
 			resume: resumeBlock,
 			// A repo that could never be cloned: reaching the clone loop at all
 			// would fail the run, which is what makes the skip observable.
 			repos: [{ name: 'repo', dir: 'repo', url: 'file:///nonexistent/repo.git', branch: null }],
+			skills: [
+				{
+					name: 'current',
+					files: [
+						{ path: 'SKILL.md', content: 'current' },
+						{ path: 'notes/info.txt', content: 'support' }
+					]
+				}
+			],
 			finishReply: { resume_expires_at: Date.now() + 48 * 60 * 60 * 1000 }
 		});
 
@@ -205,9 +224,15 @@ describe('resumed launch', () => {
 		expect(existsSync(freshWs)).toBe(false);
 		// The predecessor's clone and its edits are still there, untouched …
 		expect(readFileSync(join(prevWs, 'repo', 'edit.txt'), 'utf8')).toBe('work in progress');
-		expect(readFileSync(join(prevWs, 'repos.json'), 'utf8')).toBe('PREVIOUS RUN REPOS\n');
-		// … and the one thing that does change is the prompt.
+		expect(JSON.parse(readFileSync(join(prevWs, 'repos.json'), 'utf8'))).toHaveLength(1);
+		// Generated skills and the prompt refresh; old-layout files are not owned.
 		expect(readFileSync(join(prevWs, 'prompt.md'), 'utf8')).toBe('THE CONTINUATION PROMPT\n');
+		expect(readFileSync(join(prevWs, '.agents/skills/current/SKILL.md'), 'utf8')).toBe('current');
+		expect(readFileSync(join(prevWs, '.agents/skills/current/notes/info.txt'), 'utf8')).toBe(
+			'support'
+		);
+		expect(existsSync(join(prevWs, '.agents/skills/stale'))).toBe(false);
+		expect(readFileSync(join(prevWs, 'skills/legacy/SKILL.md'), 'utf8')).toBe('legacy');
 		expect(harvest.log).not.toContain('git clone');
 		// The run's own log says which run it continues.
 		expect(harvest.log).toContain(`resumed=${PREV_RUN_ID}`);
