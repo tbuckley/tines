@@ -19,6 +19,7 @@ import {
 // unambiguous.
 
 let projectName: string;
+let graphProjectName: string;
 const issueTitle = `UI smoke ${runId}`;
 let project: Project;
 let longProject: Project;
@@ -28,6 +29,7 @@ const wideReviewState = 'Extended Human Review 👩‍💻 界界界界界';
 
 test.beforeAll(async ({ apiFor, uniqueName }) => {
 	projectName = uniqueName('ui');
+	graphProjectName = uniqueName('ui graph');
 	const api = apiFor(ALICE);
 	const graphWorkflow = await body<{ id: string; transitions: { id: string; name: string }[] }>(
 		await api.post('/api/v1/workflows', {
@@ -51,9 +53,10 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 	firstParallelTransitionId = graphWorkflow.transitions.find(
 		(transition) => transition.name === 'First parallel route'
 	)!.id;
-	project = await body<Project>(
+	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
+	await body<Project>(
 		await api.post('/api/v1/projects', {
-			name: projectName,
+			name: graphProjectName,
 			default_workflow_id: graphWorkflow.id
 		})
 	);
@@ -122,7 +125,7 @@ test('the new-issue graph animates one connected route and updates disconnected 
 	await gotoHydrated(page, '/issues');
 	const dialog = page.getByRole('dialog', { name: 'New issue' });
 	await clickToOpen(page.getByRole('button', { name: /New issue/ }), dialog);
-	await dialog.getByLabel('Project', { exact: true }).selectOption({ label: projectName });
+	await dialog.getByLabel('Project', { exact: true }).selectOption({ label: graphProjectName });
 	const graph = dialog.getByRole('img', { name: 'Workflow graph' });
 	const state = dialog.getByLabel('Starting state');
 
