@@ -39,6 +39,7 @@
 		validateSkillDraft,
 		type SkippedSkillFile
 	} from './skill-folder-import';
+	import { readSkillMetadata } from './skill-metadata';
 
 	interface ScopeDefaults {
 		project_id?: string;
@@ -81,6 +82,10 @@
 	let kind = $state<ContextKind>('prompt');
 	let name = $state('');
 	let description = $state('');
+	let nameTouched = $state(false);
+	let descriptionTouched = $state(false);
+	let nameFromSkill = $state(false);
+	let descriptionFromSkill = $state(false);
 	let projectId = $state('');
 	let stateId = $state('');
 	let labelId = $state('');
@@ -140,6 +145,10 @@
 			kind = item?.kind ?? defaultKind ?? 'prompt';
 			name = item?.name ?? '';
 			description = item?.description ?? '';
+			nameTouched = false;
+			descriptionTouched = false;
+			nameFromSkill = false;
+			descriptionFromSkill = false;
 			projectId = item ? (item.scope.project_id ?? '') : (defaults.project_id ?? '');
 			stateId = item ? (item.scope.workflow_state_id ?? '') : (defaults.workflow_state_id ?? '');
 			labelId = item ? (item.scope.label_id ?? '') : (defaults.label_id ?? '');
@@ -300,8 +309,27 @@
 				() => !open || kind !== 'skill' || generation !== dialogGeneration
 			);
 			if (!open || kind !== 'skill' || generation !== dialogGeneration) return;
+			const metadata =
+				item === null && !requiresRootSkill
+					? await readSkillMetadata(result.files.find((file) => file.path === 'SKILL.md')!.content)
+					: {};
+			if (!open || kind !== 'skill' || generation !== dialogGeneration) return;
 			const merged = mergeSkillFiles(files, result.files, () => nextFileKey++);
 			files = merged.rows;
+			const firstImportIntoNewDraft = item === null && !requiresRootSkill;
+			if (firstImportIntoNewDraft && metadata.name && !nameTouched && !name.trim()) {
+				name = metadata.name;
+				nameFromSkill = true;
+			}
+			if (
+				firstImportIntoNewDraft &&
+				metadata.description &&
+				!descriptionTouched &&
+				!description.trim()
+			) {
+				description = metadata.description;
+				descriptionFromSkill = true;
+			}
 			requiresRootSkill = true;
 			folderSkipped = result.skipped;
 			folderStatus = `Added ${merged.added} file${merged.added === 1 ? '' : 's'}; replaced ${merged.replaced}; skipped ${result.skipped.length} ignored file${result.skipped.length === 1 ? '' : 's'}.`;
@@ -450,18 +478,28 @@
 			<Input
 				id="ctx-name"
 				bind:value={name}
+				oninput={() => {
+					nameTouched = true;
+					nameFromSkill = false;
+				}}
+				aria-describedby={kind !== 'prompt'
+					? `ctx-name-override${kind === 'skill' && nameFromSkill ? ' ctx-name-skill-source' : ''}`
+					: undefined}
 				required
 				placeholder={kind === 'skill' ? 'slug-like: review-checklist' : 'e.g. house conventions'}
 			/>
 			{#if kind === 'artifact'}
-				<p class="text-muted-foreground text-xs">
+				<p id="ctx-name-override" class="text-muted-foreground text-xs">
 					The requirement-matching key (slug-like) — renaming changes which transition requirements
 					this artifact satisfies.
 				</p>
 			{:else if kind !== 'prompt'}
-				<p class="text-muted-foreground text-xs">
+				<p id="ctx-name-override" class="text-muted-foreground text-xs">
 					A more specific item with the same name overrides this one in the effective context.
 				</p>
+			{/if}
+			{#if kind === 'skill' && nameFromSkill}
+				<p id="ctx-name-skill-source" class="text-muted-foreground text-xs">From SKILL.md</p>
 			{/if}
 		</div>
 
@@ -470,8 +508,18 @@
 			<Input
 				id="ctx-description"
 				bind:value={description}
+				oninput={() => {
+					descriptionTouched = true;
+					descriptionFromSkill = false;
+				}}
+				aria-describedby={kind === 'skill' && descriptionFromSkill
+					? 'ctx-description-skill-source'
+					: undefined}
 				placeholder="Optional one-liner shown in lists"
 			/>
+			{#if kind === 'skill' && descriptionFromSkill}
+				<p id="ctx-description-skill-source" class="text-muted-foreground text-xs">From SKILL.md</p>
+			{/if}
 		</div>
 
 		<!-- payload -->
