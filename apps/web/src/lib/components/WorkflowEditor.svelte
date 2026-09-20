@@ -232,6 +232,7 @@
 			category: s.category
 		})),
 		transitions: transitions.map((t) => ({
+			id: t.key,
 			name: t.name.trim() || undefined,
 			from_state_id: t.from,
 			to_state_id: t.to

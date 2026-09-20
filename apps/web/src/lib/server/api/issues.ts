@@ -58,6 +58,15 @@ import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels
 import { runQuery, serializeRun } from './runs';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule, scheduleInsertQueries } from './schedules';
+import { insertValues, type QueryGuard } from './query-guard';
+import {
+	assertCreateIssueLinksCommitted,
+	createIssueLinkAdmissionGuard,
+	createIssueLinkQueries,
+	prepareCreateIssueLinkPlan,
+	preflightCreateIssueLinkPlan,
+	recheckCreateIssueLinkPlan
+} from './issue-links';
 import { substringMatch } from './search';
 import { loadWorkflow, loadWorkflows } from './workflows';
 import { nextIssueNumber } from '../issue-address';
@@ -937,17 +946,20 @@ export function issueInsertQueries(
 		stateCategory: StateCategory;
 		now: number;
 		scheduledTask?: { id: string; name: string };
+		guard?: QueryGuard;
+		eventGuard?: QueryGuard;
 	}
 ): CompiledQuery[] {
 	const { id, projectId, workflowId, stateId, now, scheduledTask } = opts;
 	return [
 		// The permanent ledger prevents reuse after the highest issue moves away.
-		db
-			.insertInto('issue')
-			.values({
+		insertValues(
+			db,
+			'issue',
+			{
 				id,
 				project_id: projectId,
-				number: nextIssueNumber(projectId),
+				number: nextIssueNumber(projectId) as unknown as number,
 				title: opts.title,
 				description: opts.description,
 				workflow_id: workflowId,
@@ -961,25 +973,31 @@ export function issueInsertQueries(
 				created_at: now,
 				updated_at: now,
 				project_assignment_token: ''
-			})
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'issue.created',
-			issueId: id,
-			projectId,
-			payload: {
-				state_entry_version: 1,
-				title: opts.title,
-				workflow_id: workflowId,
-				workflow_name: opts.workflowName,
-				state_id: stateId,
-				state_name: opts.stateName,
-				state_category: opts.stateCategory,
-				...(scheduledTask
-					? { scheduled_task_id: scheduledTask.id, scheduled_task_name: scheduledTask.name }
-					: {})
-			}
-		})
+			},
+			opts.guard
+		),
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.created',
+				issueId: id,
+				projectId,
+				payload: {
+					state_entry_version: 1,
+					title: opts.title,
+					workflow_id: workflowId,
+					workflow_name: opts.workflowName,
+					state_id: stateId,
+					state_name: opts.stateName,
+					state_category: opts.stateCategory,
+					...(scheduledTask
+						? { scheduled_task_id: scheduledTask.id, scheduled_task_name: scheduledTask.name }
+						: {})
+				}
+			},
+			opts.eventGuard ?? opts.guard
+		)
 	];
 }
 
@@ -990,7 +1008,8 @@ export async function createIssue(
 	effects: DispatchEffects,
 	projectId: string,
 	body: CreateIssueRequest,
-	initialFiles: InitialIssueFile[] = []
+	initialFiles: InitialIssueFile[] = [],
+	beforeCommit?: () => Promise<void>
 ): Promise<CreateIssueResponse> {
 	const project = await db
 		.selectFrom('project')
@@ -1034,6 +1053,14 @@ export async function createIssue(
 	const vars = schedule ? templateVars(schedule.name, 1, schedule.timezone, now) : null;
 	const issueTitle = vars ? renderTemplate(title, vars) : title;
 	const issueDescription = vars ? renderTemplate(description, vars) : description;
+	const linkPlan = await prepareCreateIssueLinkPlan(
+		db,
+		actor,
+		{ id, projectId, title: issueTitle },
+		body,
+		now
+	);
+	if (linkPlan) await preflightCreateIssueLinkPlan(db, actor, linkPlan);
 
 	// A non-initial starting state pins the schedule too: future instances
 	// start where the first issue does. NULL keeps following the workflow's
@@ -1041,6 +1068,10 @@ export async function createIssue(
 	const scheduleStateId = initialState.id === workflow.initial_state_id ? null : initialState.id;
 
 	const queries: CompiledQuery[] = [];
+	const admissionGuard = linkPlan ? createIssueLinkAdmissionGuard(actor, linkPlan) : undefined;
+	const freshIssueGuard: QueryGuard | undefined = linkPlan
+		? { predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id})` }
+		: undefined;
 	const scheduleQueries = schedule
 		? scheduleInsertQueries(db, actor, {
 				schedule,
@@ -1051,7 +1082,9 @@ export async function createIssue(
 				titleTemplate: title,
 				descriptionTemplate: description,
 				now,
-				mode: 'initial-issue'
+				mode: 'initial-issue',
+				guard: admissionGuard,
+				eventGuard: freshIssueGuard
 			})
 		: null;
 	if (scheduleQueries) queries.push(scheduleQueries[0]);
@@ -1067,19 +1100,36 @@ export async function createIssue(
 			stateName: initialState.name,
 			stateCategory: initialState.category,
 			now,
+			guard: admissionGuard,
+			eventGuard: freshIssueGuard,
 			...(schedule ? { scheduledTask: { id: schedule.id, name: schedule.name } } : {})
 		})
 	);
 	if (scheduleQueries) queries.push(scheduleQueries[1]);
 	if (resolvedLabels) {
 		queries.push(
-			...labelInserts(db, actor, resolvedLabels.toCreate),
-			...issueLabelInserts(db, actor, { id, project_id: projectId }, resolvedLabels.labels, now)
+			...labelInserts(db, actor, resolvedLabels.toCreate, freshIssueGuard),
+			...issueLabelInserts(
+				db,
+				actor,
+				{ id, project_id: projectId },
+				resolvedLabels.labels,
+				now,
+				freshIssueGuard
+			)
 		);
 	}
 	if (initialFiles.length > 0) {
 		queries.push(
-			...(await initialFileArtifactQueries(db, env, actor, { id, projectId }, initialFiles, now))
+			...(await initialFileArtifactQueries(
+				db,
+				env,
+				actor,
+				{ id, projectId },
+				initialFiles,
+				now,
+				freshIssueGuard
+			))
 		);
 		const currentProject = await db
 			.selectFrom('project')
@@ -1089,8 +1139,20 @@ export async function createIssue(
 			.executeTakeFirst();
 		if (!currentProject) throw notFound();
 		await assertWritable(db, actor, currentProject);
+		if (linkPlan) await recheckCreateIssueLinkPlan(db, actor, linkPlan);
 	}
-	await runAtomic(env, queries);
+	let linkBatch: ReturnType<typeof createIssueLinkQueries> | null = null;
+	let linkBatchOffset = 0;
+	if (linkPlan && freshIssueGuard) {
+		linkBatch = createIssueLinkQueries(db, actor, linkPlan, freshIssueGuard);
+		linkBatchOffset = queries.length;
+		queries.push(...linkBatch.queries);
+	}
+	if (beforeCommit) await beforeCommit();
+	const results = await runAtomic(env, queries);
+	if (linkPlan && linkBatch) {
+		assertCreateIssueLinksCommitted(linkPlan, results, linkBatch, linkBatchOffset);
+	}
 	effects.signalDispatch();
 
 	const issue = await getIssueDetail(db, actor.userId, { id });

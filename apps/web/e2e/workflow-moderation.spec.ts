@@ -152,6 +152,14 @@ test('reports, removes, restores, suspends and recovers one exact public snapsho
 	await expect(host.getByText(`private ${marker}`, { exact: true })).toBeVisible();
 	await expect(host.getByText('https://example.test/track', { exact: false })).toBeVisible();
 	await expect(host.getByRole('link', { name: /hostile destination/i })).toHaveCount(0);
+	const hostedGraph = host.getByRole('img', { name: 'Workflow graph' });
+	await expect(hostedGraph.getByText('Open', { exact: true })).toBeVisible();
+	await expect(hostedGraph.getByText('Done', { exact: true })).toBeVisible();
+	const hostedGraphGeometry = await hostedGraph.evaluate((svg) => ({
+		width: svg.getBoundingClientRect().width,
+		containerWidth: svg.parentElement!.clientWidth
+	}));
+	expect(hostedGraphGeometry.width).toBeLessThanOrEqual(hostedGraphGeometry.containerWidth + 1);
 	await host.evaluate(() => (document.documentElement.style.zoom = '2'));
 	expect(await host.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
 		true

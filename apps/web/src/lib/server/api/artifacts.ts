@@ -55,6 +55,7 @@ import { idChunks, newId, type Database } from '$lib/server/db';
 import { assertWritable } from './archive';
 import { ApiFail, notFound, optionalString, runAtomic, type ActorContext } from './core';
 import { actorOf, eventInsert } from './events';
+import { insertValues, type QueryGuard } from './query-guard';
 
 const byteLength = (s: string) => new TextEncoder().encode(s).length;
 
@@ -750,13 +751,11 @@ interface NewFileRow {
 function fileRowInserts(
 	db: Kysely<Database>,
 	versionId: string,
-	fileRows: NewFileRow[]
+	fileRows: NewFileRow[],
+	guard?: QueryGuard
 ): CompiledQuery[] {
 	return fileRows.map((f) =>
-		db
-			.insertInto('artifact_version_file')
-			.values({ ...f, artifact_version_id: versionId })
-			.compile()
+		insertValues(db, 'artifact_version_file', { ...f, artifact_version_id: versionId }, guard)
 	);
 }
 
@@ -844,7 +843,8 @@ function createArtifactQueries(
 	itemId: string,
 	versionId: string,
 	now: number,
-	scopePayloadSql?: RawBuilder<string>
+	scopePayloadSql?: RawBuilder<string>,
+	guard?: QueryGuard
 ): CompiledQuery[] {
 	const eventPayload = {
 		context_id: itemId,
@@ -857,9 +857,10 @@ function createArtifactQueries(
 		...(input.fileRows ? { file_count: input.fileRows.length } : {})
 	};
 	return [
-		db
-			.insertInto('context_item')
-			.values({
+		insertValues(
+			db,
+			'context_item',
+			{
 				id: itemId,
 				user_id: actor.userId,
 				kind: 'artifact',
@@ -877,11 +878,13 @@ function createArtifactQueries(
 				version: 1,
 				created_at: now,
 				updated_at: now
-			})
-			.compile(),
-		db
-			.insertInto('artifact_version')
-			.values({
+			},
+			guard
+		),
+		insertValues(
+			db,
+			'artifact_version',
+			{
 				id: versionId,
 				context_item_id: itemId,
 				version: 1,
@@ -890,18 +893,24 @@ function createArtifactQueries(
 				actor_user_id: actor.userId,
 				actor_api_key_id: actor.apiKeyId,
 				created_at: now
-			})
-			.compile(),
-		...fileRowInserts(db, versionId, input.fileRows ?? []),
-		eventInsert(db, actor, {
-			type: 'context.created',
-			issueId: issue.id,
-			projectId: issue.projectId,
-			createdAt: now,
-			...(scopePayloadSql
-				? { payloadSql: scopePayloadSql }
-				: { payload: { ...eventPayload, scope: scopeEventPayload(issue as IssueRef) } })
-		})
+			},
+			guard
+		),
+		...fileRowInserts(db, versionId, input.fileRows ?? [], guard),
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'context.created',
+				issueId: issue.id,
+				projectId: issue.projectId,
+				createdAt: now,
+				...(scopePayloadSql
+					? { payloadSql: scopePayloadSql }
+					: { payload: { ...eventPayload, scope: scopeEventPayload(issue as IssueRef) } })
+			},
+			guard
+		)
 	];
 }
 
@@ -919,7 +928,8 @@ export async function initialFileArtifactQueries(
 	actor: ActorContext,
 	issue: { id: string; projectId: string },
 	files: InitialIssueFile[],
-	now: number
+	now: number,
+	guard?: QueryGuard
 ): Promise<CompiledQuery[]> {
 	if (files.length > ISSUE_CREATE_MAX_FILES) {
 		throw new ApiFail(
@@ -1029,7 +1039,8 @@ export async function initialFileArtifactQueries(
 				file.itemId,
 				file.versionId,
 				now,
-				scopePayloadSql
+				scopePayloadSql,
+				guard
 			)
 		);
 	}

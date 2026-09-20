@@ -19,7 +19,11 @@ Links are advisory, not gates — a blocked issue can still be started or closed
 - **Other relation kinds**: no "relates to", no parent/child, no epics. The schema leaves room (a `kind` column) but only `blocks` and `duplicate_of` exist.
 - **A `blocked` filter**: only `ready` ships now; a symmetric "show blocked" filter is an easy follow-up.
 - **Cross-user links**: everything remains user-scoped; you can only link issues you own (cross-project is fine, cross-user is a 404 like every other cross-user reference).
-- **Bulk operations**: links are created and removed one at a time.
+- **Bulk operations**: links are created and removed one at a time, except that issue creation may declare its initial `blocked_by[]`, `blocks[]`, and singular `duplicate_of` relationships.
+
+### Amendment — initial relationships (2026-09-19)
+
+`POST /api/v1/projects/:projectId/issues` accepts issue IDs in `blocked_by[]`, `blocks[]`, and `duplicate_of`. The create batch evaluates candidates in that order against the stored graph plus earlier candidates, using the same ownership, archive, exact-duplicate, outgoing-duplicate, and commit-time cycle rules as the one-link endpoint. The issue, schedule, labels, initial artifacts, links, and all events commit together or not at all. A rejected prospective issue uses its next-number candidate in `link_cycle` diagnostics; that number is not reserved. CLI flags `--blocked-by` and `--blocks` are repeatable and `--duplicate-of` is singular. Recurring instances do not copy these relationships.
 
 ## Concepts
 

@@ -6,6 +6,8 @@ The guard has five statements. Each has a fixed number of bindings independent o
 
 This guarantee covers all link creation through the deployed API. Direct administrative SQL and an older deployment still in flight can bypass it. Rolling back to code predating the amendment removes the concurrency protection. Link removals and FK cascades only remove edges and cannot create cycles; same-account project transfer preserves issue IDs and edges.
 
+Issue creation uses the same recursive predicate in a JSON-backed multi-edge plan. The predicate guards the schedule and issue rows; existence of the fresh issue then guards every label, artifact, link, and event write. The receipt requires the issue, every planned link, and both endpoint events before dispatch. Native-D1 coverage includes create-versus-link races and a forced late-event failure, with independent audits of the issue-address ledger and all create-owned metadata.
+
 ## Read-only legacy-cycle audit
 
 For an API-only best-effort audit, page `GET /api/v1/issues?archived=all&brief=1&limit=100` until `next_cursor` is null, then fetch every issue detail. Collect `links.blocks` and `links.duplicate_of`, deduplicate by link ID, and run a strongly-connected-components algorithm. Report every component larger than one and every self-loop with link ID, kind, endpoint IDs and canonical refs. Also report page/detail request failures, missing endpoints and total issue/link counts. Never call an incomplete inventory clean. API pagination is not a consistent snapshot during writes, so rerun during a stable period.

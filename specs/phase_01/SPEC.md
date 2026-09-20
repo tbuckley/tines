@@ -159,8 +159,8 @@ Notes:
 ## API
 
 Issue creation accepts the existing JSON request and an equivalent multipart
-representation for a new issue with initial file artifacts. Multipart creation
-publishes the issue and artifact metadata atomically after file bytes are staged,
+representation for a new issue with initial file artifacts. Either form may include
+initial issue relationships. Creation publishes the issue, relationships, and artifact metadata atomically after file bytes are staged,
 then signals dispatch; clients without files continue to send JSON unchanged.
 
 JSON over HTTP under `/api/v1/*`, served by the SvelteKit app; shared request/response types live in `@tines/shared`. Auth: Better Auth session cookie or bearer API key. All resources are scoped to the authenticated user; cross-user access is a 404.
@@ -282,5 +282,5 @@ Formerly open, now decided:
 - **Standard workflow initial state**: named **Open** — implies "ready to be taken on / being worked" without a separate backlog state.
 - **`workflow.updated` payload**: a **summary diff** — a compact record of what changed (rename, states added/removed by name, transition count deltas, initial-state change), computed at update time. Workflows stay mutable (live-referenced, no versioning), so the event payload is the change record.
 - **Issue description edits**: event only (`issue.updated`), no revision history in phase one.
-- **Graph rendering**: the workflow graph view is a hand-rolled Svelte SVG component with a simple layered auto-layout computed client-side — no graph library dependency. Sufficient for phase-one FSM sizes and gives full control over category color-coding and the transition animation.
+- **Graph rendering (superseded 2026-09-20)**: the original hand-rolled layered geometry was replaced by Dagre behind a pure synchronous adapter after action labels overlapped nodes and one another. Tines retains its Svelte/SVG renderer, category styling, transition animation, form-only editing, and unstored automatic positions. Complete state/action text boxes are reserved before layout; compact previews still elide action labels. All fitted surfaces keep their behavior, while the public snapshot graph retains its intrinsic 1.3× horizontal-scroller exception.
 - **Named transitions**: every transition has a required action name ("approve", "send back"), unique per source state, so agents act on their current state instead of aiming at target states. The transition API takes the action (or transition id); `issue.transitioned` events record it.
