@@ -70,7 +70,11 @@ test('imports declared metadata, reviews files, and persists only retained files
 			'ctx-description-skill-source'
 		);
 		expect(await page.getByLabel('Project', { exact: true }).inputValue()).toBe(originalProject);
-		await expect(page.getByRole('button', { name: 'Create' })).toBeEnabled();
+		await expect(
+			page
+				.getByRole('dialog', { name: 'New context item' })
+				.getByRole('button', { name: 'Create', exact: true })
+		).toBeEnabled();
 		await expect(page.getByLabel('File 1 path')).toHaveValue('SKILL.md');
 		await expect(page.getByLabel('File 2 path')).toHaveValue('nested/readme.txt');
 		await expect(page.getByLabel('File 3 path')).toHaveValue('notes/remove-me.txt');
@@ -84,7 +88,10 @@ test('imports declared metadata, reviews files, and persists only retained files
 			(response) =>
 				response.url().endsWith('/api/v1/context') && response.request().method() === 'POST'
 		);
-		await page.getByRole('button', { name: 'Create' }).click();
+		await page
+			.getByRole('dialog', { name: 'New context item' })
+			.getByRole('button', { name: 'Create', exact: true })
+			.click();
 		await expect((await saveResponse).status()).toBe(201);
 
 		const listed = await body<ListResponse<ContextItem>>(
@@ -192,7 +199,56 @@ test('a completed folder read cannot enter a reopened draft', async ({ page, con
 	await expect(page.getByText(/Added \d+ files?/)).toHaveCount(0);
 	await expect(page.getByRole('alert')).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Add file' })).toBeEnabled();
-	await expect(page.getByRole('button', { name: 'Create' })).toBeEnabled();
+	await expect(
+		page
+			.getByRole('dialog', { name: 'New context item' })
+			.getByRole('button', { name: 'Create', exact: true })
+	).toBeEnabled();
+});
+
+test('metadata parsing cannot enter a draft reopened while the YAML chunk loads', async ({
+	page,
+	context
+}) => {
+	const yamlChunk = barrier();
+	let yamlChunkUrl: string | undefined;
+	await page.route('**/_app/immutable/chunks/*.js', async (route) => {
+		const response = await route.fetch();
+		const body = await response.text();
+		if (body.includes('YAMLParseError')) {
+			yamlChunkUrl = route.request().url();
+			await yamlChunk.promise;
+		}
+		await route.fulfill({ response, body });
+	});
+
+	await signIn(context, ALICE.sessionToken);
+	await gotoHydrated(page, '/context');
+	await page.getByRole('button', { name: 'New item' }).click();
+	await page.getByText('Skill — text files seeded into the workspace', { exact: true }).click();
+	await page
+		.getByLabel('Skill folder')
+		.setInputFiles(path.join(import.meta.dirname, 'fixtures/skill-folder'));
+	await expect.poll(() => yamlChunkUrl).toBeTruthy();
+	await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+	await page.getByRole('button', { name: 'New item' }).click();
+	await page.getByText('Skill — text files seeded into the workspace', { exact: true }).click();
+	const response = page.waitForResponse(yamlChunkUrl!);
+	yamlChunk.release();
+	await response;
+	await page.evaluate(
+		() =>
+			new Promise<void>((resolve) =>
+				requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+			)
+	);
+
+	await expect(page.getByLabel('Name')).toHaveValue('');
+	await expect(page.getByLabel('Description')).toHaveValue('');
+	await expect(page.getByText('From SKILL.md')).toHaveCount(0);
+	await expect(page.getByLabel(/^File \d+ path$/)).toHaveCount(0);
+	await expect(page.getByText(/Added \d+ files?/)).toHaveCount(0);
 });
 
 test('typing and clearing metadata during a folder read keeps user ownership', async ({
@@ -290,42 +346,145 @@ test('preserves user-owned metadata and ignores later folder metadata', async ({
 	}
 });
 
+test('only the first successful folder import can supply draft metadata', async ({
+	page,
+	context,
+	uniqueName
+}) => {
+	const temp = await mkdtemp(path.join(tmpdir(), 'tines-skill-first-import-'));
+	const first = path.join(temp, 'first');
+	const second = path.join(temp, 'second');
+	try {
+		await mkdir(first);
+		await mkdir(second);
+		await writeFile(path.join(first, 'SKILL.md'), '# No declared metadata\n');
+		await writeFile(
+			path.join(second, 'SKILL.md'),
+			`---\nname: ${uniqueName('second-import')}\ndescription: Must remain ignored\n---\n# Second\n`
+		);
+
+		await signIn(context, ALICE.sessionToken);
+		await gotoHydrated(page, '/context');
+		await page.getByRole('button', { name: 'New item' }).click();
+		await page.getByText('Skill — text files seeded into the workspace', { exact: true }).click();
+		await page.getByLabel('Skill folder').setInputFiles(first);
+		await expect(
+			page.getByText('Added 1 file; replaced 0; skipped 0 ignored files.')
+		).toBeVisible();
+		await expect(page.getByLabel('Name')).toHaveValue('');
+		await expect(page.getByLabel('Description')).toHaveValue('');
+
+		await page.getByLabel('Skill folder').setInputFiles(second);
+		await expect(
+			page.getByText('Added 0 files; replaced 1; skipped 0 ignored files.')
+		).toBeVisible();
+		await expect(page.getByLabel('Name')).toHaveValue('');
+		await expect(page.getByLabel('Description')).toHaveValue('');
+		await expect(page.getByText('From SKILL.md')).toHaveCount(0);
+	} finally {
+		await rm(temp, { recursive: true, force: true });
+	}
+});
+
+test('folder metadata never fills an existing skill with a blank description', async ({
+	page,
+	context,
+	request,
+	uniqueName
+}) => {
+	const api = apiClient(request, ALICE.apiKey);
+	const name = uniqueName('existing-empty-description');
+	const item = await body<ContextItem>(
+		await api.post('/api/v1/context', {
+			kind: 'skill',
+			name,
+			description: '',
+			files: [{ path: 'SKILL.md', content: '# Existing skill\n' }]
+		})
+	);
+	try {
+		await signIn(context, ALICE.sessionToken);
+		await gotoHydrated(page, '/context');
+		await page.getByText(name, { exact: true }).click();
+		await expect(page.getByLabel('File SKILL.md content')).toHaveValue('# Existing skill\n');
+		await page
+			.getByLabel('Skill folder')
+			.setInputFiles(path.join(import.meta.dirname, 'fixtures/skill-folder'));
+		await expect(
+			page.getByText('Added 2 files; replaced 1; skipped 0 ignored files.')
+		).toBeVisible();
+		await expect(page.getByLabel('Name')).toHaveValue(name);
+		await expect(page.getByLabel('Description')).toHaveValue('');
+		await expect(page.getByText('From SKILL.md')).toHaveCount(0);
+	} finally {
+		expect((await api.delete(`/api/v1/context/${item.id}`)).status()).toBe(204);
+	}
+});
+
 test('metadata hints fit desktop and phone layouts in light and dark themes', async ({
 	page,
-	context
+	context,
+	request,
+	uniqueName
 }) => {
+	const api = apiClient(request, ALICE.apiKey);
+	const backgroundName = uniqueName('create-first-wide-background');
+	const background = await body<ContextItem>(
+		await api.post('/api/v1/context', {
+			kind: 'prompt',
+			name: backgroundName,
+			description: 'Background row used to prove modal-local layout assertions.',
+			body: 'Fixture'
+		})
+	);
 	await signIn(context, ALICE.sessionToken);
-	for (const [viewportName, viewport] of [
-		['desktop', DESKTOP],
-		['phone', PHONE]
-	] as const) {
-		for (const colorScheme of ['light', 'dark'] as const) {
-			await page.setViewportSize(viewport);
-			await page.emulateMedia({ colorScheme });
-			await gotoHydrated(page, '/context');
-			await page.getByRole('button', { name: 'New item' }).click();
-			await page.getByText('Skill — text files seeded into the workspace', { exact: true }).click();
-			await page
-				.getByLabel('Skill folder')
-				.setInputFiles(path.join(import.meta.dirname, 'fixtures/skill-folder'));
-			await expect(page.getByText('From SKILL.md')).toHaveCount(2);
-			await expect(page.locator('html')).toHaveClass(
-				colorScheme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
-			);
-			expect(
-				await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-			).toBe(true);
-			for (const hint of await page.getByText('From SKILL.md').all()) {
-				const box = await hint.boundingBox();
-				expect(box).not.toBeNull();
-				expect(box!.x).toBeGreaterThanOrEqual(0);
-				expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
+	try {
+		for (const [viewportName, viewport] of [
+			['desktop', DESKTOP],
+			['phone', PHONE]
+		] as const) {
+			for (const colorScheme of ['light', 'dark'] as const) {
+				await page.setViewportSize(viewport);
+				await page.emulateMedia({ colorScheme });
+				await gotoHydrated(page, `/context?q=${encodeURIComponent(backgroundName)}`);
+				const backgroundRow = page.getByRole('button').filter({ hasText: backgroundName });
+				await expect(backgroundRow).toBeVisible();
+				await backgroundRow.evaluate((element, width) => {
+					element.style.width = `${width}px`;
+				}, viewport.width + 200);
+				expect(
+					await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)
+				).toBe(true);
+				await page.getByRole('button', { name: 'New item' }).click();
+				const dialog = page.getByRole('dialog', { name: 'New context item' });
+				await dialog
+					.getByText('Skill — text files seeded into the workspace', { exact: true })
+					.click();
+				await dialog
+					.getByLabel('Skill folder')
+					.setInputFiles(path.join(import.meta.dirname, 'fixtures/skill-folder'));
+				await expect(dialog.getByText('From SKILL.md')).toHaveCount(2);
+				await expect(dialog.getByRole('button', { name: 'Create', exact: true })).toBeEnabled();
+				await expect(page.locator('html')).toHaveClass(
+					colorScheme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
+				);
+				expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+					true
+				);
+				for (const hint of await dialog.getByText('From SKILL.md').all()) {
+					const box = await hint.boundingBox();
+					expect(box).not.toBeNull();
+					expect(box!.x).toBeGreaterThanOrEqual(0);
+					expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
+				}
+				await page.screenshot({
+					path: `test-results/skill-metadata-${viewportName}-${colorScheme}.png`
+				});
+				await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
 			}
-			await page.screenshot({
-				path: `test-results/skill-metadata-${viewportName}-${colorScheme}.png`
-			});
-			await page.getByRole('button', { name: 'Cancel' }).click();
 		}
+	} finally {
+		expect((await api.delete(`/api/v1/context/${background.id}`)).status()).toBe(204);
 	}
 });
 
@@ -456,17 +615,18 @@ test('folder errors preserve the draft and an over-limit import remains removabl
 			page.getByText('Added 20 files; replaced 1; skipped 0 ignored files.')
 		).toBeVisible();
 		await expect(page.getByText(/22 \/ 20 files/)).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Create' })).toBeDisabled();
+		const dialog = page.getByRole('dialog', { name: 'New context item' });
+		await expect(dialog.getByRole('button', { name: 'Create', exact: true })).toBeDisabled();
 		await page.getByRole('button', { name: 'Remove file draft.txt' }).click();
 		await page.getByRole('button', { name: 'Remove file file-19.txt' }).click();
 		await expect(page.getByText(/20 \/ 20 files/)).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Create' })).toBeEnabled();
+		await expect(dialog.getByRole('button', { name: 'Create', exact: true })).toBeEnabled();
 
 		await page.getByRole('button', { name: 'Remove file SKILL.md' }).click();
 		await expect(page.getByRole('alert')).toContainText('Restore SKILL.md');
-		await expect(page.getByRole('button', { name: 'Create' })).toBeDisabled();
+		await expect(dialog.getByRole('button', { name: 'Create', exact: true })).toBeDisabled();
 		await page.getByLabel('File 1 path').fill('SKILL.md');
-		await expect(page.getByRole('button', { name: 'Create' })).toBeEnabled();
+		await expect(dialog.getByRole('button', { name: 'Create', exact: true })).toBeEnabled();
 	} finally {
 		await rm(temp, { recursive: true, force: true });
 	}
