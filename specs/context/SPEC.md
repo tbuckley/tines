@@ -287,7 +287,7 @@ Which scopes appear where: each element's page lists items whose scope **include
 One dialog/page for all kinds — kind picker up front (locked when editing), then:
 
 - **Prompt**: name, description, Markdown editor with preview (same component as issue descriptions).
-- **Skill**: name (slug-validated), description, and a small file editor — a file list (add/rename/remove paths) with a text editor per file; validation errors (bad path, size caps) inline. “Add from folder” recursively reads a locally selected directory, requires its root `SKILL.md`, and merges text files by exact relative path. The draft shows ignored noise and live count/byte limits, and every imported row remains editable or removable before the existing save request.
+- **Skill**: name (slug-validated), description, and a small file editor — a file list (add/rename/remove paths) with a text editor per file; validation errors (bad path, size caps) inline. “Add from folder” recursively reads a locally selected directory, requires its root `SKILL.md`, and merges text files by exact relative path. On the first successful import into a new draft, valid root front-matter name and one-line description values fill only untouched blank fields and remain editable, with their source identified beside the field. The draft shows ignored noise and live count/byte limits, and every imported row remains editable or removable before the existing save request.
 - **Repo**: name, URL, branch, checkout dir (placeholder showing the derived default).
 
 Plus the scope picker: three optional selectors (project, workflow → state, issue) rendered as removable chips, with the coherence rules enforced live (picking an issue constrains the state list to its workflow, etc.).
@@ -344,6 +344,8 @@ From the spec review:
 From later work:
 
 - **2026-09-19, Tines/602 — folder import is a draft merge, not an upload**: the browser reads strict UTF-8 text locally and merges by exact relative path; matching rows are replaced and unrelated edits survive. A picked folder must contain root `SKILL.md`; `.git`, `node_modules`, and `.DS_Store` entries are ignored, while other dotfiles remain reviewable. Nothing reaches the API until Save, and the existing 20-file / 100 KiB path-plus-content limits remain authoritative.
+
+- **2026-09-20, Tines/636 — first folder import may seed blank metadata**: a new skill draft reads valid string `name` and `description` values from root `SKILL.md` front matter once. Each untouched blank field fills independently; typed or cleared fields, later imports, and all existing-item metadata remain unchanged. Source hints disappear when a user edits the inferred field, and form overrides never rewrite the imported file.
 
 - **2026-09-01, Tines/92 — repo clone URL is `--repo-url`, not `--url`**: `-u, --url` is the API base URL on every CLI command without exception. The repo kind originally took `--url` for the clone URL and suppressed the base-URL flag, which left `context create` unable to target a non-default deployment except via `TINES_API_URL`. Payload flags that happen to hold a URL are named for what they hold.
 
