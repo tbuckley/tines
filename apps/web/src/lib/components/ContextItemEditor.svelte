@@ -621,7 +621,7 @@
 				{/if}
 				{#if files.length === 0}
 					<p class="text-muted-foreground text-xs italic">
-						No files yet — seeded into the workspace at skills/&lt;name&gt;/…
+						No files yet — seeded into the workspace at .agents/skills/&lt;name&gt;/…
 					</p>
 				{/if}
 				{#each files as file, i (file.key)}

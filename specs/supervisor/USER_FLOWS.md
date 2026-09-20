@@ -52,7 +52,7 @@ Plus: [Spec deltas from this review](#spec-deltas-from-this-review) · [Future w
 3. In a terminal, they run the command. The daemon registers, stores its token, and starts polling. Back in the browser, the runner card appears: online dot, 0/1 runs, hostname/platform.
 4. Still on the Agents tab, they create a **global routing rule** targeting `laptop-m4` (no tier — the runner's `default_tier`, `balanced`, applies). The empty state nudged them here (see Decisions).
 5. They flip the **kill switch** on. Automation is now armed — dispatch begins immediately if eligible work exists.
-6. They move an issue to an `active` state (board drag or `tines issues move`). Within one poll interval (~15 s), the daemon receives the assignment, materializes the workspace (`prompt.md` with supervisor preamble, `skills/`, cloned repos with the device's own git credentials), and launches `claude -p`.
+6. They move an issue to an `active` state (board drag or `tines issues move`). Within one poll interval (~15 s), the daemon receives the assignment, materializes the workspace (`prompt.md` with supervisor preamble, generated `.agents/skills/`, cloned repos with the device's own git credentials), and launches `claude -p`. A resumed launch refreshes that generated skill subtree while retaining repository edits.
 7. In the UI, the issue's **Agent activity panel** shows the run: `running`, tier + resolved model, live log tail. The agent's comments appear in the thread as "via ***laptop-m4*** · run on demo/12".
 8. The agent finishes, transitions the issue to the review state, and the run ends `completed` / outcome `advanced`. The runner card goes back to 0/1; the activity feed shows the whole lifecycle.
 

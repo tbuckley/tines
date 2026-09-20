@@ -135,9 +135,11 @@ is the precedent.
 - A kind whose payload an agent fetches into its workspace joins the
   "Attached to this issue: …" footnote in the launch prompt (`issueBlock`
   in `apps/web/src/lib/server/api/context.ts`). Today that line is built
-  from `context.repos` alone: skills get their own `### Skills` section
-  above it, and issue artifacts arrive as a separate `issueArtifacts`
-  argument with a block of their own, so neither is on it. The journal,
+  from `context.repos` alone. Skill discovery is rendered in the
+  environment-specific supervisor preamble because local runs receive
+  `.agents/skills` while managed runs fetch files on demand; issue artifacts
+  arrive as a separate `issueArtifacts` argument with a block of their own.
+  The journal,
   proposal, and append machinery are kind-agnostic — no other changes.
 
 ### Tests and docs

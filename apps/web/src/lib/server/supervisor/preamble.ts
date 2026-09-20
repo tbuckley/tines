@@ -31,11 +31,54 @@ export interface PreambleInput {
 	envExports?: { name: string; value: string }[];
 	/** Managed variants: names of secret env items delivered through the vault. */
 	envSecretNames?: string[];
+	/** Current effective skill metadata; file delivery differs by variant. */
+	skills?: readonly { name: string; description: string }[];
 }
 
 /** Single-quoted POSIX shell literal. */
 function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function skillInstructions(input: PreambleInput, resumed: boolean): string[] {
+	const skills = input.skills ?? [];
+	if (input.variant === 'local') {
+		if (skills.length === 0) {
+			return resumed
+				? [
+						'No skills are currently attached. The refreshed `.agents/skills` directory is empty;',
+						'do not rely on a prior skill list or skill files from the previous conversation.'
+					]
+				: [];
+		}
+		return [
+			resumed
+				? `The current effective set of ${skills.length} skill${skills.length === 1 ? '' : 's'} replaces the prior attachment set and has been refreshed at \`.agents/skills\`.`
+				: `${skills.length} skill${skills.length === 1 ? ' is' : 's are'} attached at \`.agents/skills\` for automatic harness discovery.`,
+			'If the harness has not surfaced every attached skill, inspect `.agents/skills/<name>/SKILL.md`.',
+			`If that directory or its metadata is unavailable, \`tines issues context ${input.issueRef} --json\` returns the current names, descriptions, and file contents.`
+		];
+	}
+
+	const lead = resumed
+		? 'The current effective skill set below replaces every prior attachment list and cached skill copy.'
+		: 'Skills attached to this issue are not pre-seeded in the managed workspace.';
+	if (skills.length === 0) {
+		return [lead, 'No skills are currently attached; do not rely on a prior list or cached copy.'];
+	}
+	return [
+		lead,
+		'',
+		...skills.map((skill) => {
+			const description = skill.description.replace(/\s+/g, ' ').trim();
+			return description
+				? `- \`${skill.name}\`: ${description}`
+				: `- \`${skill.name}\`: use when the ${skill.name} procedure is relevant.`;
+		}),
+		'',
+		'These files are not automatically seeded. Fetch the current bundle when needed:',
+		`\`tines issues context ${input.issueRef} --json\` (or \`GET /api/v1/issues/:id/context\`) lists each skill file with its contents.`
+	];
 }
 
 /** Environment-specific sections, keyed so future variants replace only these. */
@@ -53,13 +96,14 @@ const VARIANTS: Record<
 			'`Authorization: Bearer $TINES_API_KEY` works too. The key is revoked the moment this run',
 			'ends — do not write it anywhere.'
 		],
-		workspace: () => [
+		workspace: (input) => [
 			'Your working directory is a fresh per-run workspace containing:',
 			'',
 			'- `prompt.md` — this prompt.',
-			'- `skills/<name>/…` — the files of every skill attached to this issue.',
+			'- `.agents/skills/<name>/…` — the files of every skill attached to this issue.',
 			'- `repos.json` — the effective repositories, already cloned into the listed `dir`s',
-			"  alongside it (with this machine's own git credentials)."
+			"  alongside it (with this machine's own git credentials).",
+			...(input.skills && input.skills.length > 0 ? ['', ...skillInstructions(input, false)] : [])
 		]
 	},
 	claude_managed: {
@@ -100,9 +144,7 @@ const VARIANTS: Record<
 					]
 				: []),
 			'',
-			'Skills attached to this issue are not pre-seeded; fetch them when needed:',
-			'`tines issues context <ref> --json` (or `GET /api/v1/issues/:id/context`) lists each',
-			"skill's files with their contents."
+			...skillInstructions(input, false)
 		]
 	}
 };
@@ -162,12 +204,15 @@ export function buildResumePreamble(input: PreambleInput & { previousRunId: stri
 			` "${input.runnerName}" for issue ${input.issueRef}; it times out after` +
 			` ${input.timeoutMinutes} minutes. It continues run ${input.previousRunId}, whose`,
 		'workspace you are still in and whose conversation you are still holding — the repositories,',
-		'the files you edited and everything you learned are as you left them.',
+		'the files you edited outside the generated skill tree, and everything you learned are retained.',
 		'',
 		'What follows is only what changed while you were away, plus the contract of the stage the',
 		'issue is in now. Everything else — authentication, the workspace layout, the rest of the',
 		'issue — is unchanged from your previous prompt; re-read it there rather than asking for it',
 		'again.',
+		'',
+		...skillInstructions(input, true),
+		'',
 		...(input.variant === 'claude_managed'
 			? [
 					// Managed: the key moves by rotating the vault credential this

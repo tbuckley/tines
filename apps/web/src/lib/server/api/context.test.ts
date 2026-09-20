@@ -481,7 +481,7 @@ describe('issueBlock', () => {
 		expect(block.match(/Older agent comments:/g)).toHaveLength(1);
 	});
 
-	it('renders skill descriptions once, collapses whitespace, and falls back for empty text', () => {
+	it('omits generated skill metadata and bodies from the shared issue block', () => {
 		const context = structuredClone(richContext);
 		context.skills[0].description = ' Check the\n implementation   before review. ';
 		context.skills.push({
@@ -492,11 +492,9 @@ describe('issueBlock', () => {
 			files: [{ path: 'SKILL.md', content: 'EMPTY SKILL BODY' }]
 		});
 		const block = issueBlock(issue, context);
-		expect(block.match(/Check the implementation before review\./g)).toHaveLength(1);
-		expect(block).toContain(
-			'Skill "empty-skill" (state Review): read `skills/empty-skill/SKILL.md` when the "empty-skill" procedure is relevant.'
-		);
-		expect(block).toContain('tines issues context Tines/42 --json');
+		expect(block).not.toContain('### Skills');
+		expect(block).not.toContain('Check the implementation before review.');
+		expect(block).not.toContain('empty-skill');
 		expect(block).not.toContain('EMPTY SKILL BODY');
 	});
 
@@ -659,11 +657,9 @@ describe('issueBlock', () => {
 		);
 	});
 
-	it('lists artifacts with the fetch command and shared prompts names-only', () => {
+	it('lists repositories with the fetch command and shared prompts names-only', () => {
 		const block = issueBlock(issue, richContext);
-		expect(block).toContain(
-			'Skill "review-checklist" (state Review): read `skills/review-checklist/SKILL.md`'
-		);
+		expect(block).not.toContain('review-checklist');
 		expect(block).toContain(
 			'Attached to this issue: repo "src" (branch experiment). Fetch them: `tines issues context Tines/42 --out <dir>`'
 		);
@@ -702,7 +698,8 @@ describe('buildLaunchPrompt', () => {
 		]) {
 			expect(text).toContain('Older agent comments: cmt_0, cmt_1.');
 			expect(text).not.toContain('OMITTED COLD RESUME SENTINEL');
-			expect(text).toContain('Skill "review-checklist"');
+			expect(text).not.toContain('review-checklist');
+			expect(text).not.toContain('### Skills');
 		}
 	});
 	it('puts the context first and the issue block last', () => {

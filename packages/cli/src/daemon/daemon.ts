@@ -40,6 +40,7 @@ import type { RunStreamRenderer } from './stream-summary.js';
 import { RateLimitDetector } from './rate-limit';
 import { assignmentEffortRejection, EffortCapabilityRefresher } from './effort-capabilities.js';
 import { agentCliPrefix, installAgentCli } from './cli-refresh.js';
+import { assertNoSkillRepoOverlap, materializeSkills } from '../skills.js';
 import { ensureRunnerCredentials, nextStepsMessage } from './register.js';
 import {
 	clearRunnerCredentials,
@@ -619,24 +620,45 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		);
 
 		try {
+			const currentRepoDirs = assignment.bundle.repos.map((repo) => repo.dir);
+			let retainedRepoDirs: string[] = [];
+			if (resume) {
+				const retainedPath = join(workspace, 'repos.json');
+				let retained: unknown;
+				try {
+					retained = JSON.parse(readFileSync(retainedPath, 'utf8'));
+				} catch (error) {
+					throw new Error(
+						`cannot safely refresh skills: retained ${retainedPath} is unreadable or invalid JSON (${message(error)})`
+					);
+				}
+				if (
+					!Array.isArray(retained) ||
+					retained.some(
+						(repo) =>
+							!repo ||
+							typeof repo !== 'object' ||
+							typeof (repo as { dir?: unknown }).dir !== 'string'
+					)
+				) {
+					throw new Error(
+						`cannot safely refresh skills: retained ${retainedPath} must be an array of repositories with string dir fields`
+					);
+				}
+				retainedRepoDirs = retained.map((repo) => (repo as { dir: string }).dir);
+			}
+			assertNoSkillRepoOverlap([...currentRepoDirs, ...retainedRepoDirs]);
 			// The workspace: exactly the `issues context --out` layout. A resumed
-			// run inherits its predecessor's, so only prompt.md is rewritten —
-			// wiping and re-cloning is the cost this whole path exists to skip.
+			// run inherits its predecessor's repositories and edits, while the
+			// generated skill subtree is replaced with the current effective set.
 			if (!resume) {
 				rmSync(workspace, { recursive: true, force: true });
 				mkdirSync(workspace, { recursive: true });
 			} else {
 				rmSync(join(workspace, 'kept.json'), { force: true });
 			}
+			materializeSkills(workspace, assignment.bundle.skills);
 			writeFileSync(join(workspace, 'prompt.md'), `${assignment.prompt}\n`);
-			if (!resume)
-				for (const skill of assignment.bundle.skills) {
-					for (const file of skill.files) {
-						const target = join(workspace, 'skills', skill.name, file.path);
-						mkdirSync(dirname(target), { recursive: true });
-						writeFileSync(target, file.content);
-					}
-				}
 			if (!resume)
 				writeFileSync(
 					join(workspace, 'repos.json'),

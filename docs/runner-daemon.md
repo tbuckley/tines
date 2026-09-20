@@ -83,8 +83,11 @@ The effort placeholder forwards an effort already present on the assignment; it 
 enable effort routing for custom harnesses, which currently advertise no effort capability.
 
 Each run's workspace (under the config dir) contains `prompt.md` (supervisor preamble +
-stitched context + issue block), `skills/<name>/…`, `repos.json`, and a clone of each listed
-repository made with the machine's own git credentials. The harness runs with
+stitched context + issue block), generated `.agents/skills/<name>/…`, `repos.json`, and a
+clone of each listed repository made with the machine's own git credentials. The daemon
+owns only `.agents/skills`: every launch replaces that subtree with the complete current
+effective set, while `.agents` siblings and a legacy root `skills/` directory are left alone.
+The harness runs with
 `TINES_API_KEY` set to the run's ephemeral key and `TINES_API_URL` set to the API base.
 When the run settles the workspace is deleted, unless `--keep-workspaces` says otherwise
 (see "Debugging a failed run") or the supervisor retained it for a resume — a run that moved
@@ -185,6 +188,11 @@ and prepends `~/.config/tines/cli/node_modules/.bin` to the harness's `PATH`. No
   is simply absent and every harness silently falls through to the ambient `PATH`. If agents
   report a `tines` older than npm's, check the daemon first — `ls ~/.config/tines/cli`
   (missing prefix), then `tines --version` against `npm view tines version`.
+
+An older daemon can keep writing the former `skills/` layout during a rolling upgrade. Its
+supervisor preamble tells the agent to recover current skill names, descriptions, and file
+contents with `tines issues context <ref> --json`. Refreshing the harness-facing CLI does
+not change workspace materialization; restart or let the managed service restart the daemon.
 
 ### Keeping the daemon itself current
 
@@ -289,14 +297,16 @@ agent re-reading the repository from zero. When the runner is opted in (Agents �
 runner's resume settings, off by default), the supervisor instead keeps the finished run's
 workspace and its harness session, and the send-back is delivered as a continuation:
 
-- the daemon launches in the **kept workspace** — no wipe, no re-clone, no skills or
-  `repos.json` rewrite; only `prompt.md` changes;
+- the daemon launches in the **kept workspace** — no wipe and no re-clone; repository edits
+  and `repos.json` remain, while `prompt.md` and the generated `.agents/skills` subtree are
+  refreshed from the new assignment (including removals);
 - Claude Code is launched as `claude -p --resume <session-id> …`, so the conversation
   carries on rather than starting over;
 - the prompt is the reduced continuation message (what changed since the last run, the
   current stage's instructions and the issue block), not the full cold launch prompt;
-- the issue block uses the same essential-comment selection and skill discovery as a cold
-  launch. Older agent comment IDs resolve current bodies through `tines issues show --json`;
+- the issue block uses the same essential-comment selection as a cold launch, and the resume
+  preamble says the refreshed skill set replaces the prior one. Older agent comment IDs
+  resolve current bodies through `tines issues show --json`;
   bodies already present in the retained conversation cannot be removed retroactively;
 - the launch banner names it: `# tines runner: … resumed=<previous-run-id>`, and the run
   row says `resumed run <id>`.

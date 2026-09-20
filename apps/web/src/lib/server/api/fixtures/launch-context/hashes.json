@@ -12,24 +12,24 @@
 		"bytes": 4382
 	},
 	"skill-only.after.md": {
-		"sha256": "01ca289db01a59038c754370576c6341435f5a626f57124637247ca12f0960a7",
-		"bytes": 4635
+		"sha256": "b89c3ac90dc1a92fde2d8e462eeda86e261f5e1d7a153b4b60f04e8ea169ddd7",
+		"bytes": 4255
 	},
 	"combined.cold.before.md": {
 		"sha256": "3f90d33061415be672639d34695385df5cc5c3fd289f2434364268927450a9a4",
 		"bytes": 4201
 	},
 	"combined.cold.after.md": {
-		"sha256": "448bef5dba80440328f7112ca6f2d366a96f4ac549644eb7b113d94905b9cfb4",
-		"bytes": 3659
+		"sha256": "d55c50e3c9427de1025c8f6367971b7f85eed780a6ba7b0affa562ded42cb9b6",
+		"bytes": 3279
 	},
 	"combined.resume.before.md": {
 		"sha256": "3f90d33061415be672639d34695385df5cc5c3fd289f2434364268927450a9a4",
 		"bytes": 4201
 	},
 	"combined.resume.after.md": {
-		"sha256": "448bef5dba80440328f7112ca6f2d366a96f4ac549644eb7b113d94905b9cfb4",
-		"bytes": 3659
+		"sha256": "d55c50e3c9427de1025c8f6367971b7f85eed780a6ba7b0affa562ded42cb9b6",
+		"bytes": 3279
 	},
 	"input.json": {
 		"sha256": "7d1b81209e19b486905eb21218ccd88d2c374c87d1057e804a05bf071fe95626",

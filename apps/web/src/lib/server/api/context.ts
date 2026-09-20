@@ -2475,26 +2475,11 @@ export function issueBlock(
 		if (readOnlyLines.length > 0) lines.push('', ...readOnlyLines);
 	}
 
-	// Factual footnotes: this issue's effective artifacts (with the fetch
+	// Factual footnotes: this issue's effective repositories (with the fetch
 	// command — the agent's own attachments are fair game), then the other
 	// prompt items by name and scope label only, whose sole affordance is
-	// the proposal convention.
-	if (context.skills.length > 0) {
-		lines.push('', '### Skills', '');
-		for (const skill of context.skills) {
-			const path = `skills/${skill.name}/SKILL.md`;
-			const description = skill.description.replace(/\s+/g, ' ').trim();
-			lines.push(
-				description
-					? `- Skill "${skill.name}" (${skill.scope.label}): read \`${path}\` when this applies: ${description}`
-					: `- Skill "${skill.name}" (${skill.scope.label}): read \`${path}\` when the "${skill.name}" procedure is relevant.`
-			);
-		}
-		lines.push(
-			'',
-			`If a skill path is unavailable, read its files with \`tines issues context ${ref} --json\`; to write the bundle into a new directory, use \`tines issues context ${ref} --out <dir>\`.`
-		);
-	}
+	// the proposal convention. Skill discovery is environment-specific and
+	// therefore belongs in the supervisor preamble, not this shared block.
 	const artifacts = [
 		...context.repos.map((r) => `repo "${r.name}"${r.branch ? ` (branch ${r.branch})` : ''}`)
 	];

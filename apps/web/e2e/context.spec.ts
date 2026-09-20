@@ -703,7 +703,7 @@ test.describe.serial('agent-maintained context', () => {
 		expect((await bob.get(`/api/v1/issues/${issueId}/journal`)).status()).toBe(404);
 	});
 
-	test('the launch prompt keeps context IDs private and describes readable skills', async ({
+	test('the shared launch prompt keeps context IDs and generated skill catalogs private', async ({
 		request
 	}) => {
 		const api = apiClient(request, ALICE.apiKey);
@@ -717,10 +717,9 @@ test.describe.serial('agent-maintained context', () => {
 		);
 		expect(prompt.text).toContain(`\`tines journal append ${issueRef} "- <date>: <lesson>"\``);
 		expect(prompt.text).toContain(`--expect-version 3`);
-		expect(prompt.text).toContain(
-			`Skill "sk-${runId}" (issue ${issueRef}): read \`skills/sk-${runId}/SKILL.md\` when this applies: Use this when the issue needs the synthetic review procedure.`
-		);
-		expect(prompt.text).toContain(`tines issues context ${issueRef} --json`);
+		expect(prompt.text).not.toContain('### Skills');
+		expect(prompt.text).not.toContain(`sk-${runId}`);
+		expect(prompt.text).not.toContain('synthetic review procedure');
 		expect(prompt.text).toContain(`Also in effect: prompt "guidance-${runId}" (global)`);
 		expect(prompt.text).toContain('file an issue titled `Context change: <scope label>`');
 

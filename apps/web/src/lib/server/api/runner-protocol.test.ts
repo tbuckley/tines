@@ -862,6 +862,20 @@ describe('pollRunner', () => {
 		const t = world();
 		const runnerId = addRunner(t, { name: 'laptop-m4' });
 		const issue = addIssue(t);
+		t.sqlite
+			.prepare(
+				`INSERT INTO context_item
+					(id, user_id, kind, name, description, position, version, created_at, updated_at)
+				 VALUES ('ctx_skill', ?, 'skill', 'review-checklist', 'Check before review.', 0, 1, 0, 0)`
+			)
+			.run(USER);
+		t.sqlite
+			.prepare(
+				`INSERT INTO context_item_file
+					(id, context_item_id, path, content, created_at, updated_at)
+				 VALUES ('ctx_skill_file', 'ctx_skill', 'SKILL.md', 'SECRET SKILL BODY', 0, 0)`
+			)
+			.run();
 		const runId = addRun(t, { issueId: issue, runnerId });
 
 		const { response } = await pollRunner(
@@ -882,6 +896,11 @@ describe('pollRunner', () => {
 		expect(a.prompt).toContain(`This is run ${runId} on runner "laptop-m4" for issue demo/`);
 		expect(a.prompt).toContain('TINES_API_KEY');
 		expect(a.prompt).toContain('## Issue: demo/');
+		expect(a.prompt).toContain('1 skill is attached at `.agents/skills`');
+		expect(a.prompt).not.toContain('review-checklist');
+		expect(a.prompt).not.toContain('Check before review.');
+		expect(a.prompt).not.toContain('SECRET SKILL BODY');
+		expect(a.bundle.skills.map((skill) => skill.name)).toEqual(['review-checklist']);
 		expect(a.bundle.repos).toEqual([]);
 		// The run key is live, bound to the run, and hashed at rest.
 		expect(a.run_key).toMatch(/^tines_/);
@@ -2472,12 +2491,23 @@ describe('resume (retention and delivery)', () => {
 		const t = world();
 		const runnerId = resumeRunner(t);
 		const issue = addIssue(t);
+		t.sqlite
+			.prepare(
+				`INSERT INTO context_item
+					(id, user_id, kind, name, description, position, version, created_at, updated_at)
+				 VALUES ('ctx_resume_skill', ?, 'skill', 'stale-skill', 'Stale skill metadata.', 0, 1, 0, 0)`
+			)
+			.run(USER);
 		const first = await deliver(t, runnerId, issue);
 		const coldPrompt = first.assignment.prompt;
+		expect(first.assignment.bundle.skills.map(({ name }) => name)).toEqual(['stale-skill']);
 		await finishAdvanced(t, runnerId, issue, first.runId);
 		// The send-back itself: a human moves the issue back into an active
 		// state, which is what makes it dispatchable again.
 		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(OPEN, issue);
+		t.sqlite
+			.prepare('UPDATE context_item SET name = ?, description = ? WHERE id = ?')
+			.run('current-skill', 'Current skill metadata.', 'ctx_resume_skill');
 
 		const second = await deliver(t, runnerId, issue, NOW + 40);
 		expect(second.assignment.resume).toEqual({
@@ -2489,6 +2519,15 @@ describe('resume (retention and delivery)', () => {
 		// The continuation, not the cold launch prompt.
 		expect(second.assignment.prompt).toContain('# Supervisor run (resumed)');
 		expect(second.assignment.prompt).toContain(`It continues run ${first.runId}`);
+		expect(second.assignment.prompt).toContain(
+			'The current effective set of 1 skill replaces the prior attachment set'
+		);
+		expect(second.assignment.prompt).not.toContain('No skills are currently attached');
+		expect(second.assignment.prompt).not.toContain('stale-skill');
+		expect(second.assignment.prompt).not.toContain('Stale skill metadata.');
+		expect(
+			second.assignment.bundle.skills.map(({ name, description }) => ({ name, description }))
+		).toEqual([{ name: 'current-skill', description: 'Current skill metadata.' }]);
 		expect(coldPrompt).toContain('# Supervisor run\n');
 		expect(second.assignment.prompt.length).toBeLessThan(coldPrompt.length);
 

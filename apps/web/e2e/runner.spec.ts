@@ -128,7 +128,7 @@ case "$MODE" in
 	work)
 		cp prompt.md "$E2E_DIR/last-prompt.md"
 		cp repos.json "$E2E_DIR/last-repos.json"
-		find skills -type f > "$E2E_DIR/last-skills.txt"
+		find .agents/skills -type f > "$E2E_DIR/last-skills.txt"
 		cat srcrepo/hello.txt > "$E2E_DIR/clone-proof.txt"
 		printf '%s' "$TINES_API_KEY" > "$E2E_DIR/last-key"
 		REF=$(sed -n 's/^This is run .* for issue \\([^;]*\\);.*/\\1/p' prompt.md | head -n 1)
@@ -303,7 +303,9 @@ esac
 		expect(prompt).toContain('E2E conventions: be excellent');
 		expect(prompt).toContain('## Issue: ');
 		expect(prompt).toContain('Submit for review');
-		expect(readSideFile('last-skills.txt')).toContain('skills/e2e-skill/notes.md');
+		expect(readSideFile('last-skills.txt')).toContain('.agents/skills/e2e-skill/notes.md');
+		expect(prompt).toContain('1 skill is attached at `.agents/skills`');
+		expect(prompt).toContain(`tines issues context ${issue.project_name}/${issue.number} --json`);
 		expect(readSideFile('last-repos.json')).toContain(`file://${srcRepoDir}`);
 		expect(readSideFile('clone-proof.txt')).toBe('cloned payload\n');
 

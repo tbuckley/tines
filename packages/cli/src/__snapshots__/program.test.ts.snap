@@ -454,8 +454,8 @@ Options:
 Print an issue's effective context (the assembled bundle for its current state)
 
 Options:
-  --out <dir>      write the bundle to a directory: prompt.md, skills/<name>/…,
-                   repos.json
+  --out <dir>      write the bundle to a directory: prompt.md,
+                   .agents/skills/<name>/…, repos.json
   --force          allow --out into a non-empty directory
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
