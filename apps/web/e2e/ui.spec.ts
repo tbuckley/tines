@@ -118,6 +118,22 @@ test('an issue can be created from the issues list, picking project and starting
 	await expect(stateBadge(page)).toHaveText(/Human Review/);
 });
 
+test('the mobile new-issue form keeps space between every field', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await gotoHydrated(page, '/issues');
+	const dialog = page.getByRole('dialog', { name: 'New issue' });
+	await clickToOpen(page.getByRole('button', { name: /New issue/ }), dialog);
+
+	const gaps = await dialog.locator('form > fieldset > *').evaluateAll((fields) =>
+		fields.slice(1).map((field, index) => {
+			const previous = fields[index].getBoundingClientRect();
+			return field.getBoundingClientRect().top - previous.bottom;
+		})
+	);
+	expect(gaps).toHaveLength(8);
+	expect(gaps).toEqual(gaps.map(() => 16));
+});
+
 test('the new-issue graph animates one connected route and updates disconnected states immediately', async ({
 	page
 }) => {
