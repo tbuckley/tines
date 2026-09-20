@@ -126,6 +126,13 @@ describe('assertNoSkillRepoOverlap', () => {
 		}
 	);
 
+	it.each(['.agents/Skills', '.Agents/skills', '.AGENTS/SKILLS/repo'])(
+		'rejects case aliases of the generated directory %s',
+		(dir) => {
+			expect(() => assertNoSkillRepoOverlap([dir])).toThrow(/overlaps/);
+		}
+	);
+
 	it('allows sibling checkout directories', () => {
 		expect(() => assertNoSkillRepoOverlap(['repo', '.agents/cache'])).not.toThrow();
 	});

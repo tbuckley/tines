@@ -249,6 +249,36 @@ describe('resumed launch', () => {
 		).toBe(true);
 	}, 30_000);
 
+	it('rejects a case-aliased retained checkout without spawning or deleting it', async () => {
+		const retainedDir = '.agents/Skills';
+		const { harvest, prevWs } = await runOnce({
+			resume: resumeBlock,
+			command: 'touch {workspace}/harness-spawned',
+			finishReply: { resume_expires_at: Date.now() + 48 * 60 * 60 * 1000 },
+			prepare: (dir) => {
+				const ws = keptWorkspace(dir);
+				mkdirSync(join(ws, retainedDir), { recursive: true });
+				writeFileSync(join(ws, retainedDir, 'repository-sentinel.txt'), 'repository work');
+				writeFileSync(
+					join(ws, 'repos.json'),
+					`${JSON.stringify([{ name: 'skill-alias', dir: retainedDir, url: 'https://example.test/repo.git' }], null, 2)}\n`
+				);
+				return ws;
+			}
+		});
+
+		expect(harvest.finish).toMatchObject({
+			status: 'failed',
+			error: expect.stringContaining(
+				`Repository checkout directory "${retainedDir}" overlaps generated skill directory`
+			)
+		});
+		expect(readFileSync(join(prevWs, retainedDir, 'repository-sentinel.txt'), 'utf8')).toBe(
+			'repository work'
+		);
+		expect(existsSync(join(prevWs, 'harness-spawned'))).toBe(false);
+	}, 30_000);
+
 	it('a workspace the server retained is kept whatever --keep-workspaces says', async () => {
 		// The daemon defaults to `never`; only the finish response's
 		// `resume_expires_at` holds this one.

@@ -1204,7 +1204,37 @@ describe('claude adapter resume launch (the hand-over)', () => {
 
 	it('continues the retained session instead of creating one: rotate, retag, send', async () => {
 		const { t, runnerId } = await handoverWorld();
-		const net = handoverNetwork();
+		const net = handoverNetwork({
+			'GET /api/v1/issues/iss_1/context': () => ({
+				prompt: { text: '', parts: [] },
+				skills: [
+					{
+						item_id: 'ctx_current_skill',
+						name: 'current-skill',
+						description: ' Current skill\n metadata. ',
+						scope: {},
+						files: [{ path: 'SKILL.md', content: 'CURRENT SKILL BODY' }],
+						file_count: 1,
+						version: 1,
+						inherited_from: null
+					}
+				],
+				repos: [
+					{
+						item_id: 'ctx_1',
+						name: 'web',
+						scope: {},
+						url: 'https://github.com/o/web',
+						branch: 'main',
+						dir: 'web',
+						version: 1
+					}
+				],
+				env: [],
+				overridden: [],
+				conflicts: []
+			})
+		});
 		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
 		const result = await adapter.launch(launchInput(runnerId));
 
@@ -1222,8 +1252,19 @@ describe('claude adapter resume launch (the hand-over)', () => {
 		expect(retag.body).toMatchObject({ metadata: { tines_run_id: 'arun_l1' } });
 		const send = net.of('POST /v1/sessions/sesn_kept/events')[0]!;
 		expect(net.calls.indexOf(rotate)).toBeLessThan(net.calls.indexOf(send));
-		const events = (send.body as { events: Array<{ type: string }> }).events;
+		const events = (
+			send.body as {
+				events: Array<{ type: string; content: Array<{ type: string; text: string }> }>;
+			}
+		).events;
 		expect(events[0]!.type).toBe('user.message');
+		const resumeText = events[0]!.content[0]!.text;
+		expect(resumeText).toContain(
+			'The current effective skill set below replaces every prior attachment list and cached skill copy.'
+		);
+		expect(resumeText).toContain('- `current-skill`: Current skill metadata.');
+		expect(resumeText).not.toContain('stale-skill');
+		expect(resumeText).not.toContain('Stale skill metadata.');
 
 		expect(
 			t.all(

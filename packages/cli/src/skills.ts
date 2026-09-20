@@ -18,7 +18,10 @@ function validateRelativePath(value: string, label: string): string[] {
 }
 
 function isPrefix(left: readonly string[], right: readonly string[]): boolean {
-	return left.length <= right.length && left.every((segment, index) => segment === right[index]);
+	return (
+		left.length <= right.length &&
+		left.every((segment, index) => segment.toLowerCase() === right[index]?.toLowerCase())
+	);
 }
 
 /** Refuse a checkout that could be removed when the generated skill subtree is replaced. */
