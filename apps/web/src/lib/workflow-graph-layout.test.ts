@@ -166,6 +166,10 @@ describe('layoutWorkflowGraph', () => {
 		expect(full.nodes).toHaveLength(3);
 		expect(new Set(full.edges.map((edge) => edge.key)).size).toBe(3);
 		expect(full.edges.map((edge) => edge.label)).toEqual(['First', 'Second', 'Third']);
+		expect(full.edges.find((edge) => edge.label === 'First')?.labelBox).toMatchObject({
+			w: estimateTextWidth('First', 9.5) + 8,
+			h: 40
+		});
 		expectLabelsClear(full);
 		expect(JSON.stringify(workflow)).toBe(before);
 	});
