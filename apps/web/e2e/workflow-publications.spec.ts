@@ -531,6 +531,31 @@ test.describe.serial('public workflow snapshots', () => {
 			).toBeVisible();
 			await expect(page.getByRole('button', { name: /Sign in to install/i })).toBeVisible();
 			await expect(page.getByRole('button', { name: /Download file/i })).toBeVisible();
+			const scroller = page.getByRole('region', {
+				name: `${marker} graph; scroll horizontally to inspect all states`
+			});
+			const graph = scroller.getByRole('img', { name: 'Workflow graph' });
+			await expect(graph.getByText('Draft', { exact: true })).toBeVisible();
+			await expect(graph.getByText('Done', { exact: true })).toBeVisible();
+			const graphGeometry = await graph.evaluate((svg) => ({
+				ratio: svg.getBoundingClientRect().width / svg.viewBox.baseVal.width,
+				graphWidth: svg.getBoundingClientRect().width,
+				scrollerWidth: svg.parentElement!.clientWidth,
+				scrollerScrollWidth: svg.parentElement!.scrollWidth,
+				overflowX: getComputedStyle(svg.parentElement!).overflowX,
+				documentClientWidth: document.documentElement.clientWidth,
+				documentScrollWidth: document.documentElement.scrollWidth
+			}));
+			expect(graphGeometry.ratio).toBeCloseTo(1.3, 2);
+			expect(graphGeometry.overflowX).toBe('auto');
+			expect(graphGeometry.scrollerScrollWidth + 1).toBeGreaterThanOrEqual(
+				graphGeometry.graphWidth
+			);
+			if (viewport.width === PHONE.width)
+				expect(graphGeometry.graphWidth).toBeGreaterThan(graphGeometry.scrollerWidth);
+			expect(
+				graphGeometry.documentScrollWidth - graphGeometry.documentClientWidth
+			).toBeLessThanOrEqual(1);
 			const external = page.getByRole('button', { name: /External guide/i });
 			await external.click();
 			await expect(page.getByRole('dialog', { name: 'Open external destination?' })).toBeVisible();

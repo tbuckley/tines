@@ -370,6 +370,25 @@ test('reviews, confirms and installs an independent project-free package through
 	await expect(
 		page.getByRole('heading', { name: `${dependencyName} (imported)`, exact: true })
 	).toBeVisible();
+	const review = page.getByTestId('package-review');
+	const mainGraph = review
+		.getByRole('heading', { name: `${mainName} (imported)`, exact: true })
+		.locator('xpath=ancestor::article')
+		.getByRole('img', { name: 'Workflow graph' });
+	const dependencyGraph = review
+		.getByRole('heading', { name: `${dependencyName} (imported)`, exact: true })
+		.locator('xpath=ancestor::article')
+		.getByRole('img', { name: 'Workflow graph' });
+	await expect(mainGraph.getByText('Review', { exact: true })).toBeVisible();
+	await expect(mainGraph.getByText('Handoff', { exact: true })).toBeVisible();
+	await expect(dependencyGraph.getByText('Base', { exact: true })).toBeVisible();
+	for (const graph of [mainGraph, dependencyGraph]) {
+		const fitted = await graph.evaluate((svg) => ({
+			width: svg.getBoundingClientRect().width,
+			containerWidth: svg.parentElement!.clientWidth
+		}));
+		expect(fitted.width).toBeLessThanOrEqual(fitted.containerWidth + 1);
+	}
 	await expect(page.getByText('Variable values', { exact: true })).toBeVisible();
 	await expect(page.getByText('Original', { exact: true }).first()).toBeVisible();
 	await expect(page.getByText('Installed value', { exact: true }).first()).toBeVisible();
