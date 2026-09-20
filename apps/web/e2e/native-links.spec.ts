@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { APIRequestContext } from '@playwright/test';
 import { expect, test } from './fixtures';
-import type { IssueDetail, IssueLink, Project } from '@tines/shared';
+import type { IssueDetail, IssueLink, Label, Project } from '@tines/shared';
 import { ALICE, ALICE_AGENT, BASE_URL, CAROL } from './constants.mjs';
 import { apiClient, body, errorBody, runId } from './helpers';
 
@@ -436,10 +436,16 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 		for (let iteration = 0; iteration < 10; iteration++) {
 			const marker = `create-race-${runId}-${iteration}`;
 			const fileName = `${marker}-file`;
+			const existingLabelName = `${marker}-existing-label`;
+			const newLabelName = `${marker}-new-label`;
 			const {
+				api,
 				project,
 				issues: [a, b]
 			} = await makeIssues(request, marker, 2);
+			const existingLabel = await body<Label>(
+				await api.post('/api/v1/labels', { name: existingLabelName, color: 'blue' })
+			);
 			const create = () =>
 				request.post(`/api/v1/projects/${project.id}/issues`, {
 					headers: {
@@ -452,7 +458,7 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 								title: `${marker}-new`,
 								blocked_by: [a.id],
 								...(iteration % 2 === 0 ? { blocks: [b.id] } : { duplicate_of: b.id }),
-								labels: [`${marker}-label`],
+								labels: [existingLabelName, newLabelName],
 								schedule: { preset: { kind: 'daily', time: '09:00' } }
 							},
 							attachments: [{ part: 'file-0', name: fileName, filename: `${marker}.txt` }]
@@ -464,9 +470,19 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 						}
 					}
 				});
+			const eventIdsBefore = new Set(d1('SELECT id FROM event').map((row) => row.id));
 			const rejected = await create();
 			expect(rejected.status()).toBe(422);
 			expect((await errorBody(rejected)).error.code).toBe('link_cycle');
+			const eventDelta = d1(
+				`SELECT id, type, issue_id, project_id, json_extract(payload, '$.link_id') AS link_id
+				 FROM event`
+			).filter((row) => !eventIdsBefore.has(row.id));
+			expect(eventDelta, 'post-race event-ID delta').toHaveLength(2);
+			expect(eventDelta.map((row) => row.type)).toEqual(['issue.link_added', 'issue.link_added']);
+			expect(eventDelta.map((row) => row.issue_id).sort()).toEqual([a.id, b.id].sort());
+			expect(eventDelta.map((row) => row.project_id)).toEqual([project.id, project.id]);
+			expect(new Set(eventDelta.map((row) => row.link_id)).size).toBe(1);
 
 			const createdRows = d1(
 				`SELECT id FROM issue WHERE project_id=${literal(project.id)} AND title=${literal(`${marker}-new`)}`
@@ -479,9 +495,10 @@ test.describe.serial('native D1 issue-link concurrency guard', () => {
 						(SELECT COUNT(*) FROM issue_address WHERE project_id=${literal(project.id)}
 							AND issue_id NOT IN (${literal(a.id)},${literal(b.id)})) AS issue_address,
 						(SELECT COUNT(*) FROM scheduled_task WHERE name=${literal(`${marker}-new`)}) AS scheduled_task,
-						(SELECT COUNT(*) FROM label WHERE name=${literal(`${marker}-label`)}) AS label,
+						(SELECT COUNT(*) FROM label WHERE name=${literal(newLabelName)}) AS label,
 						(SELECT COUNT(*) FROM issue_label JOIN label ON label.id=issue_label.label_id
-							WHERE label.name=${literal(`${marker}-label`)}) AS issue_label,
+							WHERE label.id=${literal(existingLabel.id)}
+								OR label.name=${literal(newLabelName)}) AS issue_label,
 						(SELECT COUNT(*) FROM context_item WHERE name=${literal(fileName)}) AS context_item,
 						(SELECT COUNT(*) FROM artifact_version
 							JOIN context_item ON context_item.id=artifact_version.context_item_id
