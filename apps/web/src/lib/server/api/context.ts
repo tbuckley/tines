@@ -4,7 +4,9 @@ import {
 	AGENT_GUIDELINES_BODY,
 	AGENT_GUIDELINES_DESCRIPTION,
 	AGENT_GUIDELINES_NAME,
+	CONTEXT_DESCRIPTION_MAX_LENGTH,
 	CONTEXT_KINDS,
+	CONTEXT_NAME_MAX_LENGTH,
 	JOURNAL_NAME,
 	PROMPT_MAX_BYTES,
 	repoDirFromUrl,
@@ -89,11 +91,14 @@ function requireKind(value: unknown): ContextKind {
 }
 
 function validateName(kind: ContextKind, value: unknown): string {
-	const name = requireString(value, 'name', { max: 100 }).trim();
-	if (name.length === 0 || name.length > 100) {
-		throw new ApiFail(422, 'invalid_field', '"name" must be non-empty and at most 100 characters', {
-			field: 'name'
-		});
+	const name = requireString(value, 'name', { max: CONTEXT_NAME_MAX_LENGTH }).trim();
+	if (name.length === 0 || name.length > CONTEXT_NAME_MAX_LENGTH) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			`"name" must be non-empty and at most ${CONTEXT_NAME_MAX_LENGTH} characters`,
+			{ field: 'name' }
+		);
 	}
 	if (kind === 'env') {
 		if (!ENV_NAME_PATTERN.test(name)) {
@@ -831,7 +836,8 @@ export function validateContextCreateFields(body: CreateContextItemRequest) {
 		});
 	}
 	const name = validateName(kind, body.name);
-	const description = optionalString(body.description, 'description', { max: 1000 }) ?? '';
+	const description =
+		optionalString(body.description, 'description', { max: CONTEXT_DESCRIPTION_MAX_LENGTH }) ?? '';
 	rejectForeignPayload(kind, body as unknown as Record<string, unknown>);
 	let promptBody: string | null = null;
 	let files: ContextFile[] = [];
@@ -1063,7 +1069,9 @@ export async function updateContextItem(
 	const name = body.name !== undefined ? validateName(kind, body.name) : row.name;
 	const description =
 		body.description !== undefined
-			? (optionalString(body.description, 'description', { max: 1000 }) ?? '')
+			? (optionalString(body.description, 'description', {
+					max: CONTEXT_DESCRIPTION_MAX_LENGTH
+				}) ?? '')
 			: row.description;
 
 	// Merge-patch scope: omitted = unchanged, explicit null = unset.

@@ -903,6 +903,8 @@ export interface IssueFilters {
 export type ContextKind = 'prompt' | 'skill' | 'repo' | 'artifact' | 'env';
 
 export const CONTEXT_KINDS: readonly ContextKind[] = ['prompt', 'skill', 'repo', 'artifact', 'env'];
+export const CONTEXT_NAME_MAX_LENGTH = 100;
+export const CONTEXT_DESCRIPTION_MAX_LENGTH = 1000;
 
 /** Byte caps (UTF-8), enforced at the API layer with structured 422s. */
 export const PROMPT_MAX_BYTES = 32 * 1024;
