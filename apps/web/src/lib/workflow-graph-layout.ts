@@ -65,9 +65,9 @@ export interface WorkflowGraphLayout {
 const settings = {
 	full: {
 		font: 12.5,
-		height: 34,
+		height: 52,
 		minWidth: 72,
-		contentAllowance: 40,
+		contentAllowance: 48,
 		startPad: 24,
 		ranksep: 60,
 		nodesep: 24,
@@ -77,9 +77,9 @@ const settings = {
 	},
 	compact: {
 		font: 10.5,
-		height: 26,
+		height: 44,
 		minWidth: 54,
-		contentAllowance: 30,
+		contentAllowance: 38,
 		startPad: 18,
 		ranksep: 17,
 		nodesep: 16,
@@ -210,7 +210,7 @@ export function layoutWorkflowGraph(
 				to,
 				{
 					width: label ? estimateTextWidth(label, edgeFont) + 8 : 0,
-					height: label ? 20 : 0,
+					height: label ? 40 : 0,
 					minlen: config.minlen,
 					labelpos: 'c'
 				},
@@ -256,10 +256,8 @@ export function layoutWorkflowGraph(
 					throw new Error('edge geometry');
 				const source = nodeById.get(transition.from_state_id)!;
 				const target = nodeById.get(transition.to_state_id)!;
-				if (source.id !== target.id) {
-					points[0] = intersectRect(source, points[1]);
-					points[points.length - 1] = intersectRect(target, points[points.length - 2]);
-				}
+				points[0] = intersectRect(source, points[1]);
+				points[points.length - 1] = intersectRect(target, points[points.length - 2]);
 				const label = !options.compact && transition.name ? transition.name : null;
 				const labelBox =
 					label && Number.isFinite(value.x) && Number.isFinite(value.y)

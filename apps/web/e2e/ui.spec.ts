@@ -86,6 +86,63 @@ test('an issue can be created from the issues list, picking project and starting
 	await expect(stateBadge(page)).toHaveText(/Human Review/);
 });
 
+test('the new-issue graph animates one connected route and updates disconnected states immediately', async ({
+	page
+}) => {
+	await page.emulateMedia({ reducedMotion: 'no-preference' });
+	await gotoHydrated(page, '/issues');
+	const dialog = page.getByRole('dialog', { name: 'New issue' });
+	await clickToOpen(page.getByRole('button', { name: /New issue/ }), dialog);
+	await dialog.getByLabel('Project', { exact: true }).selectOption({ label: projectName });
+	const graph = dialog.getByRole('img', { name: 'Workflow graph' });
+	const state = dialog.getByLabel('Starting state');
+
+	await state.selectOption({ label: 'Human Review' });
+	const activeRoute = graph.locator('path[data-graph-transition][style*="--cat-active"]');
+	await expect(activeRoute).toHaveCount(1);
+	const motion = graph.locator('animateMotion');
+	await expect(motion).toHaveCount(1);
+	expect(await motion.getAttribute('path')).toBe(await activeRoute.getAttribute('d'));
+	await expect
+		.poll(async () =>
+			graph
+				.getByText('Human Review', { exact: true })
+				.locator('xpath=..')
+				.locator('rect[data-graph-state]')
+				.getAttribute('stroke-width')
+		)
+		.toBe('2');
+
+	await state.selectOption({ label: 'Closed' });
+	await expect(graph.locator('animateMotion')).toHaveCount(1);
+	await expect
+		.poll(async () =>
+			graph
+				.getByText('Closed', { exact: true })
+				.locator('xpath=..')
+				.locator('rect[data-graph-state]')
+				.getAttribute('stroke-width')
+		)
+		.toBe('2');
+
+	// Closed has no route back to Open, so there is no stale travel animation.
+	await state.selectOption({ label: 'Open — default' });
+	await expect(graph.locator('animateMotion')).toHaveCount(0);
+	await expect(
+		graph.getByText('Open', { exact: true }).locator('xpath=..').locator('rect[data-graph-state]')
+	).toHaveAttribute('stroke-width', '2');
+
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await state.selectOption({ label: 'Human Review' });
+	await expect(graph.locator('animateMotion')).toHaveCount(0);
+	await expect(
+		graph
+			.getByText('Human Review', { exact: true })
+			.locator('xpath=..')
+			.locator('rect[data-graph-state]')
+	).toHaveAttribute('stroke-width', '2');
+});
+
 test('the issues list search box round-trips through the q URL param', async ({ page }) => {
 	await gotoHydrated(page, '/issues');
 	const box = page.getByLabel('Search issues');
