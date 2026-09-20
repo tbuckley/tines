@@ -31,14 +31,21 @@ let reorderStateIds: Record<string, string>;
 
 const stateOrder = (page: Page) =>
 	page
-		.getByLabel('State name', { exact: true })
-		.evaluateAll((inputs) => inputs.map((input) => (input as HTMLInputElement).value));
+		.locator('[data-state-row]')
+		.evaluateAll((rows) => rows.map((row) => (row as HTMLElement).dataset.stateName));
 
 const stateRow = (page: Page, name: string) =>
 	page
 		.getByRole('button', { name: new RegExp(`^Move ${name} (up|down)$`) })
 		.first()
 		.locator('xpath=ancestor::*[@data-state-row]');
+
+async function expandState(page: Page, name: string) {
+	const row = stateRow(page, name);
+	const trigger = row.getByRole('button', { name: `Edit ${name} state`, exact: true });
+	if (await trigger.count()) await trigger.click();
+	return row;
+}
 
 const previewGeometry = async (page: Page) => {
 	const region = page.getByRole('region', { name: 'Live preview' });
@@ -255,8 +262,34 @@ test('an editable workflow shows the description once, in the form that edits it
 	await expect(page.getByLabel('Description', { exact: true })).toHaveValue(description);
 });
 
+test('state rows summarize the workflow and expand one inline editor at a time', async ({
+	page
+}) => {
+	await gotoHydrated(page, `/workflows/${reorderWorkflowId}`);
+	await expect(page.getByLabel('State name', { exact: true })).toHaveCount(0);
+	const review = stateRow(page, 'Review');
+	await expect(review.getByText('Approve → Closed', { exact: true })).toBeVisible();
+	await expect(review.getByText('approval · 1 required artifact', { exact: true })).toBeVisible();
+
+	const reviewTrigger = review.getByRole('button', { name: 'Edit Review state', exact: true });
+	await reviewTrigger.click();
+	await expect(review.getByRole('region', { name: 'Edit Review state' })).toBeVisible();
+	await expect(review.getByLabel('State name')).toBeFocused();
+	await expect(review.getByRole('button', { name: 'Collapse Review state' })).toHaveAttribute(
+		'aria-expanded',
+		'true'
+	);
+
+	await stateRow(page, 'Open').getByRole('button', { name: 'Edit Open state' }).click();
+	await expect(review.getByRole('region', { name: 'Edit Review state' })).toHaveCount(0);
+	const open = stateRow(page, 'Open');
+	await open.getByRole('button', { name: 'Collapse Open', exact: true }).click();
+	await expect(open.getByRole('button', { name: 'Edit Open state' })).toBeFocused();
+});
+
 test('an editable workflow can save parallel named actions to one state', async ({ page }) => {
 	await gotoHydrated(page, `/workflows/${workflowId}`);
+	await expandState(page, 'Open');
 	await expect(page.getByLabel('Action name')).toHaveCount(2);
 	await expect(page.getByText('Only one action can lead')).toHaveCount(0);
 	const save = page.getByRole('button', { name: 'Save workflow' });
@@ -272,6 +305,7 @@ test('an editable workflow can save parallel named actions to one state', async 
 	);
 	await save.click();
 	expect((await response).ok()).toBe(true);
+	await expandState(page, 'Open');
 	await expect(page.getByLabel('Action name')).toHaveCount(2);
 	await expect(page.getByRole('button', { name: 'Fit', exact: true })).toHaveAttribute(
 		'aria-pressed',
@@ -286,16 +320,12 @@ test('state moves preserve references and persist the displayed order through re
 	expect(await stateOrder(page)).toEqual(['Open', 'Review', 'Closed']);
 	await expect(page.getByRole('button', { name: 'Move Open up' })).toBeDisabled();
 	await expect(page.getByRole('button', { name: 'Move Closed down' })).toBeDisabled();
-	await expect(stateRow(page, 'Open').getByRole('radio')).toBeChecked();
-	await expect(stateRow(page, 'Open').getByLabel('Target state')).toHaveValue(
-		reorderStateIds.Review
-	);
-	await expect(stateRow(page, 'Review').getByLabel('Target state')).toHaveValue(
-		reorderStateIds.Closed
-	);
-	await expect(stateRow(page, 'Review').getByLabel('Required artifact name')).toHaveValue(
-		'approval'
-	);
+	const openRow = await expandState(page, 'Open');
+	await expect(openRow.getByRole('radio')).toBeChecked();
+	await expect(openRow.getByLabel('Target state')).toHaveValue(reorderStateIds.Review);
+	const reviewRow = await expandState(page, 'Review');
+	await expect(reviewRow.getByLabel('Target state')).toHaveValue(reorderStateIds.Closed);
+	await expect(reviewRow.getByLabel('Required artifact name')).toHaveValue('approval');
 
 	const reviewUp = page.getByRole('button', { name: 'Move Review up' });
 	await reviewUp.focus();
@@ -311,12 +341,12 @@ test('state moves preserve references and persist the displayed order through re
 	expect(await stateOrder(page)).toEqual(['Open', 'Closed', 'Review']);
 	await expect(page.getByRole('button', { name: 'Move Closed up' })).toBeFocused();
 
-	await stateRow(page, 'Closed').getByLabel('State name').fill('Archived');
-	await expect(stateRow(page, 'Open').getByRole('radio')).toBeChecked();
-	await expect(stateRow(page, 'Open').getByLabel('Target state')).toHaveValue(
-		reorderStateIds.Review
-	);
-	await expect(stateRow(page, 'Review').getByLabel('Target state')).toHaveValue(
+	const closedRow = await expandState(page, 'Closed');
+	await closedRow.getByLabel('State name').fill('Archived');
+	const reopenedOpen = await expandState(page, 'Open');
+	await expect(reopenedOpen.getByRole('radio')).toBeChecked();
+	await expect(reopenedOpen.getByLabel('Target state')).toHaveValue(reorderStateIds.Review);
+	await expect((await expandState(page, 'Review')).getByLabel('Target state')).toHaveValue(
 		reorderStateIds.Closed
 	);
 
@@ -369,10 +399,9 @@ test('state moves preserve references and persist the displayed order through re
 	await page.reload();
 	await expect(page.getByRole('heading', { level: 1, name: reorderWorkflowName })).toBeVisible();
 	expect(await stateOrder(page)).toEqual(['Open', 'Archived', 'Review']);
-	await expect(stateRow(page, 'Open').getByRole('radio')).toBeChecked();
-	await expect(stateRow(page, 'Open').getByLabel('Target state')).toHaveValue(
-		reorderStateIds.Review
-	);
+	const reloadedOpen = await expandState(page, 'Open');
+	await expect(reloadedOpen.getByRole('radio')).toBeChecked();
+	await expect(reloadedOpen.getByLabel('Target state')).toHaveValue(reorderStateIds.Review);
 });
 
 test('a rejected save keeps the reordered draft available for retry', async ({ page }) => {
@@ -405,8 +434,12 @@ test('new-state moves preserve draft prompts and resolve references on create', 
 	const review = stateRow(page, 'Review');
 	await review.getByRole('radio').check();
 	await review.getByRole('button', { name: 'Add stage instructions' }).click();
-	await review.getByLabel(/Stage instructions/).fill('Check the implementation carefully.');
-	await stateRow(page, 'Open').getByLabel('Target state').selectOption({ label: 'Review' });
+	await review.locator('textarea').fill('Check the implementation carefully.');
+	await (
+		await expandState(page, 'Open')
+	)
+		.getByLabel('Target state')
+		.selectOption({ label: 'Review' });
 	await page.getByRole('button', { name: 'Move Review up' }).click();
 	await page.getByRole('button', { name: 'Move Review up' }).click();
 	expect(await stateOrder(page)).toEqual(['Review', 'Open', 'Done']);
@@ -433,8 +466,8 @@ test('move controls stay contained and show both boundaries for one state on a p
 }) => {
 	await page.setViewportSize({ width: 375, height: 812 });
 	await gotoHydrated(page, '/workflows/new');
-	const removeButtons = page.getByRole('button', { name: 'Remove state' });
-	await removeButtons.last().click();
+	await expandState(page, 'Done');
+	await page.getByRole('button', { name: 'Remove state' }).click();
 	await expect(page.getByRole('button', { name: 'Move Open up' })).toBeDisabled();
 	await expect(page.getByRole('button', { name: 'Move Open down' })).toBeDisabled();
 	const geometry = await page.locator('form').evaluate((form) => ({
@@ -450,6 +483,7 @@ test('the preview keeps a transition path keyed across action rename and reorder
 	page
 }) => {
 	await gotoHydrated(page, `/workflows/${workflowId}`);
+	await expandState(page, 'Open');
 	const preview = page.getByRole('region', { name: 'Live preview' });
 	const abandonLabel = preview.getByText('Abandon', { exact: true });
 	const transitionKey = await abandonLabel.getAttribute('data-graph-transition-label');
@@ -556,6 +590,7 @@ test('a wide live preview defaults to Fit and round-trips through exact 1×', as
 	expect((await previewGeometry(page)).headingLeft).toBeCloseTo(fitted.headingLeft, 1);
 
 	const renamedAction = 'Advance with a substantially longer action label';
+	await expandState(page, 'Engineering state 1');
 	await page.getByLabel('Action name').first().fill(renamedAction);
 	await expect(region.getByText(renamedAction, { exact: true })).toBeVisible();
 	const afterEdit = await previewGeometry(page);
@@ -589,15 +624,16 @@ test('a wide live preview defaults to Fit and round-trips through exact 1×', as
 
 test('browser text bounds stay inside reserved boxes without collisions', async ({ page }) => {
 	await gotoHydrated(page, `/workflows/${wideWorkflowId}`);
-	await page
+	const firstName = `${'W'.repeat(45)} <script>`;
+	await (await expandState(page, 'Engineering state 1')).getByLabel('State name').fill(firstName);
+	await (
+		await expandState(page, 'Engineering state 2')
+	)
 		.getByLabel('State name')
-		.first()
-		.fill(`${'W'.repeat(45)} <script>`);
-	await page
-		.getByLabel('State name')
-		.nth(1)
 		.fill(`境界テスト ${'界'.repeat(20)} 👩‍💻 e\u0301`);
-	await page
+	await (
+		await expandState(page, firstName)
+	)
 		.getByLabel('Action name')
 		.first()
 		.fill(`Route ${'W'.repeat(38)} 界 😀 <b>literal</b>`);
