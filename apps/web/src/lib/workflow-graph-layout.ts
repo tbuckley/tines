@@ -84,7 +84,7 @@ const settings = {
 		ranksep: 17,
 		nodesep: 16,
 		edgesep: 10,
-		minlen: 2,
+		minlen: 1,
 		margin: 8
 	}
 } as const;
@@ -205,12 +205,14 @@ export function layoutWorkflowGraph(
 			if (!from || !to) return;
 			const label = !options.compact && transition.name ? transition.name : null;
 			const graphEdgeName = `e${index}`;
+			// Positive hidden compact dimensions avoid Dagre's degenerate endpoint intersection;
+			// the disconnected-parallel and parallel-cycle regressions protect this geometry.
 			graph.setEdge(
 				from,
 				to,
 				{
-					width: label ? estimateTextWidth(label, edgeFont) + 8 : 0,
-					height: label ? 40 : 0,
+					width: options.compact ? 1 : label ? estimateTextWidth(label, edgeFont) + 8 : 0,
+					height: options.compact ? 1 : label ? 40 : 0,
 					minlen: config.minlen,
 					labelpos: 'c'
 				},

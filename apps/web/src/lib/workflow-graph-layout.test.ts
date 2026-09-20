@@ -109,22 +109,61 @@ describe('layoutWorkflowGraph', () => {
 	});
 
 	it('retains every parallel edge in compact cyclic graphs', () => {
-		const workflow: GraphWorkflow = {
-			states: [state('s0'), state('s1'), state('s2')],
-			transitions: [
-				{ id: 'loop-a', name: 'loop', from_state_id: 's0', to_state_id: 's0' },
-				{ id: 'loop-b', name: 'loop', from_state_id: 's0', to_state_id: 's0' },
-				{ id: 'a', name: 'same', from_state_id: 's0', to_state_id: 's1' },
-				{ id: 'b', name: 'same', from_state_id: 's0', to_state_id: 's1' },
-				{ id: 'c', name: 'same', from_state_id: 's0', to_state_id: 's1' },
-				{ id: 'd', name: 'next', from_state_id: 's1', to_state_id: 's2' },
-				{ id: 'e', name: 'back', from_state_id: 's2', to_state_id: 's0' }
-			],
+		const workflow = Object.freeze({
+			states: Object.freeze([state('s0'), state('s1'), state('s2')].map(Object.freeze)),
+			transitions: Object.freeze(
+				[
+					{ id: 'loop-a', name: 'loop', from_state_id: 's0', to_state_id: 's0' },
+					{ id: 'loop-b', name: 'loop', from_state_id: 's0', to_state_id: 's0' },
+					{ id: 'a', name: 'same', from_state_id: 's0', to_state_id: 's1' },
+					{ id: 'b', name: 'same', from_state_id: 's0', to_state_id: 's1' },
+					{ id: 'c', name: 'same', from_state_id: 's0', to_state_id: 's1' },
+					{ id: 'd', name: 'next', from_state_id: 's1', to_state_id: 's2' },
+					{ id: 'e', name: 'back', from_state_id: 's2', to_state_id: 's0' }
+				].map(Object.freeze)
+			),
 			initial_state_id: 's0'
-		};
-		const result = layoutWorkflowGraph(workflow, { compact: true });
-		expectUsable(result, 7, true);
-		expect(result.edges.every((edge) => edge.label === null && edge.labelBox === null)).toBe(true);
+		}) satisfies GraphWorkflow;
+		const before = JSON.stringify(workflow);
+		const first = layoutWorkflowGraph(workflow, { compact: true });
+		const second = layoutWorkflowGraph(workflow, { compact: true });
+		expectUsable(first, 7, true);
+		expect(first.nodes).toHaveLength(3);
+		expect(new Set(first.edges.map((edge) => edge.key)).size).toBe(7);
+		expect(first.edges.every((edge) => edge.label === null && edge.labelBox === null)).toBe(true);
+		expect(first).toEqual(second);
+		expect(JSON.stringify(workflow)).toBe(before);
+	});
+
+	it('retains disconnected states and every parallel edge in compact and full graphs', () => {
+		const workflow = Object.freeze({
+			states: Object.freeze([state('s0'), state('s1'), state('s2')].map(Object.freeze)),
+			transitions: Object.freeze(
+				[
+					{ id: 'a', name: 'First', from_state_id: 's1', to_state_id: 's2' },
+					{ id: 'b', name: 'Second', from_state_id: 's1', to_state_id: 's2' },
+					{ id: 'c', name: 'Third', from_state_id: 's1', to_state_id: 's2' }
+				].map(Object.freeze)
+			),
+			initial_state_id: 's0'
+		}) satisfies GraphWorkflow;
+		const before = JSON.stringify(workflow);
+		const compact = layoutWorkflowGraph(workflow, { compact: true });
+		const repeated = layoutWorkflowGraph(workflow, { compact: true });
+		const full = layoutWorkflowGraph(workflow, { compact: false });
+
+		expectUsable(compact, 3, true);
+		expect(compact.nodes).toHaveLength(3);
+		expect(new Set(compact.edges.map((edge) => edge.key)).size).toBe(3);
+		expect(compact.edges.every((edge) => edge.label === null && edge.labelBox === null)).toBe(true);
+		expect(compact).toEqual(repeated);
+
+		expectUsable(full, 3, false);
+		expect(full.nodes).toHaveLength(3);
+		expect(new Set(full.edges.map((edge) => edge.key)).size).toBe(3);
+		expect(full.edges.map((edge) => edge.label)).toEqual(['First', 'Second', 'Third']);
+		expectLabelsClear(full);
+		expect(JSON.stringify(workflow)).toBe(before);
 	});
 
 	it('supports self-loops, duplicate temporary actions and complete wide Unicode labels', () => {
