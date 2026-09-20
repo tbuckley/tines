@@ -249,7 +249,7 @@ Options:
   -h, --help                                            display help for command
 
 Commands:
-  list [options]                                        List issues across projects (hides done issues unless --all)
+  list [options]                                        List issues across projects (hides done and duplicate issues unless included)
   create [options] <project>                            Create an issue in a project, optionally with a recurrence (a scheduled task)
   show [options] <ref>                                  Show an issue (<project>/<number>), including allowed transitions
   edit [options] <ref>                                  Edit an issue: title, description, workflow, or force-set state
@@ -562,7 +562,7 @@ Options:
 ",
   "tines issues list": "Usage: tines issues list [options]
 
-List issues across projects (hides done issues unless --all)
+List issues across projects (hides done and duplicate issues unless included)
 
 Options:
   -p, --project <name>         filter by project name or id
@@ -570,6 +570,7 @@ Options:
   -c, --category <cat>         filter by state category
   -w, --workflow <id-or-name>  filter by workflow
   -a, --all                    include issues in done states
+  --show-duplicates            include issues marked as duplicates
   --ready                      only issues that are actionable now (not done,
                                not a duplicate, no open blockers)
   -q, --search <text>          search titles and descriptions

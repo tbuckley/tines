@@ -194,6 +194,27 @@ describe('createIssueWithFiles', () => {
 	});
 });
 
+describe('issue list duplicate visibility', () => {
+	it('serializes an explicit false for global and project lists', async () => {
+		const urls: string[] = [];
+		const fetch = vi.fn(async (input: string | URL | Request) => {
+			urls.push(String(input));
+			return new Response(JSON.stringify({ items: [], next_cursor: null }), {
+				headers: { 'content-type': 'application/json' }
+			});
+		}) as unknown as typeof globalThis.fetch;
+		const client = createApiClient({ baseUrl: 'https://tines.example', fetch });
+
+		await client.listIssues({ hide_duplicates: false });
+		await client.listProjectIssues('prj_1', { hide_duplicates: false });
+
+		expect(urls).toEqual([
+			'https://tines.example/api/v1/issues?hide_duplicates=false',
+			'https://tines.example/api/v1/projects/prj_1/issues?hide_duplicates=false'
+		]);
+	});
+});
+
 describe('getVersion', () => {
 	it('calls the public unversioned endpoint without requiring an API key', async () => {
 		const fetch = vi.fn(

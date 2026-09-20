@@ -51,6 +51,12 @@ tines events list --project Tines --all-pages --max-items 20000 --json
 tines supervisor stats --window 7d --project Tines
 ```
 
+`issues list` hides done issues and issues marked as duplicates by default. Use `--all` to include done issues and `--show-duplicates` to include duplicates; use both flags together when both populations are needed.
+
+```sh
+tines issues list --all --show-duplicates --all-pages --json
+```
+
 Issues are addressed as `<project>/<number>`; schedules as `<project>/<name>`; workflow
 states as `<workflow>/<state>`. Every `list` command returns one page — add `--all-pages`
 for the whole list — and every command takes `--json` for machine-readable output. Complete

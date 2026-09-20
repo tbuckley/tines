@@ -195,6 +195,8 @@ All list endpoints use the same cursor-pagination convention (`?cursor=…&limit
 
 Issue `q` is a complete literal substring match over title and description, case-insensitive for ASCII. Characters such as `%` and `_` have no wildcard meaning, and ordinary queries longer than 48 characters are supported. Both issue-list routes share the same predicate.
 
+Issue lists exclude duplicates by default. Both list routes accept `hide_duplicates=false` (or `0`) to include them; direct issue reads are unchanged. The web issue lists expose this as a URL-backed **Show duplicates** filter and apply the same visibility predicate to rows, category counts, and pagination.
+
 Validation failures (workflow editing rules, illegal transitions) return structured errors naming what was violated and, where applicable, what *is* allowed — agents should be able to recover from a 422 without human help.
 
 Markdown (descriptions, comments) is stored raw and sanitized at render time in the web UI — agents post arbitrary Markdown, so rendering must be XSS-safe.
@@ -206,8 +208,8 @@ Markdown (descriptions, comments) is stored raw and sanitized at render time in 
 ```
 tines projects list | create <name>
 tines workflows list | show <id-or-name>
-tines issues list [--project <name>] [--state <name>] [--category <cat>] [--all]
-                                          # hides done issues unless --all
+tines issues list [--project <name>] [--state <name>] [--category <cat>] [--all] [--show-duplicates]
+                                          # hides done and duplicate issues by default
 tines issues create <project> --title <t> [--description <md>] [--workflow <id-or-name>]
 tines issues show <project>/<number>
 tines issues move <project>/<number> <action>       # transition name, e.g. "approve"

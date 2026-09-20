@@ -45,7 +45,7 @@ let duplicate: IssueDetail;
 
 test.beforeAll(async ({ apiFor, uniqueName }) => {
 	projectName = uniqueName('issues-list-mobile');
-	listUrl = `/issues?project=${encodeURIComponent(projectName)}`;
+	listUrl = `/issues?project=${encodeURIComponent(projectName)}&duplicates=1`;
 	const api = apiFor(ALICE);
 	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 
