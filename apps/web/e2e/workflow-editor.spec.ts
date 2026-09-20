@@ -230,6 +230,27 @@ test('an editable workflow can save parallel named actions to one state', async 
 	);
 });
 
+test('the preview keeps a transition path keyed across action rename and reorder', async ({
+	page
+}) => {
+	await gotoHydrated(page, `/workflows/${workflowId}`);
+	const preview = page.getByRole('region', { name: 'Live preview' });
+	const abandonLabel = preview.getByText('Abandon', { exact: true });
+	const transitionKey = await abandonLabel.getAttribute('data-graph-transition-label');
+	const tracked = await preview
+		.locator(`path[data-graph-transition=${JSON.stringify(transitionKey)}]`)
+		.elementHandle();
+	expect(tracked).not.toBeNull();
+
+	await page.getByLabel('Action name').nth(1).fill('Escalate');
+	await page.getByRole('button', { name: 'Remove action from Open' }).first().click();
+	await expect(page.getByLabel('Action name')).toHaveCount(1);
+	await expect(page.getByLabel('Action name')).toHaveValue('Escalate');
+	await expect(preview.getByText('Escalate', { exact: true })).toBeVisible();
+	expect(await tracked!.evaluate((path) => path.isConnected)).toBe(true);
+	expect(await tracked!.getAttribute('data-graph-transition')).toBe(transitionKey);
+});
+
 test('Delete sits in the save row rather than the header', async ({ page }) => {
 	await page.goto(`/workflows/${workflowId}`);
 	const form = page.locator('form');

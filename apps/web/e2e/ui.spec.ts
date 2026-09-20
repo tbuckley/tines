@@ -23,11 +23,40 @@ const issueTitle = `UI smoke ${runId}`;
 let project: Project;
 let longProject: Project;
 let issue: IssueDetail;
+let firstParallelTransitionId: string;
+const wideReviewState = 'Extended Human Review 👩‍💻 界界界界界';
 
 test.beforeAll(async ({ apiFor, uniqueName }) => {
 	projectName = uniqueName('ui');
 	const api = apiFor(ALICE);
-	project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
+	const graphWorkflow = await body<{ id: string; transitions: { id: string; name: string }[] }>(
+		await api.post('/api/v1/workflows', {
+			name: uniqueName('UI graph'),
+			initial_state: 'Open',
+			states: [
+				{ name: 'Open', category: 'active' },
+				{ name: 'Human Review', category: 'awaiting_human' },
+				{ name: wideReviewState, category: 'awaiting_human' },
+				{ name: 'Closed', category: 'done' }
+			],
+			transitions: [
+				{ name: 'Approve', from: 'Open', to: 'Human Review' },
+				{ name: 'First parallel route', from: 'Open', to: wideReviewState },
+				{ name: 'Second parallel route', from: 'Open', to: wideReviewState },
+				{ name: 'Close reviewed', from: 'Human Review', to: 'Closed' },
+				{ name: 'Close extended review', from: wideReviewState, to: 'Closed' }
+			]
+		})
+	);
+	firstParallelTransitionId = graphWorkflow.transitions.find(
+		(transition) => transition.name === 'First parallel route'
+	)!.id;
+	project = await body<Project>(
+		await api.post('/api/v1/projects', {
+			name: projectName,
+			default_workflow_id: graphWorkflow.id
+		})
+	);
 	longProject = await body<Project>(
 		await api.post('/api/v1/projects', {
 			name: `A deliberately long focused project name for chrome ${runId}`
@@ -97,21 +126,43 @@ test('the new-issue graph animates one connected route and updates disconnected 
 	const graph = dialog.getByRole('img', { name: 'Workflow graph' });
 	const state = dialog.getByLabel('Starting state');
 
-	await state.selectOption({ label: 'Human Review' });
+	await state.selectOption({ label: wideReviewState });
 	const activeRoute = graph.locator('path[data-graph-transition][style*="--cat-active"]');
 	await expect(activeRoute).toHaveCount(1);
+	await expect(activeRoute).toHaveAttribute(
+		'data-graph-transition',
+		`id:${JSON.stringify(firstParallelTransitionId)}#0`
+	);
 	const motion = graph.locator('animateMotion');
 	await expect(motion).toHaveCount(1);
 	expect(await motion.getAttribute('path')).toBe(await activeRoute.getAttribute('d'));
 	await expect
 		.poll(async () =>
 			graph
-				.getByText('Human Review', { exact: true })
+				.getByText(wideReviewState, { exact: true })
 				.locator('xpath=..')
 				.locator('rect[data-graph-state]')
 				.getAttribute('stroke-width')
 		)
 		.toBe('2');
+	const compactText = await graph.evaluate(async (svg, stateName) => {
+		await document.fonts.ready;
+		const label = [...svg.querySelectorAll<SVGTextElement>('[data-graph-state-label]')].find(
+			(element) => element.textContent === stateName
+		)!;
+		const body = label.parentElement!.querySelector<SVGRectElement>('[data-graph-state]')!;
+		const text = label.getBBox();
+		const rect = body.getBBox();
+		return {
+			fontWeight: getComputedStyle(label).fontWeight,
+			inside:
+				text.x >= rect.x - 0.01 &&
+				text.y >= rect.y - 0.01 &&
+				text.x + text.width <= rect.x + rect.width + 0.01 &&
+				text.y + text.height <= rect.y + rect.height + 0.01
+		};
+	}, wideReviewState);
+	expect(compactText).toEqual({ fontWeight: '600', inside: true });
 
 	await state.selectOption({ label: 'Closed' });
 	await expect(graph.locator('animateMotion')).toHaveCount(1);
@@ -141,6 +192,24 @@ test('the new-issue graph animates one connected route and updates disconnected 
 			.locator('xpath=..')
 			.locator('rect[data-graph-state]')
 	).toHaveAttribute('stroke-width', '2');
+	const highlightedHumanReview = await graph.evaluate(async (svg) => {
+		await document.fonts.ready;
+		const label = [...svg.querySelectorAll<SVGTextElement>('[data-graph-state-label]')].find(
+			(element) => element.textContent === 'Human Review'
+		)!;
+		const body = label.parentElement!.querySelector<SVGRectElement>('[data-graph-state]')!;
+		const text = label.getBBox();
+		const rect = body.getBBox();
+		return {
+			fontWeight: getComputedStyle(label).fontWeight,
+			inside:
+				text.x >= rect.x - 0.01 &&
+				text.y >= rect.y - 0.01 &&
+				text.x + text.width <= rect.x + rect.width + 0.01 &&
+				text.y + text.height <= rect.y + rect.height + 0.01
+		};
+	});
+	expect(highlightedHumanReview).toEqual({ fontWeight: '600', inside: true });
 });
 
 test('the issues list search box round-trips through the q URL param', async ({ page }) => {

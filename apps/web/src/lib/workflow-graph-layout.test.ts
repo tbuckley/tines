@@ -17,22 +17,36 @@ const intersects = (a: Rect, b: Rect, epsilon = 1e-6) =>
 	Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > epsilon &&
 	Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > epsilon;
 
-function expectUsable(layout: WorkflowGraphLayout, edgeCount: number) {
+function expectInside(layout: WorkflowGraphLayout, rect: Rect, padding: number, label: string) {
+	expect(rect.x - padding, `${label} left`).toBeGreaterThanOrEqual(0);
+	expect(rect.y - padding, `${label} top`).toBeGreaterThanOrEqual(0);
+	expect(rect.x + rect.w + padding, `${label} right`).toBeLessThanOrEqual(layout.width);
+	expect(rect.y + rect.h + padding, `${label} bottom`).toBeLessThanOrEqual(layout.height);
+}
+
+function expectUsable(layout: WorkflowGraphLayout, edgeCount: number, compact: boolean) {
 	expect(layout.status).toBe('ok');
 	expect(layout.width).toBeGreaterThan(0);
 	expect(layout.height).toBeGreaterThan(0);
 	expect(layout.edges).toHaveLength(edgeCount);
 	for (const node of layout.nodes) {
 		expect([node.x, node.y, node.w, node.h, node.cx, node.cy].every(Number.isFinite)).toBe(true);
-		expect(node.x).toBeGreaterThanOrEqual(0);
-		expect(node.y).toBeGreaterThanOrEqual(0);
-		expect(node.x + node.w).toBeLessThanOrEqual(layout.width);
-		expect(node.y + node.h).toBeLessThanOrEqual(layout.height);
+		expectInside(layout, node, 5, `state ${node.id} halo`);
+		if (node.isInitial)
+			expectInside(
+				layout,
+				{ x: node.x - (compact ? 18 : 24), y: node.y, w: compact ? 18 : 24, h: node.h },
+				5,
+				`state ${node.id} initial marker`
+			);
 	}
 	for (const edge of layout.edges) {
 		expect(edge.d).toMatch(/^M .* L /);
 		expect(edge.points.length).toBeGreaterThanOrEqual(2);
 		expect(edge.points.flatMap(({ x, y }) => [x, y]).every(Number.isFinite)).toBe(true);
+		for (const [index, point] of edge.points.entries())
+			expectInside(layout, { ...point, w: 0, h: 0 }, 7, `edge ${edge.key} point ${index}`);
+		if (edge.labelBox) expectInside(layout, edge.labelBox, 2, `edge ${edge.key} label`);
 	}
 }
 
@@ -57,7 +71,7 @@ describe('layoutWorkflowGraph', () => {
 		});
 		const before = JSON.stringify(workflow);
 		const result = layoutWorkflowGraph(workflow, { compact: false });
-		expectUsable(result, 0);
+		expectUsable(result, 0, false);
 		expect(result.nodes[0]).toMatchObject({ isInitial: true, isDeadEnd: true });
 		expect(JSON.stringify(workflow)).toBe(before);
 	});
@@ -82,7 +96,7 @@ describe('layoutWorkflowGraph', () => {
 		};
 		const first = layoutWorkflowGraph(workflow, { compact: false });
 		const second = layoutWorkflowGraph(workflow, { compact: false });
-		expectUsable(first, 4);
+		expectUsable(first, 4, false);
 		expect(first).toEqual(second);
 		expect(first.edges.map((edge) => edge.label)).toEqual([
 			'Forward',
@@ -98,6 +112,8 @@ describe('layoutWorkflowGraph', () => {
 		const workflow: GraphWorkflow = {
 			states: [state('s0'), state('s1'), state('s2')],
 			transitions: [
+				{ id: 'loop-a', name: 'loop', from_state_id: 's0', to_state_id: 's0' },
+				{ id: 'loop-b', name: 'loop', from_state_id: 's0', to_state_id: 's0' },
 				{ id: 'a', name: 'same', from_state_id: 's0', to_state_id: 's1' },
 				{ id: 'b', name: 'same', from_state_id: 's0', to_state_id: 's1' },
 				{ id: 'c', name: 'same', from_state_id: 's0', to_state_id: 's1' },
@@ -107,7 +123,7 @@ describe('layoutWorkflowGraph', () => {
 			initial_state_id: 's0'
 		};
 		const result = layoutWorkflowGraph(workflow, { compact: true });
-		expectUsable(result, 5);
+		expectUsable(result, 7, true);
 		expect(result.edges.every((edge) => edge.label === null && edge.labelBox === null)).toBe(true);
 	});
 
@@ -125,7 +141,7 @@ describe('layoutWorkflowGraph', () => {
 			initial_state_id: 'a'
 		};
 		const result = layoutWorkflowGraph(workflow, { compact: false });
-		expectUsable(result, 5);
+		expectUsable(result, 5, false);
 		expect(new Set(result.edges.map((edge) => edge.key)).size).toBe(5);
 		expect(result.edges[0].label).toBe(wide);
 		expectLabelsClear(result);
