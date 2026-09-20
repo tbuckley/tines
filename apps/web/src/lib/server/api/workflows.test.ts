@@ -1,22 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { getDb } from '$lib/server/db';
-import { USER, seedBase } from '../supervisor/test-fixtures';
+import { USER, addIssue, seedBase } from '../supervisor/test-fixtures';
 import type {
 	ArtifactRequirement,
 	CreateWorkflowRequest,
 	WorkflowStateInput,
 	WorkflowTransitionInput
 } from '@tines/shared';
-import { ApiFail } from './core';
+import { ApiFail, type ActorContext } from './core';
 import { createTestDb } from './test-db';
+import { TEST_NOOP_DISPATCH_EFFECTS } from './test-dispatch-effects';
 import {
 	createWorkflow,
 	deadEndWarnings,
 	diffTransitions,
+	loadWorkflow,
 	loadWorkflows,
 	resolveDef,
+	updateWorkflow,
 	workflowFingerprint
 } from './workflows';
+
+const actor: ActorContext = {
+	userId: USER,
+	userName: 'Alice',
+	apiKeyId: null,
+	apiKeyName: null,
+	viaSession: true
+};
 
 const states: WorkflowStateInput[] = [
 	{ name: 'Open', category: 'active' },
@@ -229,6 +240,90 @@ describe('resolveDef', () => {
 			{ name: 'advance', from: 'Review', to: 'Closed' }
 		];
 		expect(() => resolveDef(states, ok, 'Open', [])).not.toThrow();
+	});
+});
+
+describe('workflow state order persistence', () => {
+	it('rewrites contiguous positions without changing references or an occupied state', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const created = await createWorkflow(t.db, t.env, actor, {
+			name: 'Reorder me',
+			initial_state: 'Open',
+			states,
+			transitions: [
+				transitions[0],
+				{
+					...transitions[2],
+					requires: [
+						{
+							artifact: 'approval',
+							type: 'text',
+							content_type: 'text/markdown',
+							description: 'The approval record'
+						}
+					]
+				}
+			]
+		});
+		const byName = new Map(created.states.map((state) => [state.name, state]));
+		addIssue(t, {
+			id: 'iss_reorder_occupied',
+			workflow: created.id,
+			state: byName.get('Review')!.id
+		});
+
+		const reordered = [byName.get('Closed')!, byName.get('Open')!, byName.get('Review')!];
+		const updated = await updateWorkflow(
+			t.db,
+			t.env,
+			actor,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			created.id,
+			{
+				initial_state: byName.get('Open')!.id,
+				states: reordered.map(({ id, name, category }) => ({ id, name, category })),
+				transitions: created.transitions.map((transition) => ({
+					name: transition.name,
+					from: transition.from_state_id,
+					to: transition.to_state_id,
+					requires: transition.requires
+				}))
+			}
+		);
+		const reloaded = await loadWorkflow(t.db, USER, created.id);
+
+		for (const workflow of [updated, reloaded]) {
+			expect(workflow.states.map(({ id, position }) => ({ id, position }))).toEqual(
+				reordered.map((state, position) => ({ id: state.id, position }))
+			);
+			expect(workflow.initial_state_id).toBe(byName.get('Open')!.id);
+			expect(workflow.transitions).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						name: 'Submit',
+						from_state_id: byName.get('Open')!.id,
+						to_state_id: byName.get('Review')!.id
+					}),
+					expect.objectContaining({
+						name: 'Approve',
+						from_state_id: byName.get('Review')!.id,
+						to_state_id: byName.get('Closed')!.id,
+						requires: [
+							{
+								artifact: 'approval',
+								type: 'text',
+								content_type: 'text/markdown',
+								description: 'The approval record'
+							}
+						]
+					})
+				])
+			);
+		}
+		expect(
+			t.all('SELECT workflow_id, state_id FROM issue WHERE id = ?', 'iss_reorder_occupied')
+		).toEqual([{ workflow_id: created.id, state_id: byName.get('Review')!.id }]);
 	});
 });
 
