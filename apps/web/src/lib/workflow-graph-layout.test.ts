@@ -110,7 +110,9 @@ describe('layoutWorkflowGraph', () => {
 
 	it('retains every parallel edge in compact cyclic graphs', () => {
 		const workflow = Object.freeze({
-			states: Object.freeze([state('s0'), state('s1'), state('s2')].map(Object.freeze)),
+			states: Object.freeze(
+				[state('s0'), state('s1'), state('s2')].map((item) => Object.freeze(item))
+			),
 			transitions: Object.freeze(
 				[
 					{ id: 'loop-a', name: 'loop', from_state_id: 's0', to_state_id: 's0' },
@@ -120,7 +122,7 @@ describe('layoutWorkflowGraph', () => {
 					{ id: 'c', name: 'same', from_state_id: 's0', to_state_id: 's1' },
 					{ id: 'd', name: 'next', from_state_id: 's1', to_state_id: 's2' },
 					{ id: 'e', name: 'back', from_state_id: 's2', to_state_id: 's0' }
-				].map(Object.freeze)
+				].map((item) => Object.freeze(item))
 			),
 			initial_state_id: 's0'
 		}) satisfies GraphWorkflow;
@@ -137,13 +139,15 @@ describe('layoutWorkflowGraph', () => {
 
 	it('retains disconnected states and every parallel edge in compact and full graphs', () => {
 		const workflow = Object.freeze({
-			states: Object.freeze([state('s0'), state('s1'), state('s2')].map(Object.freeze)),
+			states: Object.freeze(
+				[state('s0'), state('s1'), state('s2')].map((item) => Object.freeze(item))
+			),
 			transitions: Object.freeze(
 				[
 					{ id: 'a', name: 'First', from_state_id: 's1', to_state_id: 's2' },
 					{ id: 'b', name: 'Second', from_state_id: 's1', to_state_id: 's2' },
 					{ id: 'c', name: 'Third', from_state_id: 's1', to_state_id: 's2' }
-				].map(Object.freeze)
+				].map((item) => Object.freeze(item))
 			),
 			initial_state_id: 's0'
 		}) satisfies GraphWorkflow;
