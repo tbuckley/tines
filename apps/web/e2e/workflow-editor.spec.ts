@@ -13,6 +13,7 @@ import { apiClient, body, gotoHydrated, signIn } from './helpers';
 
 let workflowName: string;
 let wideWorkflowName: string;
+let reorderWorkflowName: string;
 /** As long as a real workflow's: six lines on a desktop, nine on a phone. */
 const description =
 	'Backlog → Research → Design → Implementation → Automated Review → Human Review → Merging → Closed (or Canceled). Small, fully-specified tasks may go straight from Backlog to Implementation. Research, Design, and Implementation can park in Needs Clarification to ask a human a blocking question. After human approval, a Merging run brings the PR up to date with main and lands it.';
@@ -25,6 +26,132 @@ const SYSTEM_WORKFLOW = {
 
 let workflowId: string;
 let wideWorkflowId: string;
+let reorderWorkflowId: string;
+let reorderStateIds: Record<string, string>;
+
+const stateOrder = (page: Page) =>
+	page
+		.locator('[data-state-row]')
+		.evaluateAll((rows) => rows.map((row) => (row as HTMLElement).dataset.stateName));
+
+const stateRow = (page: Page, name: string) =>
+	page
+		.getByRole('button', { name: new RegExp(`^Move ${name} (up|down)$`) })
+		.first()
+		.locator('xpath=ancestor::*[@data-state-row]');
+
+async function expandState(page: Page, name: string) {
+	const row = stateRow(page, name);
+	const trigger = row.getByRole('button', { name: `Edit ${name} state`, exact: true });
+	if (await trigger.count()) await trigger.click();
+	return row;
+}
+
+type TransitionPhase = {
+	startedAt: number | null;
+	endedAt: number | null;
+	durations: number[];
+};
+
+type StateTransitionMotion = {
+	intro: TransitionPhase;
+	outro: TransitionPhase;
+};
+
+async function observeStateTransition(page: Page, name: string): Promise<void> {
+	await page.evaluate((stateName) => {
+		const motion: StateTransitionMotion = {
+			intro: { startedAt: null, endedAt: null, durations: [] },
+			outro: { startedAt: null, endedAt: null, durations: [] }
+		};
+		(window as unknown as { stateTransitionMotion: StateTransitionMotion }).stateTransitionMotion =
+			motion;
+
+		const matches = (event: Event): event is CustomEvent & { target: Element } =>
+			event.target instanceof Element &&
+			event.target.matches(`[role="region"][aria-label="Edit ${CSS.escape(stateName)} state"]`);
+		const start = (phase: TransitionPhase, event: Event) => {
+			if (!matches(event)) return;
+			phase.startedAt = performance.now();
+			const target = event.target;
+			requestAnimationFrame(() => {
+				phase.durations = target.getAnimations().flatMap((animation) => {
+					const duration = animation.effect?.getTiming().duration;
+					return typeof duration === 'number' ? [duration] : [];
+				});
+			});
+		};
+		const end = (phase: TransitionPhase, event: Event) => {
+			if (matches(event)) phase.endedAt = performance.now();
+		};
+
+		document.addEventListener('introstart', (event) => start(motion.intro, event), true);
+		document.addEventListener('introend', (event) => end(motion.intro, event), true);
+		document.addEventListener('outrostart', (event) => start(motion.outro, event), true);
+		document.addEventListener('outroend', (event) => end(motion.outro, event), true);
+	}, name);
+}
+
+const stateTransitionMotion = (page: Page) =>
+	page.evaluate(
+		() =>
+			(window as unknown as { stateTransitionMotion: StateTransitionMotion }).stateTransitionMotion
+	);
+
+async function moveWithAnimationProbe(page: Page, name: string, direction: 'up' | 'down') {
+	return page.evaluate(
+		async ({ stateName, moveDirection }) => {
+			const findRow = () =>
+				[...document.querySelectorAll<HTMLElement>('[data-state-row]')].find(
+					(row) => row.dataset.stateName === stateName
+				);
+			const row = findRow();
+			if (!row) throw new Error(`No state row named ${stateName}`);
+			const button = row.querySelector<HTMLButtonElement>(
+				`button[data-move-direction="${moveDirection}"]`
+			);
+			if (!button) throw new Error(`No ${moveDirection} button for ${stateName}`);
+
+			const before = row.getBoundingClientRect().top;
+			const positions = [before];
+			let duration = 0;
+			let sawAnimation = false;
+			let idleFrames = 0;
+			button.click();
+
+			for (let frame = 0; frame < 90; frame += 1) {
+				await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+				const movedRow = findRow();
+				if (!movedRow) throw new Error(`State row ${stateName} disappeared`);
+				positions.push(movedRow.getBoundingClientRect().top);
+				const animations = movedRow.getAnimations();
+				for (const animation of animations) {
+					const animationDuration = animation.effect?.getTiming().duration;
+					if (typeof animationDuration === 'number')
+						duration = Math.max(duration, animationDuration);
+				}
+				if (animations.some((animation) => ['pending', 'running'].includes(animation.playState))) {
+					sawAnimation = true;
+					idleFrames = 0;
+				} else {
+					idleFrames += 1;
+				}
+				if ((sawAnimation && idleFrames >= 2) || (!sawAnimation && idleFrames >= 3)) break;
+			}
+
+			return {
+				before,
+				duration,
+				positions,
+				final: findRow()!.getBoundingClientRect().top,
+				order: [...document.querySelectorAll<HTMLElement>('[data-state-row]')].map(
+					(candidate) => candidate.dataset.stateName
+				)
+			};
+		},
+		{ stateName: name, moveDirection: direction }
+	);
+}
 
 const previewGeometry = async (page: Page) => {
 	const region = page.getByRole('region', { name: 'Live preview' });
@@ -138,6 +265,7 @@ async function renderedGraphText(page: Page) {
 test.beforeAll(async ({ apiFor, uniqueName }) => {
 	workflowName = uniqueName('Header', { maxLength: 32 });
 	wideWorkflowName = uniqueName('Wide preview', { maxLength: 100 });
+	reorderWorkflowName = uniqueName('Reorder states', { maxLength: 100 });
 	const api = apiFor(ALICE);
 	const created = await body<{ id: string }>(
 		await api.post('/api/v1/workflows', {
@@ -184,6 +312,40 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 		})
 	);
 	wideWorkflowId = wide.id;
+
+	const reorder = await body<{
+		id: string;
+		states: { id: string; name: string }[];
+	}>(
+		await api.post('/api/v1/workflows', {
+			name: reorderWorkflowName,
+			description: 'A workflow used to verify persisted state ordering.',
+			initial_state: 'Open',
+			states: [
+				{ name: 'Open', category: 'active' },
+				{ name: 'Review', category: 'awaiting_human' },
+				{ name: 'Closed', category: 'done' }
+			],
+			transitions: [
+				{ name: 'Submit', from: 'Open', to: 'Review' },
+				{
+					name: 'Approve',
+					from: 'Review',
+					to: 'Closed',
+					requires: [
+						{
+							artifact: 'approval',
+							type: 'text',
+							content_type: 'text/markdown',
+							description: 'The approval record'
+						}
+					]
+				}
+			]
+		})
+	);
+	reorderWorkflowId = reorder.id;
+	reorderStateIds = Object.fromEntries(reorder.states.map((state) => [state.name, state.id]));
 });
 
 test.use({ signedIn: ALICE });
@@ -206,8 +368,95 @@ test('an editable workflow shows the description once, in the form that edits it
 	await expect(page.getByLabel('Description', { exact: true })).toHaveValue(description);
 });
 
+test('state rows summarize the workflow and expand one inline editor at a time', async ({
+	page
+}) => {
+	await gotoHydrated(page, `/workflows/${reorderWorkflowId}`);
+	await expect(page.getByLabel('State name', { exact: true })).toHaveCount(0);
+	const review = stateRow(page, 'Review');
+	await expect(review.getByText('Approve → Closed', { exact: true })).toBeVisible();
+	await expect(review.getByText('approval · 1 required artifact', { exact: true })).toBeVisible();
+
+	const reviewTrigger = review.getByRole('button', { name: 'Edit Review state', exact: true });
+	await reviewTrigger.click();
+	await expect(review.getByRole('region', { name: 'Edit Review state' })).toBeVisible();
+	await expect(review.getByLabel('State name')).toBeFocused();
+	await expect(review.getByRole('button', { name: 'Collapse Review state' })).toHaveAttribute(
+		'aria-expanded',
+		'true'
+	);
+
+	await stateRow(page, 'Open').getByRole('button', { name: 'Edit Open state' }).click();
+	await expect(review.getByRole('region', { name: 'Edit Review state' })).toHaveCount(0);
+	const open = stateRow(page, 'Open');
+	await open.getByRole('button', { name: 'Collapse Open', exact: true }).click();
+	await expect(open.getByRole('button', { name: 'Edit Open state' })).toBeFocused();
+});
+
+test('state expansion, collapse, and reordering visibly animate when motion is enabled', async ({
+	page
+}) => {
+	await page.emulateMedia({ reducedMotion: 'no-preference' });
+	await gotoHydrated(page, `/workflows/${reorderWorkflowId}`);
+	await observeStateTransition(page, 'Open');
+
+	const open = stateRow(page, 'Open');
+	await open.getByRole('button', { name: 'Edit Open state' }).click();
+	await page.waitForFunction(
+		() =>
+			(window as unknown as { stateTransitionMotion: StateTransitionMotion }).stateTransitionMotion
+				.intro.endedAt !== null
+	);
+	await open.getByRole('button', { name: 'Collapse Open state' }).click();
+	await page.waitForFunction(
+		() =>
+			(window as unknown as { stateTransitionMotion: StateTransitionMotion }).stateTransitionMotion
+				.outro.endedAt !== null
+	);
+
+	const motion = await stateTransitionMotion(page);
+	expect(Math.max(0, ...motion.intro.durations)).toBeGreaterThanOrEqual(350);
+	expect(motion.intro.endedAt! - motion.intro.startedAt!).toBeGreaterThanOrEqual(300);
+	expect(Math.max(0, ...motion.outro.durations)).toBeGreaterThanOrEqual(230);
+	expect(motion.outro.endedAt! - motion.outro.startedAt!).toBeGreaterThanOrEqual(180);
+
+	const move = await moveWithAnimationProbe(page, 'Review', 'up');
+	expect(move.order).toEqual(['Review', 'Open', 'Closed']);
+	expect(move.duration).toBeGreaterThanOrEqual(400);
+	expect(move.final).toBeLessThan(move.before);
+	const lower = Math.min(move.before, move.final) + 1;
+	const upper = Math.max(move.before, move.final) - 1;
+	expect(move.positions.some((position) => position > lower && position < upper)).toBe(true);
+});
+
+test('reduced motion makes state expansion, collapse, and reordering immediate', async ({
+	page
+}) => {
+	await page.emulateMedia({ reducedMotion: 'reduce' });
+	await gotoHydrated(page, `/workflows/${reorderWorkflowId}`);
+	await observeStateTransition(page, 'Open');
+
+	const open = stateRow(page, 'Open');
+	await open.getByRole('button', { name: 'Edit Open state' }).click();
+	await expect(open.getByRole('region', { name: 'Edit Open state' })).toBeVisible();
+	await open.getByRole('button', { name: 'Collapse Open state' }).click();
+	await expect(open.getByRole('region', { name: 'Edit Open state' })).toHaveCount(0);
+
+	const motion = await stateTransitionMotion(page);
+	expect(Math.max(0, ...motion.intro.durations)).toBe(0);
+	expect(motion.intro.endedAt! - motion.intro.startedAt!).toBeLessThan(50);
+	expect(Math.max(0, ...motion.outro.durations)).toBe(0);
+	expect(motion.outro.endedAt! - motion.outro.startedAt!).toBeLessThan(50);
+
+	const move = await moveWithAnimationProbe(page, 'Review', 'up');
+	expect(move.order).toEqual(['Review', 'Open', 'Closed']);
+	expect(move.duration).toBe(0);
+	for (const position of move.positions.slice(1)) expect(position).toBeCloseTo(move.final, 1);
+});
+
 test('an editable workflow can save parallel named actions to one state', async ({ page }) => {
 	await gotoHydrated(page, `/workflows/${workflowId}`);
+	await expandState(page, 'Open');
 	await expect(page.getByLabel('Action name')).toHaveCount(2);
 	await expect(page.getByText('Only one action can lead')).toHaveCount(0);
 	const save = page.getByRole('button', { name: 'Save workflow' });
@@ -223,6 +472,7 @@ test('an editable workflow can save parallel named actions to one state', async 
 	);
 	await save.click();
 	expect((await response).ok()).toBe(true);
+	await expandState(page, 'Open');
 	await expect(page.getByLabel('Action name')).toHaveCount(2);
 	await expect(page.getByRole('button', { name: 'Fit', exact: true })).toHaveAttribute(
 		'aria-pressed',
@@ -230,10 +480,177 @@ test('an editable workflow can save parallel named actions to one state', async 
 	);
 });
 
+test('state moves preserve references and persist the displayed order through reload', async ({
+	page
+}) => {
+	await gotoHydrated(page, `/workflows/${reorderWorkflowId}`);
+	expect(await stateOrder(page)).toEqual(['Open', 'Review', 'Closed']);
+	await expect(page.getByRole('button', { name: 'Move Open up' })).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Move Closed down' })).toBeDisabled();
+	const openRow = await expandState(page, 'Open');
+	await expect(openRow.getByRole('radio')).toBeChecked();
+	await expect(openRow.getByLabel('Target state')).toHaveValue(reorderStateIds.Review);
+	const reviewRow = await expandState(page, 'Review');
+	await expect(reviewRow.getByLabel('Target state')).toHaveValue(reorderStateIds.Closed);
+	await expect(reviewRow.getByLabel('Required artifact name')).toHaveValue('approval');
+
+	const reviewUp = page.getByRole('button', { name: 'Move Review up' });
+	await reviewUp.focus();
+	await page.keyboard.press('Space');
+	expect(await stateOrder(page)).toEqual(['Review', 'Open', 'Closed']);
+	await expect(page.getByRole('status')).toHaveText('Review moved to position 1 of 3.');
+	await expect(page.getByRole('button', { name: 'Move Review down' })).toBeFocused();
+
+	await page.getByRole('button', { name: 'Move Review down' }).click();
+	expect(await stateOrder(page)).toEqual(['Open', 'Review', 'Closed']);
+	await expect(page.getByRole('button', { name: 'Move Review down' })).toBeFocused();
+	await page.getByRole('button', { name: 'Move Closed up' }).click();
+	expect(await stateOrder(page)).toEqual(['Open', 'Closed', 'Review']);
+	await expect(page.getByRole('button', { name: 'Move Closed up' })).toBeFocused();
+
+	const closedRow = await expandState(page, 'Closed');
+	await closedRow.getByLabel('State name').fill('Archived');
+	const reopenedOpen = await expandState(page, 'Open');
+	await expect(reopenedOpen.getByRole('radio')).toBeChecked();
+	await expect(reopenedOpen.getByLabel('Target state')).toHaveValue(reorderStateIds.Review);
+	await expect((await expandState(page, 'Review')).getByLabel('Target state')).toHaveValue(
+		reorderStateIds.Closed
+	);
+
+	const responsePromise = page.waitForResponse(
+		(response) =>
+			response.request().method() === 'PATCH' &&
+			response.url().endsWith(`/api/v1/workflows/${reorderWorkflowId}`)
+	);
+	await page.getByRole('button', { name: 'Save workflow' }).click();
+	const response = await responsePromise;
+	expect(response.ok()).toBe(true);
+	const request = response.request().postDataJSON();
+	expect(request.states.map((state: { id: string }) => state.id)).toEqual([
+		reorderStateIds.Open,
+		reorderStateIds.Closed,
+		reorderStateIds.Review
+	]);
+	expect(request.initial_state).toBe(reorderStateIds.Open);
+	expect(request.transitions).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({
+				name: 'Submit',
+				from: reorderStateIds.Open,
+				to: reorderStateIds.Review
+			}),
+			expect.objectContaining({
+				name: 'Approve',
+				from: reorderStateIds.Review,
+				to: reorderStateIds.Closed,
+				requires: [
+					{
+						artifact: 'approval',
+						type: 'text',
+						content_type: 'text/markdown',
+						description: 'The approval record'
+					}
+				]
+			})
+		])
+	);
+	const saved = (await response.json()) as {
+		states: { id: string; position: number }[];
+	};
+	expect(saved.states.map(({ id, position }) => ({ id, position }))).toEqual([
+		{ id: reorderStateIds.Open, position: 0 },
+		{ id: reorderStateIds.Closed, position: 1 },
+		{ id: reorderStateIds.Review, position: 2 }
+	]);
+	await expect.poll(() => stateOrder(page)).toEqual(['Open', 'Archived', 'Review']);
+	await page.reload();
+	await expect(page.getByRole('heading', { level: 1, name: reorderWorkflowName })).toBeVisible();
+	expect(await stateOrder(page)).toEqual(['Open', 'Archived', 'Review']);
+	const reloadedOpen = await expandState(page, 'Open');
+	await expect(reloadedOpen.getByRole('radio')).toBeChecked();
+	await expect(reloadedOpen.getByLabel('Target state')).toHaveValue(reorderStateIds.Review);
+});
+
+test('a rejected save keeps the reordered draft available for retry', async ({ page }) => {
+	await gotoHydrated(page, `/workflows/${reorderWorkflowId}`);
+	await page.getByRole('button', { name: 'Move Review up' }).click();
+	expect(await stateOrder(page)).toEqual(['Open', 'Review', 'Archived']);
+	await page.route(`**/api/v1/workflows/${reorderWorkflowId}`, async (route) => {
+		if (route.request().method() !== 'PATCH') return route.continue();
+		await route.fulfill({
+			status: 500,
+			contentType: 'application/json',
+			body: JSON.stringify({ error: { code: 'forced_failure', message: 'Forced save failure' } })
+		});
+	});
+	await page.getByRole('button', { name: 'Save workflow' }).click();
+	await expect(page.getByText('Forced save failure', { exact: true })).toBeVisible();
+	expect(await stateOrder(page)).toEqual(['Open', 'Review', 'Archived']);
+});
+
+test('new-state moves preserve draft prompts and resolve references on create', async ({
+	page,
+	uniqueName
+}) => {
+	await page.emulateMedia({ reducedMotion: 'no-preference' });
+	await gotoHydrated(page, '/workflows/new');
+	const name = uniqueName('New reordered workflow', { maxLength: 100 });
+	await page.getByLabel('Name', { exact: true }).fill(name);
+	await page.getByRole('button', { name: 'Add state' }).click();
+	await page.getByLabel('State name', { exact: true }).last().fill('Review');
+	const review = stateRow(page, 'Review');
+	await review.getByRole('radio').check();
+	await review.getByRole('button', { name: 'Add stage instructions' }).click();
+	await review.locator('textarea').fill('Check the implementation carefully.');
+	await (
+		await expandState(page, 'Open')
+	)
+		.getByLabel('Target state')
+		.selectOption({ label: 'Review' });
+	await page.getByRole('button', { name: 'Move Review up' }).click();
+	await page.getByRole('button', { name: 'Move Review up' }).click();
+	expect(await stateOrder(page)).toEqual(['Review', 'Open', 'Done']);
+	await expect(page.getByRole('button', { name: 'Move Review down' })).toBeFocused();
+
+	const requestPromise = page.waitForRequest(
+		(request) => request.method() === 'POST' && request.url().endsWith('/api/v1/workflows')
+	);
+	await page.getByRole('button', { name: 'Create workflow' }).click();
+	const request = (await requestPromise).postDataJSON();
+	expect(request.states.map((state: { name: string }) => state.name)).toEqual([
+		'Review',
+		'Open',
+		'Done'
+	]);
+	expect(request.states[0].prompt).toBe('Check the implementation carefully.');
+	expect(request.initial_state).toBe('Review');
+	expect(request.transitions[0]).toMatchObject({ from: 'Open', to: 'Review' });
+	await expect(page).toHaveURL(/\/workflows\/wf_/);
+});
+
+test('move controls stay contained and show both boundaries for one state on a phone', async ({
+	page
+}) => {
+	await page.setViewportSize({ width: 375, height: 812 });
+	await gotoHydrated(page, '/workflows/new');
+	await expandState(page, 'Done');
+	await page.getByRole('button', { name: 'Remove state' }).click();
+	await expect(page.getByRole('button', { name: 'Move Open up' })).toBeDisabled();
+	await expect(page.getByRole('button', { name: 'Move Open down' })).toBeDisabled();
+	const geometry = await page.locator('form').evaluate((form) => ({
+		formRight: form.getBoundingClientRect().right,
+		documentWidth: document.documentElement.scrollWidth,
+		viewportWidth: document.documentElement.clientWidth
+	}));
+	expect(geometry.formRight).toBeLessThanOrEqual(375);
+	expect(geometry.documentWidth - geometry.viewportWidth).toBeLessThanOrEqual(1);
+});
+
 test('the preview keeps a transition path keyed across action rename and reorder', async ({
 	page
 }) => {
 	await gotoHydrated(page, `/workflows/${workflowId}`);
+	await expandState(page, 'Open');
 	const preview = page.getByRole('region', { name: 'Live preview' });
 	const abandonLabel = preview.getByText('Abandon', { exact: true });
 	const transitionKey = await abandonLabel.getAttribute('data-graph-transition-label');
@@ -340,6 +757,7 @@ test('a wide live preview defaults to Fit and round-trips through exact 1×', as
 	expect((await previewGeometry(page)).headingLeft).toBeCloseTo(fitted.headingLeft, 1);
 
 	const renamedAction = 'Advance with a substantially longer action label';
+	await expandState(page, 'Engineering state 1');
 	await page.getByLabel('Action name').first().fill(renamedAction);
 	await expect(region.getByText(renamedAction, { exact: true })).toBeVisible();
 	const afterEdit = await previewGeometry(page);
@@ -373,15 +791,16 @@ test('a wide live preview defaults to Fit and round-trips through exact 1×', as
 
 test('browser text bounds stay inside reserved boxes without collisions', async ({ page }) => {
 	await gotoHydrated(page, `/workflows/${wideWorkflowId}`);
-	await page
+	const firstName = `${'W'.repeat(45)} <script>`;
+	await (await expandState(page, 'Engineering state 1')).getByLabel('State name').fill(firstName);
+	await (
+		await expandState(page, 'Engineering state 2')
+	)
 		.getByLabel('State name')
-		.first()
-		.fill(`${'W'.repeat(45)} <script>`);
-	await page
-		.getByLabel('State name')
-		.nth(1)
 		.fill(`境界テスト ${'界'.repeat(20)} 👩‍💻 e\u0301`);
-	await page
+	await (
+		await expandState(page, firstName)
+	)
 		.getByLabel('Action name')
 		.first()
 		.fill(`Route ${'W'.repeat(38)} 界 😀 <b>literal</b>`);
