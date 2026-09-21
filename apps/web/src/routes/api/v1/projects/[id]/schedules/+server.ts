@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { ListResponse, Schedule } from '@tines/shared';
 import { api, apiContext, encodeCursor, readPage } from '$lib/server/api/core';
 import { getProject } from '$lib/server/api/projects';
-import { listSchedules } from '$lib/server/api/schedules';
+import { listSchedulesForActor } from '$lib/server/api/schedules';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
@@ -10,9 +10,9 @@ export const GET: RequestHandler = api(async (event) => {
 	// 404 for a project the user doesn't own, before filtering by it.
 	await getProject(db, actor, event.params.id);
 	const page = readPage(event);
-	const { items, hasMore } = await listSchedules(
+	const { items, hasMore } = await listSchedulesForActor(
 		db,
-		actor.userId,
+		actor,
 		{ projectId: event.params.id },
 		page
 	);

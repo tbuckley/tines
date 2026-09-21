@@ -59,6 +59,7 @@ const RUN_OPERATIONS = new Set([
 	'issue_link.read',
 	'issue_link.create',
 	'issue_link.remove',
+	'schedule.read',
 	'workflow.read',
 	'runner.read',
 	'supervisor.read',

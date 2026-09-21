@@ -33,6 +33,7 @@ import { assertWritable } from './archive';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
+import { projectReadPredicate, requireAccess } from './permissions';
 
 // ---------------------------------------------------------------------------
 // Recurrence input validation
@@ -302,6 +303,47 @@ export async function listSchedules(
 	};
 }
 
+export async function listSchedulesForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	filters: ScheduleListFilters,
+	page: Page
+): Promise<{ items: Schedule[]; hasMore: boolean }> {
+	let q = scheduleQuery(db, actor.userId).where(
+		projectReadPredicate(actor, 'scheduled_task.project_id')
+	);
+	if (filters.projectId) q = q.where('scheduled_task.project_id', '=', filters.projectId);
+	if (filters.project) {
+		const p = filters.project;
+		q = q.where((eb) => eb.or([eb('project.id', '=', p), eb('project.name', '=', p)]));
+	}
+	if (filters.enabled !== undefined) {
+		q = q.where('scheduled_task.enabled', '=', filters.enabled ? 1 : 0);
+	}
+	if (!filters.projectId && !filters.project) {
+		if ((filters.archived ?? 'false') === 'false') q = q.where('project.archived_at', 'is', null);
+		else if (filters.archived === 'true') q = q.where('project.archived_at', 'is not', null);
+	}
+	if (page.cursor) {
+		const { createdAt, id } = page.cursor;
+		q = q.where((eb) =>
+			eb.or([
+				eb('scheduled_task.created_at', '<', createdAt),
+				eb.and([eb('scheduled_task.created_at', '=', createdAt), eb('scheduled_task.id', '<', id)])
+			])
+		);
+	}
+	const rows = await q
+		.orderBy('scheduled_task.created_at desc')
+		.orderBy('scheduled_task.id desc')
+		.limit(page.limit + 1)
+		.execute();
+	return {
+		items: rows.slice(0, page.limit).map(serializeSchedule),
+		hasMore: rows.length > page.limit
+	};
+}
+
 export async function getSchedule(
 	db: Kysely<Database>,
 	userId: string,
@@ -314,6 +356,26 @@ export async function getSchedule(
 	return serializeSchedule(row);
 }
 
+export async function getScheduleForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	id: string
+): Promise<Schedule> {
+	const row = await scheduleQuery(db, actor.userId)
+		.where(projectReadPredicate(actor, 'scheduled_task.project_id'))
+		.where('scheduled_task.id', '=', id)
+		.executeTakeFirst();
+	if (!row) throw notFound();
+	const schedule = serializeSchedule(row);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'read', projectId: schedule.project_id }],
+		'schedule.read',
+		{ projectId: schedule.project_id }
+	);
+	return schedule;
+}
+
 /** The exec-shaped row (owner, initial state) for run-now, user-scoped. */
 async function getScheduleExecRow(
 	db: Kysely<Database>,
@@ -323,6 +385,20 @@ async function getScheduleExecRow(
 	const row = await scheduleExecQuery(db)
 		.where('scheduled_task.id', '=', id)
 		.where('project.user_id', '=', userId)
+		.executeTakeFirst();
+	if (!row) throw notFound();
+	return row;
+}
+
+async function getScheduleExecRowForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	id: string
+): Promise<ScheduleExecRow> {
+	const row = await scheduleExecQuery(db)
+		.where('scheduled_task.id', '=', id)
+		.where('project.user_id', '=', actor.userId)
+		.where(projectReadPredicate(actor, 'scheduled_task.project_id'))
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	return row;
@@ -470,7 +546,18 @@ export async function updateSchedule(
 	id: string,
 	body: UpdateScheduleRequest
 ): Promise<Schedule> {
-	const current = await getSchedule(db, actor.userId, id);
+	const current = await getScheduleForActor(db, actor, id);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: current.project_id }],
+		'schedule.update',
+		{ projectId: current.project_id }
+	);
+	if (body.workflow_id !== undefined || body.state !== undefined) {
+		requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'schedule.update', {
+			projectId: current.project_id
+		});
+	}
 	await assertWritable(db, actor, scheduleProject(current));
 
 	const name =
@@ -609,7 +696,13 @@ export async function deleteSchedule(
 	actor: ActorContext,
 	id: string
 ): Promise<void> {
-	const current = await getSchedule(db, actor.userId, id);
+	const current = await getScheduleForActor(db, actor, id);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'delete', projectId: current.project_id }],
+		'schedule.delete',
+		{ projectId: current.project_id }
+	);
 	await assertWritable(db, actor, scheduleProject(current));
 	await runAtomic(env, [
 		// Explicitly unlink issues (the FK's SET NULL is the backstop); their
@@ -642,7 +735,13 @@ export async function runScheduleNow(
 	effects: DispatchEffects,
 	id: string
 ): Promise<string> {
-	const schedule = await getScheduleExecRow(db, actor.userId, id);
+	const schedule = await getScheduleExecRowForActor(db, actor, id);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: schedule.project_id }],
+		'schedule.run',
+		{ projectId: schedule.project_id }
+	);
 	await assertWritable(db, actor, {
 		id: schedule.project_id,
 		name: schedule.project_name,

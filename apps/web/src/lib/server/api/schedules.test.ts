@@ -3,11 +3,19 @@ import {
 	TEST_NOOP_DISPATCH_EFFECTS
 } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
+import { FULL_API_KEY_PERMISSIONS, type ApiKeyPermissions } from '@tines/shared';
 import { sweepSchedules } from '../schedule-sweep';
 import type { ActorContext } from './core';
 import { createIssue } from './issues';
 import { archiveProject, unarchiveProject } from './projects';
-import { getSchedule, runScheduleNow, updateSchedule } from './schedules';
+import {
+	deleteSchedule,
+	getSchedule,
+	getScheduleForActor,
+	listSchedulesForActor,
+	runScheduleNow,
+	updateSchedule
+} from './schedules';
 import { createTestDb, type TestDb } from './test-db';
 import { updateWorkflow } from './workflows';
 
@@ -50,6 +58,100 @@ async function createSchedule(t: TestDb, extra: { state?: string } = {}) {
 	});
 	return res.schedule!;
 }
+
+function scopedActor(permissions: ApiKeyPermissions): ActorContext {
+	return {
+		...actor,
+		apiKeyId: 'key_scoped',
+		apiKeyName: 'scoped',
+		viaSession: false,
+		permissions,
+		runRestriction: null
+	};
+}
+
+describe('scoped schedule permissions', () => {
+	it('filters schedule pages and hides details outside selected projects', async () => {
+		const t = createTestDb();
+		seed(t);
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_2', 'u1', 'other', ${NOW}, ${NOW})
+		`);
+		const visible = await createSchedule(t);
+		const hidden = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'prj_2', {
+			title: 'Hidden daily',
+			schedule: { preset: { kind: 'daily', time: '10:00' } }
+		});
+		const scoped = scopedActor({
+			version: 1,
+			projects: { access: 'read', scope: ['prj_1'] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+
+		await expect(
+			listSchedulesForActor(t.db, scoped, {}, { cursor: null, limit: 1 })
+		).resolves.toMatchObject({ items: [{ id: visible.id }], hasMore: false });
+		await expect(getScheduleForActor(t.db, scoped, hidden.schedule!.id)).rejects.toMatchObject({
+			status: 404,
+			code: 'not_found'
+		});
+	});
+
+	it('allows reversible edits but requires project delete for permanent removal', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		t.sqlite.exec(`
+			INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+			VALUES ('key_scoped', 'u1', 'scoped', 'hash', 'prefix', ${NOW})
+		`);
+		const scoped = scopedActor({
+			version: 1,
+			projects: { access: 'write', scope: ['prj_1'] },
+			workspace: 'read',
+			control_plane: 'none'
+		});
+
+		await expect(
+			updateSchedule(t.db, t.env, scoped, schedule.id, { enabled: false })
+		).resolves.toMatchObject({ enabled: false });
+		await expect(deleteSchedule(t.db, t.env, scoped, schedule.id)).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions',
+			details: { operation: 'schedule.delete', domain: 'project', access: 'delete' }
+		});
+		await expect(getSchedule(t.db, 'u1', schedule.id)).resolves.toMatchObject({ enabled: false });
+	});
+
+	it('denies run-now to an over-granted run key before creating an instance', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		const scoped: ActorContext = {
+			...scopedActor(FULL_API_KEY_PERMISSIONS),
+			agentRunId: 'run_1',
+			runRestriction: {
+				policy: 'run-v1',
+				runId: 'run_1',
+				issueId: 'iss_bound',
+				projectId: 'prj_1',
+				launchStateId: 'wfs_std_open'
+			}
+		};
+		const before = t.all('SELECT id FROM issue').length;
+
+		await expect(
+			runScheduleNow(t.db, t.env, scoped, TEST_NOOP_DISPATCH_EFFECTS, schedule.id)
+		).rejects.toMatchObject({
+			status: 403,
+			code: 'run_key_forbidden',
+			details: { operation: 'schedule.run', reason: 'operation_forbidden' }
+		});
+		expect(t.all('SELECT id FROM issue')).toHaveLength(before);
+	});
+});
 
 describe('schedule start state', () => {
 	it('dispatch effects: runScheduleNow signals only after its instance batch commits', async () => {
