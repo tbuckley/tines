@@ -14,6 +14,7 @@ import {
 	loadEligibleIssues,
 	loadEndableRun,
 	loadEngineRunners,
+	mintRunKeyAndFlip,
 	noteRateLimit,
 	releaseDeclinedAssignments,
 	releaseSurplusAssigned,
@@ -597,6 +598,9 @@ describe('dispatch pass against the fake adapter', () => {
 		// The run key: bound to the run, expiry = launch + timeout + 10m slack.
 		const key = keyForRun(t, run.id as string);
 		expect(key).toBeDefined();
+		expect(key!.name).toBe(`${runner} · Standard/Open`);
+		expect(key!.run_workflow_name).toBe('Standard');
+		expect(key!.run_state_name).toBe('Open');
 		expect(key!.revoked_at).toBeNull();
 		expect(key!.expires_at).toBe(NOW + 30 * 60_000 + 10 * 60_000);
 		expect(run.api_key_id).toBe(key!.id);
@@ -616,6 +620,105 @@ describe('dispatch pass against the fake adapter', () => {
 		// Supervisor events are attributed to the owning user, no API key.
 		expect(started[0].actor_api_key_id).toBeNull();
 	});
+
+	it('snapshots the starting runner/workflow/state name without a length cap', async () => {
+		const t = world();
+		addTwoStageWorkflow(t);
+		const runner = addRunner(t, { name: "O'Hare 🚀 runner " + 'r'.repeat(45) });
+		const issue = addIssue(t, { workflow: 'wf_two', state: STAGE_A });
+		const run = addRun(t, { issueId: issue, runnerId: runner, stateAtStart: STAGE_A });
+
+		const workflowName = "Éngineering's workflow " + 'w'.repeat(35);
+		const stateName = 'Développement 🚧 ' + 's'.repeat(35);
+		t.sqlite.prepare('UPDATE workflow SET name = ? WHERE id = ?').run(workflowName, 'wf_two');
+		t.sqlite.prepare('UPDATE workflow_state SET name = ? WHERE id = ?').run(stateName, STAGE_A);
+		// The live issue has moved on; naming follows the run's captured start state.
+		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(STAGE_B, issue);
+
+		const minted = await mintRunKeyAndFlip(t.db, t.env, {
+			runId: run,
+			userId: USER,
+			maxRunMinutes: 30,
+			now: NOW
+		});
+		expect(minted).not.toBeNull();
+		const expected = `${"O'Hare 🚀 runner " + 'r'.repeat(45)} · ${workflowName}/${stateName}`;
+		expect(expected.length).toBeGreaterThan(100);
+		expect(keyForRun(t, run)).toMatchObject({
+			name: expected,
+			run_workflow_name: workflowName,
+			run_state_name: stateName
+		});
+
+		// Later renames do not rewrite historical attribution.
+		t.sqlite.prepare('UPDATE runner SET name = ? WHERE id = ?').run('renamed runner', runner);
+		t.sqlite.prepare('UPDATE workflow SET name = ? WHERE id = ?').run('Renamed workflow', 'wf_two');
+		t.sqlite
+			.prepare('UPDATE workflow_state SET name = ? WHERE id = ?')
+			.run('Renamed state', STAGE_A);
+		expect(keyForRun(t, run)).toMatchObject({
+			name: expected,
+			run_workflow_name: workflowName,
+			run_state_name: stateName
+		});
+	});
+
+	it('falls back to the legacy run name when starting-state metadata is absent', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const run = addRun(t, {
+			issueId: issue,
+			runnerId: runner,
+			stateAtStart: 'wfs_missing'
+		});
+
+		expect(
+			await mintRunKeyAndFlip(t.db, t.env, {
+				runId: run,
+				userId: USER,
+				maxRunMinutes: 30,
+				now: NOW
+			})
+		).not.toBeNull();
+		expect(keyForRun(t, run)).toMatchObject({
+			name: `run ${run}`,
+			run_workflow_name: null,
+			run_state_name: null
+		});
+	});
+
+	it.each(['runner', 'workflow', 'state'] as const)(
+		'falls back to the legacy run name when the %s name is blank',
+		async (component) => {
+			const t = world();
+			const runner = addRunner(t);
+			const issue = addIssue(t);
+			const run = addRun(t, { issueId: issue, runnerId: runner, stateAtStart: OPEN });
+
+			if (component === 'runner') {
+				t.sqlite.prepare('UPDATE runner SET name = ? WHERE id = ?').run('   ', runner);
+			} else if (component === 'workflow') {
+				t.sqlite.prepare('UPDATE workflow SET name = ? WHERE id = ?').run('   ', 'wf_standard');
+			} else {
+				t.sqlite.prepare('UPDATE workflow_state SET name = ? WHERE id = ?').run('   ', OPEN);
+			}
+
+			expect(
+				await mintRunKeyAndFlip(t.db, t.env, {
+					runId: run,
+					userId: USER,
+					maxRunMinutes: 30,
+					now: NOW
+				})
+			).not.toBeNull();
+			expect(keyForRun(t, run)).toMatchObject({
+				name: `run ${run}`,
+				run_workflow_name: null,
+				run_state_name: null
+			});
+		}
+	);
 
 	it('a poll-mode (local) adapter leaves the claim assigned for the daemon', async () => {
 		const t = world();

@@ -4,6 +4,7 @@ import {
 	actorLabel,
 	activeStateIds,
 	compareLabelNames,
+	compactActorLabel,
 	isActiveRun,
 	isStaleTierOverride,
 	runCostLabel,
@@ -163,6 +164,7 @@ describe('runRefLabel', () => {
 	const run: ActorRun = {
 		run_id: 'arun_9Xq2',
 		runner_name: 'laptop-m4',
+		stage: { workflow_name: 'Engineering', state_name: 'Design' },
 		issue_ref: { project_name: 'demo', number: 12 }
 	};
 
@@ -174,15 +176,129 @@ describe('runRefLabel', () => {
 		expect(runRefLabel({ ...run, issue_ref: null })).toBe('run arun_9Xq2');
 	});
 
-	it('is the same phrase actorLabel uses for a run key', () => {
-		const label = actorLabel({
+	const actor = (apiKeyName: string | null, actorRun: ActorRun = run) =>
+		actorLabel({
 			user_id: 'usr_1',
 			user_name: 'alice',
 			api_key_id: 'key_1',
-			api_key_name: 'run arun_9Xq2',
-			run
+			api_key_name: apiKeyName,
+			run: actorRun
 		});
+
+	it('uses a descriptive mint-time name instead of the live runner name', () => {
+		const label = actor('old-runner · Engineering/Design');
+		expect(label).toBe('alice via old-runner · Engineering/Design · run on demo/12');
+		expect(label.endsWith(runRefLabel(run))).toBe(true);
+	});
+
+	it('preserves the runner label for exact legacy, missing, and blank names', () => {
+		expect(actor('run arun_9Xq2')).toBe('alice via laptop-m4 · run on demo/12');
+		expect(actor(null)).toBe('alice via laptop-m4 · run on demo/12');
+		expect(actor('   ')).toBe('alice via laptop-m4 · run on demo/12');
+	});
+
+	it('does not treat another name beginning with run as legacy', () => {
+		expect(actor('run crew · Engineering/Design')).toBe(
+			'alice via run crew · Engineering/Design · run on demo/12'
+		);
+	});
+
+	it('uses a nonblank descriptive name verbatim', () => {
+		expect(actor('  archived descriptor  ')).toBe(
+			'alice via   archived descriptor   · run on demo/12'
+		);
+	});
+
+	it('uses the run-id reference when the issue is deleted', () => {
+		expect(actor('old-runner · Engineering/Design', { ...run, issue_ref: null })).toBe(
+			'alice via old-runner · Engineering/Design · run arun_9Xq2'
+		);
+	});
+
+	it('retains a descriptive name after run provenance is detached', () => {
+		expect(
+			actorLabel({
+				user_id: 'usr_1',
+				user_name: 'alice',
+				api_key_id: 'key_1',
+				api_key_name: 'old-runner · Engineering/Design',
+				run: null
+			})
+		).toBe('alice via old-runner · Engineering/Design');
+	});
+
+	it('keeps ordinary key and session labels unchanged', () => {
+		expect(
+			actorLabel({
+				user_id: 'usr_1',
+				user_name: 'alice',
+				api_key_id: 'key_1',
+				api_key_name: 'laptop-key'
+			})
+		).toBe('alice via laptop-key');
+		expect(
+			actorLabel({
+				user_id: 'usr_1',
+				user_name: 'alice',
+				api_key_id: null,
+				api_key_name: null
+			})
+		).toBe('alice');
+	});
+
+	it('is the same phrase actorLabel uses for a legacy run key', () => {
+		const label = actor('run arun_9Xq2');
 		expect(label).toBe('alice via laptop-m4 · run on demo/12');
 		expect(label.endsWith(runRefLabel(run))).toBe(true);
+	});
+
+	it('omits only the runner from a structured compact label', () => {
+		expect(
+			compactActorLabel({
+				user_id: 'usr_1',
+				user_name: 'alice',
+				api_key_id: 'key_1',
+				api_key_name: 'runner · name · Engineering/Design',
+				run
+			})
+		).toBe('alice · Engineering/Design · run on demo/12');
+	});
+
+	it('does not parse separators from the display name for a compact label', () => {
+		expect(
+			compactActorLabel({
+				user_id: 'usr_1',
+				user_name: 'alice',
+				api_key_id: 'key_1',
+				api_key_name: 'runner · name · wrong/workflow',
+				run: {
+					...run,
+					stage: { workflow_name: 'Engineering · Core', state_name: 'Build/Test' }
+				}
+			})
+		).toBe('alice · Engineering · Core/Build/Test · run on demo/12');
+	});
+
+	it('keeps the compact legacy fallback when no stage snapshot exists', () => {
+		expect(
+			compactActorLabel({
+				user_id: 'usr_1',
+				user_name: 'alice',
+				api_key_id: 'key_1',
+				api_key_name: 'run arun_9Xq2',
+				run: { ...run, stage: null }
+			})
+		).toBe('alice · run on demo/12');
+	});
+
+	it('keeps ordinary API-key attribution in a compact label', () => {
+		expect(
+			compactActorLabel({
+				user_id: 'usr_1',
+				user_name: 'alice',
+				api_key_id: 'key_1',
+				api_key_name: 'laptop-key'
+			})
+		).toBe('alice via laptop-key');
 	});
 });

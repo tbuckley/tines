@@ -136,8 +136,8 @@ export function formatDateTime(ms: number): string {
 	});
 }
 
-// Canonical "alice via …" attribution rendering (run-key aware).
-export { actorLabel } from '@tines/shared';
+// Canonical attribution rendering (run-key aware).
+export { actorLabel, compactActorLabel } from '@tines/shared';
 
 // The one description of what an activity event says, shared with the CLI.
 export { describeEvent, displayActor, eventSummary } from '@tines/shared';

@@ -284,6 +284,8 @@ export function versionQuery(db: Kysely<Database>) {
 			.select([
 				'actor_user.name as actor_user_name',
 				'api_key.name as actor_api_key_name',
+				'api_key.run_workflow_name as actor_run_workflow_name',
+				'api_key.run_state_name as actor_run_state_name',
 				'actor_run.id as actor_run_id',
 				// The run's own issue: a version attributed to a run on *another*
 				// issue must not be folded into this issue's round.

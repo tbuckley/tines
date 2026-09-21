@@ -99,6 +99,37 @@ test('a signed-in visit to / lands on the issues list', async ({ page }) => {
 	await expect(page.getByRole('link', { name: new RegExp(issueTitle) })).toBeVisible();
 });
 
+for (const [label, viewport] of [
+	['desktop', { width: 1280, height: 800 }],
+	['phone', { width: 390, height: 844 }]
+] as const) {
+	test(`primary navigation order and active semantics hold on ${label}`, async ({ page }) => {
+		await page.setViewportSize(viewport);
+		const primary =
+			label === 'phone'
+				? page.getByRole('navigation', { name: 'Primary' })
+				: page.locator('header nav');
+
+		await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${issue.number}`);
+		await expect(primary.getByRole('link')).toHaveText(['Issues', 'Workflows', 'Agents']);
+		await expect(primary.getByRole('link', { name: 'Issues' })).toHaveAttribute(
+			'aria-current',
+			'page'
+		);
+		await expect(primary.locator('[aria-current="page"]')).toHaveCount(1);
+
+		await gotoHydrated(page, '/workflows/wf_standard');
+		await expect(primary.getByRole('link', { name: 'Workflows' })).toHaveAttribute(
+			'aria-current',
+			'page'
+		);
+		await expect(primary.locator('[aria-current="page"]')).toHaveCount(1);
+
+		await gotoHydrated(page, '/context');
+		await expect(primary.locator('[aria-current="page"]')).toHaveCount(0);
+	});
+}
+
 test('an issue can be created from the issues list, picking project and starting state', async ({
 	page
 }) => {
@@ -261,7 +292,8 @@ test('the mobile layout swaps the header tabs for a bottom bar', async ({ page }
 	await page.goto('/issues');
 	const bottomNav = page.getByRole('navigation', { name: 'Primary' });
 	await expect(bottomNav).toBeVisible();
-	await expect(bottomNav.getByRole('link', { name: 'Workflows' })).toBeVisible();
+	await expect(bottomNav.getByRole('link')).toHaveText(['Issues', 'Workflows', 'Agents']);
+	await expect(bottomNav.getByRole('link', { name: 'Projects' })).toHaveCount(0);
 	// The desktop tab strip is hidden at this width.
 	await expect(page.locator('header').getByRole('link', { name: 'Workflows' })).toBeHidden();
 });
@@ -345,7 +377,9 @@ test('the app chrome stays inside both responsive breakpoint boundaries', async 
 	const bottomNav = page.getByRole('navigation', { name: 'Primary' });
 	await expect(switcher).toBeVisible();
 
-	for (const width of [639, 640, 641, 767, 768, 769]) {
+	await expect(switcher).toHaveAttribute('aria-label', `Project focus: ${longProject.name}`);
+
+	for (const width of [320, 390, 639, 640, 641, 767, 768, 769]) {
 		await page.setViewportSize({ width, height: 844 });
 		const geometry = await readSettled(() =>
 			page.evaluate(() => {
@@ -354,6 +388,8 @@ test('the app chrome stays inside both responsive breakpoint boundaries', async 
 				)!;
 				const account = document.querySelector<HTMLElement>('button[aria-label="Account menu"]')!;
 				const headerNav = document.querySelector<HTMLElement>('header nav')!;
+				const switcherLabel = switcher.querySelectorAll<HTMLElement>('span')[1]!;
+				const switcherLabelStyle = getComputedStyle(switcherLabel);
 				const box = (element: HTMLElement) => {
 					const bounds = element.getBoundingClientRect();
 					return { left: bounds.left, right: bounds.right };
@@ -363,6 +399,8 @@ test('the app chrome stays inside both responsive breakpoint boundaries', async 
 					switcher: box(switcher),
 					switcherScrollWidth: switcher.scrollWidth,
 					switcherClientWidth: switcher.clientWidth,
+					switcherLabelOverflow: switcherLabelStyle.overflow,
+					switcherLabelTextOverflow: switcherLabelStyle.textOverflow,
 					account: box(account),
 					headerNav: getComputedStyle(headerNav).display === 'none' ? null : box(headerNav)
 				};
@@ -374,6 +412,10 @@ test('the app chrome stays inside both responsive breakpoint boundaries', async 
 		expect(geometry.switcher.right, `switcher right edge at ${width}px`).toBeLessThanOrEqual(width);
 		expect(geometry.switcherScrollWidth, `switcher contents at ${width}px`).toBeLessThanOrEqual(
 			geometry.switcherClientWidth
+		);
+		expect(geometry.switcherLabelOverflow, `switcher label overflow at ${width}px`).toBe('hidden');
+		expect(geometry.switcherLabelTextOverflow, `switcher label ellipsis at ${width}px`).toBe(
+			'ellipsis'
 		);
 		expect(geometry.account.right, `account right edge at ${width}px`).toBeLessThanOrEqual(width);
 		expect(geometry.switcher.right, `switcher/account overlap at ${width}px`).toBeLessThanOrEqual(
@@ -397,7 +439,7 @@ test('the app chrome stays inside both responsive breakpoint boundaries', async 
 		}
 	}
 
-	for (const width of [640, 768]) {
+	for (const width of [320, 390, 640, 768]) {
 		await page.setViewportSize({ width, height: 844 });
 		const focusMenu = page.getByRole('menu', { name: 'Project focus' });
 		await clickToOpen(switcher, focusMenu);

@@ -52,6 +52,8 @@ interface ApiKeyRow {
 	run_project_id?: string | null;
 	run_launch_state_id?: string | null;
 	runner_name?: string | null;
+	run_workflow_name?: string | null;
+	run_state_name?: string | null;
 	run_project_name?: string | null;
 	run_issue_number?: number | null;
 }
@@ -110,6 +112,8 @@ function serialize(row: ApiKeyRow): ApiKey {
 		key.run = actorRunOf({
 			run_id: row.agent_run_id,
 			runner_name: row.runner_name ?? null,
+			run_workflow_name: row.run_workflow_name ?? null,
+			run_state_name: row.run_state_name ?? null,
 			run_project_name: row.run_project_name ?? null,
 			run_issue_number: row.run_issue_number ?? null
 		});
@@ -139,6 +143,8 @@ function keyQuery(db: Kysely<Database>, userId: string) {
 			'api_key.permissions',
 			'api_key.agent_run_id',
 			'api_key.expires_at',
+			'api_key.run_workflow_name',
+			'api_key.run_state_name',
 			'run.status as run_status',
 			'run.api_key_id as run_api_key_id',
 			'run.issue_id as run_issue_id',

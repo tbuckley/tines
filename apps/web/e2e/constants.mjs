@@ -108,7 +108,7 @@ export const RUNROW = {
 	runKey: 'tines_e2erunrow000000000000000000000000000000000',
 	runKeyRunId: 'arun_e2e_run_key_active',
 	runKeyIssueId: 'iss_e2e_run_key_active',
-	runKeyIssueNumber: 2,
+	runKeyIssueNumber: 3,
 	runKeyRunnerId: 'rnr_e2e_run_key_active',
 	runKeyRunnerName: 'run-key-fixture',
 	runKeyName: 'run:runrow'
@@ -250,6 +250,18 @@ export const API_ISOLATION = {
 	apiKey: 'tines_e2eapiisolation00000000000000000000000000000',
 	apiKeyName: 'api-isolation-key',
 	sessionToken: 'e2e-session-api-isolation'
+};
+/**
+ * Exclusive to runner.spec.ts, whose durable run history and maximum-length
+ * workflow intentionally survive its serial journey.
+ */
+export const RUNNER_E2E = {
+	id: 'usr_e2e_runner',
+	name: 'Runner E2E',
+	email: 'runner@e2e.test',
+	apiKey: 'tines_e2erunner000000000000000000000000000000000',
+	apiKeyName: 'runner-key',
+	sessionToken: 'e2e-session-runner'
 };
 export const EXPLAINER_REMEDIES = {
 	id: 'usr_e2e_explainer_remedies',

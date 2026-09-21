@@ -172,14 +172,20 @@
 							{:else if seg.kind === 'name'}
 								<span class="font-medium">“{seg.text}”</span>
 							{:else if seg.kind === 'state-transition'}
-								<span class="ml-1 inline-flex items-center gap-1.5 align-middle">
+								<span
+									class="ml-1 inline-flex max-w-full flex-wrap items-center gap-1.5 align-middle"
+								>
 									<StateBadge
 										state={{ name: seg.from, category: 'backlog' }}
 										showDot={false}
-										class="opacity-70"
+										class="max-w-full min-w-0 wrap-anywhere whitespace-normal opacity-70"
 									/>
-									<IconArrowRight size={12} class="text-muted-foreground inline" />
-									<StateBadge state={{ name: seg.to, category: 'active' }} showDot={false} />
+									<IconArrowRight size={12} class="text-muted-foreground inline shrink-0" />
+									<StateBadge
+										state={{ name: seg.to, category: 'active' }}
+										showDot={false}
+										class="max-w-full min-w-0 wrap-anywhere whitespace-normal"
+									/>
 								</span>
 							{/if}
 						{/each}

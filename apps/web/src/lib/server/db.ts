@@ -253,6 +253,10 @@ export interface ApiKeyTable {
 	id: string;
 	user_id: string;
 	name: string;
+	/** Mint-time workflow name for run keys; NULL for legacy and ordinary keys. */
+	run_workflow_name: string | null;
+	/** Mint-time starting-state name for run keys; NULL for legacy and ordinary keys. */
+	run_state_name: string | null;
 	key_hash: string;
 	key_prefix: string;
 	/** Canonical JSON ApiKeyPermissions. */

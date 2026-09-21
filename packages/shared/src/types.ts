@@ -14,12 +14,15 @@ export const STATE_CATEGORIES: readonly StateCategory[] = [
 ];
 
 /**
- * A run-key actor's provenance: resolved through the run to the runner, for
- * "via <runner> · run on <issue>" rendering.
+ * A run-key actor's structural provenance, resolved through the run to the
+ * runner and issue. Its API-key name may carry a mint-time runner/stage
+ * snapshot used for display.
  */
 export interface ActorRun {
 	run_id: string;
 	runner_name: string;
+	/** Immutable names captured when the run key was minted; null on legacy keys. */
+	stage?: { workflow_name: string; state_name: string } | null;
 	/** The issue the run is working; null if it has been deleted. */
 	issue_ref: { project_name: string; number: number } | null;
 }
@@ -31,7 +34,7 @@ export interface Actor {
 	/** NULL when the user acted directly (browser session). */
 	api_key_id: string | null;
 	api_key_name: string | null;
-	/** Set when the key is a run key: attribution goes to the runner + run. */
+	/** Set structurally for a run key; never inferred from the key name. */
 	run?: ActorRun | null;
 }
 
@@ -48,14 +51,32 @@ export function runRefLabel(run: ActorRun): string {
 
 /**
  * Canonical actor rendering everywhere actions are attributed: "alice",
- * "alice via laptop-key", or — for run keys — "alice via laptop-m4 · run on
- * demo/12".
+ * "alice via laptop-key", or — for a descriptively named run key — "alice
+ * via laptop-m4 · Engineering/Design · run on demo/12". Legacy and blank run
+ * key names fall back to the live runner name.
  */
 export function actorLabel(actor: Actor): string {
 	if (actor.run) {
-		return `${actor.user_name} via ${actor.run.runner_name} · ${runRefLabel(actor.run)}`;
+		const legacyName = `run ${actor.run.run_id}`;
+		const hasDescriptiveName =
+			Boolean(actor.api_key_name?.trim()) && actor.api_key_name !== legacyName;
+		const via = hasDescriptiveName ? actor.api_key_name! : actor.run.runner_name;
+		return `${actor.user_name} via ${via} · ${runRefLabel(actor.run)}`;
 	}
 	return actor.api_key_name ? `${actor.user_name} via ${actor.api_key_name}` : actor.user_name;
+}
+
+/**
+ * Compact actor rendering for narrow, issue-local surfaces. Structured
+ * mint-time stage metadata lets this omit only the runner without parsing the
+ * ambiguous human-readable API-key name. Legacy keys have no stage snapshot.
+ */
+export function compactActorLabel(actor: Actor): string {
+	if (!actor.run) return actorLabel(actor);
+	const stage = actor.run.stage
+		? ` · ${actor.run.stage.workflow_name}/${actor.run.stage.state_name}`
+		: '';
+	return `${actor.user_name}${stage} · ${runRefLabel(actor.run)}`;
 }
 
 // ---------------------------------------------------------------------------

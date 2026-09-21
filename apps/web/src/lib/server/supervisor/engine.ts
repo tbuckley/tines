@@ -456,13 +456,45 @@ export async function mintRunKeyAndFlip(
 	if (!binding) return null;
 	const secret = `tines_${randomString(40)}`;
 	const keyId = newId('key');
+	const legacyName = `run ${input.runId}`;
 	const [, flip] = await runBatch(env, [
 		db
 			.insertInto('api_key')
 			.values({
 				id: keyId,
 				user_id: input.userId,
-				name: `run ${input.runId}`,
+				name: sql<string>`COALESCE(
+					(SELECT NULLIF(trim(r.name), '') || ' · ' ||
+						NULLIF(trim(w.name), '') || '/' || NULLIF(trim(s.name), '')
+					 FROM agent_run AS ar
+					 JOIN runner AS r ON r.id = ar.runner_id
+					 JOIN workflow_state AS s ON s.id = ar.state_id_at_start
+					 JOIN workflow AS w ON w.id = s.workflow_id
+					 WHERE ar.id = ${input.runId} AND ar.user_id = ${input.userId}),
+					${legacyName}
+				)`,
+				run_workflow_name: sql<string | null>`(
+					SELECT NULLIF(trim(w.name), '')
+					FROM agent_run AS ar
+					JOIN runner AS r ON r.id = ar.runner_id
+					JOIN workflow_state AS s ON s.id = ar.state_id_at_start
+					JOIN workflow AS w ON w.id = s.workflow_id
+					WHERE ar.id = ${input.runId} AND ar.user_id = ${input.userId}
+						AND NULLIF(trim(r.name), '') IS NOT NULL
+						AND NULLIF(trim(w.name), '') IS NOT NULL
+						AND NULLIF(trim(s.name), '') IS NOT NULL
+				)`,
+				run_state_name: sql<string | null>`(
+					SELECT NULLIF(trim(s.name), '')
+					FROM agent_run AS ar
+					JOIN runner AS r ON r.id = ar.runner_id
+					JOIN workflow_state AS s ON s.id = ar.state_id_at_start
+					JOIN workflow AS w ON w.id = s.workflow_id
+					WHERE ar.id = ${input.runId} AND ar.user_id = ${input.userId}
+						AND NULLIF(trim(r.name), '') IS NOT NULL
+						AND NULLIF(trim(w.name), '') IS NOT NULL
+						AND NULLIF(trim(s.name), '') IS NOT NULL
+				)`,
 				key_hash: await sha256Hex(secret),
 				key_prefix: secret.slice(0, 14),
 				permissions: serializeApiKeyPermissions({
