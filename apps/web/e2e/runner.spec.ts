@@ -26,7 +26,7 @@ import type {
 } from '@tines/shared';
 import type { APIRequestContext, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
-import { ALICE, BASE_URL } from './constants.mjs';
+import { BASE_URL, RUNNER_E2E } from './constants.mjs';
 import { apiClient, body, fireSweep, gotoHydrated, signIn } from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
@@ -70,12 +70,12 @@ async function waitFor<T>(
 }
 
 async function issueRuns(request: APIRequestContext, issueId: string): Promise<AgentRun[]> {
-	const api = apiClient(request, ALICE.apiKey);
+	const api = apiClient(request, RUNNER_E2E.apiKey);
 	return (await body<ListResponse<AgentRun>>(await api.get(`/api/v1/runs?issue=${issueId}`))).items;
 }
 
 async function createIssue(request: APIRequestContext, title: string): Promise<IssueDetail> {
-	const api = apiClient(request, ALICE.apiKey);
+	const api = apiClient(request, RUNNER_E2E.apiKey);
 	const res = await api.post(`/api/v1/projects/${projectId}/issues`, { title });
 	expect(res.status()).toBe(201);
 	return body<IssueDetail>(res);
@@ -105,7 +105,7 @@ test.describe.serial('local runner end to end', () => {
 		PROJECT_NAME = uniqueName('runner');
 		WORKFLOW_NAME = `${uniqueName('attribution-workflow')}-${'w'.repeat(200)}`.slice(0, 200);
 		ACTIVE_STATE_NAME = `Open-${'s'.repeat(100)}`.slice(0, 100);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		e2eDir = mkdtempSync(join(tmpdir(), 'tines-runner-e2e-'));
 		configDir = join(e2eDir, 'config');
 		mkdirSync(configDir, { recursive: true });
@@ -245,7 +245,7 @@ esac
 				cwd: CLI_DIR,
 				env: {
 					...process.env,
-					TINES_API_KEY: ALICE.apiKey,
+					TINES_API_KEY: RUNNER_E2E.apiKey,
 					TINES_CONFIG_DIR: configDir,
 					E2E_DIR: e2eDir
 				},
@@ -262,13 +262,13 @@ esac
 			daemon.kill('SIGKILL');
 		}
 		// Leave automation off for the specs that follow.
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		await api.put('/api/v1/supervisor/settings', { enabled: false });
 		rmSync(e2eDir, { recursive: true, force: true });
 	});
 
 	test('the daemon registers and the runner shows up online', async ({ request }) => {
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		const runner = await waitFor(
 			async () => {
 				const { items } = await body<ListResponse<Runner>>(await api.get('/api/v1/runners'));
@@ -311,7 +311,7 @@ esac
 		page
 	}) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		setMode('work');
 		const issue = await createIssue(request, 'Work me');
 
@@ -354,10 +354,10 @@ esac
 		expect(handoff?.actor.api_key_name).toBe(runKeyName);
 		expect(handoff?.actor.run?.run_id).toBe(run.id);
 
-		await signIn(context, ALICE.sessionToken);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		await gotoHydrated(page, `/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`);
 		const commentCard = page.locator('article', { hasText: 'Harness progress comment' });
-		const attribution = `${ALICE.name} via ${runKeyName} · run on ${issue.project_name}/${issue.number}`;
+		const attribution = `${RUNNER_E2E.name} via ${runKeyName} · run on ${issue.project_name}/${issue.number}`;
 		const header = commentCard.locator('header');
 		const actor = header.locator(':scope > span').first();
 		const edit = header.getByRole('button', { name: 'Edit comment' });
@@ -411,7 +411,7 @@ esac
 	});
 
 	test('the log tail captured the harness output', async ({ request }) => {
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		const { items } = await body<ListResponse<AgentRun>>(
 			await api.get(`/api/v1/runs?runner=${runnerId}`)
 		);
@@ -427,7 +427,7 @@ esac
 		context,
 		page
 	}) => {
-		await signIn(context, ALICE.sessionToken);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		await gotoHydrated(page, '/agents');
 
 		// The daemon-registered runner card, online, with the rotate action.
@@ -516,7 +516,7 @@ esac
 		page,
 		uniqueName
 	}) => {
-		await signIn(context, ALICE.sessionToken);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		// `/api/v1/api-keys` is session-only, so the check rides the browser
 		// context's cookie rather than an API key.
 		const keyNames = async () =>
@@ -573,8 +573,8 @@ esac
 		request,
 		uniqueName
 	}) => {
-		const api = apiClient(request, ALICE.apiKey);
-		await signIn(context, ALICE.sessionToken);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		await gotoHydrated(page, '/agents');
 
 		const liveName = uniqueName('e2e-live');
@@ -622,7 +622,7 @@ esac
 		request
 	}) => {
 		test.setTimeout(120_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		setMode('flood');
 		const issue = await createIssue(request, 'Flood the log');
 
@@ -670,7 +670,7 @@ esac
 		page
 	}) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		rmSync(sideFile('sleep-pid'), { force: true });
 		setMode('sleep');
 		const issue = await createIssue(request, 'Probe the log protocol');
@@ -679,7 +679,7 @@ esac
 			{ label: 'the run to start' }
 		);
 
-		await signIn(context, ALICE.sessionToken);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		await gotoHydrated(page, '/agents');
 		const activeRow = page
 			.locator('li:not([inert])')
@@ -783,7 +783,7 @@ esac
 
 	test('a do-nothing harness strikes the issue three times and parks it', async ({ request }) => {
 		test.setTimeout(90_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		setMode('noop');
 		const issue = await createIssue(request, 'Nothing happens');
 
@@ -828,7 +828,7 @@ esac
 		page
 	}) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		rmSync(sideFile('sleep-pid'), { force: true });
 		setMode('sleep');
 		const issue = await createIssue(request, 'Cancel me');
@@ -850,7 +850,7 @@ esac
 
 		// The UI cancel dialog: strike note (this run hasn't moved the issue)
 		// plus an optional comment posted BEFORE the cancellation.
-		await signIn(context, ALICE.sessionToken);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		await gotoHydrated(page, '/agents');
 		// Run rows show the issue ref (project/#number), not the title.
 		const row = page
@@ -908,7 +908,7 @@ esac
 		request
 	}) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		const secret = `e2e-env-secret-${Date.now().toString(36)}`;
 		const plain = await body<ContextItem>(
 			await api.post('/api/v1/context', {
@@ -961,7 +961,7 @@ esac
 
 	test('rotating the token 401s the daemon, which exits with guidance', async ({ request }) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		const res = await api.post(`/api/v1/runners/${runnerId}/rotate-token`);
 		expect(res.ok()).toBe(true);
 		const rotated = await body<{ runner: Runner; runner_token: string }>(res);
@@ -987,7 +987,7 @@ esac
 	test('runner tokens and run keys stay in their lanes', async ({ request }) => {
 		// A user API key is not a runner token.
 		const poll = await request.post(`/api/v1/runners/${runnerId}/poll`, {
-			headers: { authorization: `Bearer ${ALICE.apiKey}` },
+			headers: { authorization: `Bearer ${RUNNER_E2E.apiKey}` },
 			data: { owned_runs: [] }
 		});
 		expect(poll.status()).toBe(401);

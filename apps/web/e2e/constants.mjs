@@ -246,6 +246,18 @@ export const API_ISOLATION = {
 	apiKeyName: 'api-isolation-key',
 	sessionToken: 'e2e-session-api-isolation'
 };
+/**
+ * Exclusive to runner.spec.ts, whose durable run history and maximum-length
+ * workflow intentionally survive its serial journey.
+ */
+export const RUNNER_E2E = {
+	id: 'usr_e2e_runner',
+	name: 'Runner E2E',
+	email: 'runner@e2e.test',
+	apiKey: 'tines_e2erunner000000000000000000000000000000000',
+	apiKeyName: 'runner-key',
+	sessionToken: 'e2e-session-runner'
+};
 export const EXPLAINER_REMEDIES = {
 	id: 'usr_e2e_explainer_remedies',
 	name: 'Explainer Remedies E2E',
