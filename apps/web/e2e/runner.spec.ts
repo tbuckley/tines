@@ -280,7 +280,9 @@ esac
 	});
 
 	test('an issue moved into an active state is worked within a poll: workspace, attribution, key lifecycle', async ({
-		request
+		request,
+		context,
+		page
 	}) => {
 		test.setTimeout(60_000);
 		const api = apiClient(request, ALICE.apiKey);
@@ -316,6 +318,23 @@ esac
 		expect(comment).toBeDefined();
 		expect(comment!.actor.run?.run_id).toBe(run.id);
 		expect(comment!.actor.run?.runner_name).toBe(RUNNER_NAME);
+		const runKeyName = `${RUNNER_NAME} · Standard/Open`;
+		expect(comment!.actor.api_key_name).toBe(runKeyName);
+
+		const transitions = await body<ListResponse<TinesEvent>>(
+			await api.get(`/api/v1/events?issue=${issue.id}&type=issue.transitioned`)
+		);
+		const handoff = transitions.items.find((event) => event.payload.action === 'Submit for review');
+		expect(handoff?.actor.api_key_name).toBe(runKeyName);
+		expect(handoff?.actor.run?.run_id).toBe(run.id);
+
+		await signIn(context, ALICE.sessionToken);
+		await gotoHydrated(page, `/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`);
+		const commentCard = page.locator('article', { hasText: 'Harness progress comment' });
+		const attribution = `${ALICE.name} via ${runKeyName} · run on ${issue.project_name}/${issue.number}`;
+		await expect(commentCard.locator('header')).toContainText(attribution);
+		await page.setViewportSize({ width: 390, height: 844 });
+		await expect(commentCard.locator('header')).toContainText(attribution);
 
 		// The run advanced the issue (its own key transitioned it)…
 		const ended = await body<ListResponse<TinesEvent>>(

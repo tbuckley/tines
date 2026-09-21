@@ -84,12 +84,12 @@ describe('actorOf', () => {
 		expect(actor.api_key_name).toBeNull();
 	});
 
-	it('resolves run keys through the run to the runner and its issue', () => {
+	it('retains and renders descriptive run-key names with structural provenance', () => {
 		const actor = actorOf({
 			actor_user_id: 'usr_1',
 			actor_user_name: 'alice',
 			actor_api_key_id: 'key_1',
-			actor_api_key_name: 'run key',
+			actor_api_key_name: 'old-laptop · Engineering/Design',
 			actor_run_id: 'arun_1',
 			actor_runner_name: 'laptop-m4',
 			actor_run_project_name: 'demo',
@@ -100,7 +100,8 @@ describe('actorOf', () => {
 			runner_name: 'laptop-m4',
 			issue_ref: { project_name: 'demo', number: 12 }
 		});
-		expect(actorLabel(actor)).toBe('alice via laptop-m4 · run on demo/12');
+		expect(actor.api_key_name).toBe('old-laptop · Engineering/Design');
+		expect(actorLabel(actor)).toBe('alice via old-laptop · Engineering/Design · run on demo/12');
 	});
 
 	it('falls back to the run id when the run’s issue is gone', () => {
@@ -108,7 +109,7 @@ describe('actorOf', () => {
 			actor_user_id: 'usr_1',
 			actor_user_name: 'alice',
 			actor_api_key_id: 'key_1',
-			actor_api_key_name: 'run key',
+			actor_api_key_name: 'run arun_1',
 			actor_run_id: 'arun_1',
 			actor_runner_name: 'laptop-m4',
 			actor_run_project_name: null,
