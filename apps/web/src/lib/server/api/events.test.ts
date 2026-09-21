@@ -15,6 +15,8 @@ const baseRow = {
 	actor_api_key_name: null,
 	actor_run_id: null,
 	actor_runner_name: null,
+	actor_run_workflow_name: null,
+	actor_run_state_name: null,
 	actor_run_project_name: null,
 	actor_run_issue_number: null,
 	issue_number: 7,
@@ -92,12 +94,15 @@ describe('actorOf', () => {
 			actor_api_key_name: 'old-laptop · Engineering/Design',
 			actor_run_id: 'arun_1',
 			actor_runner_name: 'laptop-m4',
+			actor_run_workflow_name: 'Engineering',
+			actor_run_state_name: 'Design',
 			actor_run_project_name: 'demo',
 			actor_run_issue_number: 12
 		});
 		expect(actor.run).toEqual({
 			run_id: 'arun_1',
 			runner_name: 'laptop-m4',
+			stage: { workflow_name: 'Engineering', state_name: 'Design' },
 			issue_ref: { project_name: 'demo', number: 12 }
 		});
 		expect(actor.api_key_name).toBe('old-laptop · Engineering/Design');

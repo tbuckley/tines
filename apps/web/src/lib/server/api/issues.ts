@@ -648,6 +648,8 @@ async function loadCommentHistory(db: Kysely<Database>, issueId: string) {
 			'api_key.name as actor_api_key_name',
 			'actor_run.id as actor_run_id',
 			'actor_runner.name as actor_runner_name',
+			'api_key.run_workflow_name as actor_run_workflow_name',
+			'api_key.run_state_name as actor_run_state_name',
 			'actor_run_project.name as actor_run_project_name',
 			'actor_run_issue.number as actor_run_issue_number',
 			'actor_run.issue_id as actor_run_issue_id',

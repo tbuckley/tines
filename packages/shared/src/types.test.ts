@@ -164,6 +164,7 @@ describe('runRefLabel', () => {
 	const run: ActorRun = {
 		run_id: 'arun_9Xq2',
 		runner_name: 'laptop-m4',
+		stage: { workflow_name: 'Engineering', state_name: 'Design' },
 		issue_ref: { project_name: 'demo', number: 12 }
 	};
 
@@ -251,7 +252,7 @@ describe('runRefLabel', () => {
 		expect(label.endsWith(runRefLabel(run))).toBe(true);
 	});
 
-	it('omits the indivisible run-key descriptor in a compact label', () => {
+	it('omits only the runner from a structured compact label', () => {
 		expect(
 			compactActorLabel({
 				user_id: 'usr_1',
@@ -259,6 +260,33 @@ describe('runRefLabel', () => {
 				api_key_id: 'key_1',
 				api_key_name: 'runner · name · Engineering/Design',
 				run
+			})
+		).toBe('alice · Engineering/Design · run on demo/12');
+	});
+
+	it('does not parse separators from the display name for a compact label', () => {
+		expect(
+			compactActorLabel({
+				user_id: 'usr_1',
+				user_name: 'alice',
+				api_key_id: 'key_1',
+				api_key_name: 'runner · name · wrong/workflow',
+				run: {
+					...run,
+					stage: { workflow_name: 'Engineering · Core', state_name: 'Build/Test' }
+				}
+			})
+		).toBe('alice · Engineering · Core/Build/Test · run on demo/12');
+	});
+
+	it('keeps the compact legacy fallback when no stage snapshot exists', () => {
+		expect(
+			compactActorLabel({
+				user_id: 'usr_1',
+				user_name: 'alice',
+				api_key_id: 'key_1',
+				api_key_name: 'run arun_9Xq2',
+				run: { ...run, stage: null }
 			})
 		).toBe('alice · run on demo/12');
 	});

@@ -598,6 +598,8 @@ describe('dispatch pass against the fake adapter', () => {
 		const key = keyForRun(t, run.id as string);
 		expect(key).toBeDefined();
 		expect(key!.name).toBe(`${runner} · Standard/Open`);
+		expect(key!.run_workflow_name).toBe('Standard');
+		expect(key!.run_state_name).toBe('Open');
 		expect(key!.revoked_at).toBeNull();
 		expect(key!.expires_at).toBe(NOW + 30 * 60_000 + 10 * 60_000);
 		expect(run.api_key_id).toBe(key!.id);
@@ -641,7 +643,11 @@ describe('dispatch pass against the fake adapter', () => {
 		expect(minted).not.toBeNull();
 		const expected = `${"O'Hare 🚀 runner " + 'r'.repeat(45)} · ${workflowName}/${stateName}`;
 		expect(expected.length).toBeGreaterThan(100);
-		expect(keyForRun(t, run)?.name).toBe(expected);
+		expect(keyForRun(t, run)).toMatchObject({
+			name: expected,
+			run_workflow_name: workflowName,
+			run_state_name: stateName
+		});
 
 		// Later renames do not rewrite historical attribution.
 		t.sqlite.prepare('UPDATE runner SET name = ? WHERE id = ?').run('renamed runner', runner);
@@ -649,7 +655,11 @@ describe('dispatch pass against the fake adapter', () => {
 		t.sqlite
 			.prepare('UPDATE workflow_state SET name = ? WHERE id = ?')
 			.run('Renamed state', STAGE_A);
-		expect(keyForRun(t, run)?.name).toBe(expected);
+		expect(keyForRun(t, run)).toMatchObject({
+			name: expected,
+			run_workflow_name: workflowName,
+			run_state_name: stateName
+		});
 	});
 
 	it('falls back to the legacy run name when starting-state metadata is absent', async () => {
@@ -670,7 +680,11 @@ describe('dispatch pass against the fake adapter', () => {
 				now: NOW
 			})
 		).not.toBeNull();
-		expect(keyForRun(t, run)?.name).toBe(`run ${run}`);
+		expect(keyForRun(t, run)).toMatchObject({
+			name: `run ${run}`,
+			run_workflow_name: null,
+			run_state_name: null
+		});
 	});
 
 	it.each(['runner', 'workflow', 'state'] as const)(
@@ -697,7 +711,11 @@ describe('dispatch pass against the fake adapter', () => {
 					now: NOW
 				})
 			).not.toBeNull();
-			expect(keyForRun(t, run)?.name).toBe(`run ${run}`);
+			expect(keyForRun(t, run)).toMatchObject({
+				name: `run ${run}`,
+				run_workflow_name: null,
+				run_state_name: null
+			});
 		}
 	);
 

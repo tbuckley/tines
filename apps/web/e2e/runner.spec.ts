@@ -344,6 +344,10 @@ esac
 		expect(comment).toBeDefined();
 		expect(comment!.actor.run?.run_id).toBe(run.id);
 		expect(comment!.actor.run?.runner_name).toBe(RUNNER_NAME);
+		expect(comment!.actor.run?.stage).toEqual({
+			workflow_name: WORKFLOW_NAME,
+			state_name: ACTIVE_STATE_NAME
+		});
 		const runKeyName = `${RUNNER_NAME} · ${WORKFLOW_NAME}/${ACTIVE_STATE_NAME}`;
 		expect(comment!.actor.api_key_name).toBe(runKeyName);
 
@@ -358,7 +362,7 @@ esac
 		await gotoHydrated(page, `/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`);
 		const commentCard = page.locator('article', { hasText: 'Harness progress comment' });
 		const attribution = `${RUNNER_E2E.name} via ${runKeyName} · run on ${issue.project_name}/${issue.number}`;
-		const compactAttribution = `${RUNNER_E2E.name} · run on ${issue.project_name}/${issue.number}`;
+		const compactAttribution = `${RUNNER_E2E.name} · ${WORKFLOW_NAME}/${ACTIVE_STATE_NAME} · run on ${issue.project_name}/${issue.number}`;
 		const header = commentCard.locator('header');
 		const actor = header.getByTestId('comment-actor');
 		const fullActor = actor.getByTestId('comment-actor-full');
@@ -375,6 +379,7 @@ esac
 				await expect(compactActor).toBeVisible();
 				await expect(compactActor).toHaveText(compactAttribution);
 				await expect(compactActor).not.toContainText(RUNNER_NAME);
+				await expect(compactActor).toContainText(`${WORKFLOW_NAME}/${ACTIVE_STATE_NAME}`);
 			} else {
 				await expect(fullActor).toBeVisible();
 				await expect(fullActor).toHaveText(attribution);

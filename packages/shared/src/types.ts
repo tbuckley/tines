@@ -20,6 +20,8 @@ export const STATE_CATEGORIES: readonly StateCategory[] = [
 export interface ActorRun {
 	run_id: string;
 	runner_name: string;
+	/** Immutable names captured when the run key was minted; null on legacy keys. */
+	stage?: { workflow_name: string; state_name: string } | null;
 	/** The issue the run is working; null if it has been deleted. */
 	issue_ref: { project_name: string; number: number } | null;
 }
@@ -64,12 +66,16 @@ export function actorLabel(actor: Actor): string {
 }
 
 /**
- * Compact actor rendering for narrow, issue-local surfaces. Run-key metadata
- * deliberately drops out as one unit: its mint-time name is display text, not
- * a structure whose runner and stage components can be safely parsed apart.
+ * Compact actor rendering for narrow, issue-local surfaces. Structured
+ * mint-time stage metadata lets this omit only the runner without parsing the
+ * ambiguous human-readable API-key name. Legacy keys have no stage snapshot.
  */
 export function compactActorLabel(actor: Actor): string {
-	return actor.run ? `${actor.user_name} · ${runRefLabel(actor.run)}` : actorLabel(actor);
+	if (!actor.run) return actorLabel(actor);
+	const stage = actor.run.stage
+		? ` · ${actor.run.stage.workflow_name}/${actor.run.stage.state_name}`
+		: '';
+	return `${actor.user_name}${stage} · ${runRefLabel(actor.run)}`;
 }
 
 // ---------------------------------------------------------------------------
