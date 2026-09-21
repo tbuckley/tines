@@ -21,6 +21,7 @@ import {
 	requireString,
 	runAtomic,
 	runKeyForbidden,
+	sessionActor,
 	type ActorContext
 } from './core';
 import { assertWritable, issueProject } from './archive';
@@ -30,6 +31,7 @@ import { routingRuleDeletes, rulesScopedToLabel } from './routing';
 import { eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
 import { scopeLabel } from './scope';
+import { requireAccess } from './permissions';
 
 /**
  * Exactly what `newId('lbl')` mints (16 chars of `ID_ALPHABET`). A ref of
@@ -128,7 +130,13 @@ export async function resolveLabelRef(
 }
 
 /** The whole library, with usage counts. Small enough to need no paging. */
-export async function listLabels(db: Kysely<Database>, userId: string): Promise<LabelWithUsage[]> {
+export async function listLabels(
+	db: Kysely<Database>,
+	actorInput: ActorContext | string
+): Promise<LabelWithUsage[]> {
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'label.read');
+	const userId = actor.userId;
 	const rows = await db
 		.selectFrom('label')
 		.selectAll('label')
@@ -212,6 +220,7 @@ export async function createLabel(
 	actor: ActorContext,
 	body: CreateLabelRequest
 ): Promise<Label> {
+	requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'label.create');
 	const name = normalizeLabelName(body.name);
 	const color = normalizeColor(body.color, defaultLabelColor(name));
 	const description = optionalString(body.description, 'description') ?? '';
@@ -237,6 +246,7 @@ export async function updateLabel(
 	labelRef: string,
 	body: UpdateLabelRequest
 ): Promise<Label> {
+	requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'label.update');
 	const label = await resolveLabelRef(db, actor.userId, labelRef);
 	if (!label) throw notFound();
 
@@ -286,6 +296,7 @@ export async function deleteLabel(
 	labelRef: string,
 	options: { force?: boolean } = {}
 ): Promise<DeleteLabelResponse> {
+	requireAccess(actor, [{ domain: 'workspace', access: 'delete' }], 'label.delete');
 	const label = await resolveLabelRef(db, actor.userId, labelRef);
 	if (!label) throw notFound();
 	const scopedItems = (
@@ -307,6 +318,25 @@ export async function deleteLabel(
 		})
 	}));
 	const scopedRules = await rulesScopedToLabel(db, actor.userId, label.id);
+	const issueProjects = await db
+		.selectFrom('issue_label')
+		.innerJoin('issue', 'issue.id', 'issue_label.issue_id')
+		.select('issue.project_id')
+		.distinct()
+		.where('issue_label.label_id', '=', label.id)
+		.execute();
+	requireAccess(
+		actor,
+		[
+			...issueProjects.map((row) => ({
+				domain: 'project' as const,
+				access: 'write' as const,
+				projectId: row.project_id
+			})),
+			...(scopedRules.length ? ([{ domain: 'control_plane', access: 'delete' }] as const) : [])
+		],
+		'label.delete'
+	);
 	if ((scopedItems.length > 0 || scopedRules.length > 0) && !options.force) {
 		const parts: string[] = [];
 		if (scopedItems.length > 0) {
@@ -562,7 +592,7 @@ async function assertLabelsDoNotRoute(
 	actor: ActorContext,
 	labels: Label[]
 ): Promise<void> {
-	if (!actor.agentRunId || labels.length === 0) return;
+	if (labels.length === 0) return;
 	const rules = await db
 		.selectFrom('routing_rule')
 		.select(['id', 'label_id'])
@@ -575,11 +605,14 @@ async function assertLabelsDoNotRoute(
 		.execute();
 	if (rules.length === 0) return;
 	const routed = labels.filter((l) => rules.some((r) => r.label_id === l.id));
-	throw runKeyForbidden({
-		reason: 'routing_label',
-		labels: routed.map((l) => l.name),
-		rule_ids: rules.map((r) => r.id)
-	});
+	if (actor.agentRunId) {
+		throw runKeyForbidden({
+			reason: 'routing_label',
+			labels: routed.map((l) => l.name),
+			rule_ids: rules.map((r) => r.id)
+		});
+	}
+	requireAccess(actor, [{ domain: 'control_plane', access: 'write' }], 'label.assign', {});
 }
 
 /**
@@ -595,8 +628,20 @@ export async function addIssueLabels(
 	refs: unknown
 ): Promise<AddIssueLabelsResponse> {
 	const issue = await requireIssue(db, actor.userId, issueRef);
+	requireAccess(
+		actor,
+		[
+			{ domain: 'project', access: 'write', projectId: issue.project_id },
+			{ domain: 'workspace', access: 'read' }
+		],
+		'label.assign',
+		{ projectId: issue.project_id, issueId: issue.id }
+	);
 	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	const { labels, toCreate } = await resolveOrCreateLabels(db, actor, refs);
+	if (toCreate.length > 0) {
+		requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'label.create');
+	}
 	await assertLabelsDoNotRoute(db, actor, labels);
 
 	const already = new Set((await loadIssueLabels(db, issue.id)).map((l) => l.id));
@@ -632,6 +677,15 @@ export async function removeIssueLabel(
 	labelRef: string
 ): Promise<void> {
 	const issue = await requireIssue(db, actor.userId, issueRef);
+	requireAccess(
+		actor,
+		[
+			{ domain: 'project', access: 'write', projectId: issue.project_id },
+			{ domain: 'workspace', access: 'read' }
+		],
+		'label.remove',
+		{ projectId: issue.project_id, issueId: issue.id }
+	);
 	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	const label = await resolveLabelRef(db, actor.userId, labelRef);
 	const attached = label

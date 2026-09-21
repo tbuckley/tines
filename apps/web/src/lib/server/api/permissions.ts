@@ -60,6 +60,8 @@ const RUN_OPERATIONS = new Set([
 	'starter.read',
 	'label.assign',
 	'label.remove',
+	'issue_link.create',
+	'issue_link.remove',
 	'issue_link.read',
 	'issue_link.create',
 	'issue_link.remove',
