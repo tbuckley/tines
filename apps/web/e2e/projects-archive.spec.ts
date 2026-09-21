@@ -103,12 +103,13 @@ function suite(label: string, viewport: { width: number; height: number }) {
 
 			await expect(card).toBeVisible();
 			await expect(card).toContainText('Archived');
-			// The Projects entry point remembers the toggle for the next visit —
-			// the desktop tab and the phone's bottom-bar slot are the same link.
-			await expect(page.getByRole('link', { name: 'Projects' }).first()).toHaveAttribute(
+			// The Manage projects action remembers the toggle for the next visit.
+			await page.getByRole('button', { name: /^Project focus:/ }).click();
+			await expect(page.getByRole('menuitem', { name: 'Manage projects' })).toHaveAttribute(
 				'href',
 				'/projects?archived=1'
 			);
+			await page.keyboard.press('Escape');
 
 			await clickUntil(toggle, async () => {
 				await expect(card).toHaveCount(0);

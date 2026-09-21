@@ -18,7 +18,13 @@ import {
 	signIn
 } from './helpers';
 
-type FocusWorld = { aName: string; bName: string; aId: string; bId: string };
+type FocusWorld = {
+	aName: string;
+	bName: string;
+	aId: string;
+	bId: string;
+	workflowId: string;
+};
 
 const focusTest = test.extend<{}, { world: FocusWorld }>({
 	world: [
@@ -76,7 +82,7 @@ const focusTest = test.extend<{}, { world: FocusWorld }>({
 						).id
 					);
 				}
-				await use({ aName, bName, aId, bId });
+				await use({ aName, bName, aId, bId, workflowId });
 			} finally {
 				await runCleanupSteps([
 					{ name: 'reset Alice focus', run: () => resetFocus(workerRequest) },
@@ -243,25 +249,47 @@ focusTest.describe.serial('project focus', () => {
 	);
 
 	focusTest(
-		'the phone header carries the switcher, not the bottom bar',
+		'the phone header carries project controls outside the primary navigation',
 		async ({ browser, world }) => {
-			// Human review, round 2: the switcher is in the header at every width —
-			// the phone header has the room, the bottom bar's sixth of a screen did
-			// not, and the Projects slot is a plain link to the grid again.
 			const page = await open(browser, PHONE);
 			await expect(switcher(page)).toBeVisible();
 			await expect(switcher(page)).toContainText('All projects');
 
 			await chooseFocus(page, world.aName);
 			await expect(switcher(page)).toContainText(world.aName);
-			// One control, not two: the bottom bar navigates and says nothing about
-			// the focus.
 			const bottomBar = page.getByRole('navigation', { name: 'Primary' });
-			await expect(bottomBar.getByRole('link', { name: 'Projects' })).toHaveAttribute(
+			await expect(bottomBar.getByRole('link')).toHaveText(['Issues', 'Workflows', 'Agents']);
+			await expect(bottomBar.getByRole('button', { name: /^Project focus:/ })).toHaveCount(0);
+			await switcher(page).click();
+			await expect(page.getByRole('menuitem', { name: 'Open project' })).toHaveAttribute(
 				'href',
 				`/projects/${world.aId}`
 			);
-			await expect(bottomBar.getByRole('button', { name: /^Project focus:/ })).toHaveCount(0);
+			await page.close();
+		}
+	);
+
+	focusTest(
+		'contextual Context and Activity links preserve the current focus',
+		async ({ browser, world }) => {
+			const page = await open(browser, DESKTOP);
+			await chooseFocus(page, world.bName);
+
+			await gotoHydrated(page, `/issues/${encodeURIComponent(world.aName)}/1`);
+			await page.getByRole('link', { name: 'View all context' }).click();
+			await expect(page.getByRole('heading', { name: 'Context', level: 1 })).toBeVisible();
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${world.bName}`);
+
+			await gotoHydrated(page, `/issues/${encodeURIComponent(world.aName)}/1`);
+			await page.getByRole('link', { name: 'View all activity' }).click();
+			await expect(page.getByRole('heading', { name: 'Activity', level: 1 })).toBeVisible();
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${world.bName}`);
+
+			await gotoHydrated(page, `/workflows/${world.workflowId}`);
+			await expect(page.getByRole('link', { name: 'View all context' })).toHaveAttribute(
+				'href',
+				'/context'
+			);
 			await page.close();
 		}
 	);
@@ -400,7 +428,8 @@ focusTest.describe.serial('project focus', () => {
 					page.getByRole('link', { name: new RegExp(`${world.aName} issue`) })
 				).toHaveCount(0);
 
-				await expect(page.getByRole('link', { name: 'Projects' }).first()).toHaveAttribute(
+				await switcher(page).click();
+				await expect(page.getByRole('menuitem', { name: 'Open project' })).toHaveAttribute(
 					'href',
 					`/projects/${world.bId}`
 				);
@@ -962,7 +991,7 @@ focusTest.describe.serial('project focus', () => {
 	);
 });
 
-test.describe.serial('the switcher below two projects', () => {
+test.describe.serial('project controls at every project count', () => {
 	// Carol exists precisely for this: no projects of her own, and no other
 	// spec creates any for her.
 	async function carol(browser: Browser): Promise<Page> {
@@ -973,20 +1002,46 @@ test.describe.serial('the switcher below two projects', () => {
 		return page;
 	}
 
-	test('is hidden at zero and at one project, and appears at two', async ({
+	test('offers actions at zero and one project, then shows focus at two', async ({
 		browser,
 		request,
 		uniqueName
 	}) => {
 		const api = apiClient(request, CAROL.apiKey);
 		const page = await carol(browser);
-		await expect(switcher(page)).toHaveCount(0);
+		await expect(switcher(page)).toContainText('Projects');
+		await switcher(page).click();
+		await expect(page.getByRole('menuitemradio')).toHaveCount(0);
+		await expect(page.getByRole('menuitem', { name: 'Manage projects' })).toHaveAttribute(
+			'href',
+			'/projects'
+		);
+		await expect(page.getByRole('menuitem', { name: 'New project' })).toHaveAttribute(
+			'href',
+			'/projects?new=1'
+		);
+		await page.keyboard.press('Escape');
 
 		const first = await body<Project>(
 			await api.post('/api/v1/projects', { name: uniqueName('carol-1') })
 		);
 		await page.reload();
-		await expect(switcher(page)).toHaveCount(0);
+		await expect(switcher(page)).toContainText('Projects');
+		await switcher(page).click();
+		await expect(page.getByRole('menuitemradio')).toHaveText(['All projects', first.name]);
+		await expect(page.getByRole('menuitem', { name: 'Open project' })).toHaveCount(0);
+		await page.getByRole('menuitemradio', { name: first.name }).click();
+		await expect(switcher(page)).toContainText('Projects');
+		await switcher(page).click();
+		await expect(page.getByRole('menuitem', { name: 'Open project' })).toHaveAttribute(
+			'href',
+			`/projects/${first.id}`
+		);
+		await page.keyboard.press('Home');
+		await expect(page.getByRole('menuitemradio', { name: 'All projects' })).toBeFocused();
+		await page.keyboard.press('End');
+		await expect(page.getByRole('menuitem', { name: 'New project' })).toBeFocused();
+		await page.keyboard.press('Escape');
 		// One project still behaves as the focus for New issue.
 		await clickToOpen(page.getByRole('button', { name: 'New issue' }), page.getByRole('dialog'));
 		await expect(page.getByRole('dialog').getByLabel('Project', { exact: true })).toHaveValue(
@@ -996,7 +1051,7 @@ test.describe.serial('the switcher below two projects', () => {
 
 		await api.post('/api/v1/projects', { name: uniqueName('carol-2') });
 		await page.reload();
-		await expect(switcher(page)).toBeVisible();
+		await expect(switcher(page)).toContainText(first.name);
 		await page.close();
 	});
 });

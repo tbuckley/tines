@@ -261,7 +261,8 @@ test('the mobile layout swaps the header tabs for a bottom bar', async ({ page }
 	await page.goto('/issues');
 	const bottomNav = page.getByRole('navigation', { name: 'Primary' });
 	await expect(bottomNav).toBeVisible();
-	await expect(bottomNav.getByRole('link', { name: 'Workflows' })).toBeVisible();
+	await expect(bottomNav.getByRole('link')).toHaveText(['Issues', 'Workflows', 'Agents']);
+	await expect(bottomNav.getByRole('link', { name: 'Projects' })).toHaveCount(0);
 	// The desktop tab strip is hidden at this width.
 	await expect(page.locator('header').getByRole('link', { name: 'Workflows' })).toBeHidden();
 });
