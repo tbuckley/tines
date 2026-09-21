@@ -17,6 +17,7 @@ Commands:
   logout            Forget the stored API URL and key
   config [options]  Show the API URL and key in effect, and where each comes
                     from
+  api-keys          Manage scoped API keys
   projects          Manage projects
   workflows         Manage the workflow library
   issues            Work with issues
@@ -36,6 +37,99 @@ Commands:
   usage [options]   Compare finalized run spend for a period
   events            Read the activity log
   help [command]    display help for command
+",
+  "tines api-keys": "Usage: tines api-keys [options] [command]
+
+Manage scoped API keys
+
+Options:
+  -h, --help               display help for command
+
+Commands:
+  list [options]
+  show [options] <id>      Show stored and effective authority
+  current [options]        Inspect the acting credential authority
+  create [options] <name>  Create a scoped key
+  update [options] <id>    Replace key permissions
+  revoke [options] <id>    Revoke a key
+  help [command]           display help for command
+",
+  "tines api-keys create": "Usage: tines api-keys create [options] <name>
+
+Create a scoped key
+
+Options:
+  --permissions <json|@file|->  complete permission policy as JSON, @file, or
+                                stdin
+  --preset <name>               permission preset (choices: "full", "read-only",
+                                "project-automation", "runner-setup")
+  --projects <ids>              comma-separated explicit project IDs
+  --all-projects                explicitly use all projects
+  -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
+                                or run \`tines login\`; default
+                                https://tines.tbuckley.dev)
+  --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
+                                login\`)
+  --json                        output the raw JSON response
+  -h, --help                    display help for command
+",
+  "tines api-keys current": "Usage: tines api-keys current [options]
+
+Inspect the acting credential authority
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines api-keys list": "Usage: tines api-keys list [options]
+
+Options:
+  --run-keys <mode>  run keys to include (choices: "none", "active", "all")
+  -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
+                     \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json             output the raw JSON response
+  -h, --help         display help for command
+",
+  "tines api-keys revoke": "Usage: tines api-keys revoke [options] <id>
+
+Revoke a key
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines api-keys show": "Usage: tines api-keys show [options] <id>
+
+Show stored and effective authority
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines api-keys update": "Usage: tines api-keys update [options] <id>
+
+Replace key permissions
+
+Options:
+  --permissions <json|@file|->  complete permission policy as JSON, @file, or
+                                stdin
+  -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
+                                or run \`tines login\`; default
+                                https://tines.tbuckley.dev)
+  --api-key <key>               API key (or set TINES_API_KEY, or run \`tines
+                                login\`)
+  --json                        output the raw JSON response
+  -h, --help                    display help for command
 ",
   "tines config": "Usage: tines config [options]
 
