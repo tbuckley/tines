@@ -103,12 +103,13 @@ function suite(label: string, viewport: { width: number; height: number }) {
 
 			await expect(card).toBeVisible();
 			await expect(card).toContainText('Archived');
-			// The Projects entry point remembers the toggle for the next visit —
-			// the desktop tab and the phone's bottom-bar slot are the same link.
-			await expect(page.getByRole('link', { name: 'Projects' }).first()).toHaveAttribute(
+			// The Manage projects action remembers the toggle for the next visit.
+			await page.getByRole('button', { name: /^Project focus:/ }).click();
+			await expect(page.getByRole('menuitem', { name: 'Manage projects' })).toHaveAttribute(
 				'href',
 				'/projects?archived=1'
 			);
+			await page.keyboard.press('Escape');
 
 			await clickUntil(toggle, async () => {
 				await expect(card).toHaveCount(0);
@@ -126,6 +127,24 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				await gotoHydrated(page, path);
 				await expect(page.getByLabel('Filter by project')).toHaveCount(0);
 			}
+			await page.close();
+		});
+
+		test('archived project Context and Activity links remain navigable', async ({
+			browser,
+			world
+		}) => {
+			const page = await open(browser, world, `/projects/${world.projectId}`);
+			await expect(page.getByText(/^Archived /)).toBeVisible();
+
+			await page.getByRole('link', { name: 'View all activity' }).click();
+			await expect(page).toHaveURL('/activity');
+			await expect(page.getByRole('heading', { name: 'Activity', level: 1 })).toBeVisible();
+
+			await gotoHydrated(page, `/projects/${world.projectId}`);
+			await page.getByRole('link', { name: 'View all context' }).click();
+			await expect(page).toHaveURL('/context');
+			await expect(page.getByRole('heading', { name: 'Context', level: 1 })).toBeVisible();
 			await page.close();
 		});
 

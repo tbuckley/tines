@@ -270,10 +270,11 @@ Things worth knowing:
   missed ones.
 - In the browser, `/projects` hides archived projects behind a "Show archived (n)" toggle, and
   an archived project's pages carry a read-only banner with an Unarchive action.
-- The browser's project switcher is a sticky, per-user focus for Issues, Context, Activity,
-  Workflows, and the Agents presentation. The Projects tab opens that project's home while
-  focused and the project page's Manage projects breadcrumb returns to the grid. Cross-project
-  issue links preserve the current focus and offer an explicit focus action instead.
+- The browser's project control is a sticky, per-user focus for Issues, Context, Activity,
+	Workflows, and the Agents presentation. It also links to the focused project, the remembered
+	projects grid, and the existing new-project flow. Primary navigation contains Issues, Workflows,
+	and Agents; Context and Activity remain complete pages linked from relevant detail surfaces.
+	Cross-project issue links preserve the current focus and offer an explicit focus action instead.
 - Focus is presentation only: API lists, CLI commands, launch prompts, runners, fleet queue,
   quotas, and automation controls remain workspace-wide unless explicitly scoped.
 
