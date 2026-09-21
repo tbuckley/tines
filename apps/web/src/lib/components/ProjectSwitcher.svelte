@@ -20,23 +20,40 @@
 	let open = $state(false);
 	let error = $state<string | null>(null);
 	let menu: HTMLDivElement;
+	let activeMenuIndex: number | null = null;
 
 	const label = $derived(focus?.name ?? 'All projects');
 	const visibleLabel = $derived(projects.length >= 2 ? label : 'Projects');
 
 	function focusOpenChoice(event: Event) {
 		event.preventDefault();
+		// Floating-position updates can remount Bits UI's focus scope while the
+		// popover stays open. Its open-autofocus hook runs again on that remount,
+		// so restore the current menu position instead of resetting to the checked
+		// choice in the middle of a keyboard sequence.
+		const items = menuItems();
 		const target =
+			(activeMenuIndex === null ? null : items[activeMenuIndex]) ??
 			menu?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]') ??
 			menu?.querySelector<HTMLElement>('[role="menuitem"]');
-		target?.focus();
+		if (!target) return;
+		activeMenuIndex = items.indexOf(target);
+		target.focus();
+	}
+
+	function menuItems(): HTMLElement[] {
+		return menu
+			? [...menu.querySelectorAll<HTMLElement>('[role="menuitemradio"], [role="menuitem"]')]
+			: [];
+	}
+
+	function resetMenuPositionOnOpen(next: boolean) {
+		if (next) activeMenuIndex = null;
 	}
 
 	function moveFocus(event: KeyboardEvent) {
 		if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
-		const items = [
-			...menu.querySelectorAll<HTMLElement>('[role="menuitemradio"], [role="menuitem"]')
-		];
+		const items = menuItems();
 		if (items.length === 0) return;
 		event.preventDefault();
 		const current = items.indexOf(document.activeElement as HTMLElement);
@@ -48,6 +65,7 @@
 					: event.key === 'ArrowDown'
 						? (current + 1) % items.length
 						: (current - 1 + items.length) % items.length;
+		activeMenuIndex = next;
 		items[next]?.focus();
 	}
 
@@ -58,12 +76,13 @@
 			await onchoose(id);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Could not change the project focus';
+			activeMenuIndex = null;
 			open = true;
 		}
 	}
 </script>
 
-<Popover.Root bind:open>
+<Popover.Root bind:open onOpenChange={resetMenuPositionOnOpen}>
 	<Popover.Trigger>
 		{#snippet child({ props })}
 			<!--

@@ -136,6 +136,14 @@ async function pressProjectMenuKey(
 	await expect(from).toBeFocused();
 	await page.keyboard.press(key);
 	await expect(to).toBeFocused();
+	// Bits UI may remount a floating focus scope on the next layout frame. The
+	// destination must remain the real active element after that lifecycle work,
+	// not merely receive focus for one transient assertion.
+	await page.evaluate(
+		() =>
+			new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+	);
+	await expect(to).toBeFocused();
 }
 
 /**
