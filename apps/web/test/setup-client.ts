@@ -1,10 +1,13 @@
 // Setup for the `client` Vitest project (see vite.config.ts): the component
-// tests run here, in jsdom.
-import { afterEach } from 'vitest';
-import { cleanup } from '@testing-library/svelte';
+// tests run here, in a headless Chromium.
 
-// Testing Library only registers its own teardown when Vitest's globals are
-// on, and they are not: this project imports `describe`/`it`/`expect` like
-// every other suite in the repo. Without this, each `render` leaves its
-// container in the document and the next test's queries match twice.
-afterEach(cleanup);
+// The app's stylesheet, loaded exactly as `routes/+layout.svelte` loads it.
+// Without it the components mount unstyled, and every Tailwind class they
+// rely on to lay out — the clamp's `max-h-(--clamp) overflow-hidden`, the
+// pending button's `inline-grid` — does nothing, which would quietly turn
+// the layout assertions below into assertions about nothing.
+import '../src/app.css';
+
+// No cleanup hook here: importing `render` from `vitest-browser-svelte`
+// registers its own `beforeEach(cleanup)` (dist/index.mjs), and it calls
+// Vitest's imported `beforeEach`, so it works without globals.

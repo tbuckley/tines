@@ -1,52 +1,62 @@
 import { describe, expect, it } from 'vitest';
 import { createRawSnippet } from 'svelte';
-import { render, screen } from '@testing-library/svelte';
+import { render } from 'vitest-browser-svelte';
 import PendingButton from './PendingButton.svelte';
 
 const children = createRawSnippet(() => ({ render: () => '<span>Move to review</span>' }));
 
-function button(): HTMLButtonElement {
-	return screen.getByRole('button') as HTMLButtonElement;
-}
-
 describe('PendingButton', () => {
-	it('is an ordinary button until something is pending', () => {
-		render(PendingButton, { props: { children } });
-		expect(button().disabled).toBe(false);
-		expect(button().hasAttribute('aria-busy')).toBe(false);
-		expect(screen.getByText('Move to review')).toBeTruthy();
+	it('is an ordinary button until something is pending', async () => {
+		const screen = await render(PendingButton, { children });
+		const button = screen.getByRole('button');
+		await expect.element(button).toBeEnabled();
+		expect(button.element().hasAttribute('aria-busy')).toBe(false);
+		await expect.element(screen.getByText('Move to review')).toBeVisible();
 	});
 
-	it('disables itself and says so while pending', () => {
-		render(PendingButton, { props: { children, pending: true } });
-		expect(button().disabled).toBe(true);
-		expect(button().getAttribute('aria-busy')).toBe('true');
+	it('disables itself and says so while pending', async () => {
+		const screen = await render(PendingButton, { children, pending: true });
+		const button = screen.getByRole('button');
+		await expect.element(button).toBeDisabled();
+		await expect.element(button).toHaveAttribute('aria-busy', 'true');
 	});
 
-	it('keeps the label in the layout while hiding it from both eye and reader', () => {
-		const { rerender } = render(PendingButton, { props: { children } });
-		const label = screen.getByText('Move to review').parentElement!;
-		expect(label.classList.contains('invisible')).toBe(false);
+	it('hides the label from both eye and reader while pending', async () => {
+		const screen = await render(PendingButton, { children });
+		const label = screen.container.querySelector('button > span')!;
+		expect(getComputedStyle(label).visibility).toBe('visible');
 
-		rerender({ children, pending: true });
-		// Still mounted — the grid cell it occupies is what stops the row
-		// reflowing when the spinner takes over (Tines/153).
-		expect(label.isConnected).toBe(true);
-		expect(label.classList.contains('invisible')).toBe(true);
+		await screen.rerender({ children, pending: true });
+		expect(getComputedStyle(label).visibility).toBe('hidden');
 		expect(label.getAttribute('aria-hidden')).toBe('true');
 	});
 
-	it('announces the pending state with a default caller can override', () => {
-		const { rerender } = render(PendingButton, { props: { children, pending: true } });
-		expect(screen.getByText('Working…').classList.contains('sr-only')).toBe(true);
+	it('does not reflow the row when the spinner takes over (Tines/153)', async () => {
+		const screen = await render(PendingButton, { children });
+		const button = screen.getByRole('button').element();
+		const idle = button.getBoundingClientRect();
 
-		rerender({ children, pending: true, pendingLabel: 'Moving…' });
-		expect(screen.getByText('Moving…').classList.contains('sr-only')).toBe(true);
+		await screen.rerender({ children, pending: true });
+
+		// The label keeps its grid cell, so the box is still sized by the label
+		// and the swap cannot shift anything beside it.
+		const pending = button.getBoundingClientRect();
+		expect(pending.width).toBeCloseTo(idle.width, 1);
+		expect(pending.height).toBeCloseTo(idle.height, 1);
 	});
 
-	it('still honours a plain disabled, pending or not', () => {
-		render(PendingButton, { props: { children, disabled: true } });
-		expect(button().disabled).toBe(true);
-		expect(button().hasAttribute('aria-busy')).toBe(false);
+	it('announces the pending state with a default the caller can override', async () => {
+		const screen = await render(PendingButton, { children, pending: true });
+		expect(screen.getByText('Working…').element().classList.contains('sr-only')).toBe(true);
+
+		await screen.rerender({ children, pending: true, pendingLabel: 'Moving…' });
+		expect(screen.getByText('Moving…').element().classList.contains('sr-only')).toBe(true);
+	});
+
+	it('still honours a plain disabled, pending or not', async () => {
+		const screen = await render(PendingButton, { children, disabled: true });
+		const button = screen.getByRole('button');
+		await expect.element(button).toBeDisabled();
+		expect(button.element().hasAttribute('aria-busy')).toBe(false);
 	});
 });

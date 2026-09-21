@@ -1,4 +1,5 @@
 import adapter from '@sveltejs/adapter-cloudflare';
+import { playwright } from '@vitest/browser-playwright';
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { configDefaults, defineConfig } from 'vitest/config';
@@ -22,9 +23,9 @@ export default defineConfig({
 	},
 	// Two suites, one command. `server` is everything that has always run
 	// here: plain modules under node. `client` mounts Svelte components in a
-	// DOM, which needs its own environment and resolution, so it cannot share
-	// a project with the first. `pnpm test` runs both; `--project=client`
-	// (or `=server`) picks one.
+	// real browser, which needs its own environment and resolution, so it
+	// cannot share a project with the first. `pnpm test` runs both;
+	// `--project=client` (or `=server`) picks one.
 	test: {
 		projects: [
 			{
@@ -54,16 +55,26 @@ export default defineConfig({
 			},
 			{
 				extends: true,
-				// Svelte ships a server build and a client build behind export
-				// conditions. Without `browser` the import resolves to the SSR
-				// half, whose `mount` is a stub that throws — the components would
-				// render to a string and never become DOM.
-				resolve: { conditions: ['browser'] },
 				test: {
 					name: 'client',
 					include: ['src/**/*.svelte.test.ts'],
-					environment: 'jsdom',
-					setupFiles: ['./test/setup-client.ts']
+					setupFiles: ['./test/setup-client.ts'],
+					// Chromium headless, the same browser the Playwright suite
+					// drives — so a component under test lays out, computes styles
+					// and dispatches real events exactly as it does in `e2e/`. It
+					// is what makes an assertion about `scrollHeight` or a
+					// disabled button's click mean anything; jsdom has no layout
+					// and dispatches straight at the node.
+					browser: {
+						enabled: true,
+						provider: playwright(),
+						headless: true,
+						// No UI, no screenshot on failure: this project is meant to
+						// be as cheap as the node one, and a failure reports the
+						// element it could not find.
+						screenshotFailures: false,
+						instances: [{ browser: 'chromium' }]
+					}
 				}
 			}
 		]
