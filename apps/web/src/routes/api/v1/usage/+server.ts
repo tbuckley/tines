@@ -155,7 +155,10 @@ export const GET: RequestHandler = api(async (event) => {
 				{ domain: 'control_plane', access: 'read' },
 				{ domain: 'workspace', access: 'read' }
 			],
-			'usage.read'
+			// Cohort reports are account-wide operational analysis, not a
+			// run-scoped usage read. Keep this as a distinct operation so the
+			// run ceiling cannot admit it through the ordinary usage allowlist.
+			'usage.cohort.read'
 		);
 		const cohortPayload = replayPayload?.mode === 'cohort' ? replayPayload : null;
 		const workflow = cohortPayload?.workflow ?? params.get('workflow');

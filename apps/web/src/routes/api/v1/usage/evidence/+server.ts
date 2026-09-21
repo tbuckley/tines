@@ -73,7 +73,7 @@ export const GET: RequestHandler = api(async (event) => {
 				{ domain: 'control_plane', access: 'read' },
 				{ domain: 'workspace', access: 'read' }
 			],
-			'usage.read'
+			scope.mode === 'cohort' ? 'usage.cohort.read' : 'usage.read'
 		);
 	}
 	const kind = (params.get('kind') ?? 'issues') as 'issues' | 'runs' | 'entries';

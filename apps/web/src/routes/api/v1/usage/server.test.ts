@@ -3,6 +3,7 @@ import { createTestDb } from '$lib/server/api/test-db';
 import {
 	addIssue,
 	addRun,
+	addRunKey,
 	addRunner,
 	CLOSED,
 	NOW,
@@ -235,6 +236,32 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		);
 		expect(replay.response.status).toBe(403);
 		expect(replay.body).toMatchObject({ error: { code: 'insufficient_permissions' } });
+	});
+
+	it('rejects cohort reports for a bound run key', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const issue = addIssue(t);
+		const runner = addRunner(t);
+		const run = addRun(t, {
+			id: 'arun_cohort_route',
+			issueId: issue,
+			runnerId: runner,
+			status: 'running'
+		});
+		const keyId = addRunKey(t, run, { id: 'key_cohort_run' });
+		const bearer = 'cohort-run-key';
+		t.sqlite
+			.prepare('UPDATE api_key SET key_hash = ? WHERE id = ?')
+			.run(await sha256Hex(bearer), keyId);
+
+		const result = await getWithBearer(
+			t,
+			`?mode=cohort&workflow=wf_standard&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`,
+			bearer
+		);
+		expect(result.response.status).toBe(403);
+		expect(result.body).toMatchObject({ error: { code: 'run_key_forbidden' } });
 	});
 
 	it('pages cohort members including no-run issues and cutoff-redacted attempts', async () => {
