@@ -285,23 +285,21 @@
 {/if}
 
 <!-- per-state context: what agents carry while an issue sits in each state -->
-<div class="mt-8">
-	<div class="mb-1 flex flex-wrap items-center justify-between gap-2">
-		<h2 class="flex items-center gap-1.5 text-sm font-semibold">
-			<IconBooks size={16} stroke={1.75} /> Context by state
-		</h2>
-		<a
-			href="/context"
-			class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 rounded-sm text-xs outline-none focus-visible:ring-[3px]"
-		>
-			View all context
-		</a>
-	</div>
-	<p class="text-muted-foreground mb-3 text-xs">
+<div class="mt-8 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2">
+	<h2 class="mb-1 flex items-center gap-1.5 text-sm font-semibold">
+		<IconBooks size={16} stroke={1.75} /> Context by state
+	</h2>
+	<a
+		href="/context"
+		class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mb-1 rounded-sm text-xs outline-none focus-visible:ring-[3px]"
+	>
+		View all context
+	</a>
+	<p class="text-muted-foreground col-span-full mb-3 text-xs">
 		Items scoped to a state apply to any issue sitting in it. Removing a state warns about its
 		attached context.
 	</p>
-	<div class="rounded-lg border">
+	<div class="col-span-full rounded-lg border">
 		{#each data.workflow.states as state (state.id)}
 			{@const items = itemsByState.get(state.id) ?? []}
 			{@const open = selectedStateId === state.id}
