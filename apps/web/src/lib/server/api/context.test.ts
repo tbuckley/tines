@@ -1,4 +1,9 @@
-import { repoDirFromUrl, type EffectiveContext, type IssueDetail } from '@tines/shared';
+import {
+	FULL_API_KEY_PERMISSIONS,
+	repoDirFromUrl,
+	type EffectiveContext,
+	type IssueDetail
+} from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import { getDb } from '$lib/server/db';
 import { OPEN, PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
@@ -977,7 +982,12 @@ describe('env context items', () => {
 		apiKeyName: null,
 		viaSession: true
 	};
-	const runKey: ActorContext = { ...human, viaSession: false, agentRunId: 'run_1' };
+	const runKey: ActorContext = {
+		...human,
+		viaSession: false,
+		agentRunId: 'run_1',
+		permissions: FULL_API_KEY_PERMISSIONS
+	};
 	const fail = async (p: Promise<unknown>) => {
 		try {
 			await p;

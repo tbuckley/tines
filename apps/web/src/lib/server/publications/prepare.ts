@@ -16,6 +16,7 @@ import { sql, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { sha256Hex } from '$lib/server/crypto';
 import { ApiFail, runAtomic, type ActorContext } from '../api/core';
+import { requireAccess } from '../api/permissions';
 import { packageActorKey } from '../library/token';
 import { validatePortableLibrary } from '../library/validate';
 import { publicationConfig } from './config';
@@ -69,6 +70,14 @@ export async function preparePublication(
 	request: PreparePublicationRequest,
 	now = Date.now()
 ): Promise<PublicationProof> {
+	requireAccess(
+		actor,
+		[
+			{ domain: 'control_plane', access: 'write' },
+			{ domain: 'workspace', access: 'read' }
+		],
+		'publication.prepare'
+	);
 	const config = publicationConfig(env);
 	if (!config.valid || !config.enabled)
 		throw new ApiFail(

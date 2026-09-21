@@ -12,6 +12,7 @@ import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { sha256Hex } from '$lib/server/crypto';
 import { ApiFail, type ActorContext } from '../api/core';
+import { requireAccess } from '../api/permissions';
 import { readPackageDestination, selectPackageDestination } from './destination';
 import { allocatePackageObjects, resolvePackageDestination, type ResolvedPackage } from './resolve';
 import { validatePackageBatch } from './budgets';
@@ -60,6 +61,7 @@ export async function prepareWorkflowPackage(
 	choices: unknown = {},
 	source?: HostedPublicationBinding
 ): Promise<PrepareWorkflowPackageResponse> {
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'library.prepare');
 	const material = packageKeyMaterial(env);
 	const document = await requireWorkflowDocument(documentJson);
 	if (

@@ -5,9 +5,19 @@ import { installWorkflowPackage } from '$lib/server/library/install';
 import { runE2ePublicationRaceMutation } from '$lib/server/publications/e2e-race';
 import { readLibraryEnvelope } from '$lib/server/library/transport';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
+	requireAccess(
+		actor,
+		[
+			{ domain: 'control_plane', access: 'write' },
+			{ domain: 'project', access: 'write', scope: 'all' },
+			{ domain: 'workspace', access: 'write' }
+		],
+		'library.install'
+	);
 	// Kept here as well as in the service: alternate callers cannot bypass it,
 	// and the public route remains an explicit authority boundary.
 	if (actor.agentRunId)

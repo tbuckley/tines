@@ -39,11 +39,13 @@ import {
 	optionalString,
 	requireString,
 	runAtomic,
+	sessionActor,
 	type ActorContext
 } from './core';
 import { eventInsert } from './events';
 import { projectConcurrencyControl } from './runner-concurrency';
 import { scopeLabel } from './scope';
+import { requireAccess, requireExecutionDelegation } from './permissions';
 
 /**
  * Provider-key ping, injectable for tests (the default reaches the live
@@ -425,7 +427,13 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 	};
 }
 
-export async function listRunners(db: Kysely<Database>, userId: string): Promise<Runner[]> {
+export async function listRunners(
+	db: Kysely<Database>,
+	actorInput: ActorContext | string
+): Promise<Runner[]> {
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'runner.read');
+	const userId = actor.userId;
 	const rows = await runnerQuery(db, userId)
 		.orderBy('runner.created_at asc')
 		.orderBy('runner.id asc')
@@ -434,7 +442,14 @@ export async function listRunners(db: Kysely<Database>, userId: string): Promise
 	return rows.map((r) => serializeRunner(r, now));
 }
 
-export async function getRunner(db: Kysely<Database>, userId: string, id: string): Promise<Runner> {
+export async function getRunner(
+	db: Kysely<Database>,
+	actorInput: ActorContext | string,
+	id: string
+): Promise<Runner> {
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'runner.read');
+	const userId = actor.userId;
 	const row = await runnerQuery(db, userId).where('runner.id', '=', id).executeTakeFirst();
 	if (!row) throw notFound();
 	return serializeRunner(row);
@@ -474,6 +489,7 @@ export async function createRunner(
 	body: CreateRunnerRequest,
 	ping: ProviderKeyPing = defaultPing
 ): Promise<Runner> {
+	requireExecutionDelegation(actor, 'runner.create');
 	if (typeof body.type !== 'string' || !(RUNNER_TYPES as readonly string[]).includes(body.type)) {
 		throw new ApiFail(
 			422,
@@ -626,6 +642,10 @@ export async function updateRunner(
 	body: UpdateRunnerRequest,
 	ping: ProviderKeyPing = defaultPing
 ): Promise<Runner> {
+	requireAccess(actor, [{ domain: 'control_plane', access: 'write' }], 'runner.update');
+	if (body.api_key !== undefined || body.config !== undefined) {
+		requireExecutionDelegation(actor, 'runner.update_destination');
+	}
 	const row = await runnerQuery(db, actor.userId).where('runner.id', '=', id).executeTakeFirst();
 	if (!row) throw notFound();
 	for (const field of [
@@ -983,6 +1003,7 @@ export async function registerRunner(
 	effects: DispatchEffects,
 	body: RegisterRunnerRequest
 ): Promise<RunnerTokenResponse> {
+	requireExecutionDelegation(actor, 'runner.register');
 	const name = validateRunnerName(body.name);
 	const token = generateRunnerToken();
 	const tokenHash = await sha256Hex(token);
@@ -1150,6 +1171,7 @@ export async function rotateRunnerToken(
 	actor: ActorContext,
 	id: string
 ): Promise<RunnerTokenResponse> {
+	requireExecutionDelegation(actor, 'runner.rotate_token');
 	const runner = await db
 		.selectFrom('runner')
 		.select(['id', 'name', 'type'])
@@ -1262,6 +1284,7 @@ export async function deleteRunner(
 	id: string,
 	force: boolean
 ): Promise<void> {
+	requireAccess(actor, [{ domain: 'control_plane', access: 'delete' }], 'runner.delete');
 	const runner = await db
 		.selectFrom('runner')
 		.select(['id', 'name', 'type'])

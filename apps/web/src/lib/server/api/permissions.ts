@@ -7,7 +7,9 @@ import {
 	type ProjectAccessLevel
 } from '@tines/shared';
 import { sql, type RawBuilder, type SqlBool } from 'kysely';
-import { ApiFail, runKeyForbidden, type ActorContext } from './core';
+import { ApiFail, notFound, runKeyForbidden, type ActorContext } from './core';
+import type { Kysely } from 'kysely';
+import type { Database } from '$lib/server/db';
 
 export type Requirement =
 	| { domain: 'project'; access: ProjectAccessLevel; projectId: string }
@@ -26,10 +28,6 @@ function actorPolicy(actor: ActorContext): ApiKeyPermissions {
 	// Browser sessions are owner authority. Missing policy on any key actor is
 	// a programming error, never an implicit grant.
 	if (actor.viaSession && actor.apiKeyId === null) return FULL_API_KEY_PERMISSIONS;
-	// Hand-built legacy test/internal actors predate the required field. Request
-	// authentication always supplies it; retain full authority only for those
-	// in-process callers until their fixtures have migrated.
-	if (actor.permissions === undefined) return FULL_API_KEY_PERMISSIONS;
 	throw new ApiFail(500, 'missing_actor_permissions', 'API key authority was not loaded');
 }
 
@@ -135,10 +133,81 @@ export function requireAccess(
 	}
 }
 
+/** Authority needed before issuing or replacing an execution credential. */
+export function requireExecutionDelegation(actor: ActorContext, operation: string): void {
+	requireAccess(
+		actor,
+		[
+			{ domain: 'project', access: 'write', scope: 'all' },
+			{ domain: 'workspace', access: 'write' },
+			{ domain: 'control_plane', access: 'write' }
+		],
+		operation
+	);
+}
+
+/** Non-throwing form for filtering collection rows before they are returned. */
+export function accessAllowed(
+	actor: ActorContext,
+	requirements: readonly Requirement[],
+	operation: string,
+	target: ResolvedPermissionTarget = {}
+): boolean {
+	try {
+		requireAccess(actor, requirements, operation, target);
+		return true;
+	} catch (error) {
+		if (
+			error instanceof ApiFail &&
+			(error.code === 'insufficient_permissions' || error.code === 'run_key_forbidden')
+		) {
+			return false;
+		}
+		throw error;
+	}
+}
+
+/** Resolve an owned issue without leaking it, then enforce project plus extras. */
+export async function requireIssueAccess(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	issueId: string,
+	access: ProjectAccessLevel,
+	operation: string,
+	extras: readonly Requirement[] = []
+): Promise<{ id: string; projectId: string }> {
+	const issue = await db
+		.selectFrom('issue')
+		.innerJoin('project', 'project.id', 'issue.project_id')
+		.select(['issue.id', 'issue.project_id'])
+		.where('issue.id', '=', issueId)
+		.where('project.user_id', '=', actor.userId)
+		.executeTakeFirst();
+	if (!issue) throw notFound();
+	requireAccess(
+		actor,
+		[{ domain: 'project', access, projectId: issue.project_id }, ...extras],
+		operation,
+		{ projectId: issue.project_id, issueId: issue.id }
+	);
+	return { id: issue.id, projectId: issue.project_id };
+}
+
 /** SQL predicate for project-bearing reads; scope is bound as one JSON value. */
 export function projectReadPredicate(
 	actor: ActorContext,
 	qualifiedProjectIdColumn: string
+): RawBuilder<SqlBool> {
+	return projectExpressionReadPredicate(
+		actor,
+		sql<string | null>`${sql.ref(qualifiedProjectIdColumn)}`
+	);
+}
+
+/** Project-scope predicate for a derived project-id expression. */
+export function projectExpressionReadPredicate(
+	actor: ActorContext,
+	projectId: RawBuilder<string | null>
 ): RawBuilder<SqlBool> {
 	const policy = actorPolicy(actor);
 	const runProjectId = actor.runRestriction?.projectId;
@@ -146,11 +215,11 @@ export function projectReadPredicate(
 		if (policy.projects.scope !== 'all' && !policy.projects.scope.includes(runProjectId)) {
 			return sql<SqlBool>`1 = 0`;
 		}
-		return sql<SqlBool>`${sql.ref(qualifiedProjectIdColumn)} = ${runProjectId}`;
+		return sql<SqlBool>`${projectId} = ${runProjectId}`;
 	}
 	if (policy.projects.scope === 'all') return sql<SqlBool>`1 = 1`;
 	if (policy.projects.scope.length === 0) return sql<SqlBool>`1 = 0`;
-	return sql<SqlBool>`${sql.ref(qualifiedProjectIdColumn)} IN (
+	return sql<SqlBool>`${projectId} IN (
 		SELECT value FROM json_each(${JSON.stringify(policy.projects.scope)})
 	)`;
 }

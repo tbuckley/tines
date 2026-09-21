@@ -5,6 +5,7 @@ import { getCohortUsageEvidence } from '$lib/server/api/usage-cohorts';
 import { getIssueUsage, getUsage } from '$lib/server/api/usage';
 import { usageKeyMaterial, verifyUsageScope } from '$lib/server/usage-scope';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 const recognized = [
 	'scope',
@@ -50,6 +51,31 @@ export const GET: RequestHandler = api(async (event) => {
 		});
 	}
 	if (scope.owner !== actor.userId) throw notFound();
+	if (scope.mode === 'issue') {
+		const issue = await db
+			.selectFrom('issue')
+			.innerJoin('project', 'project.id', 'issue.project_id')
+			.select(['issue.id', 'issue.project_id'])
+			.where('issue.id', '=', scope.issue)
+			.where('project.user_id', '=', actor.userId)
+			.executeTakeFirst();
+		if (!issue) throw notFound();
+		requireAccess(
+			actor,
+			[{ domain: 'project', access: 'read', projectId: issue.project_id }],
+			'usage.issue',
+			{ projectId: issue.project_id, issueId: issue.id }
+		);
+	} else {
+		requireAccess(
+			actor,
+			[
+				{ domain: 'control_plane', access: 'read' },
+				...(scope.mode === 'cohort' ? ([{ domain: 'workspace', access: 'read' }] as const) : [])
+			],
+			'usage.read'
+		);
+	}
 	const kind = (params.get('kind') ?? 'issues') as 'issues' | 'runs' | 'entries';
 	const population = (params.get('population') ??
 		(scope.mode === 'cohort' && kind !== 'runs' ? 'all' : 'finalized')) as

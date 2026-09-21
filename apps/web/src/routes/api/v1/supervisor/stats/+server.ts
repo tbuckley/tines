@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import { api, apiContext } from '$lib/server/api/core';
 import { loadStageStats } from '$lib/server/api/supervisor';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 /**
  * Per-stage flow over a rolling window — the flow board's "This week" row.
@@ -11,6 +12,7 @@ import type { RequestHandler } from './$types';
  */
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'supervisor.read');
 	const url = event.url;
 	const phases: string[] = [];
 	const response = json(

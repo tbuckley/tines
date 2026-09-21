@@ -382,11 +382,15 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	} catch {
 		throw new ApiFail(401, 'invalid_key_permissions', 'API key permissions are invalid');
 	}
-	assertRunKeyAllowed(
-		{ agentRunId: row.agent_run_id, expiresAt: row.expires_at },
-		event.url.pathname,
-		event.request.method
-	);
+	// Expiry is credential validity. Operation authorization is semantic and
+	// enforced by the service guards; the legacy path fence is not consulted.
+	if (row.expires_at !== null && row.expires_at <= Date.now()) {
+		throw new ApiFail(
+			401,
+			'run_key_expired',
+			'This run key has expired; the run it belonged to is over'
+		);
+	}
 	let runRestriction: ActorContext['runRestriction'] = null;
 	if (row.agent_run_id !== null) {
 		if (

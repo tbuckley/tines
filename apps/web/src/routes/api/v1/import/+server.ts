@@ -9,9 +9,19 @@ import { ApiFail, api, apiContext, requireJsonObject } from '$lib/server/api/cor
 import { readLibraryEnvelope } from '$lib/server/library/transport';
 import { applyImport } from '$lib/server/api/library';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
+	requireAccess(
+		actor,
+		[
+			{ domain: 'control_plane', access: 'write' },
+			{ domain: 'project', access: 'write', scope: 'all' },
+			{ domain: 'workspace', access: 'write' }
+		],
+		'library.import'
+	);
 	const raw = await readLibraryEnvelope(event.request);
 	let body: ImportLibraryRequest;
 	try {

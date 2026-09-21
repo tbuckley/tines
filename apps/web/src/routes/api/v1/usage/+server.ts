@@ -16,6 +16,7 @@ import {
 	type UsageScopePayload
 } from '$lib/server/usage-scope';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 const recognized = [
 	'window',
@@ -96,6 +97,20 @@ export const GET: RequestHandler = api(async (event) => {
 		const issueId = replayPayload?.mode === 'issue' ? replayPayload.issue : params.get('issue');
 		if (!issueId)
 			throw new ApiFail(422, 'invalid_field', 'issue mode requires issue', { field: 'issue' });
+		const issue = await db
+			.selectFrom('issue')
+			.innerJoin('project', 'project.id', 'issue.project_id')
+			.select(['issue.id', 'issue.project_id'])
+			.where('issue.id', '=', issueId)
+			.where('project.user_id', '=', actor.userId)
+			.executeTakeFirst();
+		if (!issue) throw notFound();
+		requireAccess(
+			actor,
+			[{ domain: 'project', access: 'read', projectId: issue.project_id }],
+			'usage.issue',
+			{ projectId: issue.project_id, issueId: issue.id }
+		);
 		const contradictions = replay
 			? []
 			: recognized.filter((name) => !['mode', 'issue'].includes(name) && params.has(name));
@@ -134,6 +149,14 @@ export const GET: RequestHandler = api(async (event) => {
 		return json(report, { headers: { 'cache-control': 'private, no-store' } });
 	}
 	if (mode === 'cohort') {
+		requireAccess(
+			actor,
+			[
+				{ domain: 'control_plane', access: 'read' },
+				{ domain: 'workspace', access: 'read' }
+			],
+			'usage.read'
+		);
 		const cohortPayload = replayPayload?.mode === 'cohort' ? replayPayload : null;
 		const workflow = cohortPayload?.workflow ?? params.get('workflow');
 		if (!workflow)
@@ -227,6 +250,7 @@ export const GET: RequestHandler = api(async (event) => {
 	const by = (
 		replayPayload?.mode === 'period' ? replayPayload.by : (params.get('by') ?? 'workflow')
 	) as UsageBy;
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'usage.read');
 	if (!['project', 'workflow', 'state', 'outcome', 'runner', 'tier'].includes(by))
 		throw new ApiFail(422, 'invalid_field', 'Invalid usage grouping', { field: 'by' });
 	const periodPayload = replayPayload?.mode === 'period' ? replayPayload : null;

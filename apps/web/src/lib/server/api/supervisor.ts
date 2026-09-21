@@ -45,8 +45,9 @@ import {
 	prepareStageStats,
 	type StatsEvent
 } from '$lib/server/supervisor/stats';
-import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
+import { ApiFail, requireString, runAtomic, sessionActor, type ActorContext } from './core';
 import { applyEventWindow, eventInsert, eventQuery, serializeEvent } from './events';
+import { requireAccess, requireExecutionDelegation } from './permissions';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { effectiveAutomationEnabled } from '../supervisor/settings';
 
@@ -166,8 +167,11 @@ async function assertRosterStatesExist(
 
 export async function getSupervisorSettings(
 	db: Kysely<Database>,
-	userId: string
+	actorInput: ActorContext | string
 ): Promise<SupervisorSettings> {
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'supervisor.read');
+	const userId = actor.userId;
 	const row = await db
 		.selectFrom('supervisor_settings')
 		.selectAll()
@@ -207,6 +211,10 @@ export async function updateSupervisorSettings(
 	effects: DispatchEffects,
 	body: UpdateSupervisorSettingsRequest
 ): Promise<SupervisorSettingsResponse> {
+	requireAccess(actor, [{ domain: 'control_plane', access: 'write' }], 'supervisor.update');
+	if (body.github_pat !== undefined) {
+		requireExecutionDelegation(actor, 'supervisor.update_credential');
+	}
 	const current = await getSupervisorSettings(db, actor.userId);
 
 	let enabled = current.enabled;

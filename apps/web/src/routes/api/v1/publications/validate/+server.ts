@@ -10,9 +10,11 @@ import {
 import { api, apiContext, ApiFail, requireJsonObject } from '$lib/server/api/core';
 import { readLibraryEnvelope } from '$lib/server/library/transport';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 export const POST: RequestHandler = api(async (event) => {
-	await apiContext(event);
+	const { actor } = await apiContext(event);
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'publication.validate');
 	const raw = await readLibraryEnvelope(event.request);
 	let body: Record<string, unknown>;
 	try {

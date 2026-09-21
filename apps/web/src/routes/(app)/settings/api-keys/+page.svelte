@@ -57,6 +57,11 @@
 	let created = $state<ApiKeyCreated | null>(null);
 	let copied = $state(false);
 	let errorMessage = $state<string | null>(null);
+	let editingKey = $state<ApiKey | null>(null);
+	let editPermissions = $state('');
+	let editError = $state<string | null>(null);
+	let editConflict = $state(false);
+	let savingEdit = $state(false);
 	const availableProjects = $derived([...data.projects, ...data.archivedProjects]);
 
 	function permissionsForCreate(): ApiKeyPermissions {
@@ -116,6 +121,49 @@
 		created = null;
 		copied = false;
 		errorMessage = null;
+	}
+
+	function openEdit(key: ApiKey) {
+		editingKey = key;
+		editPermissions = JSON.stringify(key.permissions, null, 2);
+		editError = null;
+		editConflict = false;
+	}
+
+	async function reloadEdit() {
+		if (!editingKey) return;
+		const fresh = await api.getApiKey(editingKey.id);
+		editingKey = fresh;
+		editPermissions = JSON.stringify(fresh.permissions, null, 2);
+		editError = null;
+		editConflict = false;
+	}
+
+	async function saveEdit(event: SubmitEvent) {
+		event.preventDefault();
+		if (!editingKey || savingEdit) return;
+		savingEdit = true;
+		editError = null;
+		editConflict = false;
+		try {
+			const permissions = parseApiKeyPermissions(JSON.parse(editPermissions));
+			await api.updateApiKey(editingKey.id, {
+				permissions,
+				expected_permissions: editingKey.permissions
+			});
+			editingKey = null;
+			await invalidateAll();
+		} catch (err) {
+			if (err instanceof ApiError && err.code === 'permissions_conflict') editConflict = true;
+			editError =
+				err instanceof SyntaxError
+					? 'Permissions must be valid JSON.'
+					: err instanceof ApiError
+						? err.message
+						: 'Failed to update permissions.';
+		} finally {
+			savingEdit = false;
+		}
 	}
 
 	/**
@@ -205,9 +253,12 @@
 					<p>{key.last_used_at ? `last used ${relativeTime(key.last_used_at)}` : 'never used'}</p>
 				</div>
 				{#if !key.revoked_at}
-					<Button size="sm" variant="outline" onclick={() => revoke(key.id, key.name)}
-						>Revoke</Button
-					>
+					<div class="flex gap-2">
+						<Button size="sm" variant="outline" onclick={() => openEdit(key)}>Edit</Button>
+						<Button size="sm" variant="outline" onclick={() => revoke(key.id, key.name)}
+							>Revoke</Button
+						>
+					</div>
 				{/if}
 			</li>
 		{/each}
@@ -287,6 +338,35 @@
 		{/if}
 	</details>
 {/if}
+
+<Modal
+	open={editingKey !== null}
+	title={editingKey ? `Edit ${editingKey.name}` : 'Edit API key'}
+	onclose={() => (editingKey = null)}
+>
+	<form onsubmit={saveEdit} class="space-y-4">
+		<p class="text-muted-foreground text-sm">
+			Replace the complete stored policy. Levels are cumulative; selected project IDs are explicit.
+		</p>
+		<label class="block space-y-1.5 text-sm font-medium">
+			Permissions JSON
+			<textarea
+				bind:value={editPermissions}
+				rows="12"
+				spellcheck="false"
+				class="border-input bg-background mt-1 w-full rounded-md border p-3 font-mono text-xs"
+			></textarea>
+		</label>
+		{#if editError}<p class="text-destructive text-sm">{editError}</p>{/if}
+		{#if editConflict}
+			<Button type="button" variant="outline" onclick={reloadEdit}>Reload saved permissions</Button>
+		{/if}
+		<div class="flex justify-end gap-2">
+			<Button type="button" variant="ghost" onclick={() => (editingKey = null)}>Cancel</Button>
+			<PendingButton type="submit" pending={savingEdit} pendingLabel="Saving…">Save</PendingButton>
+		</div>
+	</form>
+</Modal>
 
 <Modal
 	bind:open={createOpen}

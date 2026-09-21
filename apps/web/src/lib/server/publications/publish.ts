@@ -20,6 +20,7 @@ import {
 	type ActorContext,
 	type Page
 } from '../api/core';
+import { requireAccess } from '../api/permissions';
 import { packageActorKey } from '../library/token';
 import { publicationConfig } from './config';
 import { deriveOwnedPublicationDraft, PublicationDraftError } from './draft';
@@ -129,6 +130,7 @@ export async function publishPublication(
 	/** Test-only synchronization at the exact boundary the transaction guard closes. */
 	beforeAtomic?: () => Promise<void>
 ): Promise<PublicationOwnerResult> {
+	requireAccess(actor, [{ domain: 'control_plane', access: 'write' }], 'publication.publish');
 	const row = await candidateRow(db, actor.userId, candidateId);
 	if (!row) throw new ApiFail(404, 'not_found', 'Not found');
 	assertConfirmation(row, actor, request);
@@ -358,6 +360,7 @@ export async function getPublicationResult(
 	actor: ActorContext,
 	candidateId: string
 ): Promise<PublicationOwnerResult> {
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'publication.read');
 	const row = await candidateRow(db, actor.userId, candidateId);
 	if (!row) throw new ApiFail(404, 'not_found', 'Not found');
 	return parseReceipt(row);
@@ -369,6 +372,7 @@ export async function listPublications(
 	actor: ActorContext,
 	options: { workflowId?: string; page?: Page } = {}
 ): Promise<ListResponse<PublicationOwnerItem>> {
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'publication.read');
 	const page = options.page ?? { cursor: null, limit: 100 };
 	let query = db
 		.selectFrom('workflow_publication')
@@ -479,6 +483,11 @@ async function changeOwnerState(
 	target: 'published' | 'withdrawn',
 	now: number
 ): Promise<PublicationOwnerResult> {
+	requireAccess(
+		actor,
+		[{ domain: 'control_plane', access: 'write' }],
+		target === 'published' ? 'publication.restore' : 'publication.withdraw'
+	);
 	if (actor.agentRunId) throw runKeyForbidden();
 	const row = await publicationBySnapshot(db, actor.userId, snapshotId);
 	if (row.owner_state === target) return parseReceipt(row);
