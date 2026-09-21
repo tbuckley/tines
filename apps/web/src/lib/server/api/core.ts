@@ -229,72 +229,9 @@ export function sessionActor(user: { id: string; name?: string }): ActorContext 
 	};
 }
 
-// ---------------------------------------------------------------------------
-// Run keys: api_key rows with agent_run_id set. They carry issue-action
-// authority but are fenced off the control plane — an agent must not be able
-// to raise its own budget, un-park itself, re-route work, or touch
-// credentials. Ordinary named keys keep their full authority.
-//
-// The fence is per method, not per path: a surface an agent must *understand*
-// to do its job can be readable while its writes stay fenced (the label
-// library is the one such surface today).
-
 /**
- * A fenced surface. Every method is fenced unless `readable` is set, in which
- * case GET/HEAD pass: reading is classification, writing is control.
- */
-type ControlPlaneRule = { pattern: RegExp; readable?: boolean };
-
-const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
-	// The fleet's shape is legible to a run (Tines/256): an agent already reads
-	// its own dispatch explainer, which names runners, their status and their
-	// caps, so the fleet reads behind `tines supervisor status` disclose nothing
-	// new. Only the GETs open — `register`, `rotate-token` and the PATCH/DELETE
-	// writes stay fenced (`poll` is runner-token auth, never a run key), and the
-	// settings GET nulls `github_pat_hint` for run keys.
-	{ pattern: /^\/api\/v1\/runners(\/|$)/, readable: true },
-	{ pattern: /^\/api\/v1\/routing-rules(\/|$)/ },
-	{ pattern: /^\/api\/v1\/supervisor\/settings(\/|$)/, readable: true },
-	{ pattern: /^\/api\/v1\/issues\/[^/]+\/resume$/ },
-	// Moving an issue between projects is an operator act: an agent may review
-	// the move (the preview is the argument it makes to its owner) but the POST
-	// is fenced, so a run cannot re-home itself into different guidance.
-	{ pattern: /^\/api\/v1\/issues\/[^/]+\/transfer$/, readable: true },
-	{ pattern: /^\/api\/v1\/host\/workflow-moderation(\/|$)/ },
-	// The label library is vocabulary, not classification: run keys may read it
-	// (`tines labels list` — the launch prompt points at it) and may apply and
-	// remove existing labels (/issues/:id/labels stays open to them), but
-	// cannot mint, rename, or delete the terms themselves.
-	{ pattern: /^\/api\/v1\/labels(\/|$)/, readable: true },
-	// Bulk library writes: an agent must propose context changes, not apply
-	// a whole library over the top of them.
-	{ pattern: /^\/api\/v1\/import(\/|$)/ },
-	// Preparing/recovering is read-only; committing an installation is an
-	// operator action and is also denied again inside the install service.
-	{ pattern: /^\/api\/v1\/library\/install$/ },
-	// Agents may validate and prepare publication proofs, but only a human or
-	// named key may publish, withdraw, restore, or install the hosted snapshot.
-	{ pattern: /^\/api\/v1\/publications\/[^/]+\/(publish|withdraw|restore)$/ },
-	// Archiving is an operator act: an agent must not freeze (or thaw) the
-	// project it is working in, least of all the one draining around it.
-	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ },
-	// Per-user UI preferences (the project focus): an agent has no focus of its
-	// own and must not read or move its owner's. GET is fenced too.
-	{ pattern: /^\/api\/v1\/preferences(\/|$)/ }
-];
-
-/** SvelteKit answers HEAD from the GET handler, so both are reads. */
-const READ_METHODS = new Set(['GET', 'HEAD']);
-
-/** True when a run key must not make `method` requests to `pathname`. */
-export function isControlPlanePath(pathname: string, method: string): boolean {
-	const read = READ_METHODS.has(method.toUpperCase());
-	return CONTROL_PLANE_RULES.some((r) => r.pattern.test(pathname) && !(read && r.readable));
-}
-
-/**
- * The fence's 403, shared by the path fence and field-level guards (pins on
- * PATCH /issues/:id live on an otherwise run-key-legal route).
+ * Compatibility error for the remaining semantic run-key guards. New
+ * authorization is operation-based in permissions.ts, never route-based.
  */
 export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 	return new ApiFail(
@@ -309,29 +246,6 @@ export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 			'what should change and why; a human reviews and applies it.',
 		details
 	);
-}
-
-/**
- * Gate applied to every key-authenticated request: expired run keys are dead
- * (401), and live run keys get 403s on the control plane, pointing at the
- * proposal convention instead.
- */
-export function assertRunKeyAllowed(
-	key: { agentRunId: string | null; expiresAt: number | null },
-	pathname: string,
-	method: string,
-	now = Date.now()
-): void {
-	if (key.expiresAt !== null && key.expiresAt <= now) {
-		throw new ApiFail(
-			401,
-			'run_key_expired',
-			'This run key has expired; the run it belonged to is over'
-		);
-	}
-	if (key.agentRunId !== null && isControlPlanePath(pathname, method)) {
-		throw runKeyForbidden();
-	}
 }
 
 export async function requireActor(event: RequestEvent): Promise<ActorContext> {

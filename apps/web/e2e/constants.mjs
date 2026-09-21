@@ -106,6 +106,7 @@ export const RUNROW = {
 	 * `expires_at <= now` predicate, which the 2030 expiry keeps clear.
 	 */
 	runKey: 'tines_e2erunrow000000000000000000000000000000000',
+	runKeyRunId: 'arun_e2e_run_key_active',
 	runKeyName: 'run:runrow'
 };
 

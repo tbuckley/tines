@@ -66,3 +66,6 @@ and are echoed by `tines issues comment`, so an agent that mis-posts holds the
 handle it needs. The launch prompt names the repair commands but does not list
 ids for every comment: the comment you just wrote is the one you legitimately
 need to fix.
+# 2026-09-21 — API-key scope enforcement (Tines/648)
+
+Comment reads and writes require authority on the issue's project. Hard deletion requires project delete in addition to the existing author/run ownership rule. Run keys remain confined to their bound issue. See `../api-keys/SPEC.md`.

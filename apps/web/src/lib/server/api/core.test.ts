@@ -3,11 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
 	ApiFail,
 	api,
-	assertRunKeyAllowed,
 	decodeCursor,
 	errorResponse,
 	encodeCursor,
-	isControlPlanePath,
 	readArchived,
 	jsonifyMethodNotAllowed,
 	pageResult,
@@ -209,176 +207,6 @@ describe('pageResult', () => {
 	});
 });
 
-describe('isControlPlanePath', () => {
-	// Everything the fence covers, asserted method by method: the label
-	// library and the fleet reads are readable, so this table is what keeps a
-	// future `readable` flag from quietly opening the rest of the control
-	// plane (Tines/93, widened for the fleet queue in Tines/256).
-	it.each([
-		['/api/v1/runners', 'POST'],
-		['/api/v1/runners/rnr_1', 'PATCH'],
-		['/api/v1/runners/rnr_1', 'DELETE'],
-		['/api/v1/runners/rnr_1/rotate-token', 'POST'],
-		['/api/v1/routing-rules', 'GET'],
-		['/api/v1/routing-rules/rul_1', 'PATCH'],
-		['/api/v1/supervisor/settings', 'PUT'],
-		['/api/v1/issues/iss_1/resume', 'POST'],
-		['/api/v1/host/workflow-moderation/cases', 'GET'],
-		['/api/v1/host/workflow-moderation/decisions', 'POST'],
-		// Minting, renaming, and deleting terms is taxonomy, not classification.
-		['/api/v1/labels', 'POST'],
-		['/api/v1/labels/lbl_1', 'PATCH'],
-		['/api/v1/labels/lbl_1', 'DELETE'],
-		// Bulk library writes are a control-plane action: an agent proposes
-		// context changes, it does not apply a whole library.
-		['/api/v1/import', 'GET'],
-		['/api/v1/import', 'POST'],
-		['/api/v1/library/install', 'POST'],
-		// Archiving is an operator act: an agent must not freeze the project it
-		// is working in, nor thaw one a human froze.
-		['/api/v1/projects/prj_1/archive', 'POST'],
-		['/api/v1/projects/prj_1/unarchive', 'POST'],
-		// The project focus is its owner's UI state: an agent has none, and
-		// reading one would let it guess at scope it must not have.
-		['/api/v1/preferences', 'GET'],
-		['/api/v1/preferences', 'PATCH']
-	])('fences %s %s', (path, method) => {
-		expect(isControlPlanePath(path, method)).toBe(true);
-	});
-
-	it.each([
-		['/api/v1/issues', 'GET'],
-		['/api/v1/issues', 'POST'],
-		['/api/v1/issues/iss_1', 'PATCH'],
-		['/api/v1/issues/iss_1/comments', 'POST'],
-		['/api/v1/issues/iss_1/transition', 'POST'],
-		['/api/v1/issues/iss_1/prompt', 'GET'],
-		['/api/v1/context', 'GET'],
-		// Export is a read of what a run key can already list.
-		['/api/v1/export', 'GET'],
-		['/api/v1/library/validate', 'POST'],
-		['/api/v1/library/prepare', 'POST'],
-		['/api/v1/library/installs/lin_1', 'GET'],
-		['/api/v1/events', 'GET'],
-		['/api/v1/projects/prj_1/issues', 'GET'],
-		// The vocabulary itself: an agent must know the terms to apply them,
-		// and the launch prompt points at `tines labels list`.
-		['/api/v1/labels', 'GET'],
-		['/api/v1/labels', 'HEAD'],
-		// The fleet's shape: an agent's own dispatch explainer already names
-		// runners, their status and their caps (Tines/256).
-		['/api/v1/runners', 'GET'],
-		['/api/v1/runners', 'HEAD'],
-		['/api/v1/runners/rnr_1', 'GET'],
-		['/api/v1/supervisor/settings', 'GET'],
-		['/api/v1/supervisor/settings', 'HEAD'],
-		// The queue is unfenced by construction: the rule matches
-		// `supervisor/settings`, not `supervisor/*`.
-		['/api/v1/supervisor/queue', 'GET'],
-		['/api/v1/supervisor/queue', 'HEAD'],
-		// The stage stats beside it (Tines/257): the fence pattern names
-		// `supervisor/settings`, not `supervisor/*`, so this stays open — the
-		// rows are here so narrowing the pattern later has to be deliberate.
-		['/api/v1/supervisor/stats', 'GET'],
-		['/api/v1/supervisor/stats', 'HEAD'],
-		// Methods arrive from the request verbatim; compare case-insensitively.
-		['/api/v1/labels', 'get'],
-		// Similar-looking but distinct segments stay open.
-		['/api/v1/runnersandmore', 'GET'],
-		['/api/v1/issues/resume', 'POST'],
-		// Reading and working in a project stays open, archived or not.
-		['/api/v1/projects/prj_1', 'GET'],
-		['/api/v1/projects/prj_1/issues', 'POST'],
-		['/api/v1/projects/prj_1/archived', 'POST']
-	])('leaves %s %s open', (path, method) => {
-		expect(isControlPlanePath(path, method)).toBe(false);
-	});
-});
-
-describe('assertRunKeyAllowed', () => {
-	const now = 1_723_000_000_000;
-	const runKey = { agentRunId: 'arun_1', expiresAt: now + 60_000 };
-
-	it('lets a live run key act on issue endpoints', () => {
-		expect(() =>
-			assertRunKeyAllowed(runKey, '/api/v1/issues/iss_1/comments', 'POST', now)
-		).not.toThrow();
-	});
-
-	it('lets a live run key read the label library it is told to classify with', () => {
-		expect(() => assertRunKeyAllowed(runKey, '/api/v1/labels', 'GET', now)).not.toThrow();
-		expect(() => assertRunKeyAllowed(runKey, '/api/v1/labels', 'HEAD', now)).not.toThrow();
-		// The fleet reads, opened with the Now row (Tines/256).
-		expect(() => assertRunKeyAllowed(runKey, '/api/v1/runners', 'GET', now)).not.toThrow();
-		expect(() =>
-			assertRunKeyAllowed(runKey, '/api/v1/supervisor/settings', 'GET', now)
-		).not.toThrow();
-		expect(() => assertRunKeyAllowed(runKey, '/api/v1/supervisor/queue', 'GET', now)).not.toThrow();
-		expect(() => assertRunKeyAllowed(runKey, '/api/v1/supervisor/stats', 'GET', now)).not.toThrow();
-	});
-
-	it('403s a run key on every control-plane surface, naming the proposal convention', () => {
-		for (const [path, method] of [
-			['/api/v1/runners', 'POST'],
-			['/api/v1/runners/rnr_1', 'PATCH'],
-			['/api/v1/routing-rules/rul_1', 'PATCH'],
-			['/api/v1/supervisor/settings', 'PUT'],
-			['/api/v1/issues/iss_1/resume', 'POST'],
-			['/api/v1/labels', 'POST'],
-			['/api/v1/library/install', 'POST']
-		]) {
-			try {
-				assertRunKeyAllowed(runKey, path, method, now);
-				throw new Error(`expected a 403 for ${method} ${path}`);
-			} catch (e) {
-				expect(e).toBeInstanceOf(ApiFail);
-				expect((e as ApiFail).status).toBe(403);
-				expect((e as ApiFail).code).toBe('run_key_forbidden');
-				expect((e as ApiFail).message).toContain('Context change:');
-			}
-		}
-	});
-
-	it('says what is forbidden about labels: minting terms, not reading them', () => {
-		try {
-			assertRunKeyAllowed(runKey, '/api/v1/labels', 'POST', now);
-			throw new Error('expected a 403');
-		} catch (e) {
-			const message = (e as ApiFail).message;
-			expect(message).toContain('create, rename, or delete labels');
-			expect(message).not.toContain('the label library');
-		}
-	});
-
-	it('401s an expired run key everywhere, before the fence', () => {
-		const expired = { agentRunId: 'arun_1', expiresAt: now - 1 };
-		for (const path of [
-			'/api/v1/issues/iss_1/comments',
-			'/api/v1/supervisor/settings',
-			// Even the newly readable library: expiry is checked before the fence.
-			'/api/v1/labels'
-		]) {
-			try {
-				assertRunKeyAllowed(expired, path, 'GET', now);
-				throw new Error('expected a 401');
-			} catch (e) {
-				expect(e).toBeInstanceOf(ApiFail);
-				expect((e as ApiFail).status).toBe(401);
-				expect((e as ApiFail).code).toBe('run_key_expired');
-			}
-		}
-	});
-
-	it('never fences ordinary named keys (no agent_run_id, no expiry)', () => {
-		const named = { agentRunId: null, expiresAt: null };
-		expect(() =>
-			assertRunKeyAllowed(named, '/api/v1/supervisor/settings', 'PATCH', now)
-		).not.toThrow();
-		expect(() => assertRunKeyAllowed(named, '/api/v1/runners', 'POST', now)).not.toThrow();
-		expect(() => assertRunKeyAllowed(named, '/api/v1/labels', 'POST', now)).not.toThrow();
-	});
-});
-
 describe('jsonifyMethodNotAllowed', () => {
 	/** What SvelteKit itself returns for an unsupported verb on a real route. */
 	const kit405 = () =>
@@ -451,18 +279,5 @@ describe('readArchived', () => {
 			expect((e as ApiFail).code).toBe('invalid_field');
 			expect((e as ApiFail).details).toEqual({ field: 'archived' });
 		}
-	});
-});
-
-describe('workflow package read-only run-key paths', () => {
-	it.each([
-		['/api/v1/workflows/wf_standard/export', 'GET'],
-		['/api/v1/library/validate', 'POST'],
-		['/api/v1/library/prepare', 'POST']
-	])('permits %s %s without opening whole-library import', (path, method) => {
-		expect(() =>
-			assertRunKeyAllowed({ agentRunId: 'run', expiresAt: Date.now() + 60_000 }, path, method)
-		).not.toThrow();
-		expect(isControlPlanePath('/api/v1/import', 'POST')).toBe(true);
 	});
 });

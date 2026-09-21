@@ -263,3 +263,6 @@ else in the non-goals list (membership, per-project labels, nesting) stands.
    directory plus sorted effective repository IDs, classified as retained,
    resolved or introduced, and name every participant with its side-specific
    scope (falling back to an unresolved ID).
+# 2026-09-21 — API-key scope enforcement (Tines/648)
+
+Project collections are filtered by the key's explicit project scope before pagination. Create requires all-project write, edits and reversible archive operations require write, and hard deletion requires delete plus authority for any cross-domain cascade. See `../api-keys/SPEC.md`.

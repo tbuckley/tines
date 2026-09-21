@@ -2,10 +2,15 @@ import {
 	recordDispatchEffects,
 	TEST_NOOP_DISPATCH_EFFECTS
 } from '$lib/server/api/test-dispatch-effects';
-import { compareLabelNames, defaultLabelColor, LABEL_COLORS } from '@tines/shared';
+import {
+	compareLabelNames,
+	defaultLabelColor,
+	FULL_API_KEY_PERMISSIONS,
+	LABEL_COLORS
+} from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PROJECT, USER, addIssue, addRunner, seedBase } from '../supervisor/test-fixtures';
-import { ApiFail, isControlPlanePath, runAtomic, type ActorContext } from './core';
+import { ApiFail, runAtomic, type ActorContext } from './core';
 import { listIssues } from './issues';
 import {
 	addIssueLabels,
@@ -42,7 +47,8 @@ const runKey: ActorContext = {
 	apiKeyId: null,
 	apiKeyName: null,
 	viaSession: false,
-	agentRunId: 'arun_1'
+	agentRunId: 'arun_1',
+	permissions: FULL_API_KEY_PERMISSIONS
 };
 
 let t: TestDb;
@@ -528,19 +534,6 @@ describe('the run-key vocabulary fence', () => {
 			code: 'unknown_label'
 		});
 		expect(await names()).toEqual([]);
-	});
-
-	it('fences library writes but not reading the library or applying labels', () => {
-		// Minting, renaming, and deleting terms is taxonomy: fenced.
-		expect(isControlPlanePath('/api/v1/labels', 'POST')).toBe(true);
-		expect(isControlPlanePath('/api/v1/labels/lbl_1', 'PATCH')).toBe(true);
-		expect(isControlPlanePath('/api/v1/labels/lbl_1', 'DELETE')).toBe(true);
-		// Reading the vocabulary is classification: open. The launch prompt
-		// tells agents to run `tines labels list`, which is this GET.
-		expect(isControlPlanePath('/api/v1/labels', 'GET')).toBe(false);
-		// Applying and removing existing labels was always open.
-		expect(isControlPlanePath('/api/v1/issues/iss_1/labels', 'POST')).toBe(false);
-		expect(isControlPlanePath('/api/v1/issues/iss_1/labels/bug', 'DELETE')).toBe(false);
 	});
 });
 

@@ -95,7 +95,7 @@ test.describe.serial('API keys page', () => {
 		await expect(row).toContainText(RUNROW.runnerName);
 		await expect(row).toContainText(RUNROW.runKey.slice(0, 14));
 		// The run id is available on hover without spending a line on it.
-		await expect(row.locator('p').first()).toHaveAttribute('title', new RegExp(RUNROW.runId));
+		await expect(row.locator('p').first()).toHaveAttribute('title', new RegExp(RUNROW.runKeyRunId));
 
 		// The revoked run key is hidden until asked for.
 		await expect(disclosure(page).getByText(RUNROW_FAILED.runnerName)).toHaveCount(0);

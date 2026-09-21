@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { withLibraryDocumentDigest } from '@tines/shared';
+import { FULL_API_KEY_PERMISSIONS, withLibraryDocumentDigest } from '@tines/shared';
 import {
 	automatedPackage,
 	inheritedPackage
@@ -100,7 +100,13 @@ describe('signed workflow package preparation and reconstruction', () => {
 	});
 	it('binds account and exact actor identity; run keys may prepare but another actor must reprepare', async () => {
 		const f = await fixture();
-		const runActor = { ...actor, viaSession: false, apiKeyId: 'run-key', agentRunId: 'run' };
+		const runActor = {
+			...actor,
+			viaSession: false,
+			apiKeyId: 'run-key',
+			agentRunId: 'run',
+			permissions: FULL_API_KEY_PERMISSIONS
+		};
 		const preview = await prepareWorkflowPackage(f.t.db, env, runActor, f.raw, f.choices);
 		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
 		await expect(reconstructPackagePlan(f.t.db, actor, f.raw, payload)).rejects.toMatchObject({

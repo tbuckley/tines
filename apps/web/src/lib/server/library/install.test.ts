@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { canonicalizeLibraryValue, withLibraryDocumentDigest } from '@tines/shared';
+import {
+	canonicalizeLibraryValue,
+	FULL_API_KEY_PERMISSIONS,
+	withLibraryDocumentDigest
+} from '@tines/shared';
 import {
 	automatedPackage,
 	inheritedPackage
@@ -352,7 +356,13 @@ describe('atomic workflow package install', () => {
 			actor,
 			f.request
 		);
-		const rotated = { ...actor, viaSession: false, apiKeyId: 'new-key', apiKeyName: 'new key' };
+		const rotated = {
+			...actor,
+			viaSession: false,
+			apiKeyId: 'new-key',
+			apiKeyName: 'new key',
+			permissions: FULL_API_KEY_PERMISSIONS
+		};
 		expect(await getWorkflowPackageReceipt(f.t.db, rotated, receipt.id)).toEqual(receipt);
 		await expect(
 			installWorkflowPackage(f.t.db, { ...f.t.env, ...signing }, rotated, f.request)

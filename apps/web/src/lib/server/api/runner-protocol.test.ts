@@ -2,7 +2,7 @@ import {
 	recordDispatchEffects,
 	TEST_NOOP_DISPATCH_EFFECTS
 } from '$lib/server/api/test-dispatch-effects';
-import { RUN_LOG_MAX_BYTES } from '@tines/shared';
+import { FULL_API_KEY_PERMISSIONS, RUN_LOG_MAX_BYTES } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import {
 	addComment,
@@ -605,7 +605,8 @@ describe('pollRunner', () => {
 			...actor,
 			apiKeyId: 'key_owner',
 			apiKeyName: 'owner automation',
-			viaSession: false
+			viaSession: false,
+			permissions: FULL_API_KEY_PERMISSIONS
 		};
 		const keyWrite = await updateRunner(t.db, t.env, keyActor, TEST_NOOP_DISPATCH_EFFECTS, id, {
 			max_concurrent: 3,
