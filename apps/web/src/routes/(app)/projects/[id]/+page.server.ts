@@ -73,7 +73,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		listLabels(db, userId),
 		loadWorkflows(db, userId),
 		listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 }),
-		listContextItems(db, userId, { project: project.id }, { cursor: null, limit: 100 }),
+		listContextItems(db, actor, { project: project.id }, { cursor: null, limit: 100 }),
 		listRoutingRules(db, userId)
 	]);
 	// The inline agent-routing rows: this project's own rules, or — when it

@@ -12,6 +12,7 @@ import { mintUsageScope, usageKeyMaterial } from '$lib/server/usage-scope';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { explainDispatch } from '$lib/server/supervisor/explain';
 import { getDb } from '$lib/server/db';
+import { sessionActor } from '$lib/server/api/core';
 import type { PageServerLoad } from './$types';
 
 /**
@@ -38,6 +39,7 @@ export const load: PageServerLoad = async ({
 }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
+	const actor = sessionActor(locals.user!);
 
 	// Mutations and the live poll refresh this page alone (see +page.svelte);
 	// invalidateAll() would also re-run the layout for no reason.
@@ -142,7 +144,7 @@ export const load: PageServerLoad = async ({
 			// Artifacts have their own panel; the context list shows the rest.
 			contextItems: listContextItems(
 				db,
-				userId,
+				actor,
 				{ issue: issue.id },
 				{ cursor: null, limit: 100 }
 			).then((page) => page.items.filter((i) => i.kind !== 'artifact')),

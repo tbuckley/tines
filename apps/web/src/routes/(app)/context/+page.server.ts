@@ -4,12 +4,14 @@ import { listLabels } from '$lib/server/api/labels';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
 import { resolvePageFocus } from '$lib/server/page-focus';
+import { sessionActor } from '$lib/server/api/core';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, platform, url, depends }) => {
 	depends('app:preferences');
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
+	const actor = sessionActor(locals.user!);
 	const { focusId, notice } = await resolvePageFocus(db, platform!.env, userId, url);
 
 	// An unrecognized kind (typo, stale link) would throw a 422 out of
@@ -24,14 +26,14 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 	const [{ items }, workflows, labels, guidelines, sharedItemCount] = await Promise.all([
 		listContextItems(
 			db,
-			userId,
+			actor,
 			{ ...filters, touchesProjectId: focusId ?? undefined },
 			{ cursor: null, limit: 100 }
 		),
 		loadWorkflows(db, userId),
 		listLabels(db, userId),
 		// Offer the starter guidance until a global item by that name exists.
-		listContextItems(db, userId, { kind: 'prompt', exact: true }, { cursor: null, limit: 100 }),
+		listContextItems(db, actor, { kind: 'prompt', exact: true }, { cursor: null, limit: 100 }),
 		focusId ? countSharedContextItems(db, userId) : Promise.resolve(null)
 	]);
 	// The project halves come from the app layout; the page derives the archived

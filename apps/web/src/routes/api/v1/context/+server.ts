@@ -17,7 +17,7 @@ export const GET: RequestHandler = api(async (event) => {
 	const params = event.url.searchParams;
 	const { items, hasMore } = await listContextItems(
 		db,
-		actor.userId,
+		actor,
 		{
 			kind: params.get('kind') ?? undefined,
 			project: params.get('project') ?? undefined,

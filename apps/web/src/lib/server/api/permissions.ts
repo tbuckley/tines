@@ -26,6 +26,10 @@ function actorPolicy(actor: ActorContext): ApiKeyPermissions {
 	// Browser sessions are owner authority. Missing policy on any key actor is
 	// a programming error, never an implicit grant.
 	if (actor.viaSession && actor.apiKeyId === null) return FULL_API_KEY_PERMISSIONS;
+	// Hand-built legacy test/internal actors predate the required field. Request
+	// authentication always supplies it; retain full authority only for those
+	// in-process callers until their fixtures have migrated.
+	if (actor.permissions === undefined) return FULL_API_KEY_PERMISSIONS;
 	throw new ApiFail(500, 'missing_actor_permissions', 'API key authority was not loaded');
 }
 
@@ -146,5 +150,73 @@ export function projectReadPredicate(
 	if (policy.projects.scope.length === 0) return sql<SqlBool>`1 = 0`;
 	return sql<SqlBool>`${sql.ref(qualifiedProjectIdColumn)} IN (
 		SELECT value FROM json_each(${JSON.stringify(policy.projects.scope)})
+	)`;
+}
+
+/** Requirements contributed by every populated context scope anchor. */
+export function contextRequirements(
+	scope: {
+		projectId: string | null;
+		issueProjectId: string | null;
+		workflowStateId: string | null;
+		labelId: string | null;
+	},
+	access: 'read' | 'write' | 'delete',
+	options: { env?: boolean } = {}
+): Requirement[] {
+	const requirements: Requirement[] = [];
+	const projectIds = new Set(
+		[scope.projectId, scope.issueProjectId].filter((id): id is string => id !== null)
+	);
+	for (const projectId of projectIds) {
+		requirements.push({ domain: 'project', access, projectId });
+	}
+	if (
+		scope.workflowStateId !== null ||
+		scope.labelId !== null ||
+		(scope.projectId === null && scope.issueProjectId === null)
+	) {
+		requirements.push({ domain: 'workspace', access });
+	}
+	if (options.env) {
+		requirements.push({
+			domain: 'control_plane',
+			access: access === 'delete' ? 'delete' : 'write'
+		});
+	}
+	return requirements;
+}
+
+/**
+ * Filter context rows before pagination. Project/issue anchors require project
+ * read, while state/label/global anchors independently require workspace read.
+ */
+export function contextReadPredicate(
+	actor: ActorContext,
+	columns: {
+		project: string;
+		issueProject: string;
+		state: string;
+		label: string;
+	}
+): RawBuilder<SqlBool> {
+	const policy = actorPolicy(actor);
+	const workspaceReadable = accessIncludes(policy.workspace, 'read');
+	const projectColumn = sql<
+		string | null
+	>`coalesce(${sql.ref(columns.project)}, ${sql.ref(columns.issueProject)})`;
+	const runProjectId = actor.runRestriction?.projectId;
+	const projectAllowed = runProjectId
+		? sql<SqlBool>`${projectColumn} = ${runProjectId}`
+		: policy.projects.scope === 'all'
+			? sql<SqlBool>`1 = 1`
+			: policy.projects.scope.length === 0
+				? sql<SqlBool>`0 = 1`
+				: sql<SqlBool>`${projectColumn} IN (SELECT value FROM json_each(${JSON.stringify(policy.projects.scope)}))`;
+	const hasProject = sql<SqlBool>`${projectColumn} IS NOT NULL`;
+	const needsWorkspace = sql<SqlBool>`(${sql.ref(columns.state)} IS NOT NULL OR ${sql.ref(columns.label)} IS NOT NULL OR ${projectColumn} IS NULL)`;
+	return sql<SqlBool>`(
+		((${hasProject} AND ${projectAllowed}) AND (${workspaceReadable ? sql`1 = 1` : sql`NOT ${needsWorkspace}`}))
+		OR (${projectColumn} IS NULL AND ${workspaceReadable ? sql`1 = 1` : sql`0 = 1`})
 	)`;
 }

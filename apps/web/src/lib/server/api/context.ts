@@ -56,6 +56,7 @@ import {
 	optionalString,
 	requireString,
 	runAtomic,
+	sessionActor,
 	type ActorContext,
 	runKeyForbidden,
 	type Page
@@ -72,6 +73,7 @@ import {
 	type ResolvedScope,
 	type ScopeIds
 } from './scope';
+import { contextReadPredicate, contextRequirements, requireAccess } from './permissions';
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -478,11 +480,20 @@ export async function loadFiles(
 
 export async function getContextItem(
 	db: Kysely<Database>,
-	userId: string,
+	actorInput: ActorContext | string,
 	id: string
 ): Promise<ContextItem> {
-	const row = await contextItemQuery(db, userId)
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	const row = await contextItemQuery(db, actor.userId)
 		.where('context_item.id', '=', id)
+		.where(
+			contextReadPredicate(actor, {
+				project: 'context_item.project_id',
+				issueProject: 'scope_issue.project_id',
+				state: 'context_item.workflow_state_id',
+				label: 'context_item.label_id'
+			})
+		)
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	const files =
@@ -527,11 +538,20 @@ export interface ContextItemFilters {
  */
 export async function listContextItems(
 	db: Kysely<Database>,
-	userId: string,
+	actorInput: ActorContext | string,
 	filters: ContextItemFilters,
 	page: Page
 ): Promise<{ items: ContextItem[]; hasMore: boolean }> {
-	let q = contextItemQuery(db, userId);
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	const userId = actor.userId;
+	let q = contextItemQuery(db, userId).where(
+		contextReadPredicate(actor, {
+			project: 'context_item.project_id',
+			issueProject: 'scope_issue.project_id',
+			state: 'context_item.workflow_state_id',
+			label: 'context_item.label_id'
+		})
+	);
 	if (filters.kind) {
 		q = q.where('context_item.kind', '=', requireKind(filters.kind));
 	}
@@ -977,6 +997,19 @@ export async function createContextItem(
 		labelId: body.label_id ?? null,
 		issueId: body.issue_id ?? null
 	});
+	const boundJournal = await isBoundRunJournal(db, actor, {
+		kind,
+		name,
+		project_id: scope.projectId,
+		workflow_state_id: scope.workflowStateId,
+		issue_id: scope.issueId
+	});
+	requireAccess(
+		actor,
+		contextRequirements(scope, 'write', { env: kind === 'env' }),
+		boundJournal ? 'journal.create' : 'context.create',
+		{ projectId: scope.issueProjectId ?? scope.projectId ?? undefined, boundJournal }
+	);
 	await assertScopeWritable(db, actor, scope);
 	await assertNameAvailable(db, actor.userId, kind, name, scope);
 
@@ -991,7 +1024,7 @@ export async function createContextItem(
 		now
 	});
 	await runContextWrite(env, queries);
-	return getContextItem(db, actor.userId, id);
+	return getContextItem(db, actor, id);
 }
 
 /**
@@ -1106,6 +1139,26 @@ export async function updateContextItem(
 	}
 	const scope =
 		scopeTouched || scopeChanged ? await resolveScope(db, actor.userId, targetIds) : currentScope;
+	const oldBoundJournal = await isBoundRunJournal(db, actor, row);
+	const newBoundJournal = await isBoundRunJournal(db, actor, {
+		kind,
+		name,
+		project_id: scope.projectId,
+		workflow_state_id: scope.workflowStateId,
+		issue_id: scope.issueId
+	});
+	requireAccess(
+		actor,
+		[
+			...contextRequirements(currentScope, 'write', { env: kind === 'env' }),
+			...(scopeChanged ? contextRequirements(scope, 'write', { env: kind === 'env' }) : [])
+		],
+		oldBoundJournal && newBoundJournal ? 'journal.rewrite' : 'context.update',
+		{
+			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
+			boundJournal: oldBoundJournal && newBoundJournal
+		}
+	);
 	// Moving an item *into* an archived project is a write on that project too.
 	if (scopeChanged) await assertScopeWritable(db, actor, scope);
 
@@ -1296,7 +1349,7 @@ export async function updateContextItem(
 		if (body.expected_version !== undefined || attempt >= 3) throw versionConflict(fresh);
 		return updateContextItem(db, env, actor, id, body, attempt + 1);
 	}
-	return getContextItem(db, actor.userId, id);
+	return getContextItem(db, actor, id);
 }
 
 export async function deleteContextItem(
@@ -1311,6 +1364,13 @@ export async function deleteContextItem(
 	if (!row) throw notFound();
 	fenceRunKeyEnvWrite(actor, row.kind);
 	const scope = rowScope(row);
+	const boundJournal = await isBoundRunJournal(db, actor, row);
+	requireAccess(
+		actor,
+		contextRequirements(scope, 'delete', { env: row.kind === 'env' }),
+		'context.delete',
+		{ projectId: scope.issueProjectId ?? scope.projectId ?? undefined, boundJournal }
+	);
 	await assertScopeWritable(db, actor, scope);
 	await runAtomic(env, [
 		db.deleteFrom('context_item_file').where('context_item_id', '=', id).compile(),
@@ -1377,6 +1437,13 @@ export async function appendContextItem(
 		validatePromptBody(nextBody);
 
 		const scope = rowScope(row);
+		const boundJournal = await isBoundRunJournal(db, actor, row);
+		requireAccess(
+			actor,
+			contextRequirements(scope, 'write'),
+			boundJournal ? 'journal.append' : 'context.append',
+			{ projectId: scope.issueProjectId ?? scope.projectId ?? undefined, boundJournal }
+		);
 		const newVersion = row.version + 1;
 		const now = Date.now();
 		const results = await runAtomic(env, [
@@ -1406,7 +1473,7 @@ export async function appendContextItem(
 				newVersion
 			)
 		]);
-		if ((results[0]?.meta.changes ?? 0) > 0) return getContextItem(db, actor.userId, id);
+		if ((results[0]?.meta.changes ?? 0) > 0) return getContextItem(db, actor, id);
 		// Lost the race: with an explicit expectation that's a conflict;
 		// otherwise re-read and re-append onto the fresh body.
 		if (body.expected_version !== undefined || attempt >= 4) {
@@ -1441,6 +1508,24 @@ export function isJournal(row: {
 		row.workflow_state_id !== null &&
 		row.issue_id === null
 	);
+}
+
+/** True only for the journal exception bound to this run's launch-state root. */
+async function isBoundRunJournal(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	row: {
+		kind: string;
+		name: string;
+		project_id: string | null;
+		workflow_state_id: string | null;
+		issue_id: string | null;
+	}
+): Promise<boolean> {
+	const run = actor.runRestriction;
+	if (!run || !isJournal(row) || row.project_id !== run.projectId) return false;
+	const chain = await resolveStateChain(db, run.launchStateId);
+	return chain.length > 0 && row.workflow_state_id === chain[0];
 }
 
 /**
