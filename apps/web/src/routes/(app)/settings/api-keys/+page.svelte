@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ApiKey, ApiKeyCreated } from '@tines/shared';
-	import { ApiError, runRefLabel } from '@tines/shared';
+	import { ApiError, FULL_API_KEY_PERMISSIONS, runRefLabel } from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconKey from '@tabler/icons-svelte/icons/key';
@@ -53,7 +53,7 @@
 		creating = true;
 		errorMessage = null;
 		try {
-			created = await api.createApiKey({ name });
+			created = await api.createApiKey({ name, permissions: FULL_API_KEY_PERMISSIONS });
 			name = '';
 			await invalidateAll();
 		} catch (err) {

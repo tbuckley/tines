@@ -3064,6 +3064,7 @@ export const EVENT_TYPES = [
 	'workflow.updated',
 	'workflow.deleted',
 	'api_key.created',
+	'api_key.permissions_updated',
 	'api_key.revoked',
 	'scheduled_task.created',
 	'scheduled_task.updated',
@@ -3136,6 +3137,8 @@ export interface ApiKey {
 	revoked_at: number | null;
 	/** Stored authority. Run keys are additionally constrained by run_restrictions. */
 	permissions: ApiKeyPermissions;
+	/** Stored policy intersected with the run ceiling; equal to permissions for named keys. */
+	effective_permissions: ApiKeyPermissions;
 	/**
 	 * Set on *run keys*: the agent run this key was minted for, resolved to the
 	 * runner and the run's issue. Absent on user-created keys.

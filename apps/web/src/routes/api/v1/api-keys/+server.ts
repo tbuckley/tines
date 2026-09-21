@@ -5,11 +5,11 @@ import { createApiKey, listApiKeys } from '$lib/server/api/apikeys';
 import { api, ApiFail, apiContext, readJson } from '$lib/server/api/core';
 import type { RequestHandler } from './$types';
 
-// Keys are managed from a browser session only — a key cannot mint or list
-// keys (sessionOnly enforces that).
+// Key-authenticated managers are limited by control-plane authority and the
+// delegation-subset checks in the service; browser sessions retain owner authority.
 
 export const GET: RequestHandler = api(async (event) => {
-	const { db, actor } = await apiContext(event, { sessionOnly: true });
+	const { db, actor } = await apiContext(event);
 	// Run keys are one per agent run and never deleted, so the default view
 	// carries only the ones that can still act; ?run_keys= widens or drops it.
 	const raw = event.url.searchParams.get('run_keys');
@@ -22,14 +22,14 @@ export const GET: RequestHandler = api(async (event) => {
 		);
 	}
 	const body: ListResponse<ApiKey> = {
-		items: await listApiKeys(db, actor.userId, { runKeys: (raw as RunKeyFilter) ?? undefined }),
+		items: await listApiKeys(db, actor, { runKeys: (raw as RunKeyFilter) ?? undefined }),
 		next_cursor: null
 	};
 	return json(body);
 });
 
 export const POST: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event, { sessionOnly: true });
+	const { db, env, actor } = await apiContext(event);
 	const body = await readJson<CreateApiKeyRequest>(event);
 	const key = await createApiKey(db, env, actor, body.name, body.permissions);
 	return json(key, { status: 201 });

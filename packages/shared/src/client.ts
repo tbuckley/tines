@@ -18,6 +18,7 @@ import type {
 	RunnerPollResponse,
 	RunnerTokenResponse,
 	ApiKey,
+	ApiKeyAuthority,
 	RunKeyFilter,
 	ApiKeyCreated,
 	AppendContextRequest,
@@ -29,6 +30,7 @@ import type {
 	ContextItem,
 	ContextListFilters,
 	CreateApiKeyRequest,
+	UpdateApiKeyRequest,
 	CreateCommentRequest,
 	CreateContextItemRequest,
 	CreateIssueRequest,
@@ -629,11 +631,18 @@ export function createApiClient(options: ApiClientOptions) {
 		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>
 			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),
 
-		// API keys (create/revoke require a browser session, not a key)
+		// API keys
 		listApiKeys: (filters: { run_keys?: RunKeyFilter } = {}) =>
 			get<ListResponse<ApiKey>>(`/api/v1/api-keys${query(filters)}`),
+		getApiKey: (id: string) => get<ApiKey>(`/api/v1/api-keys/${id}`),
+		getCurrentApiKeyAuthority: () =>
+			get<{ key: { id: string; name: string } | null; authority: ApiKeyAuthority }>(
+				'/api/v1/api-keys/current'
+			),
 		createApiKey: (body: CreateApiKeyRequest) =>
 			request<ApiKeyCreated>('POST', '/api/v1/api-keys', body),
+		updateApiKey: (id: string, body: UpdateApiKeyRequest) =>
+			request<ApiKey>('PATCH', `/api/v1/api-keys/${id}`, body),
 		revokeApiKey: (id: string) => request<void>('DELETE', `/api/v1/api-keys/${id}`),
 
 		exportWorkflowPackage: (

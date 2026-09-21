@@ -223,9 +223,6 @@ describe('isControlPlanePath', () => {
 		['/api/v1/routing-rules/rul_1', 'PATCH'],
 		['/api/v1/supervisor/settings', 'PUT'],
 		['/api/v1/issues/iss_1/resume', 'POST'],
-		// Key metadata stays fenced even to a read.
-		['/api/v1/api-keys', 'GET'],
-		['/api/v1/api-keys/key_1', 'DELETE'],
 		['/api/v1/host/workflow-moderation/cases', 'GET'],
 		['/api/v1/host/workflow-moderation/decisions', 'POST'],
 		// Minting, renaming, and deleting terms is taxonomy, not classification.
@@ -327,7 +324,6 @@ describe('assertRunKeyAllowed', () => {
 			['/api/v1/routing-rules/rul_1', 'PATCH'],
 			['/api/v1/supervisor/settings', 'PUT'],
 			['/api/v1/issues/iss_1/resume', 'POST'],
-			['/api/v1/api-keys', 'GET'],
 			['/api/v1/labels', 'POST'],
 			['/api/v1/library/install', 'POST']
 		]) {

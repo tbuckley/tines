@@ -1,6 +1,21 @@
+import { FULL_API_KEY_PERMISSIONS, parseApiKeyPermissions } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
-import { addIssue, addRun, addRunner, NOW, seedBase, USER } from '../supervisor/test-fixtures';
-import { countRunKeys, listApiKeys, revokeApiKey } from './apikeys';
+import {
+	addIssue,
+	addRun,
+	addRunner,
+	NOW,
+	PROJECT,
+	seedBase,
+	USER
+} from '../supervisor/test-fixtures';
+import {
+	countRunKeys,
+	createApiKey,
+	listApiKeys,
+	revokeApiKey,
+	updateApiKeyPermissions
+} from './apikeys';
 import type { ActorContext } from './core';
 import { actorRunOf } from './events';
 import { createTestDb, type TestDb } from './test-db';
@@ -42,8 +57,43 @@ const actor: ActorContext = {
 	userName: 'alice',
 	apiKeyId: null,
 	apiKeyName: null,
-	viaSession: true
+	viaSession: true,
+	permissions: FULL_API_KEY_PERMISSIONS,
+	runRestriction: null
 };
+
+describe('API key permission lifecycle', () => {
+	it('stores an explicit scoped policy and audits a CAS update atomically', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const initial = parseApiKeyPermissions({
+			projects: { access: 'read', scope: [PROJECT] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+		const created = await createApiKey(t.db, t.env, actor, 'scoped', initial);
+		expect(created.permissions).toEqual(initial);
+		expect(created.effective_permissions).toEqual(initial);
+
+		const next = parseApiKeyPermissions({
+			projects: { access: 'write', scope: [PROJECT] },
+			workspace: 'read',
+			control_plane: 'none'
+		});
+		const updated = await updateApiKeyPermissions(t.db, t.env, actor, created.id, next, initial);
+		expect(updated.permissions).toEqual(next);
+		const events = t.all("SELECT payload FROM event WHERE type = 'api_key.permissions_updated'");
+		expect(events).toHaveLength(1);
+		expect(JSON.parse(events[0].payload as string)).toMatchObject({ before: initial, after: next });
+
+		await expect(
+			updateApiKeyPermissions(t.db, t.env, actor, created.id, initial, initial)
+		).rejects.toMatchObject({ code: 'permissions_conflict' });
+		expect(t.all("SELECT id FROM event WHERE type = 'api_key.permissions_updated'")).toHaveLength(
+			1
+		);
+	});
+});
 
 describe('listApiKeys', () => {
 	it('returns a user with no runs their own keys, newest first, with no run provenance', async () => {
@@ -52,7 +102,7 @@ describe('listApiKeys', () => {
 		addKey(t, { id: 'key_old', name: 'laptop', createdAt: NOW - 1000 });
 		addKey(t, { id: 'key_new', name: 'ci', createdAt: NOW });
 
-		const keys = await listApiKeys(t.db, USER);
+		const keys = await listApiKeys(t.db, actor);
 		expect(keys.map((k) => k.name)).toEqual(['ci', 'laptop']);
 		expect(keys.every((k) => k.run === undefined)).toBe(true);
 		expect(await countRunKeys(t.db, USER)).toEqual({ active: 0, revoked: 0 });
@@ -83,7 +133,7 @@ describe('listApiKeys', () => {
 			createdAt: NOW - 1000
 		});
 
-		const keys = await listApiKeys(t.db, USER);
+		const keys = await listApiKeys(t.db, actor);
 		expect(keys.map((k) => k.id)).toEqual(['key_live', 'key_user']);
 
 		const runKey = keys.find((k) => k.id === 'key_live');
@@ -116,14 +166,14 @@ describe('listApiKeys', () => {
 			});
 		}
 
-		const capped = await listApiKeys(t.db, USER, { runKeys: 'all', revokedRunKeyLimit: 2 });
+		const capped = await listApiKeys(t.db, actor, { runKeys: 'all', revokedRunKeyLimit: 2 });
 		// Newest revoked first, and only as many as the cap allows.
 		expect(capped.map((k) => k.id)).toEqual(['key_user', 'key_arun_c', 'key_arun_b']);
 
-		const all = await listApiKeys(t.db, USER, { runKeys: 'all' });
+		const all = await listApiKeys(t.db, actor, { runKeys: 'all' });
 		expect(all).toHaveLength(4);
 
-		const none = await listApiKeys(t.db, USER, { runKeys: 'none' });
+		const none = await listApiKeys(t.db, actor, { runKeys: 'none' });
 		expect(none.map((k) => k.id)).toEqual(['key_user']);
 	});
 
@@ -141,8 +191,8 @@ describe('listApiKeys', () => {
 			null
 		);
 		// Gone from the default listing, still reachable behind the toggle.
-		expect(await listApiKeys(t.db, USER)).toHaveLength(0);
-		expect((await listApiKeys(t.db, USER, { runKeys: 'all' })).map((k) => k.id)).toEqual([
+		expect(await listApiKeys(t.db, actor)).toHaveLength(0);
+		expect((await listApiKeys(t.db, actor, { runKeys: 'all' })).map((k) => k.id)).toEqual([
 			'key_live'
 		]);
 		expect(await countRunKeys(t.db, USER)).toEqual({ active: 0, revoked: 1 });
