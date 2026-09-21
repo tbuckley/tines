@@ -214,11 +214,15 @@ test.describe('project page layout', () => {
 		await page.context().close();
 	});
 
-	test('offers the Context tab as the escape hatch', async ({ browser, world }) => {
+	test('offers the complete Context and Activity pages', async ({ browser, world }) => {
 		const page = await open(browser, world, { width: 1440, height: 900 });
-		await expect(page.getByRole('link', { name: 'View all in Context' })).toHaveAttribute(
+		await expect(page.getByRole('link', { name: 'View all context' })).toHaveAttribute(
 			'href',
 			'/context'
+		);
+		await expect(page.getByRole('link', { name: 'View all activity' })).toHaveAttribute(
+			'href',
+			'/activity'
 		);
 		await page.context().close();
 	});

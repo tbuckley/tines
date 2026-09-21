@@ -237,6 +237,11 @@ SvelteKit + shadcn-svelte, behind sign-in.
 
 ### Structure
 
+> Superseded by Tines/644: the persistent primary navigation is Issues,
+> Workflows, and Agents. Projects is managed from the header project control;
+> Context and Activity remain complete pages reached from relevant detail
+> surfaces. Existing routes remain valid.
+
 A persistent top nav with four tabs — **Issues, Workflows, Projects, Activity** — each a list view with a corresponding detail page. Settings (API keys, account) live under the avatar menu, not in the tabs.
 
 - **Issues** (`/issues`): the default landing tab — a global list across all projects, hiding `done` issues by default. Filter by project focus, workflow, optional state within that workflow, and category; rows show number, title, project, state (color-coded by category), and last activity. Workflow/state selections use stable IDs, while old name-based URLs remain valid. → detail at `/issues/:project/:number`.

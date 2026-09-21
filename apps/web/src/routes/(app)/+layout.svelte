@@ -1,8 +1,5 @@
 <script lang="ts">
-	import IconActivity from '@tabler/icons-svelte/icons/activity';
 	import IconArrowsSplit2 from '@tabler/icons-svelte/icons/arrows-split-2';
-	import IconBooks from '@tabler/icons-svelte/icons/books';
-	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconListDetails from '@tabler/icons-svelte/icons/list-details';
 	import IconLogout from '@tabler/icons-svelte/icons/logout';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
@@ -30,20 +27,8 @@
 	const tabs = $derived([
 		{ path: '/issues', href: navMemory.issuesHref, label: 'Issues', icon: IconListDetails },
 		{ path: '/workflows', href: '/workflows', label: 'Workflows', icon: IconSitemap },
-		{
-			path: '/projects',
-			href: focus ? `/projects/${focus.id}` : navMemory.projectsHref,
-			label: 'Projects',
-			icon: IconFolder
-		},
-		{ path: '/context', href: '/context', label: 'Context', icon: IconBooks },
-		{ path: '/agents', href: '/agents', label: 'Agents', icon: IconRobot },
-		{ path: '/activity', href: '/activity', label: 'Activity', icon: IconActivity }
+		{ path: '/agents', href: '/agents', label: 'Agents', icon: IconRobot }
 	]);
-
-	// The project focus is chrome, not a page filter: it only makes sense once
-	// there are two projects to move between (Tines/259).
-	const showSwitcher = $derived(data.projects.length >= 2);
 
 	// The chrome's answer to "what am I looking at": the layout's own data,
 	// unless the client has set the focus since (opening a project page does),
@@ -145,15 +130,14 @@
 				</span>
 				Tines
 			</a>
-			{#if showSwitcher}
-				<ProjectSwitcher projects={data.projects} {focus} onchoose={chooseFocus} />
-			{/if}
+			<ProjectSwitcher projects={data.projects} {focus} onchoose={chooseFocus} />
 			<!-- Below md the tabs live in the bottom bar instead. -->
 			<nav class="hidden h-full items-center gap-1 md:flex">
 				{#each tabs as tab (tab.path)}
 					{@const active = page.url.pathname.startsWith(tab.path)}
 					<a
 						href={tab.href}
+						aria-current={active ? 'page' : undefined}
 						class="relative flex h-full items-center px-3 text-sm font-medium transition-colors {active
 							? 'text-foreground'
 							: 'text-muted-foreground hover:text-foreground'}"
@@ -245,7 +229,7 @@
 		style="padding-bottom: env(safe-area-inset-bottom)"
 		aria-label="Primary"
 	>
-		<div class="grid h-16 grid-cols-6">
+		<div class="grid h-16 grid-cols-3">
 			{#each tabs as tab (tab.path)}
 				{@const active = mobileTabPath.startsWith(tab.path)}
 				{@const pending = active && !page.url.pathname.startsWith(tab.path)}

@@ -1221,7 +1221,13 @@
 							<span class="text-muted-foreground font-normal">({contextSummaryLabel})</span>
 						{/if}
 					</h2>
-					<div class="flex gap-2">
+					<div class="flex flex-wrap items-center gap-2">
+						<a
+							href="/context"
+							class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 rounded-sm text-xs outline-none focus-visible:ring-[3px]"
+						>
+							View all context
+						</a>
 						<Button size="sm" variant="outline" onclick={() => (promptDialogOpen = true)}>
 							<IconRocket size={14} /> View launch prompt
 						</Button>
@@ -1334,7 +1340,15 @@
 		<!-- this issue's slice of the activity log -->
 		<PhoneFold title="Activity" summary={countLabel(data.events.length)}>
 			<section>
-				<h2 class="mb-3 text-sm font-semibold">Activity</h2>
+				<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+					<h2 class="text-sm font-semibold">Activity</h2>
+					<a
+						href="/activity"
+						class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 rounded-sm text-xs outline-none focus-visible:ring-[3px]"
+					>
+						View all activity
+					</a>
+				</div>
 				<EventList events={data.events} showIssueLinks={false} emptyMessage="No activity yet." />
 			</section>
 		</PhoneFold>

@@ -3,13 +3,14 @@
  * app chrome and read by the issues list and New issue.
  */
 import type { Project, UserPreferences } from '@tines/shared';
-import type { Browser, Page } from '@playwright/test';
+import type { Browser, Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE, CAROL, RUNROW } from './constants.mjs';
 import {
 	apiClient,
 	body,
 	clickToOpen,
+	clickUntil,
 	DESKTOP,
 	gotoHydrated,
 	PHONE,
@@ -18,7 +19,13 @@ import {
 	signIn
 } from './helpers';
 
-type FocusWorld = { aName: string; bName: string; aId: string; bId: string };
+type FocusWorld = {
+	aName: string;
+	bName: string;
+	aId: string;
+	bId: string;
+	workflowId: string;
+};
 
 const focusTest = test.extend<{}, { world: FocusWorld }>({
 	world: [
@@ -76,7 +83,7 @@ const focusTest = test.extend<{}, { world: FocusWorld }>({
 						).id
 					);
 				}
-				await use({ aName, bName, aId, bId });
+				await use({ aName, bName, aId, bId, workflowId });
 			} finally {
 				await runCleanupSteps([
 					{ name: 'reset Alice focus', run: () => resetFocus(workerRequest) },
@@ -119,6 +126,25 @@ const focusTest = test.extend<{}, { world: FocusWorld }>({
 
 /** The header control, which doubles as the assertion for the current focus. */
 const switcher = (page: Page) => page.getByRole('button', { name: /^Project focus:/ });
+
+async function pressProjectMenuKey(
+	page: Page,
+	key: 'ArrowDown' | 'ArrowUp' | 'Home' | 'End',
+	from: Locator,
+	to: Locator
+): Promise<void> {
+	await expect(from).toBeFocused();
+	await page.keyboard.press(key);
+	await expect(to).toBeFocused();
+	// Bits UI may remount a floating focus scope on the next layout frame. The
+	// destination must remain the real active element after that lifecycle work,
+	// not merely receive focus for one transient assertion.
+	await page.evaluate(
+		() =>
+			new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+	);
+	await expect(to).toBeFocused();
+}
 
 /**
  * Opens the switcher and picks an entry, retrying the whole gesture until the
@@ -243,28 +269,151 @@ focusTest.describe.serial('project focus', () => {
 	);
 
 	focusTest(
-		'the phone header carries the switcher, not the bottom bar',
+		'a failed focus choice reopens the menu and can be retried',
 		async ({ browser, world }) => {
-			// Human review, round 2: the switcher is in the header at every width —
-			// the phone header has the room, the bottom bar's sixth of a screen did
-			// not, and the Projects slot is a plain link to the grid again.
+			const page = await open(browser, DESKTOP);
+			await page.route('**/api/v1/preferences', async (route) => {
+				if (route.request().method() !== 'PATCH') return route.continue();
+				await route.fulfill({
+					status: 500,
+					contentType: 'application/json',
+					body: JSON.stringify({ error: { code: 'focus_failure', message: 'Focus choice failed' } })
+				});
+			});
+
+			await switcher(page).click();
+			await page.getByRole('menuitemradio', { name: world.aName }).click();
+			await expect(page.getByRole('alert')).toHaveText('Focus choice failed');
+			await expect(switcher(page)).toHaveAttribute('aria-expanded', 'true');
+			await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
+			await expect(page.getByRole('menuitemradio', { name: 'All projects' })).toBeFocused();
+
+			await page.unroute('**/api/v1/preferences');
+			await page.getByRole('menuitemradio', { name: world.aName }).click();
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${world.aName}`);
+			await page.close();
+		}
+	);
+
+	for (const [label, viewport] of [
+		['desktop', DESKTOP],
+		['phone', PHONE]
+	] as const) {
+		focusTest(
+			`pointer and keyboard opening focus the checked choice on ${label}`,
+			async ({ browser }) => {
+				const page = await open(browser, viewport);
+				const checked = page.getByRole('menuitemradio', { name: 'All projects' });
+
+				await switcher(page).click();
+				await expect(checked).toBeFocused();
+				await page.keyboard.press('Escape');
+				await expect(switcher(page)).toBeFocused();
+
+				await page.keyboard.press('Enter');
+				await expect(checked).toBeFocused();
+				await page.keyboard.press('Escape');
+				await expect(switcher(page)).toBeFocused();
+				await page.close();
+			}
+		);
+	}
+
+	focusTest(
+		'the phone header carries project controls outside the primary navigation',
+		async ({ browser, world }) => {
 			const page = await open(browser, PHONE);
 			await expect(switcher(page)).toBeVisible();
 			await expect(switcher(page)).toContainText('All projects');
 
 			await chooseFocus(page, world.aName);
 			await expect(switcher(page)).toContainText(world.aName);
-			// One control, not two: the bottom bar navigates and says nothing about
-			// the focus.
 			const bottomBar = page.getByRole('navigation', { name: 'Primary' });
-			await expect(bottomBar.getByRole('link', { name: 'Projects' })).toHaveAttribute(
+			await expect(bottomBar.getByRole('link')).toHaveText(['Issues', 'Workflows', 'Agents']);
+			await expect(bottomBar.getByRole('button', { name: /^Project focus:/ })).toHaveCount(0);
+			await switcher(page).click();
+			await expect(page.getByRole('menuitem', { name: 'Open project' })).toHaveAttribute(
 				'href',
 				`/projects/${world.aId}`
 			);
-			await expect(bottomBar.getByRole('button', { name: /^Project focus:/ })).toHaveCount(0);
 			await page.close();
 		}
 	);
+
+	for (const [label, viewport] of [
+		['desktop', DESKTOP],
+		['phone', PHONE]
+	] as const) {
+		focusTest(
+			`all five contextual links navigate without changing project focus on ${label}`,
+			async ({ browser, world }) => {
+				const page = await open(browser, viewport);
+				await chooseFocus(page, world.bName);
+				const issuePath = `/issues/${encodeURIComponent(world.aName)}/1`;
+
+				await gotoHydrated(page, issuePath);
+				const contextFold = page.getByRole('button', { name: /^Context/ }).locator('xpath=..');
+				const issueContextLink =
+					label === 'phone'
+						? contextFold.getByRole('link', { name: 'View all context' })
+						: page.getByRole('link', { name: 'View all context' });
+				if (label === 'phone') {
+					await expect(issueContextLink).toBeHidden();
+					await contextFold.getByRole('button', { name: /^Context/ }).click();
+				}
+				await expect(issueContextLink).toBeVisible();
+				await issueContextLink.click();
+				await expect(page).toHaveURL('/context');
+				await expect(page.getByRole('heading', { name: 'Context', level: 1 })).toBeVisible();
+				await expect(page.getByText(`${world.bName}-context`, { exact: true })).toBeVisible();
+				await expect(page.getByText(`${world.aName}-context`, { exact: true })).toHaveCount(0);
+				await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${world.bName}`);
+
+				await gotoHydrated(page, issuePath);
+				const activityFold = page.getByRole('button', { name: /^Activity/ }).locator('xpath=..');
+				const issueActivityLink =
+					label === 'phone'
+						? activityFold.getByRole('link', { name: 'View all activity' })
+						: page.getByRole('link', { name: 'View all activity' });
+				if (label === 'phone') {
+					await expect(issueActivityLink).toBeHidden();
+					await activityFold.getByRole('button', { name: /^Activity/ }).click();
+				}
+				await expect(issueActivityLink).toBeVisible();
+				await issueActivityLink.click();
+				await expect(page).toHaveURL('/activity');
+				await expect(page.getByRole('heading', { name: 'Activity', level: 1 })).toBeVisible();
+				await expect(
+					page.locator(`a[href="/issues/${encodeURIComponent(world.bName)}/1"]`).first()
+				).toBeVisible();
+				await expect(
+					page.locator(`a[href="/issues/${encodeURIComponent(world.aName)}/1"]`)
+				).toHaveCount(0);
+
+				// This fixture has no state context: the link remains available on an empty surface.
+				await gotoHydrated(page, `/workflows/${world.workflowId}`);
+				await page.getByRole('link', { name: 'View all context' }).click();
+				await expect(page).toHaveURL('/context');
+				await expect(page.getByRole('heading', { name: 'Context', level: 1 })).toBeVisible();
+
+				// A project page establishes its own focus. Move back to B while staying on A,
+				// then prove both project links preserve B and its existing destination semantics.
+				await gotoHydrated(page, `/projects/${world.aId}`);
+				await chooseFocus(page, world.bName);
+				await page.getByRole('link', { name: 'View all activity' }).click();
+				await expect(page).toHaveURL('/activity');
+				await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${world.bName}`);
+
+				await gotoHydrated(page, `/projects/${world.aId}`);
+				await chooseFocus(page, world.bName);
+				await page.getByRole('link', { name: 'View all context' }).click();
+				await expect(page).toHaveURL('/context');
+				await expect(page.getByText(`${world.bName}-context`, { exact: true })).toBeVisible();
+				await expect(page.getByText(`${world.aName}-context`, { exact: true })).toHaveCount(0);
+				await page.close();
+			}
+		);
+	}
 
 	focusTest(
 		'the focused list drops the project prefix and matches the API counts',
@@ -400,7 +549,8 @@ focusTest.describe.serial('project focus', () => {
 					page.getByRole('link', { name: new RegExp(`${world.aName} issue`) })
 				).toHaveCount(0);
 
-				await expect(page.getByRole('link', { name: 'Projects' }).first()).toHaveAttribute(
+				await switcher(page).click();
+				await expect(page.getByRole('menuitem', { name: 'Open project' })).toHaveAttribute(
 					'href',
 					`/projects/${world.bId}`
 				);
@@ -962,9 +1112,9 @@ focusTest.describe.serial('project focus', () => {
 	);
 });
 
-test.describe.serial('the switcher below two projects', () => {
-	// Carol exists precisely for this: no projects of her own, and no other
-	// spec creates any for her.
+test.describe.serial('project controls at every project count', () => {
+	// Carol exists precisely for this: no live projects of her own, and no other
+	// spec creates any for her. This spec archives its fixtures after each run.
 	async function carol(browser: Browser): Promise<Page> {
 		const context = await browser.newContext({ viewport: DESKTOP });
 		await signIn(context, CAROL.sessionToken);
@@ -973,30 +1123,145 @@ test.describe.serial('the switcher below two projects', () => {
 		return page;
 	}
 
-	test('is hidden at zero and at one project, and appears at two', async ({
+	test('offers actions at zero and one project, then shows focus at two', async ({
 		browser,
 		request,
 		uniqueName
 	}) => {
+		test.setTimeout(60_000);
 		const api = apiClient(request, CAROL.apiKey);
 		const page = await carol(browser);
-		await expect(switcher(page)).toHaveCount(0);
+		const projectIds: string[] = [];
+		try {
+			const initialPreferences = await body<UserPreferences>(await api.get('/api/v1/preferences'));
+			expect(initialPreferences.focused_project_id).toBe(null);
+			expect(initialPreferences.last_project_id).toBe(null);
 
-		const first = await body<Project>(
-			await api.post('/api/v1/projects', { name: uniqueName('carol-1') })
-		);
-		await page.reload();
-		await expect(switcher(page)).toHaveCount(0);
-		// One project still behaves as the focus for New issue.
-		await clickToOpen(page.getByRole('button', { name: 'New issue' }), page.getByRole('dialog'));
-		await expect(page.getByRole('dialog').getByLabel('Project', { exact: true })).toHaveValue(
-			first.id
-		);
-		await page.keyboard.press('Escape');
+			await expect(switcher(page)).toContainText('Projects');
+			await switcher(page).click();
+			await expect(page.getByRole('menuitemradio')).toHaveCount(0);
+			const manage = page.getByRole('menuitem', { name: 'Manage projects' });
+			await expect(manage).toBeFocused();
+			await expect(manage).toHaveAttribute('href', '/projects');
+			await expect(page.getByRole('menuitem', { name: 'New project' })).toHaveAttribute(
+				'href',
+				'/projects?new=1'
+			);
+			await page.keyboard.press('Escape');
+			await expect(switcher(page)).toBeFocused();
 
-		await api.post('/api/v1/projects', { name: uniqueName('carol-2') });
-		await page.reload();
-		await expect(switcher(page)).toBeVisible();
-		await page.close();
+			// New project activates from another page and consumes the one-shot query.
+			await switcher(page).click();
+			const projectMenu = page.getByRole('menu', { name: 'Project focus' });
+			const newProject = page.getByRole('menuitem', { name: 'New project' });
+			await expect(newProject).toHaveAttribute('href', '/projects?new=1');
+			await newProject.click();
+			const newProjectDialog = page.getByRole('dialog', { name: 'New project' });
+			await expect(newProjectDialog).toBeVisible();
+			await expect(projectMenu).toBeHidden();
+			await expect(page).toHaveURL('/projects');
+			await newProjectDialog.getByRole('button', { name: 'Cancel' }).dispatchEvent('click');
+			// Hidden precedes the dialog focus scope's teardown. Wait for removal so
+			// its delayed close autofocus cannot interrupt the later menu-key journey.
+			await expect(newProjectDialog).toHaveCount(0);
+			await gotoHydrated(page, '/issues');
+
+			// An archived-only account still exposes project management and its
+			// archived inventory without adding a focus choice.
+			const archived = await body<Project>(
+				await api.post('/api/v1/projects', { name: uniqueName('carol-archived') })
+			);
+			projectIds.push(archived.id);
+			expect((await api.post(`/api/v1/projects/${archived.id}/archive`)).ok()).toBe(true);
+			await gotoHydrated(page, '/issues');
+			await switcher(page).click();
+			await page.getByRole('menuitem', { name: 'Manage projects' }).click();
+			await expect(page).toHaveURL('/projects');
+			await gotoHydrated(page, '/projects');
+			const showArchived = page.getByRole('checkbox', { name: /^Show archived \(\d+\)$/ });
+			await clickUntil(showArchived, async () => {
+				await expect(page).toHaveURL('/projects?archived=1');
+			});
+			await gotoHydrated(page, '/projects?archived=1');
+			await expect(page.getByRole('link', { name: archived.name })).toBeVisible();
+			await expect(newProjectDialog).toHaveCount(0);
+
+			const first = await body<Project>(
+				await api.post('/api/v1/projects', { name: uniqueName('carol-1') })
+			);
+			projectIds.push(first.id);
+			await gotoHydrated(page, '/issues');
+			await expect(switcher(page)).toContainText('Projects');
+			await switcher(page).click();
+			await expect(page.getByRole('menuitemradio')).toHaveText(['All projects', first.name]);
+			await expect(page.getByRole('menuitemradio', { name: 'All projects' })).toBeFocused();
+			await expect(page.getByRole('menuitem', { name: 'Open project' })).toHaveCount(0);
+			await page.getByRole('menuitemradio', { name: first.name }).click();
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${first.name}`);
+			await expect(switcher(page)).toContainText('Projects');
+			// The focus PATCH invalidates this layout. Wait for the closing portal to
+			// detach before reopening, otherwise its late focus cleanup can steal focus
+			// from the newly opened menu under a loaded CI worker.
+			await expect(projectMenu).toHaveCount(0);
+			const allProjects = page.getByRole('menuitemradio', { name: 'All projects' });
+			const firstProject = page.getByRole('menuitemradio', { name: first.name });
+			await clickToOpen(switcher(page), firstProject);
+			await expect(firstProject).toBeFocused();
+			const openProject = page.getByRole('menuitem', { name: 'Open project' });
+			const lastAction = page.getByRole('menuitem', { name: 'New project' });
+			await expect(openProject).toHaveAttribute('href', `/projects/${first.id}`);
+
+			// Every movement key crosses the radio/action boundary, including both wraps.
+			await pressProjectMenuKey(page, 'ArrowDown', firstProject, openProject);
+			await pressProjectMenuKey(page, 'ArrowUp', openProject, firstProject);
+			await pressProjectMenuKey(page, 'Home', firstProject, allProjects);
+			await pressProjectMenuKey(page, 'ArrowUp', allProjects, lastAction);
+			await pressProjectMenuKey(page, 'ArrowDown', lastAction, allProjects);
+			await pressProjectMenuKey(page, 'End', allProjects, lastAction);
+			await page.keyboard.press('Escape');
+
+			// One project still behaves as the focus for New issue.
+			await gotoHydrated(page, '/issues');
+			await clickToOpen(page.getByRole('button', { name: 'New issue' }), page.getByRole('dialog'));
+			await expect(page.getByRole('dialog').getByLabel('Project', { exact: true })).toHaveValue(
+				first.id
+			);
+			await page.keyboard.press('Escape');
+
+			await switcher(page).click();
+			await openProject.click();
+			await expect(page).toHaveURL(`/projects/${first.id}`);
+			await expect(page.getByRole('heading', { name: first.name, level: 1 })).toBeVisible();
+
+			const second = await body<Project>(
+				await api.post('/api/v1/projects', { name: uniqueName('carol-2') })
+			);
+			projectIds.push(second.id);
+			await gotoHydrated(page, '/issues');
+			await expect(switcher(page)).toContainText(first.name);
+		} finally {
+			await runCleanupSteps([
+				{
+					name: 'reset Carol focus',
+					run: async () => {
+						const res = await api.patch('/api/v1/preferences', {
+							focused_project_id: null,
+							last_project_id: null
+						});
+						expect(res.ok()).toBe(true);
+					}
+				},
+				{
+					name: 'close Carol browser context',
+					run: () => page.context().close()
+				},
+				...projectIds.map((id) => ({
+					name: `archive Carol project ${id}`,
+					run: async () => {
+						expect((await api.post(`/api/v1/projects/${id}/archive`)).ok()).toBe(true);
+					}
+				}))
+			]);
+		}
 	});
 });
