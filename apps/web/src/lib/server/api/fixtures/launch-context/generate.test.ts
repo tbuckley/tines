@@ -165,10 +165,7 @@ function legacyPresentation(
 ): string {
 	let result = changes.comments ? text.replace(/, ID: cmt_[^)]+(?=\):)/g, '') : text;
 	if (changes.skill) {
-		result = result.replace(
-			/\n\n### Skills\n\n[\s\S]*$/,
-			`\n\nAttached to this issue: skill "fixture-skill" (2 files). Fetch them: \`tines issues context ${issue.project_name}/${issue.number} --out <dir>\``
-		);
+		result += `\n\nAttached to this issue: skill "fixture-skill" (2 files). Fetch them: \`tines issues context ${issue.project_name}/${issue.number} --out <dir>\``;
 	}
 	return result;
 }
@@ -213,7 +210,9 @@ const measured = () => ({
 describe('launch-context comparison fixtures', () => {
 	it('match the real candidate builders and expected selection', () => {
 		if (process.env.UPDATE_LAUNCH_CONTEXT_FIXTURES === '1') {
-			for (const [name, text] of Object.entries(outputs)) writeFileSync(join(dir, name), text);
+			for (const [name, text] of Object.entries(outputs)) {
+				if (name.endsWith('.after.md')) writeFileSync(join(dir, name), text);
+			}
 			writeFileSync(
 				join(dir, 'hashes.json'),
 				JSON.stringify(
@@ -241,10 +240,11 @@ describe('launch-context comparison fixtures', () => {
 		const skillAfter = outputs['skill-only.after.md'];
 		expect(skillBefore).toContain('Attached to this issue: skill "fixture-skill" (2 files).');
 		expect(skillBefore).not.toContain('### Skills');
-		expect(skillAfter).toContain('### Skills');
+		expect(skillAfter).not.toContain('### Skills');
+		expect(skillAfter).not.toContain('fixture-skill');
 		expect(skillAfter).not.toContain('Attached to this issue: skill "fixture-skill" (2 files).');
 		expect(skillBefore.slice(0, skillBefore.indexOf('\n\nAttached to this issue: skill'))).toBe(
-			skillAfter.slice(0, skillAfter.indexOf('\n\n### Skills'))
+			skillAfter
 		);
 		for (const name of ['combined.cold.before.md', 'combined.resume.before.md']) {
 			expect(outputs[name]).toContain('Attached to this issue: skill "fixture-skill" (2 files).');

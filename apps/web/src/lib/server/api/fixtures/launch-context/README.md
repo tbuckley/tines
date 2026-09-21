@@ -19,7 +19,7 @@ UPDATE_LAUNCH_CONTEXT_FIXTURES=1 pnpm --filter @tines/web exec vitest run src/li
 
 The `.before.md` files are frozen baseline outputs. The checker calls the real current
 `buildLaunchPrompt` and `buildResumePrompt`; its explicitly labelled fixture-only transform
-removes the new IDs/discovery presentation to reproduce the pinned baseline, never a second
+restores the historical skill footer and removes new IDs to reproduce the pinned baseline, never a second
 production renderer. The comment-only pair holds legacy skill treatment constant, the
 skill-only pair holds the complete comment thread constant, and the combined cold/resume
 pairs show both changes.
@@ -37,6 +37,6 @@ success output, and missing-ID error. These are text measurements, not tool-call
 Whole-task consumption, model correctness, attempts, repairs, and causal savings are not
 measured in Tines/520; Tines/521 owns those comparisons and the shared attempt ceiling.
 
-The conditional skill files remain embedded unchanged in `input.json`. The prompt describes
-only `skills/fixture-skill/SKILL.md`; its body and `support.txt` are deliberately absent from
-all rendered Markdown and remain available through the effective context bundle.
+The conditional skill files remain embedded unchanged in `input.json`. Their name,
+description, body, and `support.txt` are deliberately absent from shared rendered Markdown;
+the files remain available through the effective context bundle and supervisor delivery.

@@ -343,6 +343,8 @@ From the spec review:
 
 From later work:
 
+- **2026-09-20, Tines/642 — Agent Skills use the standard workspace directory**: this supersedes the original `skills/<name>/…` export and launch-catalog decisions above. `tines issues context --out` and local daemons write the complete effective set to generated `.agents/skills/<name>/…`; replacement owns only that subtree, validates containment and repository overlap first, and preserves stored file bytes. The shared issue prompt no longer lists skills. Automatic discovery and environment-specific supervisor recovery cues replace that catalog without changing effective-context JSON or stored metadata.
+
 - **2026-09-19, Tines/602 — folder import is a draft merge, not an upload**: the browser reads strict UTF-8 text locally and merges by exact relative path; matching rows are replaced and unrelated edits survive. A picked folder must contain root `SKILL.md`; `.git`, `node_modules`, and `.DS_Store` entries are ignored, while other dotfiles remain reviewable. Nothing reaches the API until Save, and the existing 20-file / 100 KiB path-plus-content limits remain authoritative.
 
 - **2026-09-20, Tines/636 — first folder import may seed blank metadata**: a new skill draft reads valid string `name` and `description` values from root `SKILL.md` front matter once. Each untouched blank field fills independently; typed or cleared fields, later imports, and all existing-item metadata remain unchanged. Source hints disappear when a user edits the inferred field, and form overrides never rewrite the imported file.

@@ -852,6 +852,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				timeoutMinutes: input.runner.max_run_minutes,
 				apiUrl: base,
 				repoDirs: repos.map((r) => r.dir),
+				skills: context.skills.map(({ name, description }) => ({ name, description })),
 				previousRunId: resume.previous_run_id
 			});
 			// Everything up to the send is retryable-by-abandonment: nothing has
@@ -948,6 +949,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			timeoutMinutes: input.runner.max_run_minutes,
 			apiUrl: base,
 			repoDirs: repos.map((r) => r.dir),
+			skills: context.skills.map(({ name, description }) => ({ name, description })),
 			envExports: resolvedEnv
 				.filter((e) => !e.secret)
 				.map((e) => ({ name: e.name, value: e.value })),

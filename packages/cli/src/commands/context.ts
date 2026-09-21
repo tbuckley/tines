@@ -79,7 +79,7 @@ function printContextItem(item: ContextItem): void {
 	} else if (item.kind === 'prompt') {
 		console.log(`\n${item.body}`);
 	} else if (item.kind === 'skill') {
-		console.log(`\nfiles (seeded at skills/${item.name}/):`);
+		console.log(`\nfiles (seeded at .agents/skills/${item.name}/):`);
 		for (const f of item.files ?? []) {
 			console.log(`  ${f.path}  (${Buffer.byteLength(f.content, 'utf8')} bytes)`);
 		}

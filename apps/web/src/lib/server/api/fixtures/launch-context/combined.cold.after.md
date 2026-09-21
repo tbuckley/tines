@@ -55,9 +55,3 @@ None — this state is terminal.
 No journal exists yet for project Fixture Project's · state Implementation. Start one:
 `tines journal append Fixture Project's/520 "- <date>: <lesson>"`
 (or `-` with a quoted heredoc, as for comments, when the body must not be touched by the shell)
-
-### Skills
-
-- Skill "fixture-skill" (global): read `skills/fixture-skill/SKILL.md` when this applies: Use when comparing launch-context selection and recovery behavior.
-
-If a skill path is unavailable, read its files with `tines issues context Fixture Project's/520 --json`; to write the bundle into a new directory, use `tines issues context Fixture Project's/520 --out <dir>`.
