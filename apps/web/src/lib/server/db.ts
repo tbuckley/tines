@@ -1,5 +1,5 @@
 import type { StateCategory } from '@tines/shared';
-import { Kysely, SqliteAdapter } from 'kysely';
+import { Kysely, SqliteAdapter, type Generated } from 'kysely';
 import { D1Dialect } from 'kysely-d1';
 import { traceUsageScaleDb } from './usage-scale-trace';
 
@@ -104,6 +104,8 @@ export interface ScheduledTaskTable {
 	next_run_at: number;
 	last_run_at: number | null;
 	run_count: number;
+	/** Monotonic fence for persisted schedule-definition changes. */
+	definition_revision: Generated<number>;
 	created_at: number;
 	updated_at: number;
 }

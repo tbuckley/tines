@@ -42,16 +42,46 @@ function seedCustomWorkflow(t: TestDb) {
 	`);
 }
 
-async function createSchedule(t: TestDb, extra: { state?: string } = {}) {
+async function createSchedule(
+	t: TestDb,
+	extra: { state?: string; requireAllClosed?: boolean } = {}
+) {
 	const res = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'prj_1', {
 		title: 'Daily triage',
 		state: extra.state,
-		schedule: { preset: { kind: 'daily', time: '09:00' } }
+		schedule: {
+			preset: { kind: 'daily', time: '09:00' },
+			...(extra.requireAllClosed ? { require_all_closed: true } : {})
+		}
 	});
 	return res.schedule!;
 }
 
 describe('schedule start state', () => {
+	it('makes concurrent Run now calls share the commit-time all-closed gate', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t, { requireAllClosed: true });
+		t.sqlite
+			.prepare(`UPDATE issue SET state_id = 'wfs_std_closed' WHERE scheduled_task_id = ?`)
+			.run(schedule.id);
+
+		const outcomes = await Promise.allSettled([
+			runScheduleNow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, schedule.id),
+			runScheduleNow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, schedule.id)
+		]);
+		expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+		const rejected = outcomes.find((outcome) => outcome.status === 'rejected');
+		expect(rejected).toMatchObject({ reason: { code: 'schedule_blocked', status: 422 } });
+		expect(t.all(`SELECT id FROM issue WHERE scheduled_task_id = ?`, schedule.id)).toHaveLength(2);
+		expect(
+			t.all(`SELECT id FROM event WHERE type = 'issue.created' AND issue_id IS NOT NULL`)
+		).toHaveLength(2);
+		expect(t.all(`SELECT run_count FROM scheduled_task WHERE id = ?`, schedule.id)).toEqual([
+			{ run_count: 2 }
+		]);
+	});
+
 	it('dispatch effects: runScheduleNow signals only after its instance batch commits', async () => {
 		const t = createTestDb();
 		seed(t);
@@ -177,6 +207,34 @@ describe('schedule start state', () => {
 		// One more sweep at the same instant still fires nothing: no catch-up.
 		await sweepSchedules(t.env);
 		expect(instances()).toBe(before);
+	});
+
+	it('re-checks pause at the cron commit boundary', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		const due = Date.now() - 60_000;
+		t.sqlite
+			.prepare(`UPDATE scheduled_task SET next_run_at = ? WHERE id = ?`)
+			.run(due, schedule.id);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let paused = false;
+		t.env.DB.batch = async (statements) => {
+			if (!paused) {
+				paused = true;
+				t.sqlite.prepare(`UPDATE scheduled_task SET enabled = 0 WHERE id = ?`).run(schedule.id);
+			}
+			return realBatch(statements);
+		};
+
+		await sweepSchedules(t.env, Date.now());
+		expect(t.all(`SELECT id FROM issue WHERE scheduled_task_id = ?`, schedule.id)).toHaveLength(1);
+		expect(
+			t.all(`SELECT id FROM event WHERE type = 'issue.created' AND issue_id IS NOT NULL`)
+		).toHaveLength(1);
+		expect(
+			t.all(`SELECT run_count, next_run_at FROM scheduled_task WHERE id = ?`, schedule.id)
+		).toEqual([{ run_count: 1, next_run_at: due }]);
 	});
 
 	it('picking the initial state — or explicit null — resets to "follow the workflow"', async () => {
