@@ -278,6 +278,12 @@
 		{#if data.project.description}
 			<p class="text-muted-foreground mt-1 max-w-xl text-sm">{data.project.description}</p>
 		{/if}
+		<a
+			href="/activity"
+			class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mt-2 inline-block rounded-sm text-xs outline-none focus-visible:ring-[3px]"
+		>
+			View all activity
+		</a>
 	</div>
 	<div class="flex gap-2">
 		<Button variant="outline" onclick={() => (settingsOpen = true)}>
@@ -419,7 +425,7 @@
 		<h2 class="text-sm font-semibold">Context</h2>
 		<div class="flex items-center gap-3">
 			<a href="/context" class="text-muted-foreground hover:text-foreground text-xs">
-				View all in Context
+				View all context
 			</a>
 			{#if !archived}
 				<Button
