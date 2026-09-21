@@ -1014,3 +1014,22 @@ trusted-account content. They use a closed escaped text renderer that creates no
 resource attributes and suppresses malformed image/media/embed nodes defensively. This keeps private
 library behavior compatible while public admission and display remain text-only; see
 [`specs/library/PUBLICATIONS.md`](../library/PUBLICATIONS.md).
+
+# Explicit API-key authority (2026-09-21, Tines/648)
+
+Artifact access now follows the project containing the issue rather than a
+control-plane path classification. Reading metadata or content requires project
+read; attaching, uploading, reaffirming, and minting a signed site link require
+project write; permanent artifact deletion requires project delete. A run key
+may perform the write operations only on its bound issue, and its stored project
+policy is intersected with that run ceiling. A signed URL remains a bearer
+capability with its existing expiry and redemption rules; minting one does not
+grant general control-plane authority.
+
+These checks are service-level and participate in mixed-operation planning. A
+transition that evaluates artifact requirements uses the actor's authorized
+issue view, while a request that both changes issue control fields and mutates an
+artifact must satisfy every independently required domain before any D1 or R2
+write. This supersedes the earlier statement that site-link minting was a
+control-plane operation and the phase-one assumption that every run key had full
+artifact authority.
