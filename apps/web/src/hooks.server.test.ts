@@ -50,16 +50,14 @@ describe('handle', () => {
 		expect(getSession).toHaveBeenCalledOnce();
 	});
 
-	it('still resolves the session when a bearer key rides alongside cookies', async () => {
-		// requireActor() prefers the session over the key; skipping here would
-		// flip that precedence for requests carrying both credentials.
+	it('uses bearer authority when a key rides alongside cookies', async () => {
 		await run(
 			request('/api/v1/projects', {
 				authorization: 'Bearer tk_abc',
 				cookie: 'better-auth.session_token=x'
 			})
 		);
-		expect(getSession).toHaveBeenCalledOnce();
+		expect(getSession).not.toHaveBeenCalled();
 	});
 
 	it('still resolves the session for a Bearer header with no key', async () => {

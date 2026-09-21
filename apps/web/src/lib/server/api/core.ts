@@ -1,5 +1,11 @@
 import type { D1Result } from '@cloudflare/workers-types';
-import type { ApiErrorBody, ArchivedFilter } from '@tines/shared';
+import {
+	FULL_API_KEY_PERMISSIONS,
+	parseApiKeyPermissions,
+	type ApiErrorBody,
+	type ApiKeyPermissions,
+	type ArchivedFilter
+} from '@tines/shared';
 import { json, type RequestEvent } from '@sveltejs/kit';
 import type { CompiledQuery } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
@@ -199,6 +205,15 @@ export interface ActorContext {
 	viaSession: boolean;
 	/** Set when the key is a run key (bound to an agent run). */
 	agentRunId?: string | null;
+	/** Required on request actors. Optional only for legacy session test fixtures. */
+	permissions?: ApiKeyPermissions;
+	runRestriction?: {
+		policy: 'run-v1';
+		runId: string;
+		issueId: string;
+		projectId: string;
+		launchStateId: string;
+	} | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,18 +323,20 @@ export function assertRunKeyAllowed(
 }
 
 export async function requireActor(event: RequestEvent): Promise<ActorContext> {
-	if (event.locals.user) {
+	const header = event.request.headers.get('authorization');
+	const key = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+	if (!key && event.locals.user) {
 		return {
 			userId: event.locals.user.id,
 			userName: event.locals.user.name,
 			apiKeyId: null,
 			apiKeyName: null,
-			viaSession: true
+			viaSession: true,
+			permissions: FULL_API_KEY_PERMISSIONS,
+			runRestriction: null
 		};
 	}
 
-	const header = event.request.headers.get('authorization');
-	const key = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
 	if (!key || !event.platform) {
 		throw new ApiFail(
 			401,
@@ -333,12 +350,20 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	const row = await db
 		.selectFrom('api_key')
 		.innerJoin('user', 'user.id', 'api_key.user_id')
+		.leftJoin('agent_run as run', 'run.id', 'api_key.agent_run_id')
+		.leftJoin('issue as run_issue', 'run_issue.id', 'run.issue_id')
 		.select([
 			'api_key.id',
 			'api_key.user_id',
 			'api_key.name',
 			'api_key.agent_run_id',
 			'api_key.expires_at',
+			'api_key.permissions',
+			'run.status as run_status',
+			'run.api_key_id as run_api_key_id',
+			'run.issue_id as run_issue_id',
+			'run.state_id_at_start as run_launch_state_id',
+			'run_issue.project_id as run_project_id',
 			'user.name as user_name'
 		])
 		.where('api_key.key_hash', '=', hash)
@@ -347,11 +372,36 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	if (!row) {
 		throw new ApiFail(401, 'unauthorized', 'Invalid or revoked API key');
 	}
+	let permissions: ApiKeyPermissions;
+	try {
+		permissions = parseApiKeyPermissions(JSON.parse(row.permissions));
+	} catch {
+		throw new ApiFail(401, 'invalid_key_permissions', 'API key permissions are invalid');
+	}
 	assertRunKeyAllowed(
 		{ agentRunId: row.agent_run_id, expiresAt: row.expires_at },
 		event.url.pathname,
 		event.request.method
 	);
+	let runRestriction: ActorContext['runRestriction'] = null;
+	if (row.agent_run_id !== null) {
+		if (
+			(row.run_status !== 'launching' && row.run_status !== 'running') ||
+			row.run_api_key_id !== row.id ||
+			!row.run_issue_id ||
+			!row.run_project_id ||
+			!row.run_launch_state_id
+		) {
+			throw new ApiFail(401, 'run_key_inactive', 'This run key is no longer active');
+		}
+		runRestriction = {
+			policy: 'run-v1',
+			runId: row.agent_run_id,
+			issueId: row.run_issue_id,
+			projectId: row.run_project_id,
+			launchStateId: row.run_launch_state_id
+		};
+	}
 
 	const touch = db
 		.updateTable('api_key')
@@ -367,7 +417,9 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 		apiKeyId: row.id,
 		apiKeyName: row.name,
 		viaSession: false,
-		agentRunId: row.agent_run_id
+		agentRunId: row.agent_run_id,
+		permissions,
+		runRestriction
 	};
 }
 

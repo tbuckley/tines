@@ -278,6 +278,7 @@ export function addRunKey(t: TestDb, runId: string, opts: { id?: string } = {}):
 			VALUES (?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(id, USER, `run ${runId}`, `hash_${id}`, id.slice(0, 8), runId, NOW);
+	t.sqlite.prepare('UPDATE agent_run SET api_key_id = ? WHERE id = ?').run(id, runId);
 	return id;
 }
 

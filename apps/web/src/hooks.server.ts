@@ -47,17 +47,13 @@ function crossSiteFormSubmission(event: RequestEvent): boolean {
  * - The header must carry a key `requireActor()` would actually extract
  *   (its `/^Bearer\s+(.+)$/` + trim); a malformed or empty Bearer value
  *   falls through to the session, as it always did.
- * - The request must carry no cookies: `requireActor()` prefers
- *   `locals.user` over the key, and skipping the session for a
- *   cookie-carrying request would silently flip that precedence (401 on a
- *   bad key, 403 on session-only endpoints despite a good one). Bearer
- *   clients send no cookies, so the fast path still covers all real
- *   bearer traffic.
+ * - Bearer authority wins when both a cookie and header are present. This
+ *   prevents a broad browser session from silently widening a scoped key.
  */
 function usesBearerAuth(event: RequestEvent): boolean {
 	if (!event.url.pathname.startsWith('/api/v1/')) return false;
 	if (!/^Bearer\s+\S/i.test(event.request.headers.get('authorization') ?? '')) return false;
-	return !event.request.headers.get('cookie');
+	return true;
 }
 
 const handleRequest: Handle = async ({ event, resolve }) => {
