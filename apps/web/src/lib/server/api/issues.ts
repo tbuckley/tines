@@ -59,6 +59,7 @@ import { runQuery, serializeRun } from './runs';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule, scheduleInsertQueries } from './schedules';
 import { insertValues, type QueryGuard } from './query-guard';
+import { projectReadPredicate, requireAccess } from './permissions';
 import {
 	assertCreateIssueLinksCommitted,
 	createIssueLinkAdmissionGuard,
@@ -517,6 +518,40 @@ export async function listIssues(
 	return { items, hasMore: rows.length > page.limit };
 }
 
+/** External issue collection read, filtered before pagination and counts. */
+export async function listIssuesForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	filters: IssueListFilters,
+	page: Page & { direction?: 'after' | 'before' }
+): Promise<{ items: IssueListItem[]; hasMore: boolean }> {
+	let q = applyCategoryFilters(
+		applyScopeFilters(issueQuery(db, actor.userId), actor.userId, filters),
+		filters
+	).where(projectReadPredicate(actor, 'issue.project_id'));
+	const backwards = page.direction === 'before';
+	if (page.cursor) {
+		const { createdAt, id } = page.cursor;
+		q = q.where((eb) =>
+			eb.or([
+				eb('issue.created_at', backwards ? '>' : '<', createdAt),
+				eb.and([eb('issue.created_at', '=', createdAt), eb('issue.id', backwards ? '>' : '<', id)])
+			])
+		);
+	}
+	const rows = await q
+		.orderBy('issue.created_at', backwards ? 'asc' : 'desc')
+		.orderBy('issue.id', backwards ? 'asc' : 'desc')
+		.limit(page.limit + 1)
+		.execute();
+	const serialize = filters.brief ? briefIssue : serializeIssue;
+	const pageRows = rows.slice(0, page.limit);
+	if (backwards) pageRows.reverse();
+	const items = pageRows.map(serialize);
+	await attachRoundSummaries(db, actor.userId, pageRows, items);
+	return { items, hasMore: rows.length > page.limit };
+}
+
 /**
  * `round_summary` on the awaiting-human rows of one page: what the round that
  * just ended produced, so the Awaiting list can say "impl-pr v2 · PR #78"
@@ -796,6 +831,41 @@ export async function loadIssue(
 	return serializeIssue(row);
 }
 
+/** External issue lookup. Out-of-scope project rows are indistinguishable from missing rows. */
+export async function loadIssueForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	ref: IssueLookup
+): Promise<Issue> {
+	let q = issueQuery(db, actor.userId).where(projectReadPredicate(actor, 'issue.project_id'));
+	if ('id' in ref) q = q.where('issue.id', '=', ref.id);
+	else if ('projectId' in ref)
+		q = q.where(({ exists, selectFrom }) =>
+			exists(
+				selectFrom('issue_address')
+					.select('issue_address.issue_id')
+					.whereRef('issue_address.issue_id', '=', 'issue.id')
+					.where('issue_address.project_id', '=', ref.projectId)
+					.where('issue_address.number', '=', ref.number)
+			)
+		);
+	else
+		q = q.where(({ exists, selectFrom }) =>
+			exists(
+				selectFrom('issue_address')
+					.innerJoin('project as address_project', 'address_project.id', 'issue_address.project_id')
+					.select('issue_address.issue_id')
+					.whereRef('issue_address.issue_id', '=', 'issue.id')
+					.where('address_project.user_id', '=', actor.userId)
+					.where('address_project.name', '=', ref.projectName)
+					.where('issue_address.number', '=', ref.number)
+			)
+		);
+	const row = await q.executeTakeFirst();
+	if (!row) throw notFound();
+	return serializeIssue(row);
+}
+
 export interface IssueDetailOptions {
 	/** Include metadata used only by launch-prompt comment selection. */
 	launchComments?: boolean;
@@ -895,6 +965,23 @@ export async function getIssueDetail(
 				}
 			: {})
 	};
+}
+
+/** External issue detail read, with project scope applied at the root lookup. */
+export async function getIssueDetailForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	ref: IssueLookup,
+	opts: IssueDetailOptions = {}
+): Promise<IssueDetail> {
+	const issue = await loadIssueForActor(db, actor, ref);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'read', projectId: issue.project_id }],
+		'issue.read',
+		{ projectId: issue.project_id, issueId: issue.id }
+	);
+	return getIssueDetail(db, actor.userId, issue, opts);
 }
 
 /** How many runs of an issue's history the round derivation reads back. */
@@ -1018,6 +1105,22 @@ export async function createIssue(
 		.where('user_id', '=', actor.userId)
 		.executeTakeFirst();
 	if (!project) throw notFound();
+	requireAccess(actor, [{ domain: 'project', access: 'write', projectId }], 'issue.create', {
+		projectId
+	});
+	requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'issue.create', {
+		projectId
+	});
+	if (body.schedule !== undefined) {
+		requireAccess(actor, [{ domain: 'project', access: 'write', projectId }], 'schedule.create', {
+			projectId
+		});
+	}
+	if ((body.labels?.length ?? 0) > 0) {
+		requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'label.assign', {
+			projectId
+		});
+	}
 	// Creating issues (and the schedules that ride along) is a project-level
 	// write: no draining run is exempt from it.
 	await assertWritable(db, actor, project);
@@ -1040,6 +1143,11 @@ export async function createIssue(
 	const resolvedLabels = body.labels?.length
 		? await resolveOrCreateLabels(db, actor, body.labels)
 		: null;
+	if ((resolvedLabels?.toCreate.length ?? 0) > 0) {
+		requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'label.create', {
+			projectId
+		});
+	}
 
 	const now = Date.now();
 	const id = newId('iss');
@@ -1197,6 +1305,35 @@ export async function updateIssue(
 ): Promise<IssueDetail> {
 	assertPinFieldsAllowed(actor, body);
 	const current = await getIssueDetail(db, actor.userId, { id });
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: current.project_id }],
+		'issue.update',
+		{ projectId: current.project_id, issueId: current.id }
+	);
+	if (body.workflow_id !== undefined) {
+		requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'issue.update', {
+			projectId: current.project_id,
+			issueId: current.id
+		});
+	}
+	if (body.state !== undefined) {
+		requireAccess(actor, [], 'issue.force_state', {
+			projectId: current.project_id,
+			issueId: current.id
+		});
+	}
+	if (body.pinned_runner_id !== undefined || body.pinned_tier !== undefined) {
+		requireAccess(
+			actor,
+			[
+				{ domain: 'project', access: 'write', projectId: current.project_id },
+				{ domain: 'control_plane', access: 'write' }
+			],
+			'issue.pin',
+			{ projectId: current.project_id, issueId: current.id }
+		);
+	}
 	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
 	const title =
 		body.title !== undefined
@@ -1433,6 +1570,12 @@ export async function transitionIssue(
 	body: TransitionIssueRequest
 ): Promise<IssueDetail> {
 	const current = await getIssueDetail(db, actor.userId, { id });
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: current.project_id }],
+		'issue.transition',
+		{ projectId: current.project_id, issueId: current.id }
+	);
 	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
 
 	const action = body.action?.trim();
@@ -1544,6 +1687,15 @@ export async function resumeIssue(
 	id: string
 ): Promise<IssueDetail> {
 	const current = await getIssueDetail(db, actor.userId, { id });
+	requireAccess(
+		actor,
+		[
+			{ domain: 'project', access: 'write', projectId: current.project_id },
+			{ domain: 'control_plane', access: 'write' }
+		],
+		'issue.resume',
+		{ projectId: current.project_id, issueId: current.id }
+	);
 	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
 	if (!current.needs_attention && current.attempt_count === 0) {
 		effects.signalDispatch();
@@ -1574,6 +1726,12 @@ export async function createComment(
 	body: CreateCommentRequest
 ): Promise<Comment> {
 	const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: issue.project_id }],
+		'comment.create',
+		{ projectId: issue.project_id, issueId: issue.id }
+	);
 	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	const text = requireString(body.body, 'body', { max: 100_000 });
 
@@ -1632,12 +1790,18 @@ async function requireComment(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	issueId: string,
-	commentId: string
+	commentId: string,
+	access: 'write' | 'delete',
+	operation: 'comment.update' | 'comment.delete'
 ): Promise<{
 	issue: IssueDetail;
 	row: { id: string; body: string; actor_api_key_id: string | null };
 }> {
 	const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+	requireAccess(actor, [{ domain: 'project', access, projectId: issue.project_id }], operation, {
+		projectId: issue.project_id,
+		issueId: issue.id
+	});
 	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	const row = await db
 		.selectFrom('comment')
@@ -1658,7 +1822,7 @@ export async function updateComment(
 	commentId: string,
 	body: UpdateCommentRequest
 ): Promise<Comment> {
-	const { issue } = await requireComment(db, actor, issueId, commentId);
+	const { issue } = await requireComment(db, actor, issueId, commentId, 'write', 'comment.update');
 	const text = requireString(body.body, 'body', { max: 100_000 });
 
 	await runAtomic(env, [
@@ -1690,7 +1854,14 @@ export async function deleteComment(
 	issueId: string,
 	commentId: string
 ): Promise<void> {
-	const { issue, row } = await requireComment(db, actor, issueId, commentId);
+	const { issue, row } = await requireComment(
+		db,
+		actor,
+		issueId,
+		commentId,
+		'delete',
+		'comment.delete'
+	);
 	await runAtomic(env, [
 		db.deleteFrom('comment').where('id', '=', commentId).compile(),
 		eventInsert(db, actor, {
