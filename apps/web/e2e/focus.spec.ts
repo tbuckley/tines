@@ -3,7 +3,7 @@
  * app chrome and read by the issues list and New issue.
  */
 import type { Project, UserPreferences } from '@tines/shared';
-import type { Browser, Page } from '@playwright/test';
+import type { Browser, Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE, CAROL, RUNROW } from './constants.mjs';
 import {
@@ -126,6 +126,17 @@ const focusTest = test.extend<{}, { world: FocusWorld }>({
 
 /** The header control, which doubles as the assertion for the current focus. */
 const switcher = (page: Page) => page.getByRole('button', { name: /^Project focus:/ });
+
+async function pressProjectMenuKey(
+	page: Page,
+	key: 'ArrowDown' | 'ArrowUp' | 'Home' | 'End',
+	from: Locator,
+	to: Locator
+): Promise<void> {
+	await expect(from).toBeFocused();
+	await page.keyboard.press(key);
+	await expect(to).toBeFocused();
+}
 
 /**
  * Opens the switcher and picks an entry, retrying the whole gesture until the
@@ -1133,18 +1144,18 @@ test.describe.serial('project controls at every project count', () => {
 
 			// New project activates from another page and consumes the one-shot query.
 			await switcher(page).click();
-			// The destination immediately replaces `?new=1`, so navigate to the
-			// menu's real href and let the fresh page consume it after hydration.
-			const newProjectHref = await page
-				.getByRole('menuitem', { name: 'New project' })
-				.getAttribute('href');
-			expect(newProjectHref).toBe('/projects?new=1');
-			await page.goto(newProjectHref!, { waitUntil: 'domcontentloaded' });
+			const projectMenu = page.getByRole('menu', { name: 'Project focus' });
+			const newProject = page.getByRole('menuitem', { name: 'New project' });
+			await expect(newProject).toHaveAttribute('href', '/projects?new=1');
+			await newProject.click();
 			const newProjectDialog = page.getByRole('dialog', { name: 'New project' });
 			await expect(newProjectDialog).toBeVisible();
+			await expect(projectMenu).toBeHidden();
 			await expect(page).toHaveURL('/projects');
 			await newProjectDialog.getByRole('button', { name: 'Cancel' }).dispatchEvent('click');
-			await expect(newProjectDialog).toBeHidden();
+			// Hidden precedes the dialog focus scope's teardown. Wait for removal so
+			// its delayed close autofocus cannot interrupt the later menu-key journey.
+			await expect(newProjectDialog).toHaveCount(0);
 			await gotoHydrated(page, '/issues');
 
 			// An archived-only account still exposes project management and its
@@ -1180,24 +1191,25 @@ test.describe.serial('project controls at every project count', () => {
 			await page.getByRole('menuitemradio', { name: first.name }).click();
 			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${first.name}`);
 			await expect(switcher(page)).toContainText('Projects');
-			await switcher(page).click();
-			await expect(page.getByRole('menuitemradio', { name: first.name })).toBeFocused();
+			// The focus PATCH invalidates this layout. Wait for the closing portal to
+			// detach before reopening, otherwise its late focus cleanup can steal focus
+			// from the newly opened menu under a loaded CI worker.
+			await expect(projectMenu).toHaveCount(0);
+			const allProjects = page.getByRole('menuitemradio', { name: 'All projects' });
+			const firstProject = page.getByRole('menuitemradio', { name: first.name });
+			await clickToOpen(switcher(page), firstProject);
+			await expect(firstProject).toBeFocused();
 			const openProject = page.getByRole('menuitem', { name: 'Open project' });
+			const lastAction = page.getByRole('menuitem', { name: 'New project' });
 			await expect(openProject).toHaveAttribute('href', `/projects/${first.id}`);
 
 			// Every movement key crosses the radio/action boundary, including both wraps.
-			await page.keyboard.press('ArrowDown');
-			await expect(openProject).toBeFocused();
-			await page.keyboard.press('ArrowUp');
-			await expect(page.getByRole('menuitemradio', { name: first.name })).toBeFocused();
-			await page.keyboard.press('Home');
-			await expect(page.getByRole('menuitemradio', { name: 'All projects' })).toBeFocused();
-			await page.keyboard.press('ArrowUp');
-			await expect(page.getByRole('menuitem', { name: 'New project' })).toBeFocused();
-			await page.keyboard.press('ArrowDown');
-			await expect(page.getByRole('menuitemradio', { name: 'All projects' })).toBeFocused();
-			await page.keyboard.press('End');
-			await expect(page.getByRole('menuitem', { name: 'New project' })).toBeFocused();
+			await pressProjectMenuKey(page, 'ArrowDown', firstProject, openProject);
+			await pressProjectMenuKey(page, 'ArrowUp', openProject, firstProject);
+			await pressProjectMenuKey(page, 'Home', firstProject, allProjects);
+			await pressProjectMenuKey(page, 'ArrowUp', allProjects, lastAction);
+			await pressProjectMenuKey(page, 'ArrowDown', lastAction, allProjects);
+			await pressProjectMenuKey(page, 'End', allProjects, lastAction);
 			await page.keyboard.press('Escape');
 
 			// One project still behaves as the focus for New issue.
