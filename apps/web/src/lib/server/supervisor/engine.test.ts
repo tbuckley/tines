@@ -673,6 +673,34 @@ describe('dispatch pass against the fake adapter', () => {
 		expect(keyForRun(t, run)?.name).toBe(`run ${run}`);
 	});
 
+	it.each(['runner', 'workflow', 'state'] as const)(
+		'falls back to the legacy run name when the %s name is blank',
+		async (component) => {
+			const t = world();
+			const runner = addRunner(t);
+			const issue = addIssue(t);
+			const run = addRun(t, { issueId: issue, runnerId: runner, stateAtStart: OPEN });
+
+			if (component === 'runner') {
+				t.sqlite.prepare('UPDATE runner SET name = ? WHERE id = ?').run('   ', runner);
+			} else if (component === 'workflow') {
+				t.sqlite.prepare('UPDATE workflow SET name = ? WHERE id = ?').run('   ', 'wf_standard');
+			} else {
+				t.sqlite.prepare('UPDATE workflow_state SET name = ? WHERE id = ?').run('   ', OPEN);
+			}
+
+			expect(
+				await mintRunKeyAndFlip(t.db, t.env, {
+					runId: run,
+					userId: USER,
+					maxRunMinutes: 30,
+					now: NOW
+				})
+			).not.toBeNull();
+			expect(keyForRun(t, run)?.name).toBe(`run ${run}`);
+		}
+	);
+
 	it('a poll-mode (local) adapter leaves the claim assigned for the daemon', async () => {
 		const t = world();
 		const runner = addRunner(t);

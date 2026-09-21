@@ -1109,17 +1109,19 @@
 						<header
 							class="text-muted-foreground flex items-center gap-2 border-b px-4 py-2 text-xs"
 						>
-							<span class="text-foreground font-medium">{actorLabel(comment.actor)}</span>
-							<span title={new Date(comment.created_at).toLocaleString()}>
+							<span class="text-foreground min-w-0 flex-1 font-medium wrap-anywhere"
+								>{actorLabel(comment.actor)}</span
+							>
+							<span class="shrink-0" title={new Date(comment.created_at).toLocaleString()}>
 								{comment.pending ? 'sending…' : relativeTime(comment.created_at)}
 							</span>
 							{#if comment.updated_at}
-								<span class="italic" title={new Date(comment.updated_at).toLocaleString()}>
+								<span class="shrink-0 italic" title={new Date(comment.updated_at).toLocaleString()}>
 									(edited)
 								</span>
 							{/if}
 							{#if !comment.pending && !archived}
-								<div class="ml-auto flex items-center gap-1">
+								<div class="ml-auto flex shrink-0 items-center gap-1">
 									<Button
 										variant="ghost"
 										size="icon"

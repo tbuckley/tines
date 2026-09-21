@@ -21,7 +21,8 @@ import type {
 	Project,
 	Runner,
 	RunnerTokenResponse,
-	TinesEvent
+	TinesEvent,
+	WorkflowResponse
 } from '@tines/shared';
 import type { APIRequestContext, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
@@ -34,6 +35,8 @@ const CLI_ENTRY = join(CLI_DIR, 'src', 'index.ts');
 
 let RUNNER_NAME: string;
 let PROJECT_NAME: string;
+let WORKFLOW_NAME: string;
+let ACTIVE_STATE_NAME: string;
 
 // Shared across the serial suite.
 let e2eDir: string;
@@ -98,8 +101,10 @@ async function openAddRunner(page: Page) {
 
 test.describe.serial('local runner end to end', () => {
 	test.beforeAll(async ({ request, uniqueName }) => {
-		RUNNER_NAME = uniqueName('e2e-runner');
+		RUNNER_NAME = `${uniqueName('e2e-runner')}-${'r'.repeat(100)}`.slice(0, 100);
 		PROJECT_NAME = uniqueName('runner');
+		WORKFLOW_NAME = `${uniqueName('attribution-workflow')}-${'w'.repeat(200)}`.slice(0, 200);
+		ACTIVE_STATE_NAME = `Open-${'s'.repeat(100)}`.slice(0, 100);
 		const api = apiClient(request, ALICE.apiKey);
 		e2eDir = mkdtempSync(join(tmpdir(), 'tines-runner-e2e-'));
 		configDir = join(e2eDir, 'config');
@@ -172,12 +177,33 @@ esac
 			{ mode: 0o755 }
 		);
 
+		// Use every component's server-valid maximum length so the real run also
+		// exercises the comment header's worst-case attribution geometry.
+		const workflowResponse = await api.post('/api/v1/workflows', {
+			name: WORKFLOW_NAME,
+			initial_state: ACTIVE_STATE_NAME,
+			states: [
+				{ name: ACTIVE_STATE_NAME, category: 'active' },
+				{ name: 'Human Review', category: 'awaiting_human' }
+			],
+			transitions: [
+				{
+					name: 'Submit for review',
+					from: ACTIVE_STATE_NAME,
+					to: 'Human Review'
+				}
+			]
+		});
+		expect(workflowResponse.status()).toBe(201);
+		const workflow = await body<WorkflowResponse>(workflowResponse);
+
 		// Project + context the workspace should materialize.
 		projectId = (
 			await body<Project>(
 				await api.post('/api/v1/projects', {
 					name: PROJECT_NAME,
-					initial_prompt: 'E2E conventions: be excellent to each other.'
+					initial_prompt: 'E2E conventions: be excellent to each other.',
+					default_workflow_id: workflow.id
 				})
 			)
 		).id;
@@ -318,7 +344,7 @@ esac
 		expect(comment).toBeDefined();
 		expect(comment!.actor.run?.run_id).toBe(run.id);
 		expect(comment!.actor.run?.runner_name).toBe(RUNNER_NAME);
-		const runKeyName = `${RUNNER_NAME} · Standard/Open`;
+		const runKeyName = `${RUNNER_NAME} · ${WORKFLOW_NAME}/${ACTIVE_STATE_NAME}`;
 		expect(comment!.actor.api_key_name).toBe(runKeyName);
 
 		const transitions = await body<ListResponse<TinesEvent>>(
@@ -332,9 +358,43 @@ esac
 		await gotoHydrated(page, `/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`);
 		const commentCard = page.locator('article', { hasText: 'Harness progress comment' });
 		const attribution = `${ALICE.name} via ${runKeyName} · run on ${issue.project_name}/${issue.number}`;
-		await expect(commentCard.locator('header')).toContainText(attribution);
-		await page.setViewportSize({ width: 390, height: 844 });
-		await expect(commentCard.locator('header')).toContainText(attribution);
+		const header = commentCard.locator('header');
+		const actor = header.locator(':scope > span').first();
+		const edit = header.getByRole('button', { name: 'Edit comment' });
+		const remove = header.getByRole('button', { name: 'Delete comment' });
+		for (const viewport of [
+			{ width: 1440, height: 900 },
+			{ width: 390, height: 844 }
+		]) {
+			await page.setViewportSize(viewport);
+			await expect(header).toContainText(attribution);
+			await expect(edit).toBeInViewport();
+			await expect(remove).toBeInViewport();
+
+			const geometry = await page.evaluate(
+				([card, commentHeader, actorLabel]) => {
+					const cardRect = card.getBoundingClientRect();
+					const headerRect = commentHeader.getBoundingClientRect();
+					const actorRect = actorLabel.getBoundingClientRect();
+					return {
+						overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+						card: { left: cardRect.left, right: cardRect.right },
+						header: { left: headerRect.left, right: headerRect.right },
+						actor: { left: actorRect.left, right: actorRect.right }
+					};
+				},
+				[
+					await commentCard.elementHandle(),
+					await header.elementHandle(),
+					await actor.elementHandle()
+				]
+			);
+			expect(geometry.overflow).toBeLessThanOrEqual(1);
+			expect(geometry.header.left).toBeGreaterThanOrEqual(geometry.card.left - 1);
+			expect(geometry.header.right).toBeLessThanOrEqual(geometry.card.right + 1);
+			expect(geometry.actor.left).toBeGreaterThanOrEqual(geometry.card.left - 1);
+			expect(geometry.actor.right).toBeLessThanOrEqual(geometry.card.right + 1);
+		}
 
 		// The run advanced the issue (its own key transitioned it)…
 		const ended = await body<ListResponse<TinesEvent>>(
