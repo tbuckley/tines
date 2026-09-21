@@ -5,7 +5,6 @@
 	import IconChevronDown from '@tabler/icons-svelte/icons/chevron-down';
 	import { Popover } from 'bits-ui';
 	import { navMemory } from '$lib/nav-memory.svelte';
-	import { tick } from 'svelte';
 
 	let {
 		projects,
@@ -25,15 +24,13 @@
 	const label = $derived(focus?.name ?? 'All projects');
 	const visibleLabel = $derived(projects.length >= 2 ? label : 'Projects');
 
-	$effect(() => {
-		if (!open) return;
-		void tick().then(() => {
-			const target =
-				menu?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]') ??
-				menu?.querySelector<HTMLElement>('[role="menuitem"]');
-			target?.focus();
-		});
-	});
+	function focusOpenChoice(event: Event) {
+		event.preventDefault();
+		const target =
+			menu?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]') ??
+			menu?.querySelector<HTMLElement>('[role="menuitem"]');
+		target?.focus();
+	}
 
 	function moveFocus(event: KeyboardEvent) {
 		if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
@@ -88,6 +85,7 @@
 	</Popover.Trigger>
 	<Popover.Portal>
 		<Popover.Content
+			onOpenAutoFocus={focusOpenChoice}
 			side="bottom"
 			sideOffset={6}
 			align="start"

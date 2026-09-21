@@ -130,6 +130,24 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await page.close();
 		});
 
+		test('archived project Context and Activity links remain navigable', async ({
+			browser,
+			world
+		}) => {
+			const page = await open(browser, world, `/projects/${world.projectId}`);
+			await expect(page.getByText(/^Archived /)).toBeVisible();
+
+			await page.getByRole('link', { name: 'View all activity' }).click();
+			await expect(page).toHaveURL('/activity');
+			await expect(page.getByRole('heading', { name: 'Activity', level: 1 })).toBeVisible();
+
+			await gotoHydrated(page, `/projects/${world.projectId}`);
+			await page.getByRole('link', { name: 'View all context' }).click();
+			await expect(page).toHaveURL('/context');
+			await expect(page.getByRole('heading', { name: 'Context', level: 1 })).toBeVisible();
+			await page.close();
+		});
+
 		test('a stale ?project= URL names the archived project instead of emptying', async ({
 			browser,
 			world
