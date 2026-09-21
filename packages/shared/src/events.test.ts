@@ -359,8 +359,19 @@ describe('displayActor', () => {
 		const ev = event(
 			'issue.commented',
 			{},
-			{ actor: { ...ACTOR, api_key_id: 'key_1', api_key_name: 'laptop' } }
+			{
+				actor: {
+					...ACTOR,
+					api_key_id: 'key_1',
+					api_key_name: 'old-laptop · Engineering/Design',
+					run: {
+						run_id: 'arun_1',
+						runner_name: 'new-laptop',
+						issue_ref: { project_name: 'Tines', number: 49 }
+					}
+				}
+			}
 		);
-		expect(displayActor(ev)).toBe('Alice via laptop');
+		expect(displayActor(ev)).toBe('Alice via old-laptop · Engineering/Design · run on Tines/49');
 	});
 });

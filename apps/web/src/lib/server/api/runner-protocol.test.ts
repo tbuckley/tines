@@ -906,6 +906,7 @@ describe('pollRunner', () => {
 		expect(a.run_key).toMatch(/^tines_/);
 		const key = keyForRun(t, runId);
 		expect(key?.key_hash).toBe(await sha256Hex(a.run_key));
+		expect(key?.name).toBe('laptop-m4 · Standard/Open');
 		expect(key?.revoked_at).toBeNull();
 		expect(runById(t, runId)?.status).toBe('launching');
 
@@ -919,6 +920,30 @@ describe('pollRunner', () => {
 			NOW + 2
 		);
 		expect(second.response.assignments).toEqual([]);
+	});
+
+	it('resolves renamed runner and launch-stage names when a claimed run is delivered', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { name: 'laptop-before' });
+		const issue = addIssue(t);
+		const runId = addRun(t, { issueId: issue, runnerId });
+
+		t.sqlite.prepare('UPDATE runner SET name = ? WHERE id = ?').run('laptop-after', runnerId);
+		t.sqlite
+			.prepare('UPDATE workflow SET name = ? WHERE id = ?')
+			.run('Standard renamed', 'wf_standard');
+		t.sqlite.prepare('UPDATE workflow_state SET name = ? WHERE id = ?').run('Open renamed', OPEN);
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [] },
+			NOW + 1
+		);
+		expect(response.assignments.map((assignment) => assignment.run.id)).toEqual([runId]);
+		expect(keyForRun(t, runId)?.name).toBe('laptop-after · Standard renamed/Open renamed');
 	});
 
 	it('delivers env items only to daemons that advertise env_delivery, never inside the bundle', async () => {

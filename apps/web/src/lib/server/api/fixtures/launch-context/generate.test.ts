@@ -26,7 +26,7 @@ const comments = input.issue.comments.map((comment: Record<string, unknown>) => 
 			: {
 					...human,
 					api_key_id: `key_${comment.run_id}`,
-					api_key_name: String(comment.run_id),
+					api_key_name: `run ${String(comment.run_id)}`,
 					run: {
 						run_id: comment.run_id,
 						runner_name: 'fixture-runner',

@@ -55,7 +55,7 @@
 	import { PROJECT_ARCHIVED_TOOLTIP } from '$lib/archived';
 	import { checklistItems, checklistProgress, type FirstRunInputs } from '$lib/first-run';
 	import { addRunnerToGlobalRule } from '$lib/routing';
-	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
+	import { actorLabel, compactActorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
 	import { issueBackTarget, navMemory } from '$lib/nav-memory.svelte';
 	import { focusHint } from '$lib/focus.svelte';
@@ -1109,17 +1109,27 @@
 						<header
 							class="text-muted-foreground flex items-center gap-2 border-b px-4 py-2 text-xs"
 						>
-							<span class="text-foreground font-medium">{actorLabel(comment.actor)}</span>
-							<span title={new Date(comment.created_at).toLocaleString()}>
+							<span
+								class="text-foreground min-w-0 flex-1 font-medium wrap-anywhere"
+								data-testid="comment-actor"
+							>
+								<span class="max-sm:hidden" data-testid="comment-actor-full"
+									>{actorLabel(comment.actor)}</span
+								>
+								<span class="sm:hidden" data-testid="comment-actor-compact"
+									>{compactActorLabel(comment.actor)}</span
+								>
+							</span>
+							<span class="shrink-0" title={new Date(comment.created_at).toLocaleString()}>
 								{comment.pending ? 'sending…' : relativeTime(comment.created_at)}
 							</span>
 							{#if comment.updated_at}
-								<span class="italic" title={new Date(comment.updated_at).toLocaleString()}>
+								<span class="shrink-0 italic" title={new Date(comment.updated_at).toLocaleString()}>
 									(edited)
 								</span>
 							{/if}
 							{#if !comment.pending && !archived}
-								<div class="ml-auto flex items-center gap-1">
+								<div class="ml-auto flex shrink-0 items-center gap-1">
 									<Button
 										variant="ghost"
 										size="icon"
@@ -1365,7 +1375,7 @@
 		stateEnteredAt={data.issue.state_entered_at}
 		onmove={requestMove}
 	/>
-	<p class="text-muted-foreground mt-3 text-xs">
+	<p class="text-muted-foreground mt-3 min-w-0 text-xs wrap-anywhere">
 		Workflow:
 		<a href="/workflows/{data.issue.workflow.id}" class="hover:underline"
 			>{data.issue.workflow.name}</a

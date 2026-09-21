@@ -21,11 +21,12 @@ import type {
 	Project,
 	Runner,
 	RunnerTokenResponse,
-	TinesEvent
+	TinesEvent,
+	WorkflowResponse
 } from '@tines/shared';
 import type { APIRequestContext, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
-import { ALICE, BASE_URL } from './constants.mjs';
+import { BASE_URL, RUNNER_E2E } from './constants.mjs';
 import { apiClient, body, fireSweep, gotoHydrated, signIn } from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
@@ -34,6 +35,8 @@ const CLI_ENTRY = join(CLI_DIR, 'src', 'index.ts');
 
 let RUNNER_NAME: string;
 let PROJECT_NAME: string;
+let WORKFLOW_NAME: string;
+let ACTIVE_STATE_NAME: string;
 
 // Shared across the serial suite.
 let e2eDir: string;
@@ -67,12 +70,12 @@ async function waitFor<T>(
 }
 
 async function issueRuns(request: APIRequestContext, issueId: string): Promise<AgentRun[]> {
-	const api = apiClient(request, ALICE.apiKey);
+	const api = apiClient(request, RUNNER_E2E.apiKey);
 	return (await body<ListResponse<AgentRun>>(await api.get(`/api/v1/runs?issue=${issueId}`))).items;
 }
 
 async function createIssue(request: APIRequestContext, title: string): Promise<IssueDetail> {
-	const api = apiClient(request, ALICE.apiKey);
+	const api = apiClient(request, RUNNER_E2E.apiKey);
 	const res = await api.post(`/api/v1/projects/${projectId}/issues`, { title });
 	expect(res.status()).toBe(201);
 	return body<IssueDetail>(res);
@@ -98,9 +101,11 @@ async function openAddRunner(page: Page) {
 
 test.describe.serial('local runner end to end', () => {
 	test.beforeAll(async ({ request, uniqueName }) => {
-		RUNNER_NAME = uniqueName('e2e-runner');
+		RUNNER_NAME = `${uniqueName('e2e-runner')}-${'r'.repeat(100)}`.slice(0, 100);
 		PROJECT_NAME = uniqueName('runner');
-		const api = apiClient(request, ALICE.apiKey);
+		WORKFLOW_NAME = `${uniqueName('attribution-workflow')}-${'w'.repeat(200)}`.slice(0, 200);
+		ACTIVE_STATE_NAME = `Open-${'s'.repeat(100)}`.slice(0, 100);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		e2eDir = mkdtempSync(join(tmpdir(), 'tines-runner-e2e-'));
 		configDir = join(e2eDir, 'config');
 		mkdirSync(configDir, { recursive: true });
@@ -172,12 +177,33 @@ esac
 			{ mode: 0o755 }
 		);
 
+		// Use every component's server-valid maximum length so the real run also
+		// exercises the comment header's worst-case attribution geometry.
+		const workflowResponse = await api.post('/api/v1/workflows', {
+			name: WORKFLOW_NAME,
+			initial_state: ACTIVE_STATE_NAME,
+			states: [
+				{ name: ACTIVE_STATE_NAME, category: 'active' },
+				{ name: 'Human Review', category: 'awaiting_human' }
+			],
+			transitions: [
+				{
+					name: 'Submit for review',
+					from: ACTIVE_STATE_NAME,
+					to: 'Human Review'
+				}
+			]
+		});
+		expect(workflowResponse.status()).toBe(201);
+		const workflow = await body<WorkflowResponse>(workflowResponse);
+
 		// Project + context the workspace should materialize.
 		projectId = (
 			await body<Project>(
 				await api.post('/api/v1/projects', {
 					name: PROJECT_NAME,
-					initial_prompt: 'E2E conventions: be excellent to each other.'
+					initial_prompt: 'E2E conventions: be excellent to each other.',
+					default_workflow_id: workflow.id
 				})
 			)
 		).id;
@@ -219,7 +245,7 @@ esac
 				cwd: CLI_DIR,
 				env: {
 					...process.env,
-					TINES_API_KEY: ALICE.apiKey,
+					TINES_API_KEY: RUNNER_E2E.apiKey,
 					TINES_CONFIG_DIR: configDir,
 					E2E_DIR: e2eDir
 				},
@@ -236,13 +262,13 @@ esac
 			daemon.kill('SIGKILL');
 		}
 		// Leave automation off for the specs that follow.
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		await api.put('/api/v1/supervisor/settings', { enabled: false });
 		rmSync(e2eDir, { recursive: true, force: true });
 	});
 
 	test('the daemon registers and the runner shows up online', async ({ request }) => {
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		const runner = await waitFor(
 			async () => {
 				const { items } = await body<ListResponse<Runner>>(await api.get('/api/v1/runners'));
@@ -280,10 +306,12 @@ esac
 	});
 
 	test('an issue moved into an active state is worked within a poll: workspace, attribution, key lifecycle', async ({
-		request
+		request,
+		context,
+		page
 	}) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		setMode('work');
 		const issue = await createIssue(request, 'Work me');
 
@@ -316,6 +344,74 @@ esac
 		expect(comment).toBeDefined();
 		expect(comment!.actor.run?.run_id).toBe(run.id);
 		expect(comment!.actor.run?.runner_name).toBe(RUNNER_NAME);
+		expect(comment!.actor.run?.stage).toEqual({
+			workflow_name: WORKFLOW_NAME,
+			state_name: ACTIVE_STATE_NAME
+		});
+		const runKeyName = `${RUNNER_NAME} · ${WORKFLOW_NAME}/${ACTIVE_STATE_NAME}`;
+		expect(comment!.actor.api_key_name).toBe(runKeyName);
+
+		const transitions = await body<ListResponse<TinesEvent>>(
+			await api.get(`/api/v1/events?issue=${issue.id}&type=issue.transitioned`)
+		);
+		const handoff = transitions.items.find((event) => event.payload.action === 'Submit for review');
+		expect(handoff?.actor.api_key_name).toBe(runKeyName);
+		expect(handoff?.actor.run?.run_id).toBe(run.id);
+
+		await signIn(context, RUNNER_E2E.sessionToken);
+		await gotoHydrated(page, `/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`);
+		const commentCard = page.locator('article', { hasText: 'Harness progress comment' });
+		const attribution = `${RUNNER_E2E.name} via ${runKeyName} · run on ${issue.project_name}/${issue.number}`;
+		const compactAttribution = `${RUNNER_E2E.name} · ${WORKFLOW_NAME}/${ACTIVE_STATE_NAME} · run on ${issue.project_name}/${issue.number}`;
+		const header = commentCard.locator('header');
+		const actor = header.getByTestId('comment-actor');
+		const fullActor = actor.getByTestId('comment-actor-full');
+		const compactActor = actor.getByTestId('comment-actor-compact');
+		const edit = header.getByRole('button', { name: 'Edit comment' });
+		const remove = header.getByRole('button', { name: 'Delete comment' });
+		for (const viewport of [
+			{ width: 1440, height: 900 },
+			{ width: 390, height: 844 }
+		]) {
+			await page.setViewportSize(viewport);
+			if (viewport.width < 640) {
+				await expect(fullActor).toBeHidden();
+				await expect(compactActor).toBeVisible();
+				await expect(compactActor).toHaveText(compactAttribution);
+				await expect(compactActor).not.toContainText(RUNNER_NAME);
+				await expect(compactActor).toContainText(`${WORKFLOW_NAME}/${ACTIVE_STATE_NAME}`);
+			} else {
+				await expect(fullActor).toBeVisible();
+				await expect(fullActor).toHaveText(attribution);
+				await expect(compactActor).toBeHidden();
+			}
+			await expect(edit).toBeInViewport();
+			await expect(remove).toBeInViewport();
+
+			const geometry = await page.evaluate(
+				([card, commentHeader, actorLabel]) => {
+					const cardRect = card.getBoundingClientRect();
+					const headerRect = commentHeader.getBoundingClientRect();
+					const actorRect = actorLabel.getBoundingClientRect();
+					return {
+						overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+						card: { left: cardRect.left, right: cardRect.right },
+						header: { left: headerRect.left, right: headerRect.right },
+						actor: { left: actorRect.left, right: actorRect.right }
+					};
+				},
+				[
+					await commentCard.elementHandle(),
+					await header.elementHandle(),
+					await actor.elementHandle()
+				]
+			);
+			expect(geometry.overflow).toBeLessThanOrEqual(1);
+			expect(geometry.header.left).toBeGreaterThanOrEqual(geometry.card.left - 1);
+			expect(geometry.header.right).toBeLessThanOrEqual(geometry.card.right + 1);
+			expect(geometry.actor.left).toBeGreaterThanOrEqual(geometry.card.left - 1);
+			expect(geometry.actor.right).toBeLessThanOrEqual(geometry.card.right + 1);
+		}
 
 		// The run advanced the issue (its own key transitioned it)…
 		const ended = await body<ListResponse<TinesEvent>>(
@@ -332,7 +428,7 @@ esac
 	});
 
 	test('the log tail captured the harness output', async ({ request }) => {
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		const { items } = await body<ListResponse<AgentRun>>(
 			await api.get(`/api/v1/runs?runner=${runnerId}`)
 		);
@@ -348,7 +444,7 @@ esac
 		context,
 		page
 	}) => {
-		await signIn(context, ALICE.sessionToken);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		await gotoHydrated(page, '/agents');
 
 		// The daemon-registered runner card, online, with the rotate action.
@@ -437,7 +533,7 @@ esac
 		page,
 		uniqueName
 	}) => {
-		await signIn(context, ALICE.sessionToken);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		// `/api/v1/api-keys` is session-only, so the check rides the browser
 		// context's cookie rather than an API key.
 		const keyNames = async () =>
@@ -494,8 +590,8 @@ esac
 		request,
 		uniqueName
 	}) => {
-		const api = apiClient(request, ALICE.apiKey);
-		await signIn(context, ALICE.sessionToken);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		await gotoHydrated(page, '/agents');
 
 		const liveName = uniqueName('e2e-live');
@@ -543,7 +639,7 @@ esac
 		request
 	}) => {
 		test.setTimeout(120_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		setMode('flood');
 		const issue = await createIssue(request, 'Flood the log');
 
@@ -591,7 +687,7 @@ esac
 		page
 	}) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		rmSync(sideFile('sleep-pid'), { force: true });
 		setMode('sleep');
 		const issue = await createIssue(request, 'Probe the log protocol');
@@ -600,7 +696,7 @@ esac
 			{ label: 'the run to start' }
 		);
 
-		await signIn(context, ALICE.sessionToken);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		await gotoHydrated(page, '/agents');
 		const activeRow = page
 			.locator('li:not([inert])')
@@ -704,7 +800,7 @@ esac
 
 	test('a do-nothing harness strikes the issue three times and parks it', async ({ request }) => {
 		test.setTimeout(90_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		setMode('noop');
 		const issue = await createIssue(request, 'Nothing happens');
 
@@ -749,7 +845,7 @@ esac
 		page
 	}) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		rmSync(sideFile('sleep-pid'), { force: true });
 		setMode('sleep');
 		const issue = await createIssue(request, 'Cancel me');
@@ -771,7 +867,7 @@ esac
 
 		// The UI cancel dialog: strike note (this run hasn't moved the issue)
 		// plus an optional comment posted BEFORE the cancellation.
-		await signIn(context, ALICE.sessionToken);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		await gotoHydrated(page, '/agents');
 		// Run rows show the issue ref (project/#number), not the title.
 		const row = page
@@ -829,7 +925,7 @@ esac
 		request
 	}) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		const secret = `e2e-env-secret-${Date.now().toString(36)}`;
 		const plain = await body<ContextItem>(
 			await api.post('/api/v1/context', {
@@ -882,7 +978,7 @@ esac
 
 	test('rotating the token 401s the daemon, which exits with guidance', async ({ request }) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		const res = await api.post(`/api/v1/runners/${runnerId}/rotate-token`);
 		expect(res.ok()).toBe(true);
 		const rotated = await body<{ runner: Runner; runner_token: string }>(res);
@@ -908,7 +1004,7 @@ esac
 	test('runner tokens and run keys stay in their lanes', async ({ request }) => {
 		// A user API key is not a runner token.
 		const poll = await request.post(`/api/v1/runners/${runnerId}/poll`, {
-			headers: { authorization: `Bearer ${ALICE.apiKey}` },
+			headers: { authorization: `Bearer ${RUNNER_E2E.apiKey}` },
 			data: { owned_runs: [] }
 		});
 		expect(poll.status()).toBe(401);

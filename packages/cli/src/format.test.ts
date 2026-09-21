@@ -143,14 +143,16 @@ describe('commentLines', () => {
 		const actor = {
 			...comment.actor,
 			api_key_id: 'key_1',
-			api_key_name: 'run key',
+			api_key_name: 'macbook · Engineering/Implementation',
 			run: {
 				run_id: 'arun_1',
 				runner_name: 'macbook',
 				issue_ref: { project_name: 'Tines', number: 11 }
 			}
 		};
-		expect(commentLines({ ...comment, actor })[1]).toContain('alice via macbook · run on Tines/11');
+		expect(commentLines({ ...comment, actor })[1]).toContain(
+			'alice via macbook · Engineering/Implementation · run on Tines/11'
+		);
 	});
 });
 
