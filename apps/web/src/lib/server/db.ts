@@ -255,6 +255,8 @@ export interface ApiKeyTable {
 	name: string;
 	key_hash: string;
 	key_prefix: string;
+	/** Canonical JSON ApiKeyPermissions. */
+	permissions: string;
 	/** Set on run keys: the run this key is bound to. NULL for ordinary keys. */
 	agent_run_id: string | null;
 	/** Run keys only: the key is dead past this time even if never revoked. */

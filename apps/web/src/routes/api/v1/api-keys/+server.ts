@@ -31,6 +31,6 @@ export const GET: RequestHandler = api(async (event) => {
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event, { sessionOnly: true });
 	const body = await readJson<CreateApiKeyRequest>(event);
-	const key = await createApiKey(db, env, actor, body.name);
+	const key = await createApiKey(db, env, actor, body.name, body.permissions);
 	return json(key, { status: 201 });
 });

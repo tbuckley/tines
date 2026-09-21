@@ -1,4 +1,13 @@
-import type { ApiKey, ApiKeyCreated, RunKeyCounts, RunKeyFilter } from '@tines/shared';
+import {
+	FULL_API_KEY_PERMISSIONS,
+	parseApiKeyPermissions,
+	serializeApiKeyPermissions,
+	type ApiKey,
+	type ApiKeyCreated,
+	type ApiKeyPermissions,
+	type RunKeyCounts,
+	type RunKeyFilter
+} from '@tines/shared';
 import { sql, type Kysely } from 'kysely';
 import { newId, randomString, type Database } from '$lib/server/db';
 import { ApiFail, notFound, requireString, runAtomic, sha256Hex, type ActorContext } from './core';
@@ -30,6 +39,7 @@ interface ApiKeyRow {
 	created_at: number;
 	last_used_at: number | null;
 	revoked_at: number | null;
+	permissions: string;
 	agent_run_id?: string | null;
 	runner_name?: string | null;
 	run_project_name?: string | null;
@@ -37,13 +47,27 @@ interface ApiKeyRow {
 }
 
 function serialize(row: ApiKeyRow): ApiKey {
+	let permissions: ApiKeyPermissions;
+	try {
+		permissions = parseApiKeyPermissions(JSON.parse(row.permissions));
+	} catch {
+		throw new ApiFail(
+			500,
+			'invalid_key_permissions',
+			`API key "${row.id}" has invalid permissions`,
+			{
+				api_key_id: row.id
+			}
+		);
+	}
 	const key: ApiKey = {
 		id: row.id,
 		name: row.name,
 		key_prefix: row.key_prefix,
 		created_at: row.created_at,
 		last_used_at: row.last_used_at,
-		revoked_at: row.revoked_at
+		revoked_at: row.revoked_at,
+		permissions
 	};
 	// Only run keys carry provenance; a user key's wire shape is unchanged.
 	if (row.agent_run_id) {
@@ -76,6 +100,7 @@ function keyQuery(db: Kysely<Database>, userId: string) {
 			'api_key.created_at',
 			'api_key.last_used_at',
 			'api_key.revoked_at',
+			'api_key.permissions',
 			'api_key.agent_run_id',
 			'runner.name as runner_name',
 			'run_project.name as run_project_name',
@@ -139,9 +164,21 @@ export async function createApiKey(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	name: string
+	name: string,
+	permissionsInput: unknown = FULL_API_KEY_PERMISSIONS
 ): Promise<ApiKeyCreated> {
 	const keyName = requireString(name, 'name', { max: 100 }).trim();
+	let permissions: ApiKeyPermissions;
+	try {
+		permissions = parseApiKeyPermissions(permissionsInput);
+	} catch (error) {
+		if (error instanceof Error && 'field' in error) {
+			throw new ApiFail(422, 'invalid_field', error.message, {
+				field: (error as { field: string }).field
+			});
+		}
+		throw error;
+	}
 	const secret = generateSecret();
 	const now = Date.now();
 	const row = {
@@ -150,6 +187,7 @@ export async function createApiKey(
 		name: keyName,
 		key_hash: await sha256Hex(secret),
 		key_prefix: secret.slice(0, 14),
+		permissions: serializeApiKeyPermissions(permissions),
 		created_at: now,
 		last_used_at: null,
 		revoked_at: null
@@ -158,7 +196,7 @@ export async function createApiKey(
 		db.insertInto('api_key').values(row).compile(),
 		eventInsert(db, actor, {
 			type: 'api_key.created',
-			payload: { api_key_id: row.id, name: keyName, key_prefix: row.key_prefix }
+			payload: { api_key_id: row.id, name: keyName, key_prefix: row.key_prefix, permissions }
 		})
 	]);
 	return { ...serialize(row), key: secret };
