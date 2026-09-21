@@ -20,6 +20,8 @@ import {
 } from '$lib/server/usage-scope';
 import { retainedIssueWorkflow, retainedStartWorkflow } from './usage-ledger';
 import { hydrateUsageEvidenceRuns } from './runs';
+import type { ActorContext } from './core';
+import { projectReadPredicate } from './permissions';
 
 export interface EvidenceRequest {
 	kind: 'issues' | 'runs' | 'entries';
@@ -192,7 +194,8 @@ export async function getUsageEvidence(
 	scopeToken: string,
 	scope: UsageScopePayload,
 	request: EvidenceRequest,
-	material: string
+	material: string,
+	actor?: ActorContext
 ): Promise<UsageEvidencePage> {
 	if (request.kind === 'issues' && scope.mode !== 'period')
 		throw new Error('issue mode already selects one issue');
@@ -263,6 +266,7 @@ export async function getUsageEvidence(
 			let q = rows(db, owner)
 				.where('agent_run.ended_at', '>=', scope.mode === 'period' ? scope.from : 0)
 				.where('agent_run.ended_at', '<', cutoff);
+			if (actor) q = q.where(projectReadPredicate(actor, 'issue.project_id'));
 			if (seek)
 				q = q.where(
 					sql<boolean>`(COALESCE(agent_run.issue_id, ''), agent_run.ended_at, agent_run.id) > (${seek.issue}, ${seek.at}, ${seek.id})`
@@ -312,6 +316,7 @@ export async function getUsageEvidence(
 				request.population === 'finalized' ? 'agent_run.ended_at' : 'agent_run.created_at';
 			let q =
 				request.population === 'pending' ? pendingUsageEvidenceRows(db, owner) : rows(db, owner);
+			if (actor) q = q.where(projectReadPredicate(actor, 'issue.project_id'));
 			q = q.where('agent_run.created_at', '<', cutoff);
 			q =
 				request.population === 'finalized'

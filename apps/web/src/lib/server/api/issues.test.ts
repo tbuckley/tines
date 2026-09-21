@@ -36,7 +36,7 @@ import {
 	transitionIssue,
 	updateIssue
 } from './issues';
-import { createLabel, listLabels } from './labels';
+import { createLabel, listLabelsInternal } from './labels';
 import { listArtifacts } from './artifacts';
 import { getArtifactStore } from '$lib/server/artifact-store';
 import { runScheduleNow } from './schedules';
@@ -107,6 +107,41 @@ describe('scoped issue permissions', () => {
 			status: 404,
 			code: 'not_found'
 		});
+	});
+
+	it('redacts workspace, control-plane, and out-of-scope link expansions independently', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_2', '${USER}', 'other', 1, 1)
+		`);
+		const visible = addIssue(t, { project: PROJECT, id: 'iss_visible', title: 'visible' });
+		const hidden = addIssue(t, { project: 'prj_2', id: 'iss_hidden', title: 'hidden' });
+		t.sqlite.exec(`
+			INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at)
+			VALUES ('lnk_hidden', '${visible}', '${hidden}', 'blocks', 1);
+			INSERT INTO context_item
+				(id, user_id, kind, name, description, issue_id, position, version, created_at, updated_at)
+			VALUES ('ctx_visible', '${USER}', 'prompt', 'visible', '', '${visible}', 0, 1, 1, 1);
+			INSERT INTO context_item
+				(id, user_id, kind, name, description, workflow_state_id, position, version, created_at, updated_at)
+			VALUES ('ctx_shared', '${USER}', 'prompt', 'shared', '', '${OPEN}', 1, 1, 1, 1);
+		`);
+		const actor = scopedActor({
+			version: 1,
+			projects: { access: 'read', scope: [PROJECT] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+
+		const detail = await getIssueDetailForActor(t.db, actor, { id: visible }, { round: true });
+		expect(detail.workflow).toBeUndefined();
+		expect(detail.round).toBeUndefined();
+		expect(detail.redacted).toEqual(['workspace', 'control_plane', 'project_links']);
+		expect(detail.links.blocks).toEqual([]);
+		expect(detail.context_summary.prompts).toBe(1);
+		expect(detail.allowed_transitions.length).toBeGreaterThan(0);
 	});
 
 	it('allows content writes but rejects pin fields without control-plane write', async () => {
@@ -1000,10 +1035,9 @@ describe('createIssue with labels', () => {
 		const issue = await create(human, ['bug', 'p1']);
 		expect(issue.labels.map((l) => l.name)).toEqual(['bug', 'p1']);
 		// They land in the library too, each used exactly once.
-		expect((await listLabels(t.db, USER)).map((l) => `${l.name}:${l.issue_count}`)).toEqual([
-			'bug:1',
-			'p1:1'
-		]);
+		expect((await listLabelsInternal(t.db, USER)).map((l) => `${l.name}:${l.issue_count}`)).toEqual(
+			['bug:1', 'p1:1']
+		);
 		const event = t.all(
 			`SELECT payload FROM event WHERE issue_id = ? AND type = 'issue.created'`,
 			issue.id
@@ -1030,7 +1064,7 @@ describe('createIssue with labels', () => {
 		expect((caught as ApiFail).code).toBe('unknown_label');
 		// The whole point of resolving before the batch: no half-created issue.
 		expect(issueCount()).toBe(0);
-		expect(await listLabels(t.db, USER)).toEqual([]);
+		expect(await listLabelsInternal(t.db, USER)).toEqual([]);
 	});
 
 	it('dispatch effects: createIssue stays silent when the durable batch rejects', async () => {
@@ -1052,13 +1086,13 @@ describe('createIssue with labels', () => {
 		await createLabel(t.db, t.env, human, { name: 'bug' });
 		const issue = await create(runKey, ['BUG']);
 		expect(issue.labels.map((l) => l.name)).toEqual(['bug']);
-		expect(await listLabels(t.db, USER)).toHaveLength(1);
+		expect(await listLabelsInternal(t.db, USER)).toHaveLength(1);
 	});
 
 	it('dedupes names that differ only by case within one create', async () => {
 		const issue = await create(human, ['bug', 'Bug']);
 		expect(issue.labels.map((l) => l.name)).toEqual(['bug']);
-		expect(await listLabels(t.db, USER)).toHaveLength(1);
+		expect(await listLabelsInternal(t.db, USER)).toHaveLength(1);
 	});
 
 	it('filters on a label applied at creation time', async () => {

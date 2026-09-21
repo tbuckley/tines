@@ -251,6 +251,7 @@ export const GET: RequestHandler = api(async (event) => {
 		replayPayload?.mode === 'period' ? replayPayload.by : (params.get('by') ?? 'workflow')
 	) as UsageBy;
 	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'usage.read');
+	requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'usage.read');
 	if (!['project', 'workflow', 'state', 'outcome', 'runner', 'tier'].includes(by))
 		throw new ApiFail(422, 'invalid_field', 'Invalid usage grouping', { field: 'by' });
 	const periodPayload = replayPayload?.mode === 'period' ? replayPayload : null;
@@ -303,25 +304,31 @@ export const GET: RequestHandler = api(async (event) => {
 	)
 		throw notFound();
 	try {
-		const report = await getUsage(db, actor.userId, {
-			window: periodPayload
-				? undefined
-				: ((params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined),
-			from: periodPayload
-				? new Date(periodPayload.from).toISOString()
-				: (params.get('from') ?? undefined),
-			to: periodPayload
-				? new Date(periodPayload.to).toISOString()
-				: (params.get('to') ?? undefined),
-			project: selected?.project ?? params.get('project') ?? undefined,
-			workflow: selected?.workflow ?? params.get('workflow') ?? undefined,
-			state: selected?.state ?? params.get('state') ?? undefined,
-			runner: selected?.runner ?? params.get('runner') ?? undefined,
-			tier: selected?.tier ?? params.get('tier') ?? undefined,
-			outcome: outcome as never,
-			accounting_status: accounting as UsageAccountingStatus | undefined,
-			by
-		});
+		const report = await getUsage(
+			db,
+			actor.userId,
+			{
+				window: periodPayload
+					? undefined
+					: ((params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined),
+				from: periodPayload
+					? new Date(periodPayload.from).toISOString()
+					: (params.get('from') ?? undefined),
+				to: periodPayload
+					? new Date(periodPayload.to).toISOString()
+					: (params.get('to') ?? undefined),
+				project: selected?.project ?? params.get('project') ?? undefined,
+				workflow: selected?.workflow ?? params.get('workflow') ?? undefined,
+				state: selected?.state ?? params.get('state') ?? undefined,
+				runner: selected?.runner ?? params.get('runner') ?? undefined,
+				tier: selected?.tier ?? params.get('tier') ?? undefined,
+				outcome: outcome as never,
+				accounting_status: accounting as UsageAccountingStatus | undefined,
+				by
+			},
+			Date.now(),
+			actor
+		);
 		// A replay freezes the operator-visible period basis as well as its
 		// instants. Current supervisor settings must not relabel an old scope.
 		if (periodPayload) {

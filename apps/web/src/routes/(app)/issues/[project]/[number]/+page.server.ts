@@ -3,7 +3,7 @@ import { truncate } from '$lib/format';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail, loadIssue } from '$lib/server/api/issues';
-import { listLabels } from '$lib/server/api/labels';
+import { listLabelsInternal } from '$lib/server/api/labels';
 import { listRunners } from '$lib/server/api/runners';
 import { listRoutingRules } from '$lib/server/api/routing';
 import { hasAnyRun, listRuns } from '$lib/server/api/runs';
@@ -96,7 +96,7 @@ export const load: PageServerLoad = async ({
 		detailPromise,
 		eventsPromise,
 		// The whole vocabulary, for the labels picker in the aside.
-		listLabels(db, userId)
+		listLabelsInternal(db, userId)
 	]);
 
 	// The artifacts ride along on the detail (fetched in the same wave); expose

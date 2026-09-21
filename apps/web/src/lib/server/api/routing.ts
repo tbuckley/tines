@@ -16,7 +16,7 @@ import {
 	isTierOnlyTargets,
 	routingScopeSpecificity
 } from '@tines/shared';
-import type { CompiledQuery, Kysely } from 'kysely';
+import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { ApiFail, notFound, runAtomic, sessionActor, type ActorContext } from './core';
@@ -794,6 +794,7 @@ export async function rulesScopedToLabel(
 		id: string;
 		project_id: string | null;
 		workflow_state_id: string | null;
+		label_id: string | null;
 		scope_label: string;
 	}[]
 > {
@@ -802,6 +803,7 @@ export async function rulesScopedToLabel(
 		id: row.id,
 		project_id: row.project_id,
 		workflow_state_id: row.workflow_state_id,
+		label_id: row.label_id,
 		scope_label: rowScope(row).label
 	}));
 }
@@ -819,22 +821,41 @@ export function routingRuleDeletes(
 		id: string;
 		project_id: string | null;
 		workflow_state_id: string | null;
+		label_id: string | null;
 		scope_label: string;
 	}[]
 ): CompiledQuery[] {
-	return rules.flatMap((rule) => [
-		db.deleteFrom('routing_rule').where('id', '=', rule.id).compile(),
-		eventInsert(db, actor, {
-			type: 'routing_rule.deleted',
-			projectId: rule.project_id,
-			payload: {
-				rule_id: rule.id,
-				scope_label: rule.scope_label,
-				workflow_state_id: rule.workflow_state_id,
-				via: 'label.deleted'
-			}
-		})
-	]);
+	return rules.flatMap((rule) => {
+		const eventId = newId('evt');
+		const witness = sql<boolean>`EXISTS (
+			SELECT 1 FROM routing_rule current
+			WHERE current.id = ${rule.id}
+				AND current.project_id IS ${rule.project_id}
+				AND current.workflow_state_id IS ${rule.workflow_state_id}
+				AND current.label_id IS ${rule.label_id}
+		)`;
+		const admitted = sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`;
+		return [
+			eventInsert(
+				db,
+				actor,
+				{
+					id: eventId,
+					type: 'routing_rule.deleted',
+					projectId: rule.project_id,
+					payload: {
+						rule_id: rule.id,
+						scope_label: rule.scope_label,
+						workflow_state_id: rule.workflow_state_id,
+						via: 'label.deleted'
+					}
+				},
+				{ predicate: witness }
+			),
+			sql`SELECT CASE WHEN ${admitted} THEN 1 ELSE json_extract('x', '$[') END`.compile(db),
+			db.deleteFrom('routing_rule').where('id', '=', rule.id).where(admitted).compile()
+		];
+	});
 }
 
 export async function deleteRoutingRule(

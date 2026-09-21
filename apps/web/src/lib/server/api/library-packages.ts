@@ -1,5 +1,7 @@
 import { LibraryValidationError } from '@tines/shared';
 import { ApiFail } from './core';
+import type { ActorContext } from './core';
+import { requireAccess } from './permissions';
 import { validatePortableLibrary } from '../library/validate';
 export { validatePortableLibrary };
 import { exportWorkflowPackage } from '../library/export';
@@ -22,4 +24,28 @@ export async function buildWorkflowPackage(...args: Parameters<typeof exportWork
 			throw new ApiFail(422, 'invalid_library', error.message, { diagnostics: error.diagnostics });
 		throw error;
 	}
+}
+
+export async function buildWorkflowPackageForActor(
+	db: Parameters<typeof exportWorkflowPackage>[0],
+	actor: ActorContext,
+	workflowId: string,
+	options: NonNullable<Parameters<typeof exportWorkflowPackage>[3]> = {}
+) {
+	const requirements = [
+		{ domain: 'workspace' as const, access: 'read' as const },
+		...(options.source_project_id
+			? [
+					{
+						domain: 'project' as const,
+						access: 'read' as const,
+						projectId: options.source_project_id
+					}
+				]
+			: [])
+	];
+	requireAccess(actor, requirements, 'library.export', {
+		projectId: options.source_project_id
+	});
+	return buildWorkflowPackage(db, actor.userId, workflowId, options);
 }

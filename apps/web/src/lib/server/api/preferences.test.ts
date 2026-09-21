@@ -4,6 +4,7 @@ import { ApiFail, type ActorContext } from './core';
 import {
 	clearStaleFocus,
 	getPreferences,
+	getPreferencesForActor,
 	resolveFocus,
 	setFocus,
 	updatePreferences
@@ -48,6 +49,32 @@ describe('getPreferences', () => {
 			last_project_id: null,
 			updated_at: null
 		});
+	});
+
+	it('redacts stored pointers outside a key project scope', async () => {
+		await updatePreferences(t.db, t.env, actor, {
+			focused_project_id: SECOND,
+			last_project_id: SECOND
+		});
+		const scoped: ActorContext = {
+			...actor,
+			apiKeyId: 'key_scoped',
+			viaSession: false,
+			permissions: {
+				version: 1,
+				projects: { access: 'read', scope: [PROJECT] },
+				workspace: 'read',
+				control_plane: 'none'
+			},
+			runRestriction: null
+		};
+		await expect(getPreferencesForActor(t.db, scoped)).resolves.toMatchObject({
+			focused_project_id: null,
+			last_project_id: null
+		});
+		await expect(
+			updatePreferences(t.db, t.env, scoped, { focused_project_id: SECOND })
+		).rejects.toMatchObject({ code: 'insufficient_permissions' });
 	});
 });
 

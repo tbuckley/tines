@@ -45,7 +45,7 @@ import {
 import { eventInsert } from './events';
 import { projectConcurrencyControl } from './runner-concurrency';
 import { scopeLabel } from './scope';
-import { requireAccess, requireExecutionDelegation } from './permissions';
+import { requireAccess, requireExecutionDelegation, type Requirement } from './permissions';
 
 /**
  * Provider-key ping, injectable for tests (the default reaches the live
@@ -1309,12 +1309,16 @@ export async function deleteRunner(
 			'routing_rule.targets',
 			'routing_rule.project_id',
 			'routing_rule.workflow_state_id',
+			'routing_rule.label_id',
 			'project.name as project_name',
 			'workflow_state.name as state_name'
 		])
 		.where('routing_rule.user_id', '=', actor.userId)
 		.execute();
-	const rules = ruleRows
+	const affectingRuleRows = ruleRows.filter((r) =>
+		(JSON.parse(r.targets) as RoutingTarget[]).some((t) => t.runner_id === id)
+	);
+	const rules = affectingRuleRows
 		.map((r) => ({
 			id: r.id,
 			label: scopeLabel({
@@ -1332,6 +1336,34 @@ export async function deleteRunner(
 		.select(['issue.id', 'issue.number', 'issue.project_id', 'project.name as project_name'])
 		.where('issue.pinned_runner_id', '=', id)
 		.execute();
+	const runRows = await db
+		.selectFrom('agent_run')
+		.leftJoin('issue', 'issue.id', 'agent_run.issue_id')
+		.select(['agent_run.id', 'issue.project_id'])
+		.where('agent_run.runner_id', '=', id)
+		.execute();
+	const dependencyRequirements: Requirement[] = pinRows.map((pin) => ({
+		domain: 'project',
+		access: 'write',
+		projectId: pin.project_id
+	}));
+	for (const rule of affectingRuleRows) {
+		dependencyRequirements.push(
+			rule.project_id
+				? { domain: 'project', access: 'write', projectId: rule.project_id }
+				: { domain: 'project', access: 'write', scope: 'all' }
+		);
+		if (rule.workflow_state_id || rule.label_id)
+			dependencyRequirements.push({ domain: 'workspace', access: 'read' });
+	}
+	for (const run of runRows) {
+		dependencyRequirements.push(
+			run.project_id
+				? { domain: 'project', access: 'delete', projectId: run.project_id }
+				: { domain: 'project', access: 'delete', scope: 'all' }
+		);
+	}
+	requireAccess(actor, dependencyRequirements, 'runner.delete');
 
 	const plan = planRunnerRemoval(
 		runner,
@@ -1357,6 +1389,26 @@ export async function deleteRunner(
 		SELECT 1 FROM agent_run
 		WHERE runner_id = ${id} AND status IN (${sql.join([...ACTIVE_RUN_STATUSES])})
 	)`;
+	const plannedPins = JSON.stringify(pinRows.map((row) => row.id));
+	const plannedRules = JSON.stringify(affectingRuleRows.map((row) => row.id));
+	const plannedRuns = JSON.stringify(runRows.map((row) => row.id));
+	const removalWitness = sql<boolean>`${noActiveRuns}
+		AND NOT EXISTS (
+			SELECT 1 FROM issue
+			WHERE pinned_runner_id = ${id}
+				AND id NOT IN (SELECT value FROM json_each(${plannedPins}))
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM routing_rule rr, json_each(rr.targets) target
+			WHERE rr.user_id = ${actor.userId}
+				AND json_extract(target.value, '$.runner_id') = ${id}
+				AND rr.id NOT IN (SELECT value FROM json_each(${plannedRules}))
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM agent_run
+			WHERE runner_id = ${id}
+				AND id NOT IN (SELECT value FROM json_each(${plannedRuns}))
+		)`;
 	const guardedEvent = (input: {
 		type: string;
 		issueId?: string | null;
@@ -1370,7 +1422,7 @@ export async function deleteRunner(
 			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 			SELECT ${newId('evt')}, ${actor.userId}, ${input.type}, ${actor.userId}, ${actor.apiKeyId ?? null},
 				${input.issueId ?? null}, ${projectId}, ${JSON.stringify(input.payload)}, ${Date.now()}
-			WHERE ${noActiveRuns}`.compile(db);
+			WHERE ${removalWitness}`.compile(db);
 	};
 
 	const now = Date.now();
@@ -1381,7 +1433,7 @@ export async function deleteRunner(
 				.updateTable('routing_rule')
 				.set({ targets: JSON.stringify(update.targets), updated_at: now })
 				.where('id', '=', update.id)
-				.where(noActiveRuns)
+				.where(removalWitness)
 				.compile(),
 			guardedEvent({
 				type: 'routing_rule.updated',
@@ -1402,7 +1454,7 @@ export async function deleteRunner(
 				.updateTable('issue')
 				.set({ pinned_runner_id: null, pinned_tier: null, updated_at: now })
 				.where('id', '=', pin.issue_id)
-				.where(noActiveRuns)
+				.where(removalWitness)
 				.compile(),
 			guardedEvent({
 				type: 'issue.updated',
@@ -1425,7 +1477,20 @@ export async function deleteRunner(
 			.updateTable('issue')
 			.set({ pinned_runner_id: null, pinned_tier: null })
 			.where('pinned_runner_id', '=', id)
-			.where(noActiveRuns)
+			.where(removalWitness)
+			.compile(),
+		// Revoke before detaching provenance: a retired execution credential
+		// must never become a usable named key, even between cleanup releases.
+		db
+			.updateTable('api_key')
+			.set({ revoked_at: now })
+			.where('revoked_at', 'is', null)
+			.where(
+				'agent_run_id',
+				'in',
+				db.selectFrom('agent_run').select('id').where('runner_id', '=', id)
+			)
+			.where(removalWitness)
 			.compile(),
 		// Ended runs go with their runner (pause keeps history; delete does
 		// not); their run keys lose the provenance link but stay on record.
@@ -1437,13 +1502,13 @@ export async function deleteRunner(
 				'in',
 				db.selectFrom('agent_run').select('id').where('runner_id', '=', id)
 			)
-			.where(noActiveRuns)
+			.where(removalWitness)
 			.compile(),
-		db.deleteFrom('agent_run').where('runner_id', '=', id).where(noActiveRuns).compile(),
+		db.deleteFrom('agent_run').where('runner_id', '=', id).where(removalWitness).compile(),
 		// By this point a passing guard has emptied agent_run for the runner,
 		// so this delete's own guard only bites when the batch no-oped — and
 		// then it also spares the FK from the still-referencing ended runs.
-		db.deleteFrom('runner').where('id', '=', id).where(noActiveRuns).compile(),
+		db.deleteFrom('runner').where('id', '=', id).where(removalWitness).compile(),
 		guardedEvent({
 			type: 'runner.removed',
 			payload: {

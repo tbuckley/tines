@@ -3,7 +3,7 @@ import { truncate } from '$lib/format';
 import { listContextItems } from '$lib/server/api/context';
 import { ApiFail, sessionActor } from '$lib/server/api/core';
 import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
-import { listLabels } from '$lib/server/api/labels';
+import { listLabelsInternal } from '$lib/server/api/labels';
 import { getProject } from '$lib/server/api/projects';
 import { listRoutingRules } from '$lib/server/api/routing';
 import { listSchedules } from '$lib/server/api/schedules';
@@ -70,7 +70,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 			page
 		),
 		countIssuesByCategory(db, userId, scope),
-		listLabels(db, userId),
+		listLabelsInternal(db, userId),
 		loadWorkflows(db, userId),
 		listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 }),
 		listContextItems(db, actor, { project: project.id }, { cursor: null, limit: 100 }),

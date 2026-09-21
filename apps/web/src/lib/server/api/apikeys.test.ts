@@ -93,6 +93,36 @@ describe('API key permission lifecycle', () => {
 			1
 		);
 	});
+
+	it('loses creation atomically when the manager is revoked after validation', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		addKey(t, { id: 'key_manager', name: 'manager' });
+		const manager: ActorContext = {
+			...actor,
+			apiKeyId: 'key_manager',
+			apiKeyName: 'manager',
+			viaSession: false
+		};
+		const d1 = t.env.DB;
+		const realBatch = d1.batch.bind(d1);
+		let intercepted = false;
+		d1.batch = async (statements) => {
+			if (!intercepted) {
+				intercepted = true;
+				t.sqlite.prepare('UPDATE api_key SET revoked_at=? WHERE id=?').run(NOW, 'key_manager');
+			}
+			return realBatch(statements);
+		};
+
+		await expect(
+			createApiKey(t.db, t.env, manager, 'must not exist', FULL_API_KEY_PERMISSIONS)
+		).rejects.toMatchObject({ code: 'permission_delegation_conflict' });
+		expect(t.all("SELECT id FROM api_key WHERE name='must not exist'")).toEqual([]);
+		expect(
+			t.all("SELECT id FROM event WHERE type='api_key.created' AND payload LIKE '%must not exist%'")
+		).toEqual([]);
+	});
 });
 
 describe('listApiKeys', () => {

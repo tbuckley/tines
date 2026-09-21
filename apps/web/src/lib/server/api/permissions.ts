@@ -94,8 +94,14 @@ function requireRunOperation(
 		'artifact.update',
 		'artifact.delete',
 		'artifact.site_link',
+		'context.create',
+		'context.update',
+		'context.append',
+		'context.delete',
 		'label.assign',
-		'label.remove'
+		'label.remove',
+		'issue_link.create',
+		'issue_link.remove'
 	]);
 	if (boundIssueWrite.has(operation) && target.issueId !== run.issueId) {
 		throw runKeyForbidden({ operation, reason: 'outside_run_issue' });
@@ -119,7 +125,8 @@ export function requireAccess(
 			requirement.domain === 'project'
 				? 'projectId' in requirement
 					? permissionsIncludeProject(policy, requirement.projectId, requirement.access)
-					: policy.projects.scope === 'all' &&
+					: !actor.runRestriction &&
+						policy.projects.scope === 'all' &&
 						accessIncludes(policy.projects.access, requirement.access)
 				: accessIncludes(policy[requirement.domain], requirement.access);
 		if (!allowed) {

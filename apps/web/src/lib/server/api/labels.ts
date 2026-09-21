@@ -26,12 +26,17 @@ import {
 } from './core';
 import { assertWritable, issueProject } from './archive';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
-import { contextItemQuery, deleteContextItem } from './context';
+import { findAttachedContext, sweepAttachedContext } from './context';
 import { routingRuleDeletes, rulesScopedToLabel } from './routing';
 import { eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
 import { scopeLabel } from './scope';
-import { requireAccess } from './permissions';
+import {
+	accessAllowed,
+	contextReadPredicate,
+	projectReadPredicate,
+	requireAccess
+} from './permissions';
 
 /**
  * Exactly what `newId('lbl')` mints (16 chars of `ID_ALPHABET`). A ref of
@@ -132,22 +137,33 @@ export async function resolveLabelRef(
 /** The whole library, with usage counts. Small enough to need no paging. */
 export async function listLabels(
 	db: Kysely<Database>,
-	actorInput: ActorContext | string
+	actor: ActorContext
 ): Promise<LabelWithUsage[]> {
-	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
 	requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'label.read');
 	const userId = actor.userId;
+	const controlReadable = accessAllowed(
+		actor,
+		[{ domain: 'control_plane', access: 'read' }],
+		'routing_rule.read'
+	);
 	const rows = await db
 		.selectFrom('label')
 		.selectAll('label')
 		.select([
-			sql<number>`(SELECT COUNT(*) FROM issue_label il WHERE il.label_id = label.id)`.as(
-				'issue_count'
-			),
-			sql<number>`(SELECT COUNT(*) FROM context_item ci WHERE ci.label_id = label.id)`.as(
-				'context_item_count'
-			),
-			sql<number>`(SELECT COUNT(*) FROM routing_rule rr WHERE rr.label_id = label.id)`.as(
+			sql<number>`(SELECT COUNT(*) FROM issue_label il
+				JOIN issue label_issue ON label_issue.id = il.issue_id
+				WHERE il.label_id = label.id
+					AND ${projectReadPredicate(actor, 'label_issue.project_id')})`.as('issue_count'),
+			sql<number>`(SELECT COUNT(*) FROM context_item ci
+				LEFT JOIN issue label_context_issue ON label_context_issue.id = ci.issue_id
+				WHERE ci.label_id = label.id AND ${contextReadPredicate(actor, {
+					project: 'ci.project_id',
+					issueProject: 'label_context_issue.project_id',
+					state: 'ci.workflow_state_id',
+					label: 'ci.label_id'
+				})})`.as('context_item_count'),
+			sql<number>`(SELECT COUNT(*) FROM routing_rule rr WHERE rr.label_id = label.id
+				AND ${controlReadable ? projectReadPredicate(actor, 'rr.project_id') : sql<boolean>`0 = 1`})`.as(
 				'routing_rule_count'
 			)
 		])
@@ -160,6 +176,14 @@ export async function listLabels(
 		context_item_count: Number(r.context_item_count),
 		routing_rule_count: Number(r.routing_rule_count)
 	}));
+}
+
+/** Trusted owner/session boundary for page loaders and internal delivery. */
+export function listLabelsInternal(
+	db: Kysely<Database>,
+	userId: string
+): Promise<LabelWithUsage[]> {
+	return listLabels(db, sessionActor({ id: userId }));
 }
 
 async function resolveByName(
@@ -299,23 +323,12 @@ export async function deleteLabel(
 	requireAccess(actor, [{ domain: 'workspace', access: 'delete' }], 'label.delete');
 	const label = await resolveLabelRef(db, actor.userId, labelRef);
 	if (!label) throw notFound();
-	const scopedItems = (
-		await contextItemQuery(db, actor.userId).where('context_item.label_id', '=', label.id).execute()
-	).map((row) => ({
-		id: row.id,
-		kind: row.kind as ContextKind,
-		name: row.name,
-		scope_label: scopeLabel({
-			projectId: row.project_id,
-			projectName: row.scope_project_name,
-			workflowStateId: row.workflow_state_id,
-			stateName: row.scope_state_name,
-			labelId: row.label_id,
-			labelName: row.scope_label_name,
-			issueId: row.issue_id,
-			issueProjectName: row.scope_issue_project_name,
-			issueNumber: row.scope_issue_number
-		})
+	const attachedContext = await findAttachedContext(db, actor.userId, { labelId: label.id });
+	const scopedItems = attachedContext.map((item) => ({
+		id: item.id,
+		kind: item.kind,
+		name: item.name,
+		scope_label: scopeLabel(item.scope)
 	}));
 	const scopedRules = await rulesScopedToLabel(db, actor.userId, label.id);
 	const issueProjects = await db
@@ -333,7 +346,16 @@ export async function deleteLabel(
 				access: 'write' as const,
 				projectId: row.project_id
 			})),
-			...(scopedRules.length ? ([{ domain: 'control_plane', access: 'delete' }] as const) : [])
+			...(scopedRules.length ? ([{ domain: 'control_plane', access: 'delete' }] as const) : []),
+			...scopedRules.map((rule) =>
+				rule.project_id
+					? {
+							domain: 'project' as const,
+							access: 'write' as const,
+							projectId: rule.project_id
+						}
+					: { domain: 'project' as const, access: 'write' as const, scope: 'all' as const }
+			)
 		],
 		'label.delete'
 	);
@@ -364,9 +386,13 @@ export async function deleteLabel(
 			{ context_items: scopedItems, routing_rules: scopedRules }
 		);
 	}
-	for (const item of scopedItems) {
-		await deleteContextItem(db, env, actor, item.id);
-	}
+	const contextSweep = sweepAttachedContext(
+		db,
+		actor,
+		attachedContext,
+		options.force === true,
+		`delete label "${label.name}"`
+	);
 	const used = await db
 		.selectFrom('issue_label')
 		.select((eb) => eb.fn.countAll<number>().as('n'))
@@ -375,6 +401,7 @@ export async function deleteLabel(
 	const issueCount = Number(used?.n ?? 0);
 
 	await runAtomic(env, [
+		...contextSweep.queries,
 		// A label-scoped rule goes with the label: see `routingRuleDeletes`.
 		...routingRuleDeletes(db, actor, scopedRules),
 		// Explicit, because D1 does not enforce foreign keys by default.
@@ -459,7 +486,7 @@ export async function resolveOrCreateLabels(
 	}
 
 	if (unknown.length > 0) {
-		const known = await listLabels(db, actor.userId);
+		const known = await listLabels(db, actor);
 		// For a human every other miss was created, so `unknown` here can only
 		// hold stale ids - a page that loaded before someone deleted the label.
 		const why = actor.agentRunId

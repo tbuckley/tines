@@ -47,7 +47,12 @@ import {
 } from '$lib/server/supervisor/stats';
 import { ApiFail, requireString, runAtomic, sessionActor, type ActorContext } from './core';
 import { applyEventWindow, eventInsert, eventQuery, serializeEvent } from './events';
-import { requireAccess, requireExecutionDelegation } from './permissions';
+import {
+	accessAllowed,
+	projectReadPredicate,
+	requireAccess,
+	requireExecutionDelegation
+} from './permissions';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { effectiveAutomationEnabled } from '../supervisor/settings';
 
@@ -407,13 +412,21 @@ function refOf(row: QueueRefRow, queuePosition: number | null): QueueIssueRef {
  * Nothing is materialised: this runs on request, on the Agents page load and
  * for `tines supervisor status`.
  */
-export async function loadFleetQueue(
+async function loadFleetQueueScoped(
 	db: Kysely<Database>,
 	userId: string,
 	now: number = Date.now(),
-	options: { project?: string } = {}
+	options: { project?: string } = {},
+	actor?: ActorContext
 ): Promise<FleetQueue> {
 	const project = options.project ? await resolveProjectRef(db, userId, options.project) : null;
+	if (actor && project)
+		requireAccess(
+			actor,
+			[{ domain: 'project', access: 'read', projectId: project.id }],
+			'supervisor.read',
+			{ projectId: project.id }
+		);
 	const [settings, allEligible, runners, rules, counts, parkedRows, humanRow] = await Promise.all([
 		loadDispatchSettings(db, userId),
 		loadEligibleIssues(db, userId),
@@ -423,7 +436,11 @@ export async function loadFleetQueue(
 		// Parked issues are excluded from the eligible set by definition, so
 		// they need their own read. Same eligibility joins, `needs_attention`
 		// flipped: these are the issues a human has to resume.
-		queueRefQuery(db, userId, project?.id).where('issue.needs_attention', '=', 1).execute(),
+		(() => {
+			let q = queueRefQuery(db, userId, project?.id).where('issue.needs_attention', '=', 1);
+			if (actor) q = q.where(projectReadPredicate(actor, 'issue.project_id'));
+			return q.execute();
+		})(),
 		// Human stages get a summary line only, so a count and a min suffice.
 		db
 			.selectFrom('issue')
@@ -433,15 +450,26 @@ export async function loadFleetQueue(
 			.where('project.archived_at', 'is', null)
 			.where('st.category', '=', 'awaiting_human')
 			.$if(project !== null, (q) => q.where('issue.project_id', '=', project!.id))
+			.$if(actor !== undefined, (q) => q.where(projectReadPredicate(actor!, 'issue.project_id')))
 			.select((eb) => [
 				eb.fn.countAll<number>().as('n'),
 				eb.fn.min(sql<number>`COALESCE(issue.state_entered_at, issue.created_at)`).as('oldest')
 			])
 			.executeTakeFirst()
 	]);
-	const eligible = project
+	const projectEligible = project
 		? allEligible.filter((issue) => issue.project_id === project.id)
 		: allEligible;
+	const eligible = actor
+		? projectEligible.filter((issue) =>
+				accessAllowed(
+					actor,
+					[{ domain: 'project', access: 'read', projectId: issue.project_id }],
+					'supervisor.read',
+					{ projectId: issue.project_id, issueId: issue.id }
+				)
+			)
+		: projectEligible;
 
 	// The queue the explainer reports positions in: eligible issues that would
 	// actually route somewhere, oldest-`updated_at` first.
@@ -533,6 +561,24 @@ export async function loadFleetQueue(
 			oldest_entered_at: humanRow?.oldest ?? null
 		}
 	};
+}
+
+export function loadFleetQueue(
+	db: Kysely<Database>,
+	userId: string,
+	now: number = Date.now(),
+	options: { project?: string } = {}
+): Promise<FleetQueue> {
+	return loadFleetQueueScoped(db, userId, now, options);
+}
+
+export function loadFleetQueueForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	now: number = Date.now(),
+	options: { project?: string } = {}
+): Promise<FleetQueue> {
+	return loadFleetQueueScoped(db, actor.userId, now, options, actor);
 }
 
 /** The eligibility joins plus the ref columns, ordered by the wait clock. */
@@ -677,7 +723,8 @@ export async function loadStageStats(
 		phase?: (name: 'read' | 'prepare' | 'base' | 'markers', durationMs: number) => void;
 		/** Local retained profiler: reproduce the pre-Tines/518 marker loop. */
 		profileRepeatPreparation?: boolean;
-	}
+	},
+	actor?: ActorContext
 ): Promise<StageStatsReport> {
 	const windowMs = parseStatsWindow(query.window);
 	if (query.compare !== undefined && query.compare !== 'previous' && query.compare !== 'none') {
@@ -687,6 +734,13 @@ export async function loadStageStats(
 	}
 	const compare = query.compare !== 'none';
 	const project = query.project ? await resolveProjectRef(db, userId, query.project) : null;
+	if (actor && project)
+		requireAccess(
+			actor,
+			[{ domain: 'project', access: 'read', projectId: project.id }],
+			'supervisor.read',
+			{ projectId: project.id }
+		);
 	// Both windows are scanned in one pass; `compare=none` still reads them,
 	// which keeps the query plan (and the cache) identical.
 	const scanFrom = now - 2 * windowMs;
@@ -728,6 +782,7 @@ export async function loadStageStats(
 				]);
 			q = applyEventWindow(q, { since: scanFrom, until: now, type: [...STATS_EVENT_TYPES] });
 			if (project) q = q.where('event.project_id', '=', project.id);
+			if (actor) q = q.where(projectReadPredicate(actor, 'event.project_id'));
 			return q.execute();
 		})(),
 		(() => {
@@ -751,12 +806,17 @@ export async function loadStageStats(
 					'agent_run.ended_at as ended_at'
 				]);
 			if (project) q = q.where('issue.project_id', '=', project.id);
+			if (actor) q = q.where(projectReadPredicate(actor, 'issue.project_id'));
 			return q.execute();
 		})(),
 		db
 			.selectFrom('agent_run')
+			.leftJoin('issue as outcome_issue', 'outcome_issue.id', 'agent_run.issue_id')
 			.where('user_id', '=', userId)
 			.where('outcome', 'is not', null)
+			.$if(actor !== undefined, (q) =>
+				q.where(projectReadPredicate(actor!, 'outcome_issue.project_id'))
+			)
 			.select((eb) => eb.fn.min<number | null>('ended_at').as('since'))
 			.executeTakeFirst(),
 		(() => {
@@ -787,6 +847,11 @@ export async function loadStageStats(
 			if (project) {
 				q = q.where((eb) =>
 					eb.or([eb('project_id', 'is', null), eb('project_id', '=', project.id)])
+				);
+			}
+			if (actor) {
+				q = q.where((eb) =>
+					eb.or([eb('project_id', 'is', null), projectReadPredicate(actor, 'event.project_id')])
 				);
 			}
 			return q.execute();

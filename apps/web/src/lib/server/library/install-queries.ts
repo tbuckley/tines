@@ -137,7 +137,7 @@ export function compilePackageInstall(
 	return [
 		sql`INSERT INTO library_install (id,user_id,actor_key,document_digest,plan_digest,request_digest,execution_nonce,receipt_json,created_at)
    SELECT ${plan.id},${actor.userId},${plan.actor_key},${plan.document_digest},${plan.plan_digest},${requestDigest},${executionNonce},${JSON.stringify(receipt)},${receipt.committed_at}
-	   WHERE ${packageDestinationExpression(actor.userId, plan.selection)}=${witnessRaw}
+	   WHERE ${packageDestinationExpression(actor, plan.selection)}=${witnessRaw}
 	    AND CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) < ${plan.expires_at}
 	    AND ${sourceGuard}`.compile(db),
 		...compilePackageObjects(db, actor, resolved, plan.allocation, guard, receipt.committed_at),

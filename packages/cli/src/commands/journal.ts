@@ -97,6 +97,15 @@ async function resolveJournal(
 		// Rollout insurance only: a CLI newer than the server it is pointed at
 		// has no /journal endpoint, so fall back to the issue's current state.
 		if (!(err instanceof ApiError) || err.status !== 404) throw err;
+		if (!issue.workflow)
+			throw new ApiError(
+				403,
+				{
+					code: 'insufficient_permissions',
+					message: 'Journal fallback requires workspace read access'
+				},
+				'Journal fallback requires workspace read access'
+			);
 		const scope = stateScope(issue, issue.state, issue.workflow);
 		return { issue, scope, note: null, item: await journalItemAt(api, scope) };
 	}

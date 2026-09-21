@@ -251,13 +251,41 @@ export async function createApiKey(
 		last_used_at: null,
 		revoked_at: null
 	};
-	await runAtomic(env, [
-		db.insertInto('api_key').values(row).compile(),
-		eventInsert(db, actor, {
-			type: 'api_key.created',
-			payload: { api_key_id: row.id, name: keyName, key_prefix: row.key_prefix, permissions }
-		})
+	const managerWitness = actor.apiKeyId
+		? sql<boolean>`EXISTS (
+			SELECT 1 FROM api_key manager
+			WHERE manager.id = ${actor.apiKeyId} AND manager.user_id = ${actor.userId}
+				AND manager.permissions = ${serializeApiKeyPermissions(actor.permissions!)}
+				AND manager.revoked_at IS NULL
+				AND (manager.expires_at IS NULL OR manager.expires_at > ${now})
+		)`
+		: sql<boolean>`1 = 1`;
+	const insert = sql`
+		INSERT INTO api_key
+			(id, user_id, name, key_hash, key_prefix, permissions, created_at, last_used_at, revoked_at)
+		SELECT ${row.id}, ${row.user_id}, ${row.name}, ${row.key_hash}, ${row.key_prefix},
+			${row.permissions}, ${row.created_at}, NULL, NULL
+		WHERE ${managerWitness}
+	`.compile(db);
+	const results = await runAtomic(env, [
+		insert,
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'api_key.created',
+				payload: { api_key_id: row.id, name: keyName, key_prefix: row.key_prefix, permissions }
+			},
+			{ predicate: sql<boolean>`EXISTS (SELECT 1 FROM api_key WHERE id = ${row.id})` }
+		)
 	]);
+	if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1) {
+		throw new ApiFail(
+			409,
+			'permission_delegation_conflict',
+			'The acting API key changed while delegating permissions; retry with current authority'
+		);
+	}
 	return { ...serialize(row), key: secret };
 }
 

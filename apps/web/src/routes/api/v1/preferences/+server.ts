@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { UpdatePreferencesRequest } from '@tines/shared';
 import { api, apiContext, readJson } from '$lib/server/api/core';
-import { getPreferences, updatePreferences } from '$lib/server/api/preferences';
+import { getPreferencesForActor, updatePreferences } from '$lib/server/api/preferences';
 import type { RequestHandler } from './$types';
 import { requireAccess } from '$lib/server/api/permissions';
 
@@ -10,8 +10,7 @@ import { requireAccess } from '$lib/server/api/permissions';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'preference.read');
-	return json(await getPreferences(db, actor.userId));
+	return json(await getPreferencesForActor(db, actor));
 });
 
 export const PATCH: RequestHandler = api(async (event) => {

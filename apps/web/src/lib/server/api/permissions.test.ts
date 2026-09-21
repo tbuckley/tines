@@ -86,6 +86,64 @@ describe('requireAccess', () => {
 			expect.objectContaining({ code: 'run_key_forbidden' })
 		);
 	});
+
+	it('binds every existing-issue context and link mutation to the run issue', () => {
+		const run: ActorContext = {
+			...scoped,
+			agentRunId: 'run_1',
+			permissions: FULL_API_KEY_PERMISSIONS,
+			runRestriction: {
+				policy: 'run-v1',
+				runId: 'run_1',
+				issueId: 'iss_a',
+				projectId: 'prj_a',
+				launchStateId: 'wfs_a'
+			}
+		};
+		for (const operation of [
+			'context.create',
+			'context.update',
+			'context.append',
+			'context.delete',
+			'issue_link.create',
+			'issue_link.remove'
+		]) {
+			expect(() =>
+				requireAccess(run, [], operation, {
+					projectId: 'prj_a',
+					issueId: 'iss_a'
+				})
+			).not.toThrow();
+			expect(() =>
+				requireAccess(run, [], operation, {
+					projectId: 'prj_a',
+					issueId: 'iss_other'
+				})
+			).toThrow(expect.objectContaining({ code: 'run_key_forbidden' }));
+			expect(() => requireAccess(run, [], operation, { projectId: 'prj_a' })).toThrow(
+				expect.objectContaining({ code: 'run_key_forbidden' })
+			);
+		}
+	});
+
+	it('never lets a run key satisfy an all-projects requirement', () => {
+		const run: ActorContext = {
+			...session,
+			apiKeyId: 'key_run',
+			viaSession: false,
+			agentRunId: 'run_1',
+			runRestriction: {
+				policy: 'run-v1',
+				runId: 'run_1',
+				issueId: 'iss_a',
+				projectId: 'prj_a',
+				launchStateId: 'wfs_a'
+			}
+		};
+		expect(() =>
+			requireAccess(run, [{ domain: 'project', access: 'read', scope: 'all' }], 'library.prepare')
+		).toThrow(expect.objectContaining({ code: 'insufficient_permissions' }));
+	});
 });
 
 describe('projectReadPredicate', () => {

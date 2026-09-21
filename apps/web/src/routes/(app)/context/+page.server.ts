@@ -1,6 +1,6 @@
 import { AGENT_GUIDELINES_NAME, CONTEXT_KINDS } from '@tines/shared';
 import { countSharedContextItems, listContextItems } from '$lib/server/api/context';
-import { listLabels } from '$lib/server/api/labels';
+import { listLabelsInternal } from '$lib/server/api/labels';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
 import { resolvePageFocus } from '$lib/server/page-focus';
@@ -31,7 +31,7 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 			{ cursor: null, limit: 100 }
 		),
 		loadWorkflows(db, userId),
-		listLabels(db, userId),
+		listLabelsInternal(db, userId),
 		// Offer the starter guidance until a global item by that name exists.
 		listContextItems(db, actor, { kind: 'prompt', exact: true }, { cursor: null, limit: 100 }),
 		focusId ? countSharedContextItems(db, userId) : Promise.resolve(null)

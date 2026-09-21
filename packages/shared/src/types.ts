@@ -617,7 +617,8 @@ export interface AllowedTransition {
 }
 
 export interface IssueDetail extends Issue {
-	workflow: Workflow;
+	/** Full shared workflow definition; omitted when workspace read is unavailable. */
+	workflow?: Workflow;
 	comments: Comment[];
 	/** The named transitions legally available from the current state. */
 	allowed_transitions: AllowedTransition[];
@@ -642,6 +643,8 @@ export interface IssueDetail extends Issue {
 	since_last_run?: SinceLastRun | null;
 	/** Prompt-only metadata, emitted when launch comment selection is requested. */
 	launch_comments?: { latest_completed_run_comment_id: string | null };
+	/** Independent domains omitted from this composite response. */
+	redacted?: ('workspace' | 'control_plane' | 'project_links')[];
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,8 @@ import {
 import { sql, type Kysely, type RawBuilder } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { retainedStartWorkflow, retainedIssueWorkflow, retainedWorkflow } from './usage-ledger';
+import type { ActorContext } from './core';
+import { projectReadPredicate } from './permissions';
 
 export interface UsageRequest extends UsagePeriodInput, ResolvedUsageFilters {
 	by?: UsageBy;
@@ -201,7 +203,8 @@ export async function getUsage(
 	db: Kysely<Database>,
 	userId: string,
 	request: UsageRequest,
-	generatedAt = Date.now()
+	generatedAt = Date.now(),
+	actor?: ActorContext
 ): Promise<UsageReport> {
 	const period = resolveUsagePeriod(request, await configuredTimezone(db, userId), generatedAt);
 	const by = request.by ?? 'workflow';
@@ -215,6 +218,7 @@ export async function getUsage(
 		...(request.accounting_status ? { accounting_status: request.accounting_status } : {})
 	};
 	let q = scanQuery(db, userId).where('agent_run.ended_at', '>=', period.from);
+	if (actor) q = q.where(projectReadPredicate(actor, 'issue.project_id'));
 	if (filters.project && filters.project !== 'unknown')
 		q = q.where('issue.project_id', '=', filters.project);
 	if (filters.project === 'unknown') q = q.where('issue.project_id', 'is', null);
@@ -250,6 +254,7 @@ export async function getUsage(
 		.where((eb) =>
 			eb.or([eb('agent_run.ended_at', 'is', null), eb('agent_run.ended_at', '>=', period.to)])
 		);
+	if (actor) pendingQ = pendingQ.where(projectReadPredicate(actor, 'issue.project_id'));
 	if (filters.project && filters.project !== 'unknown')
 		pendingQ = pendingQ.where('issue.project_id', '=', filters.project);
 	if (filters.project === 'unknown') pendingQ = pendingQ.where('issue.project_id', 'is', null);

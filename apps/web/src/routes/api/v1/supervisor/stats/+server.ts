@@ -13,6 +13,7 @@ import { requireAccess } from '$lib/server/api/permissions';
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'supervisor.read');
+	requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'supervisor.read');
 	const url = event.url;
 	const phases: string[] = [];
 	const response = json(
@@ -28,7 +29,8 @@ export const GET: RequestHandler = api(async (event) => {
 			{
 				phase: (name, durationMs) => phases.push(`stats_${name};dur=${durationMs.toFixed(1)}`),
 				profileRepeatPreparation: event.platform?.env.STATS_SCALE_REPEAT_PREPARATION === '1'
-			}
+			},
+			actor
 		)
 	);
 	response.headers.append('Server-Timing', phases.join(', '));

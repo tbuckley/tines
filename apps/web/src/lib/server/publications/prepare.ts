@@ -133,6 +133,20 @@ export async function preparePublication(
 	let selection: unknown;
 	let sourceWorkflowId: string | null = null;
 	if (request.source.kind === 'owned_workflow') {
+		if (request.source.options.source_project_id) {
+			requireAccess(
+				actor,
+				[
+					{
+						domain: 'project',
+						access: 'read',
+						projectId: request.source.options.source_project_id
+					}
+				],
+				'publication.prepare',
+				{ projectId: request.source.options.source_project_id }
+			);
+		}
 		const draft = request.source.draft;
 		if (draft && Object.hasOwn(request.source.options, 'authoring'))
 			throw new ApiFail(

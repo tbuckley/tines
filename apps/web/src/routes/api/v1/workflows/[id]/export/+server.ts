@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { parseStrictLibraryJson, type ExportWorkflowPackageOptions } from '@tines/shared';
 import { api, apiContext, ApiFail } from '$lib/server/api/core';
-import { buildWorkflowPackage } from '$lib/server/api/library-packages';
+import { buildWorkflowPackageForActor } from '$lib/server/api/library-packages';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
@@ -38,5 +38,5 @@ export const GET: RequestHandler = api(async (event) => {
 	} catch {
 		throw new ApiFail(400, 'invalid_json', 'Tier and authoring selectors must be strict JSON');
 	}
-	return json(await buildWorkflowPackage(db, actor.userId, event.params.id, options));
+	return json(await buildWorkflowPackageForActor(db, actor, event.params.id, options));
 });

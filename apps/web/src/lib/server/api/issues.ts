@@ -59,7 +59,7 @@ import { runQuery, serializeRun } from './runs';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule, scheduleInsertQueries } from './schedules';
 import { insertValues, type QueryGuard } from './query-guard';
-import { projectReadPredicate, requireAccess } from './permissions';
+import { accessAllowed, projectReadPredicate, requireAccess } from './permissions';
 import {
 	assertCreateIssueLinksCommitted,
 	createIssueLinkAdmissionGuard,
@@ -869,6 +869,8 @@ export async function loadIssueForActor(
 }
 
 export interface IssueDetailOptions {
+	/** External actor used to project independent domains from the response. */
+	authorizationActor?: ActorContext;
 	/** Include metadata used only by launch-prompt comment selection. */
 	launchComments?: boolean;
 	/**
@@ -893,6 +895,8 @@ export interface IssueDetailOptions {
 	round?: boolean;
 }
 
+export type FullIssueDetail = IssueDetail & { workflow: NonNullable<IssueDetail['workflow']> };
+
 /** "Project/42" — the ref an agent types, and the one the fix commands quote. */
 function issueRef(issue: Pick<Issue, 'project_name' | 'number'>): string {
 	return `${issue.project_name}/${issue.number}`;
@@ -903,10 +907,20 @@ export async function getIssueDetail(
 	userId: string,
 	ref: IssueLookup | Issue,
 	opts: IssueDetailOptions = {}
-): Promise<IssueDetail> {
+): Promise<FullIssueDetail> {
 	// An already-loaded issue can be passed straight in (the page resolves the
 	// row first so everything below it starts in one wave).
 	const issue = 'workflow_id' in ref ? ref : await loadIssue(db, userId, ref);
+	const actor = opts.authorizationActor;
+	const workspaceReadable =
+		actor === undefined ||
+		accessAllowed(actor, [{ domain: 'workspace', access: 'read' }], 'workflow.read');
+	const controlReadable =
+		actor === undefined ||
+		accessAllowed(actor, [{ domain: 'control_plane', access: 'read' }], 'run.read', {
+			projectId: issue.project_id,
+			issueId: issue.id
+		});
 
 	// Artifacts are needed unconditionally when the caller asked for them, and
 	// otherwise only if some outgoing transition declares requirements — which
@@ -917,13 +931,18 @@ export async function getIssueDetail(
 			opts.workflows ?? loadWorkflows(db, userId, issue.workflow_id),
 			loadCommentHistory(db, issue.id),
 			loadIssueLinks(db, userId, issue.id),
-			contextSummaryForIssue(db, userId, {
-				projectId: issue.project_id,
-				stateId: issue.state.id,
-				issueId: issue.id
-			}),
+			contextSummaryForIssue(
+				db,
+				userId,
+				{
+					projectId: issue.project_id,
+					stateId: issue.state.id,
+					issueId: issue.id
+				},
+				actor
+			),
 			opts.artifacts ? listArtifacts(db, userId, issue.id) : null,
-			opts.round ? loadHandoffRows(db, userId, issue.id) : null
+			opts.round && controlReadable ? loadHandoffRows(db, userId, issue.id) : null
 		]);
 	const comments = commentHistory.comments;
 
@@ -945,12 +964,57 @@ export async function getIssueDetail(
 		});
 	}
 
+	let visibleLinks = links;
+	let linksRedacted = false;
+	if (actor) {
+		const linked = [
+			...links.blocked_by,
+			...links.blocks,
+			...(links.duplicate_of ? [links.duplicate_of] : []),
+			...links.duplicated_by
+		];
+		const projectRows = linked.length
+			? await db
+					.selectFrom('issue')
+					.select(['id', 'project_id'])
+					.where(
+						'id',
+						'in',
+						linked.map((item) => item.issue_id)
+					)
+					.execute()
+			: [];
+		const byIssue = new Map(projectRows.map((row) => [row.id, row.project_id]));
+		const allowed = (item: LinkedIssue) => {
+			const projectId = byIssue.get(item.issue_id);
+			return Boolean(
+				projectId &&
+				accessAllowed(
+					actor,
+					[{ domain: 'project', access: 'read', projectId }],
+					'issue_link.read',
+					{ projectId, issueId: item.issue_id }
+				)
+			);
+		};
+		visibleLinks = {
+			blocked_by: links.blocked_by.filter(allowed),
+			blocks: links.blocks.filter(allowed),
+			duplicate_of: links.duplicate_of && allowed(links.duplicate_of) ? links.duplicate_of : null,
+			duplicated_by: links.duplicated_by.filter(allowed)
+		};
+		linksRedacted = linked.length !== Object.values(visibleLinks).flat().filter(Boolean).length;
+	}
+	const redacted: ('workspace' | 'control_plane' | 'project_links')[] = [];
+	if (!workspaceReadable) redacted.push('workspace');
+	if (opts.round && !controlReadable) redacted.push('control_plane');
+	if (linksRedacted) redacted.push('project_links');
 	return {
 		...issue,
-		workflow,
+		...(workspaceReadable ? { workflow } : {}),
 		comments,
 		allowed_transitions: allowed,
-		links,
+		links: visibleLinks,
 		context_summary: contextSummary,
 		...(preloadedArtifacts ? { artifacts: preloadedArtifacts } : {}),
 		...(opts.launchComments
@@ -965,8 +1029,9 @@ export async function getIssueDetail(
 					round: deriveRound({ issue, workflow, comments, ...handoff }),
 					since_last_run: deriveSinceLastRun({ issue, comments, ...handoff })
 				}
-			: {})
-	};
+			: {}),
+		...(redacted.length ? { redacted } : {})
+	} as FullIssueDetail;
 }
 
 /** External issue detail read, with project scope applied at the root lookup. */
@@ -983,7 +1048,7 @@ export async function getIssueDetailForActor(
 		'issue.read',
 		{ projectId: issue.project_id, issueId: issue.id }
 	);
-	return getIssueDetail(db, actor.userId, issue, opts);
+	return getIssueDetail(db, actor.userId, issue, { ...opts, authorizationActor: actor });
 }
 
 /** How many runs of an issue's history the round derivation reads back. */

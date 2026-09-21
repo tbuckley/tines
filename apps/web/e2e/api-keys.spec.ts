@@ -211,4 +211,56 @@ test.describe.serial('API keys page', () => {
 		await page.getByRole('alertdialog').getByRole('button', { name: 'Revoke key' }).click();
 		await expect(row).toContainText('revoked');
 	});
+
+	test('an over-granted run key stays bound for context, journals, and links', async ({ page }) => {
+		const sessionHeaders = { authorization: `Bearer ${ALICE.apiKey}` };
+		const runHeaders = { authorization: `Bearer ${RUNROW.runKey}` };
+		const createIssue = async (title: string) => {
+			const response = await page.request.post(`/api/v1/projects/${RUNROW.projectId}/issues`, {
+				headers: sessionHeaders,
+				data: { title }
+			});
+			expect(response.status()).toBe(201);
+			return (await response.json()) as { id: string };
+		};
+		const unrelated = await createIssue('run-bound unrelated one');
+		const other = await createIssue('run-bound unrelated two');
+
+		const boundContext = await page.request.post('/api/v1/context', {
+			headers: runHeaders,
+			data: { kind: 'prompt', name: 'run-bound-note', body: 'ok', issue_id: RUNROW.runKeyIssueId }
+		});
+		expect(boundContext.status()).toBe(201);
+		for (const data of [
+			{ kind: 'prompt', name: 'unrelated-note', body: 'no', issue_id: unrelated.id },
+			{ kind: 'prompt', name: 'shared-state-note', body: 'no', workflow_state_id: 'wfs_std_open' }
+		]) {
+			const denied = await page.request.post('/api/v1/context', { headers: runHeaders, data });
+			expect(denied.status()).toBe(403);
+			expect((await denied.json()).error.code).toBe('run_key_forbidden');
+		}
+		const journal = await page.request.post('/api/v1/context', {
+			headers: runHeaders,
+			data: {
+				kind: 'prompt',
+				name: 'journal',
+				body: 'bound lesson',
+				project_id: RUNROW.projectId,
+				workflow_state_id: 'wfs_std_open'
+			}
+		});
+		expect(journal.status()).toBe(201);
+
+		const allowedLink = await page.request.post(`/api/v1/issues/${RUNROW.runKeyIssueId}/links`, {
+			headers: runHeaders,
+			data: { kind: 'blocks', issue_id: unrelated.id }
+		});
+		expect(allowedLink.status()).toBe(201);
+		const deniedLink = await page.request.post(`/api/v1/issues/${unrelated.id}/links`, {
+			headers: runHeaders,
+			data: { kind: 'blocks', issue_id: other.id }
+		});
+		expect(deniedLink.status()).toBe(403);
+		expect((await deniedLink.json()).error.code).toBe('run_key_forbidden');
+	});
 });

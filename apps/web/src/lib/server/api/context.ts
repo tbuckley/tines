@@ -73,7 +73,12 @@ import {
 	type ResolvedScope,
 	type ScopeIds
 } from './scope';
-import { contextReadPredicate, contextRequirements, requireAccess } from './permissions';
+import {
+	accessAllowed,
+	contextReadPredicate,
+	contextRequirements,
+	requireAccess
+} from './permissions';
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -1008,7 +1013,11 @@ export async function createContextItem(
 		actor,
 		contextRequirements(scope, 'write', { env: kind === 'env' }),
 		boundJournal ? 'journal.create' : 'context.create',
-		{ projectId: scope.issueProjectId ?? scope.projectId ?? undefined, boundJournal }
+		{
+			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
+			issueId: scope.issueId ?? undefined,
+			boundJournal
+		}
 	);
 	await assertScopeWritable(db, actor, scope);
 	await assertNameAvailable(db, actor.userId, kind, name, scope);
@@ -1156,6 +1165,7 @@ export async function updateContextItem(
 		oldBoundJournal && newBoundJournal ? 'journal.rewrite' : 'context.update',
 		{
 			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
+			issueId: scope.issueId ?? undefined,
 			boundJournal: oldBoundJournal && newBoundJournal
 		}
 	);
@@ -1369,7 +1379,11 @@ export async function deleteContextItem(
 		actor,
 		contextRequirements(scope, 'delete', { env: row.kind === 'env' }),
 		'context.delete',
-		{ projectId: scope.issueProjectId ?? scope.projectId ?? undefined, boundJournal }
+		{
+			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
+			issueId: scope.issueId ?? undefined,
+			boundJournal
+		}
 	);
 	await assertScopeWritable(db, actor, scope);
 	await runAtomic(env, [
@@ -1442,7 +1456,11 @@ export async function appendContextItem(
 			actor,
 			contextRequirements(scope, 'write'),
 			boundJournal ? 'journal.append' : 'context.append',
-			{ projectId: scope.issueProjectId ?? scope.projectId ?? undefined, boundJournal }
+			{
+				projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
+				issueId: scope.issueId ?? undefined,
+				boundJournal
+			}
 		);
 		const newVersion = row.version + 1;
 		const now = Date.now();
@@ -2167,7 +2185,8 @@ export async function envDigest(entries: ResolvedEnvEntry[]): Promise<string> {
 export async function contextSummaryForIssue(
 	db: Kysely<Database>,
 	userId: string,
-	target: { projectId: string; stateId: string; issueId: string }
+	target: { projectId: string; stateId: string; issueId: string },
+	actor?: ActorContext
 ): Promise<ContextSummary> {
 	// This predicate must track `matchingItemsQuery`'s: a badge that disagrees
 	// with the panel is a bug report. The state clause spans the inheritance
@@ -2196,7 +2215,17 @@ export async function contextSummaryForIssue(
 				)
 		)
 		.selectFrom('context_item')
-		.select(['kind', 'name'])
+		.select([
+			'kind',
+			'name',
+			'project_id',
+			'workflow_state_id',
+			'label_id',
+			'issue_id',
+			sql<string | null>`(SELECT project_id FROM issue WHERE id = context_item.issue_id)`.as(
+				'issue_project_id'
+			)
+		])
 		.where('user_id', '=', userId)
 		.where((eb) =>
 			eb.and([
@@ -2219,14 +2248,35 @@ export async function contextSummaryForIssue(
 			])
 		)
 		.execute();
+	const visible = actor
+		? rows.filter((row) =>
+				accessAllowed(
+					actor,
+					contextRequirements(
+						{
+							projectId: row.project_id,
+							issueProjectId: row.issue_project_id,
+							workflowStateId: row.workflow_state_id,
+							labelId: row.label_id
+						},
+						'read'
+					),
+					'context.read',
+					{
+						projectId: row.issue_project_id ?? row.project_id ?? undefined,
+						issueId: row.issue_id ?? undefined
+					}
+				)
+			)
+		: rows;
 	return {
-		prompts: rows.filter((r) => r.kind === 'prompt').length,
-		skills: new Set(rows.filter((r) => r.kind === 'skill').map((r) => r.name)).size,
-		repos: new Set(rows.filter((r) => r.kind === 'repo').map((r) => r.name)).size,
+		prompts: visible.filter((r) => r.kind === 'prompt').length,
+		skills: new Set(visible.filter((r) => r.kind === 'skill').map((r) => r.name)).size,
+		repos: new Set(visible.filter((r) => r.kind === 'repo').map((r) => r.name)).size,
 		// Artifacts are issue-scoped by construction, so the matching rows are
 		// exactly this issue's attachments (a badge count, not effective context).
-		artifacts: rows.filter((r) => r.kind === 'artifact').length,
-		envs: new Set(rows.filter((r) => r.kind === 'env').map((r) => r.name)).size
+		artifacts: visible.filter((r) => r.kind === 'artifact').length,
+		envs: new Set(visible.filter((r) => r.kind === 'env').map((r) => r.name)).size
 	};
 }
 
@@ -2388,7 +2438,7 @@ export function issueBlock(
 	lines.push(
 		'### Current state',
 		'',
-		`${issue.state.name} (${issue.state.category}), in workflow "${issue.workflow.name}".`,
+		`${issue.state.name} (${issue.state.category}), in workflow "${issue.workflow?.name ?? issue.workflow_id}".`,
 		''
 	);
 	// Labels are classification the agent both reads and writes, so the block
@@ -2647,6 +2697,7 @@ export interface AttachedContextItem {
 	id: string;
 	kind: ContextKind;
 	name: string;
+	version: number;
 	scope: ResolvedScope;
 }
 
@@ -2658,7 +2709,7 @@ function toDeleted(item: AttachedContextItem): DeletedContextItem {
 export async function findAttachedContext(
 	db: Kysely<Database>,
 	userId: string,
-	anchor: { projectId?: string; stateIds?: string[] }
+	anchor: { projectId?: string; stateIds?: string[]; labelId?: string }
 ): Promise<AttachedContextItem[]> {
 	if (anchor.stateIds !== undefined && anchor.stateIds.length === 0) return [];
 	let q = contextItemQuery(db, userId);
@@ -2666,6 +2717,7 @@ export async function findAttachedContext(
 	if (anchor.stateIds !== undefined) {
 		q = q.where('context_item.workflow_state_id', 'in', anchor.stateIds);
 	}
+	if (anchor.labelId !== undefined) q = q.where('context_item.label_id', '=', anchor.labelId);
 	const rows = await q
 		.orderBy('context_item.created_at asc')
 		.orderBy('context_item.id asc')
@@ -2674,6 +2726,7 @@ export async function findAttachedContext(
 		id: row.id,
 		kind: row.kind as ContextKind,
 		name: row.name,
+		version: row.version,
 		scope: rowScope(row)
 	}));
 }
@@ -2702,22 +2755,59 @@ export function sweepAttachedContext(
 		);
 	}
 	// Apply the same write boundary as direct deletion before building any cascade.
-	for (const item of items) fenceRunKeyEnvWrite(actor, item.kind);
-	const queries = items.flatMap((item) => [
-		db.deleteFrom('context_item_file').where('context_item_id', '=', item.id).compile(),
-		db.deleteFrom('context_item').where('id', '=', item.id).compile(),
-		eventInsert(db, actor, {
-			type: 'context.deleted',
-			...eventRefs(item.scope),
-			payload: {
-				context_id: item.id,
-				kind: item.kind,
-				name: item.name,
-				scope: scopeEventPayload(item.scope),
-				forced: true
+	for (const item of items) {
+		fenceRunKeyEnvWrite(actor, item.kind);
+		requireAccess(
+			actor,
+			contextRequirements(item.scope, 'delete', { env: item.kind === 'env' }),
+			'context.delete',
+			{
+				projectId: item.scope.issueProjectId ?? item.scope.projectId ?? undefined,
+				issueId: item.scope.issueId ?? undefined
 			}
-		})
-	]);
+		);
+	}
+	const queries = items.flatMap((item) => {
+		const eventId = newId('evt');
+		const witness = sql<boolean>`EXISTS (
+			SELECT 1 FROM context_item current
+			WHERE current.id = ${item.id}
+				AND current.version = ${item.version}
+				AND current.project_id IS ${item.scope.projectId}
+				AND current.workflow_state_id IS ${item.scope.workflowStateId}
+				AND current.label_id IS ${item.scope.labelId}
+				AND current.issue_id IS ${item.scope.issueId}
+		)`;
+		const admitted = sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`;
+		return [
+			eventInsert(
+				db,
+				actor,
+				{
+					id: eventId,
+					type: 'context.deleted',
+					...eventRefs(item.scope),
+					payload: {
+						context_id: item.id,
+						kind: item.kind,
+						name: item.name,
+						scope: scopeEventPayload(item.scope),
+						forced: true
+					}
+				},
+				{ predicate: witness }
+			),
+			// SQLite CASE is lazy: a lost witness raises and rolls back the whole
+			// D1 batch instead of letting the enclosing anchor cascade partially.
+			sql`SELECT CASE WHEN ${admitted} THEN 1 ELSE json_extract('x', '$[') END`.compile(db),
+			db
+				.deleteFrom('context_item_file')
+				.where('context_item_id', '=', item.id)
+				.where(admitted)
+				.compile(),
+			db.deleteFrom('context_item').where('id', '=', item.id).where(admitted).compile()
+		];
+	});
 	return { queries, deleted: items.map(toDeleted) };
 }
 

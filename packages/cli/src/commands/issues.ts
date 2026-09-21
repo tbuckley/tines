@@ -107,7 +107,7 @@ function printIssueDetail(issue: IssueDetail): void {
 	// canonical issue's, and the issue's own (dormant) state moves below it.
 	const dup = issue.duplicate_of;
 	console.log(
-		`state: ${issue.effective_state.name} (${issue.effective_state.category})${dup ? ` (via ${issueRef(dup)} — duplicate)` : ''}  workflow: ${issue.workflow.name}  updated: ${timestamp(issue.updated_at)}`
+		`state: ${issue.effective_state.name} (${issue.effective_state.category})${dup ? ` (via ${issueRef(dup)} — duplicate)` : ''}  workflow: ${issue.workflow?.name ?? 'restricted'}  updated: ${timestamp(issue.updated_at)}`
 	);
 	if (dup) {
 		console.log(
@@ -503,7 +503,8 @@ export function register(program: Command): void {
 			const notes: string[] = [];
 			if (body.title !== undefined) notes.push(`title "${updated.title}"`);
 			if (body.description !== undefined) notes.push('description');
-			if (body.workflow_id !== undefined) notes.push(`workflow "${updated.workflow.name}"`);
+			if (body.workflow_id !== undefined)
+				notes.push(`workflow "${updated.workflow?.name ?? body.workflow_id}"`);
 			if (updated.state.id !== issue.state.id) {
 				notes.push(`state ${issue.state.name} → ${updated.state.name}`);
 			}

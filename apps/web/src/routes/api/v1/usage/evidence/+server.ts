@@ -71,7 +71,7 @@ export const GET: RequestHandler = api(async (event) => {
 			actor,
 			[
 				{ domain: 'control_plane', access: 'read' },
-				...(scope.mode === 'cohort' ? ([{ domain: 'workspace', access: 'read' }] as const) : [])
+				{ domain: 'workspace', access: 'read' }
 			],
 			'usage.read'
 		);
@@ -122,7 +122,15 @@ export const GET: RequestHandler = api(async (event) => {
 						evidenceRequest,
 						material
 					)
-				: await getUsageEvidence(db, actor.userId, scopeToken, scope, evidenceRequest, material);
+				: await getUsageEvidence(
+						db,
+						actor.userId,
+						scopeToken,
+						scope,
+						evidenceRequest,
+						material,
+						actor
+					);
 		if (scope.mode !== 'cohort' && params.has('member') && result.total_count === 0)
 			throw new Error('member is not a contributor in this selection');
 		if (scope.mode === 'cohort')
@@ -130,12 +138,18 @@ export const GET: RequestHandler = api(async (event) => {
 		const parent =
 			scope.mode === 'issue'
 				? await getIssueUsage(db, actor.userId, scope.issue, scope.cutoff)
-				: await getUsage(db, actor.userId, {
-						from: new Date(scope.from).toISOString(),
-						to: new Date(scope.to).toISOString(),
-						...scope.filters,
-						by: scope.by
-					});
+				: await getUsage(
+						db,
+						actor.userId,
+						{
+							from: new Date(scope.from).toISOString(),
+							to: new Date(scope.to).toISOString(),
+							...scope.filters,
+							by: scope.by
+						},
+						Date.now(),
+						actor
+					);
 		const parentTotal = parent?.mode === 'issue' ? parent.issue.aggregate : parent?.matching_total;
 		if (parent?.mode === 'issue') {
 			result.attempt_count = parent.issue.attempt_count;
