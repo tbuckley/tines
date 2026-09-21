@@ -358,8 +358,11 @@ esac
 		await gotoHydrated(page, `/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`);
 		const commentCard = page.locator('article', { hasText: 'Harness progress comment' });
 		const attribution = `${RUNNER_E2E.name} via ${runKeyName} · run on ${issue.project_name}/${issue.number}`;
+		const compactAttribution = `${RUNNER_E2E.name} · run on ${issue.project_name}/${issue.number}`;
 		const header = commentCard.locator('header');
-		const actor = header.locator(':scope > span').first();
+		const actor = header.getByTestId('comment-actor');
+		const fullActor = actor.getByTestId('comment-actor-full');
+		const compactActor = actor.getByTestId('comment-actor-compact');
 		const edit = header.getByRole('button', { name: 'Edit comment' });
 		const remove = header.getByRole('button', { name: 'Delete comment' });
 		for (const viewport of [
@@ -367,7 +370,16 @@ esac
 			{ width: 390, height: 844 }
 		]) {
 			await page.setViewportSize(viewport);
-			await expect(header).toContainText(attribution);
+			if (viewport.width < 640) {
+				await expect(fullActor).toBeHidden();
+				await expect(compactActor).toBeVisible();
+				await expect(compactActor).toHaveText(compactAttribution);
+				await expect(compactActor).not.toContainText(RUNNER_NAME);
+			} else {
+				await expect(fullActor).toBeVisible();
+				await expect(fullActor).toHaveText(attribution);
+				await expect(compactActor).toBeHidden();
+			}
 			await expect(edit).toBeInViewport();
 			await expect(remove).toBeInViewport();
 

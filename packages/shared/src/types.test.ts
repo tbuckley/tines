@@ -4,6 +4,7 @@ import {
 	actorLabel,
 	activeStateIds,
 	compareLabelNames,
+	compactActorLabel,
 	isActiveRun,
 	isStaleTierOverride,
 	runCostLabel,
@@ -248,5 +249,28 @@ describe('runRefLabel', () => {
 		const label = actor('run arun_9Xq2');
 		expect(label).toBe('alice via laptop-m4 · run on demo/12');
 		expect(label.endsWith(runRefLabel(run))).toBe(true);
+	});
+
+	it('omits the indivisible run-key descriptor in a compact label', () => {
+		expect(
+			compactActorLabel({
+				user_id: 'usr_1',
+				user_name: 'alice',
+				api_key_id: 'key_1',
+				api_key_name: 'runner · name · Engineering/Design',
+				run
+			})
+		).toBe('alice · run on demo/12');
+	});
+
+	it('keeps ordinary API-key attribution in a compact label', () => {
+		expect(
+			compactActorLabel({
+				user_id: 'usr_1',
+				user_name: 'alice',
+				api_key_id: 'key_1',
+				api_key_name: 'laptop-key'
+			})
+		).toBe('alice via laptop-key');
 	});
 });

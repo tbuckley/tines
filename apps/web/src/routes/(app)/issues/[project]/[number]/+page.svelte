@@ -55,7 +55,7 @@
 	import { PROJECT_ARCHIVED_TOOLTIP } from '$lib/archived';
 	import { checklistItems, checklistProgress, type FirstRunInputs } from '$lib/first-run';
 	import { addRunnerToGlobalRule } from '$lib/routing';
-	import { actorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
+	import { actorLabel, compactActorLabel, prefersReducedMotion, relativeTime } from '$lib/format';
 	import { mergeLinks, type PendingAdd } from '$lib/link-overlay';
 	import { issueBackTarget, navMemory } from '$lib/nav-memory.svelte';
 	import { focusHint } from '$lib/focus.svelte';
@@ -1109,9 +1109,17 @@
 						<header
 							class="text-muted-foreground flex items-center gap-2 border-b px-4 py-2 text-xs"
 						>
-							<span class="text-foreground min-w-0 flex-1 font-medium wrap-anywhere"
-								>{actorLabel(comment.actor)}</span
+							<span
+								class="text-foreground min-w-0 flex-1 font-medium wrap-anywhere"
+								data-testid="comment-actor"
 							>
+								<span class="max-sm:hidden" data-testid="comment-actor-full"
+									>{actorLabel(comment.actor)}</span
+								>
+								<span class="sm:hidden" data-testid="comment-actor-compact"
+									>{compactActorLabel(comment.actor)}</span
+								>
+							</span>
 							<span class="shrink-0" title={new Date(comment.created_at).toLocaleString()}>
 								{comment.pending ? 'sending…' : relativeTime(comment.created_at)}
 							</span>

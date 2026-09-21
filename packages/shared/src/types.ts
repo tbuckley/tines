@@ -63,6 +63,15 @@ export function actorLabel(actor: Actor): string {
 	return actor.api_key_name ? `${actor.user_name} via ${actor.api_key_name}` : actor.user_name;
 }
 
+/**
+ * Compact actor rendering for narrow, issue-local surfaces. Run-key metadata
+ * deliberately drops out as one unit: its mint-time name is display text, not
+ * a structure whose runner and stage components can be safely parsed apart.
+ */
+export function compactActorLabel(actor: Actor): string {
+	return actor.run ? `${actor.user_name} · ${runRefLabel(actor.run)}` : actorLabel(actor);
+}
+
 // ---------------------------------------------------------------------------
 // Projects
 
