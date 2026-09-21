@@ -27,7 +27,9 @@ tines config                                        # what is in effect, and fro
 
 The URL defaults to `https://tines.tbuckley.dev`. Or set `TINES_API_URL` and `TINES_API_KEY`
 in the environment — that is how agent runs are configured, and the env vars win over the
-stored config. `--url` and `--api-key` on any command win over both.
+stored config. On commands that talk to the API, `--url` and `--api-key` win over both. The
+local-only `logout`, `runner restart`, `runner uninstall`, `runner workspaces`, and
+`runner workspaces prune` commands take no `--url`.
 
 ## Everyday commands
 
@@ -58,13 +60,15 @@ tines issues list --all --show-duplicates --all-pages --json
 ```
 
 Issues are addressed as `<project>/<number>`; schedules as `<project>/<name>`; workflow
-states as `<workflow>/<state>`. Every `list` command returns one page — add `--all-pages`
-for the whole list — and every command takes `--json` for machine-readable output. Complete
-list walks have a default 10,000-item safety ceiling. Use `--max-items <n>` with
-`--all-pages` to choose a different positive finite bound; exceeding it fails without
-printing a partial result. `--limit` remains the per-request page size. A larger bound keeps
-more output in memory and makes more requests, so increase it deliberately or narrow the
-list's filters.
+states as `<workflow>/<state>`. Paginated `list` commands return one page — add
+`--all-pages` for the whole list. Four lists instead return the whole collection and take no
+pagination flags: `labels list`, `runners list`, `routing list`, and
+`issues artifacts list`. Every leaf command except `login` and `logout` takes `--json` for
+machine-readable output. Complete list walks have a default 10,000-item safety ceiling. Use
+`--max-items <n>` with `--all-pages` to choose a different positive finite bound; exceeding
+it fails without printing a partial result. `--limit` remains the per-request page size. A
+larger bound keeps more output in memory and makes more requests, so increase it deliberately
+or narrow the list's filters.
 `tines <noun> --help` lists the rest: `workflows`, `context`, `journal`, `schedules`,
 `runners`, `runs`, `routing`, `supervisor`.
 
