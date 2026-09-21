@@ -13,9 +13,12 @@ import { TEST_NOOP_DISPATCH_EFFECTS } from './test-dispatch-effects';
 import {
 	createWorkflow,
 	deadEndWarnings,
+	deleteWorkflow,
 	diffTransitions,
 	loadWorkflow,
+	loadWorkflowForActor,
 	loadWorkflows,
+	loadWorkflowsForActor,
 	resolveDef,
 	updateWorkflow,
 	workflowFingerprint
@@ -626,5 +629,95 @@ describe('loadWorkflows D1 parameter budget', () => {
 
 		expect(await loadWorkflows(getDb(t.env), USER, created.at(-1)?.id)).toHaveLength(1);
 		expect(await loadWorkflows(getDb(t.env), USER, 'wf_missing')).toEqual([]);
+	});
+});
+
+describe('workflow permissions', () => {
+	function scopedActor(access: 'read' | 'write' | 'delete'): ActorContext {
+		return {
+			...actor,
+			apiKeyId: 'key_workflow',
+			apiKeyName: 'workflow key',
+			viaSession: false,
+			permissions: {
+				version: 1,
+				projects: { access: 'read', scope: [] },
+				workspace: access,
+				control_plane: 'none'
+			}
+		};
+	}
+
+	function setup() {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(
+			`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+			 VALUES ('key_workflow', '${USER}', 'workflow key', 'hash_workflow', 'tines_workflow', 1)`
+		);
+		return t;
+	}
+
+	it('requires workspace read at request-facing loaders and write to create', async () => {
+		const t = setup();
+		const reader = scopedActor('read');
+		addIssue(t);
+		expect((await loadWorkflowsForActor(t.db, reader)).map((w) => w.id)).toContain('wf_standard');
+		await expect(loadWorkflowForActor(t.db, reader, 'wf_standard')).resolves.toMatchObject({
+			id: 'wf_standard',
+			issue_count: 0
+		});
+		await expect(
+			createWorkflow(t.db, t.env, reader, {
+				name: 'Denied',
+				states,
+				transitions,
+				initial_state: 'Open'
+			})
+		).rejects.toMatchObject({ status: 403, code: 'insufficient_permissions' });
+		expect(t.all("SELECT id FROM workflow WHERE name = 'Denied'")).toEqual([]);
+	});
+
+	it('requires delete authority for destructive PATCH fields and workflow deletion', async () => {
+		const t = setup();
+		const workflow = await createWorkflow(t.db, t.env, actor, {
+			name: 'Guarded',
+			states,
+			transitions,
+			initial_state: 'Open'
+		});
+		const writer = scopedActor('write');
+
+		await expect(
+			updateWorkflow(t.db, t.env, writer, TEST_NOOP_DISPATCH_EFFECTS, workflow.id, {
+				transitions: []
+			})
+		).rejects.toMatchObject({ status: 403, code: 'insufficient_permissions' });
+		expect(
+			t.all('SELECT id FROM workflow_transition WHERE workflow_id = ?', workflow.id)
+		).toHaveLength(transitions.length);
+		await expect(deleteWorkflow(t.db, t.env, writer, workflow.id)).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions'
+		});
+		expect(t.all('SELECT id FROM workflow WHERE id = ?', workflow.id)).toHaveLength(1);
+	});
+
+	it('requires project write before clearing default-workflow pointers', async () => {
+		const t = setup();
+		const workflow = await createWorkflow(t.db, t.env, actor, {
+			name: 'Default',
+			states,
+			transitions,
+			initial_state: 'Open'
+		});
+		t.sqlite.exec(`UPDATE project SET default_workflow_id = '${workflow.id}' WHERE id = 'prj_1'`);
+
+		await expect(
+			deleteWorkflow(t.db, t.env, scopedActor('delete'), workflow.id)
+		).rejects.toMatchObject({ status: 403, code: 'insufficient_permissions' });
+		expect(t.all('SELECT default_workflow_id FROM project WHERE id = ?', 'prj_1')[0]).toEqual({
+			default_workflow_id: workflow.id
+		});
 	});
 });

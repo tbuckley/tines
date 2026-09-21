@@ -53,6 +53,7 @@ const RUN_OPERATIONS = new Set([
 	'journal.append',
 	'journal.rewrite',
 	'label.read',
+	'starter.read',
 	'label.assign',
 	'label.remove',
 	'issue_link.read',

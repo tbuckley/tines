@@ -156,6 +156,9 @@ export async function createProject(
 	const resolvedStarter = resolveStarter(body.starter, opts.starters);
 	const { name, description } = validateProjectFields(body);
 	requireAccess(actor, [{ domain: 'project', access: 'write', scope: 'all' }], 'project.create');
+	if (resolvedStarter) {
+		requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'project.create');
+	}
 	await assertNameAvailable(db, actor.userId, name);
 	if (resolvedStarter?.starter.default_workflow && body.default_workflow_id != null) {
 		throw new ApiFail(

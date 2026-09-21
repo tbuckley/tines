@@ -1,12 +1,12 @@
 import { json } from '@sveltejs/kit';
 import type { CreateWorkflowRequest, ListResponse, WorkflowResponse } from '@tines/shared';
 import { api, apiContext, readJson } from '$lib/server/api/core';
-import { createWorkflow, loadWorkflows } from '$lib/server/api/workflows';
+import { createWorkflow, loadWorkflowsForActor } from '$lib/server/api/workflows';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	const items = await loadWorkflows(db, actor.userId);
+	const items = await loadWorkflowsForActor(db, actor);
 	const body: ListResponse<WorkflowResponse> = { items, next_cursor: null };
 	return json(body);
 });
