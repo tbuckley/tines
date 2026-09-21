@@ -5,6 +5,7 @@ import {
 	ARTIFACT_TYPES,
 	type Artifact,
 	type ArtifactType,
+	type ApiKeyPermissions,
 	type IssueDetail
 } from '@tines/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,12 +13,15 @@ import { getArtifactStore } from '$lib/server/artifact-store';
 import { PROJECT, USER, seedBase } from '../supervisor/test-fixtures';
 import {
 	artifactContentResponse,
+	artifactContentResponseForActor,
 	artifactSiteResponse,
 	createSiteLink,
 	checkRequirements,
 	deleteArtifact,
 	getArtifactDetail,
+	getArtifactDetailForActor,
 	listArtifacts,
+	listArtifactsForActor,
 	reaffirmArtifact,
 	upsertArtifact,
 	uploadArtifactFile,
@@ -99,6 +103,81 @@ describe('issue artifacts', () => {
 
 	const attachDoc = (issueId: string, content = '# Design') =>
 		upsertArtifact(t.db, t.env, actor, issueId, 'design-doc', { type: 'text', content });
+
+	function scopedActor(permissions: ApiKeyPermissions): ActorContext {
+		return {
+			userId: USER,
+			userName: 'alice',
+			apiKeyId: 'key_scoped',
+			apiKeyName: 'scoped',
+			viaSession: false,
+			permissions,
+			runRestriction: null
+		};
+	}
+
+	it('enforces project scope on artifact metadata and content reads', async () => {
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_2', '${USER}', 'other', 1, 1)
+		`);
+		const hidden = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'prj_2', {
+			title: 'hidden'
+		});
+		await upsertArtifact(t.db, t.env, actor, hidden.id, 'note', {
+			type: 'text',
+			content: 'secret'
+		});
+		const scoped = scopedActor({
+			version: 1,
+			projects: { access: 'read', scope: [PROJECT] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+
+		for (const read of [
+			() => listArtifactsForActor(t.db, scoped, hidden.id),
+			() => getArtifactDetailForActor(t.db, scoped, hidden.id, 'note'),
+			() => artifactContentResponseForActor(t.db, t.env, scoped, hidden.id, 'note')
+		]) {
+			await expect(read()).rejects.toMatchObject({ status: 404, code: 'not_found' });
+		}
+	});
+
+	it('allows version writes but requires project delete for hard removal', async () => {
+		const issue = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'scoped artifact'
+		});
+		t.sqlite.exec(`
+			INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+			VALUES ('key_scoped', '${USER}', 'scoped', 'hash', 'prefix', 1)
+		`);
+		const scoped = scopedActor({
+			version: 1,
+			projects: { access: 'write', scope: [PROJECT] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+
+		await expect(
+			upsertArtifact(t.db, t.env, scoped, issue.id, 'note', {
+				type: 'text',
+				content: 'kept'
+			})
+		).resolves.toMatchObject({ name: 'note', current_version: { version: 1 } });
+		await expect(deleteArtifact(t.db, t.env, scoped, issue.id, 'note')).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions',
+			details: { operation: 'artifact.delete', domain: 'project', access: 'delete' }
+		});
+		await expect(getArtifactDetail(t.db, USER, issue.id, 'note')).resolves.toMatchObject({
+			name: 'note',
+			current_version: { version: 1 }
+		});
+		expect(await (await artifactContentResponse(t.db, t.env, USER, issue.id, 'note')).text()).toBe(
+			'kept'
+		);
+	});
 
 	// -------------------------------------------------------------------------
 	// Workflow requirements: definition round-trip and validation

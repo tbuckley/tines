@@ -56,6 +56,7 @@ import { assertWritable } from './archive';
 import { ApiFail, notFound, optionalString, runAtomic, type ActorContext } from './core';
 import { actorOf, eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
+import { projectReadPredicate, requireAccess } from './permissions';
 
 const byteLength = (s: string) => new TextEncoder().encode(s).length;
 
@@ -209,6 +210,38 @@ async function requireIssue(
 		])
 		.where('issue.id', '=', issueId)
 		.where('project.user_id', '=', userId)
+		.executeTakeFirst();
+	if (!row) throw notFound();
+	return {
+		id: row.id,
+		projectId: row.project_id,
+		projectName: row.project_name,
+		projectArchivedAt: row.project_archived_at,
+		number: row.number,
+		stateEnteredAt: Number(row.state_entered_at ?? row.created_at)
+	};
+}
+
+async function requireIssueForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	issueId: string
+): Promise<IssueRef> {
+	const row = await db
+		.selectFrom('issue')
+		.innerJoin('project', 'project.id', 'issue.project_id')
+		.select([
+			'issue.id',
+			'issue.project_id',
+			'issue.number',
+			'issue.state_entered_at',
+			'issue.created_at',
+			'project.name as project_name',
+			'project.archived_at as project_archived_at'
+		])
+		.where('issue.id', '=', issueId)
+		.where('project.user_id', '=', actor.userId)
+		.where(projectReadPredicate(actor, 'issue.project_id'))
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	return {
@@ -466,6 +499,21 @@ export async function listArtifacts(
 		.map((i) => serializeArtifact(i, byItem.get(i.id)!, filesByVersion, issue));
 }
 
+export async function listArtifactsForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	issueId: string
+): Promise<Artifact[]> {
+	const issue = await requireIssueForActor(db, actor, issueId);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'read', projectId: issue.projectId }],
+		'artifact.read',
+		{ projectId: issue.projectId, issueId: issue.id }
+	);
+	return listArtifacts(db, actor.userId, issue.id);
+}
+
 interface LoadedArtifact {
 	item: ItemRow;
 	versions: VersionRow[];
@@ -498,6 +546,22 @@ export async function getArtifactDetail(
 		...serializeArtifact(item, versions, filesByVersion, issue),
 		versions: versions.map((v) => serializeVersion(v, filesByVersion.get(v.id)))
 	};
+}
+
+export async function getArtifactDetailForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	issueId: string,
+	name: string
+): Promise<ArtifactDetail> {
+	const issue = await requireIssueForActor(db, actor, issueId);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'read', projectId: issue.projectId }],
+		'artifact.read',
+		{ projectId: issue.projectId, issueId: issue.id }
+	);
+	return getArtifactDetail(db, actor.userId, issue.id, name);
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,7 +1157,13 @@ async function upsertArtifactOnce(
 	rawName: string,
 	body: UpsertArtifactRequest
 ): Promise<Artifact> {
-	const issue = await requireIssue(db, actor.userId, issueId);
+	const issue = await requireIssueForActor(db, actor, issueId);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: issue.projectId }],
+		'artifact.update',
+		{ projectId: issue.projectId, issueId: issue.id }
+	);
 	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const name = validateArtifactName(rawName);
 	const description = optionalString(body.description, 'description', { max: 1000 });
@@ -1239,7 +1309,13 @@ async function uploadArtifactFileOnce(
 	rawName: string,
 	file: { filename: string; contentType: string; bytes: Uint8Array }
 ): Promise<Artifact> {
-	const issue = await requireIssue(db, actor.userId, issueId);
+	const issue = await requireIssueForActor(db, actor, issueId);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: issue.projectId }],
+		'artifact.update',
+		{ projectId: issue.projectId, issueId: issue.id }
+	);
 	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const name = validateArtifactName(rawName);
 	const filename = validateFilename(file.filename);
@@ -1325,7 +1401,13 @@ async function uploadArtifactFolderOnce(
 	rawName: string,
 	files: FolderUploadFile[]
 ): Promise<Artifact> {
-	const issue = await requireIssue(db, actor.userId, issueId);
+	const issue = await requireIssueForActor(db, actor, issueId);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: issue.projectId }],
+		'artifact.update',
+		{ projectId: issue.projectId, issueId: issue.id }
+	);
 	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const name = validateArtifactName(rawName);
 	if (files.length === 0) {
@@ -1446,7 +1528,13 @@ async function reaffirmArtifactOnce(
 	issueId: string,
 	name: string
 ): Promise<Artifact> {
-	const issue = await requireIssue(db, actor.userId, issueId);
+	const issue = await requireIssueForActor(db, actor, issueId);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: issue.projectId }],
+		'artifact.update',
+		{ projectId: issue.projectId, issueId: issue.id }
+	);
 	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const { item, versions, filesByVersion } = await requireArtifact(db, actor.userId, issue, name);
 	const current = versions[versions.length - 1];
@@ -1505,7 +1593,13 @@ export async function deleteArtifact(
 	issueId: string,
 	name: string
 ): Promise<void> {
-	const issue = await requireIssue(db, actor.userId, issueId);
+	const issue = await requireIssueForActor(db, actor, issueId);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'delete', projectId: issue.projectId }],
+		'artifact.delete',
+		{ projectId: issue.projectId, issueId: issue.id }
+	);
 	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const { item } = await requireArtifact(db, actor.userId, issue, name);
 	await runAtomic(env, [
@@ -1630,6 +1724,24 @@ export async function artifactContentResponse(
 	return new Response(bytes as unknown as BodyInit, { status: 200, headers });
 }
 
+export async function artifactContentResponseForActor(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	issueId: string,
+	name: string,
+	opts: { version?: number; inline?: boolean; path?: string } = {}
+): Promise<Response> {
+	const issue = await requireIssueForActor(db, actor, issueId);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'read', projectId: issue.projectId }],
+		'artifact.read',
+		{ projectId: issue.projectId, issueId: issue.id }
+	);
+	return artifactContentResponse(db, env, actor.userId, issue.id, name, opts);
+}
+
 // ---------------------------------------------------------------------------
 // Sites: HTML artifacts served live (specs/artifacts/SPEC.md "Sites")
 
@@ -1655,7 +1767,13 @@ export async function createSiteLink(
 	name: string,
 	opts: { version?: number; requestOrigin: string }
 ): Promise<ArtifactSiteLink> {
-	const issue = await requireIssue(db, actor.userId, issueId);
+	const issue = await requireIssueForActor(db, actor, issueId);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: issue.projectId }],
+		'artifact.site_link',
+		{ projectId: issue.projectId, issueId: issue.id }
+	);
 	const { item, versions, filesByVersion } = await requireArtifact(db, actor.userId, issue, name);
 	const type = artifactTypeOf(item.config);
 	const row =
