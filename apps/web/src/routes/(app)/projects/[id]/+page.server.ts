@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { truncate } from '$lib/format';
 import { listContextItems } from '$lib/server/api/context';
-import { ApiFail } from '$lib/server/api/core';
+import { ApiFail, sessionActor } from '$lib/server/api/core';
 import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
 import { listLabels } from '$lib/server/api/labels';
 import { getProject } from '$lib/server/api/projects';
@@ -15,6 +15,7 @@ import type { PageServerLoad } from './$types';
 export const load: PageServerLoad = async ({ locals, platform, params, url }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
+	const actor = sessionActor(locals.user!);
 	let page;
 	try {
 		page = readIssuePage(url);
@@ -23,7 +24,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		throw e;
 	}
 
-	const project = await getProject(db, userId, params.id).catch((e) => {
+	const project = await getProject(db, actor, params.id).catch((e) => {
 		const status = e instanceof ApiFail ? e.status : 500;
 		error(status, status === 404 ? `No project has the ID “${truncate(params.id)}”.` : 'Not found');
 	});

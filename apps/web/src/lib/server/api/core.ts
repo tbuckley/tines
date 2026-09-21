@@ -216,6 +216,19 @@ export interface ActorContext {
 	} | null;
 }
 
+/** Full owner authority for trusted browser-session entry points. */
+export function sessionActor(user: { id: string; name?: string }): ActorContext {
+	return {
+		userId: user.id,
+		userName: user.name ?? '',
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true,
+		permissions: FULL_API_KEY_PERMISSIONS,
+		runRestriction: null
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Run keys: api_key rows with agent_run_id set. They carry issue-action
 // authority but are fenced off the control plane — an agent must not be able
@@ -325,15 +338,7 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	const header = event.request.headers.get('authorization');
 	const key = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
 	if (!key && event.locals.user) {
-		return {
-			userId: event.locals.user.id,
-			userName: event.locals.user.name,
-			apiKeyId: null,
-			apiKeyName: null,
-			viaSession: true,
-			permissions: FULL_API_KEY_PERMISSIONS,
-			runRestriction: null
-		};
+		return sessionActor(event.locals.user);
 	}
 
 	if (!key || !event.platform) {

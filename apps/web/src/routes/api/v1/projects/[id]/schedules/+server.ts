@@ -8,7 +8,7 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	// 404 for a project the user doesn't own, before filtering by it.
-	await getProject(db, actor.userId, event.params.id);
+	await getProject(db, actor, event.params.id);
 	const page = readPage(event);
 	const { items, hasMore } = await listSchedules(
 		db,

@@ -2,6 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import { partitionProjects } from '$lib/archived';
 import { clearStaleFocus, resolveFocus } from '$lib/server/api/preferences';
 import { listProjects } from '$lib/server/api/projects';
+import { sessionActor } from '$lib/server/api/core';
 import { getDb } from '$lib/server/db';
 import type { LayoutServerLoad } from './$types';
 
@@ -26,8 +27,9 @@ export const load: LayoutServerLoad = async ({ locals, platform, depends, url })
 	depends('app:preferences');
 
 	const db = getDb(platform!.env);
+	const actor = sessionActor(locals.user);
 	const [all, resolved] = await Promise.all([
-		listProjects(db, locals.user.id, { archived: 'all' }),
+		listProjects(db, actor, { archived: 'all' }),
 		resolveFocus(db, locals.user.id)
 	]);
 

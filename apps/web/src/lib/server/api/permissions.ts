@@ -11,6 +11,7 @@ import { ApiFail, runKeyForbidden, type ActorContext } from './core';
 
 export type Requirement =
 	| { domain: 'project'; access: ProjectAccessLevel; projectId: string }
+	| { domain: 'project'; access: ProjectAccessLevel; scope: 'all' }
 	| { domain: 'workspace' | 'control_plane'; access: Exclude<AccessLevel, 'none'> };
 
 export interface ResolvedPermissionTarget {
@@ -111,7 +112,10 @@ export function requireAccess(
 	for (const requirement of requirements) {
 		const allowed =
 			requirement.domain === 'project'
-				? permissionsIncludeProject(policy, requirement.projectId, requirement.access)
+				? 'projectId' in requirement
+					? permissionsIncludeProject(policy, requirement.projectId, requirement.access)
+					: policy.projects.scope === 'all' &&
+						accessIncludes(policy.projects.access, requirement.access)
 				: accessIncludes(policy[requirement.domain], requirement.access);
 		if (!allowed) {
 			throw new ApiFail(403, 'insufficient_permissions', 'The API key lacks required authority', {
@@ -129,6 +133,13 @@ export function projectReadPredicate(
 	qualifiedProjectIdColumn: string
 ): RawBuilder<SqlBool> {
 	const policy = actorPolicy(actor);
+	const runProjectId = actor.runRestriction?.projectId;
+	if (runProjectId) {
+		if (policy.projects.scope !== 'all' && !policy.projects.scope.includes(runProjectId)) {
+			return sql<SqlBool>`1 = 0`;
+		}
+		return sql<SqlBool>`${sql.ref(qualifiedProjectIdColumn)} = ${runProjectId}`;
+	}
 	if (policy.projects.scope === 'all') return sql<SqlBool>`1 = 1`;
 	if (policy.projects.scope.length === 0) return sql<SqlBool>`1 = 0`;
 	return sql<SqlBool>`${sql.ref(qualifiedProjectIdColumn)} IN (

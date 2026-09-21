@@ -6,7 +6,7 @@ import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	const items = await listProjects(db, actor.userId, {
+	const items = await listProjects(db, actor, {
 		archived: readArchived(event.url.searchParams)
 	});
 	const body: ListResponse<Project> = { items, next_cursor: null };
