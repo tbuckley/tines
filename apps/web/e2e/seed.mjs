@@ -265,9 +265,12 @@ statements.push(
 	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
 	 VALUES ('${RUNROW.runKeyIssueId}', '${RUNROW.projectId}', ${RUNROW.runKeyIssueNumber}, 'Run key fixture', '',
 	   'wf_standard', 'wfs_std_open', ${nowMs + 1}, ${nowMs + 1});`,
+	// Keep this fixture on the managed path: a paused local runner with an
+	// active run is correctly reaped by the offline-run sweep before the
+	// run-key authorization journeys can use it.
 	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier,
 	   config, created_at, updated_at)
-	 VALUES ('${RUNROW.runKeyRunnerId}', '${ALICE.id}', 'local', '${RUNROW.runKeyRunnerName}', 'paused', 1, 30,
+	 VALUES ('${RUNROW.runKeyRunnerId}', '${ALICE.id}', 'claude_managed', '${RUNROW.runKeyRunnerName}', 'paused', 1, 30,
 	   'balanced', '{}', ${nowMs + 1}, ${nowMs + 1});`,
 	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, state_id_at_start,
 	   log, created_at, started_at)

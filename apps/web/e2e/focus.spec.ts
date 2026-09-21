@@ -1094,10 +1094,10 @@ focusTest.describe.serial('project focus', () => {
 	});
 
 	focusTest(
-		'a run key’s issue list is unscoped whatever its owner is focused on',
+		'a run key’s issue list stays inside its bound project whatever its owner is focused on',
 		async ({ request, world }) => {
-			// The focus is a UI scope, never a data one: set one over the API, then
-			// read the list back with a run key and see both projects’ issues.
+			// The focus is a UI scope, never a data one. The run ceiling still
+			// limits the collection to the run's bound project.
 			const alice = apiClient(request, ALICE.apiKey);
 			expect(
 				(await alice.patch('/api/v1/preferences', { focused_project_id: world.aId })).ok()
@@ -1105,9 +1105,11 @@ focusTest.describe.serial('project focus', () => {
 
 			const res = await apiClient(request, RUNROW.runKey).get('/api/v1/issues?limit=100');
 			expect(res.status(), await res.text()).toBe(200);
-			const titles = (await body<{ items: { title: string }[] }>(res)).items.map((i) => i.title);
-			expect(titles).toContain(`${world.aName} issue`);
-			expect(titles).toContain(`${world.bName} issue`);
+			const items = (await body<{ items: { title: string; project_id: string }[] }>(res)).items;
+			expect(items.length).toBeGreaterThan(0);
+			expect(items.every((item) => item.project_id === RUNROW.projectId)).toBe(true);
+			expect(items.map((item) => item.title)).not.toContain(`${world.aName} issue`);
+			expect(items.map((item) => item.title)).not.toContain(`${world.bName} issue`);
 		}
 	);
 });

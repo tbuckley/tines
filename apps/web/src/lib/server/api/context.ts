@@ -1016,6 +1016,7 @@ export async function createContextItem(
 		{
 			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
 			issueId: scope.issueId ?? undefined,
+			issueScoped: scope.issueId === actor.runRestriction?.issueId,
 			boundJournal
 		}
 	);
@@ -1166,6 +1167,9 @@ export async function updateContextItem(
 		{
 			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
 			issueId: scope.issueId ?? undefined,
+			issueScoped:
+				currentScope.issueId === actor.runRestriction?.issueId &&
+				scope.issueId === actor.runRestriction?.issueId,
 			boundJournal: oldBoundJournal && newBoundJournal
 		}
 	);
@@ -1382,6 +1386,7 @@ export async function deleteContextItem(
 		{
 			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
 			issueId: scope.issueId ?? undefined,
+			issueScoped: scope.issueId === actor.runRestriction?.issueId,
 			boundJournal
 		}
 	);
@@ -1459,6 +1464,7 @@ export async function appendContextItem(
 			{
 				projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
 				issueId: scope.issueId ?? undefined,
+				issueScoped: scope.issueId === actor.runRestriction?.issueId,
 				boundJournal
 			}
 		);

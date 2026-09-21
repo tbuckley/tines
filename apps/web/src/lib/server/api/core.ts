@@ -251,7 +251,10 @@ export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	const header = event.request.headers.get('authorization');
 	const key = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
-	if (!key && event.locals.user) {
+	// An Authorization header is an explicit credential choice. Never let a
+	// malformed or unsupported bearer fall through to the browser session:
+	// doing so turns a failed API-key request into a successful owner request.
+	if (header === null && event.locals.user) {
 		return sessionActor(event.locals.user);
 	}
 

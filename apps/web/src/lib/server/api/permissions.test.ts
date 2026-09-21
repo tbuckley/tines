@@ -108,12 +108,12 @@ describe('requireAccess', () => {
 			'issue_link.create',
 			'issue_link.remove'
 		]) {
-			expect(() =>
-				requireAccess(run, [], operation, {
-					projectId: 'prj_a',
-					issueId: 'iss_a'
-				})
-			).not.toThrow();
+			const issueTarget = {
+				projectId: 'prj_a',
+				issueId: 'iss_a',
+				...(operation.startsWith('context.') ? { issueScoped: true } : {})
+			};
+			expect(() => requireAccess(run, [], operation, issueTarget)).not.toThrow();
 			expect(() =>
 				requireAccess(run, [], operation, {
 					projectId: 'prj_a',
@@ -124,6 +124,17 @@ describe('requireAccess', () => {
 				expect.objectContaining({ code: 'run_key_forbidden' })
 			);
 		}
+		expect(() =>
+			requireAccess(run, [], 'context.create', {
+				projectId: 'prj_a',
+				issueId: 'iss_a'
+			})
+		).toThrow(
+			expect.objectContaining({
+				code: 'run_key_forbidden',
+				details: expect.objectContaining({ reason: 'context_not_issue_scoped' })
+			})
+		);
 	});
 
 	it('never lets a run key satisfy an all-projects requirement', () => {

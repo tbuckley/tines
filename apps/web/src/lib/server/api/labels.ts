@@ -334,7 +334,7 @@ export async function deleteLabel(
 	const issueProjects = await db
 		.selectFrom('issue_label')
 		.innerJoin('issue', 'issue.id', 'issue_label.issue_id')
-		.select('issue.project_id')
+		.select(['issue.id as issue_id', 'issue.project_id'])
 		.distinct()
 		.where('issue_label.label_id', '=', label.id)
 		.execute();
@@ -399,8 +399,34 @@ export async function deleteLabel(
 		.where('label_id', '=', label.id)
 		.executeTakeFirst();
 	const issueCount = Number(used?.n ?? 0);
+	const plannedContextIds = JSON.stringify(attachedContext.map((item) => item.id));
+	const plannedRuleIds = JSON.stringify(scopedRules.map((rule) => rule.id));
+	const plannedIssueIds = JSON.stringify(issueProjects.map((row) => row.issue_id));
+	// The reads above are a plan, not authorization by themselves. A context
+	// item, routing rule, or issue assignment can appear before the batch. Fail
+	// before the first sweep statement so a late dependency cannot be left
+	// pointing at a deleted label or be detached without its project witness.
+	const cascadeWitness = sql<boolean>`EXISTS (
+			SELECT 1 FROM label WHERE id = ${label.id} AND user_id = ${actor.userId}
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM context_item
+			WHERE label_id = ${label.id}
+				AND id NOT IN (SELECT value FROM json_each(${plannedContextIds}))
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM routing_rule
+			WHERE label_id = ${label.id}
+				AND id NOT IN (SELECT value FROM json_each(${plannedRuleIds}))
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM issue_label
+			WHERE label_id = ${label.id}
+				AND issue_id NOT IN (SELECT value FROM json_each(${plannedIssueIds}))
+		)`;
 
 	await runAtomic(env, [
+		sql`SELECT CASE WHEN ${cascadeWitness} THEN 1 ELSE json_extract('x', '$[') END`.compile(db),
 		...contextSweep.queries,
 		// A label-scoped rule goes with the label: see `routingRuleDeletes`.
 		...routingRuleDeletes(db, actor, scopedRules),

@@ -19,6 +19,8 @@ export type Requirement =
 export interface ResolvedPermissionTarget {
 	projectId?: string;
 	issueId?: string;
+	/** True only when every mutated context scope is anchored to this issue. */
+	issueScoped?: boolean;
 	/** Set only after the context service resolves the exact journal scope. */
 	boundJournal?: boolean;
 }
@@ -69,7 +71,8 @@ const RUN_OPERATIONS = new Set([
 	'usage.read',
 	'event.read',
 	'library.validate',
-	'library.prepare'
+	'library.prepare',
+	'library.export'
 ]);
 
 function requireRunOperation(
@@ -105,6 +108,13 @@ function requireRunOperation(
 	]);
 	if (boundIssueWrite.has(operation) && target.issueId !== run.issueId) {
 		throw runKeyForbidden({ operation, reason: 'outside_run_issue' });
+	}
+	if (
+		operation.startsWith('context.') &&
+		!operation.startsWith('journal.') &&
+		target.issueScoped !== true
+	) {
+		throw runKeyForbidden({ operation, reason: 'context_not_issue_scoped' });
 	}
 	if (operation.startsWith('journal.') && !target.boundJournal) {
 		throw runKeyForbidden({ operation, reason: 'journal_anchor_unavailable' });

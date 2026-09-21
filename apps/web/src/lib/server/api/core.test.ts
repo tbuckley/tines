@@ -6,6 +6,7 @@ import {
 	decodeCursor,
 	errorResponse,
 	encodeCursor,
+	requireActor,
 	readArchived,
 	jsonifyMethodNotAllowed,
 	pageResult,
@@ -25,6 +26,18 @@ function requestEvent(): RequestEvent {
 }
 
 describe('request dispatch effects', () => {
+	it('does not fall back to a browser session for a malformed Authorization header', async () => {
+		const event = {
+			...requestEvent(),
+			request: new Request('http://test/api/v1/test', {
+				headers: { authorization: 'Basic browser-must-not-win' }
+			}),
+			locals: { user: { id: 'usr_session' } }
+		} as unknown as RequestEvent;
+
+		await expect(requireActor(event)).rejects.toMatchObject({ status: 401, code: 'unauthorized' });
+	});
+
 	it('does not schedule without a signal', async () => {
 		queued.mockClear();
 		const response = await api((event) => {

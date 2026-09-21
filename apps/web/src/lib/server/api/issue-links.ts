@@ -189,8 +189,22 @@ export async function prepareCreateIssueLinkPlan(
 	for (const item of requested) {
 		const endpoint = byId.get(item.otherId);
 		if (!endpoint) throw notFound();
+		requireAccess(
+			actor,
+			[{ domain: 'project', access: 'write', projectId: endpoint.project_id }],
+			'issue_link.create',
+			{ projectId: endpoint.project_id, issueId: endpoint.id }
+		);
 		await assertWritable(db, actor, endpointProject(endpoint), { issueId: endpoint.id });
 	}
+	// A prospective issue is not the run's bound issue, so a run key cannot
+	// attach a relationship while creating an unrelated issue.
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: prospective.projectId }],
+		'issue_link.create',
+		{ projectId: prospective.projectId, issueId: prospective.id }
+	);
 
 	return {
 		prospective,
