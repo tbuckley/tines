@@ -120,7 +120,8 @@ export const GET: RequestHandler = api(async (event) => {
 						scopeToken,
 						scope,
 						evidenceRequest,
-						material
+						material,
+						actor
 					)
 				: await getUsageEvidence(
 						db,
@@ -161,6 +162,7 @@ export const GET: RequestHandler = api(async (event) => {
 		}
 		return json(result, { headers: { 'cache-control': 'private, no-store' } });
 	} catch (error) {
+		if (error instanceof ApiFail) throw error;
 		throw new ApiFail(422, 'invalid_evidence_selection', (error as Error).message, {
 			remedy: 'restart evidence from its usage report'
 		});

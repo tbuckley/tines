@@ -213,7 +213,8 @@ export const GET: RequestHandler = api(async (event) => {
 							selected_states: cohortPayload.selected_states,
 							selection_basis: cohortPayload.selection_basis
 						}
-					: undefined
+					: undefined,
+				actor
 			);
 			if (!report) throw notFound();
 			report.scope =

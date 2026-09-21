@@ -1410,39 +1410,75 @@ export async function deleteWorkflow(
 		const base = wf.states.find((s) => s.id === baseId);
 		return base ? `${wf.name} / ${base.name}` : baseId;
 	});
-	await runAtomic(env, [
-		...sweep.queries,
-		db
-			.updateTable('project')
-			.set({ default_workflow_id: null })
-			.where('default_workflow_id', '=', id)
-			.compile(),
-		db.deleteFrom('workflow_transition').where('workflow_id', '=', id).compile(),
-		// Same pre-null as a state removal: the self-FK has no ON DELETE action.
-		db
-			.updateTable('workflow_state')
-			.set({ inherits_from_state_id: null })
-			.where('inherits_from_state_id', 'in', stateIds)
-			.compile(),
-		db.deleteFrom('workflow_state').where('workflow_id', '=', id).compile(),
-		db.deleteFrom('workflow').where('id', '=', id).compile(),
-		eventInsert(db, actor, {
-			type: 'workflow.deleted',
-			payload: {
-				workflow_id: id,
-				name: wf.name,
-				...(clearedInheritance.length
-					? {
-							inheritance_changed: clearedInheritance.map((c) => ({
-								workflow: c.workflow_name,
-								state: c.state_name,
-								from: c.was,
-								to: null
-							}))
-						}
-					: {})
-			}
-		})
-	]);
+	const admittedDefaultIds = defaultProjects.map((project) => project.id);
+	const admittedDefaults = admittedDefaultIds.length
+		? sql`p.id IN (${sql.join(
+				admittedDefaultIds.map((projectId) => sql`${projectId}`),
+				sql`, `
+			)})`
+		: sql`0 = 1`;
+	const defaultPointerWitness = sql<boolean>`NOT EXISTS (
+		SELECT 1 FROM project p
+		WHERE p.default_workflow_id = ${id}
+			AND NOT (${admittedDefaults})
+	)`;
+	const clearDefaultProjects = db
+		.updateTable('project')
+		.set({ default_workflow_id: null })
+		.where('default_workflow_id', '=', id)
+		.where('id', 'in', admittedDefaultIds.length ? admittedDefaultIds : ['__no_admitted_project__'])
+		.compile();
+	try {
+		await runAtomic(env, [
+			// The witness must run before any cascade statement: a pointer added
+			// after preflight must refuse the whole batch, not get cleared as if it
+			// had been admitted.
+			sql`SELECT CASE WHEN ${defaultPointerWitness} THEN 1 ELSE json_extract('x', '$[') END`.compile(
+				db
+			),
+			...sweep.queries,
+			clearDefaultProjects,
+			db.deleteFrom('workflow_transition').where('workflow_id', '=', id).compile(),
+			// Same pre-null as a state removal: the self-FK has no ON DELETE action.
+			db
+				.updateTable('workflow_state')
+				.set({ inherits_from_state_id: null })
+				.where('inherits_from_state_id', 'in', stateIds)
+				.compile(),
+			db.deleteFrom('workflow_state').where('workflow_id', '=', id).compile(),
+			db.deleteFrom('workflow').where('id', '=', id).compile(),
+			eventInsert(db, actor, {
+				type: 'workflow.deleted',
+				payload: {
+					workflow_id: id,
+					name: wf.name,
+					...(clearedInheritance.length
+						? {
+								inheritance_changed: clearedInheritance.map((c) => ({
+									workflow: c.workflow_name,
+									state: c.state_name,
+									from: c.was,
+									to: null
+								}))
+							}
+						: {})
+				}
+			}),
+			// Re-check every project pointer after the cascade has run. SQLite's
+			// lazy CASE error rolls the entire D1 batch back on a lost witness.
+			sql`SELECT CASE WHEN ${defaultPointerWitness} THEN 1 ELSE json_extract('x', '$[') END`.compile(
+				db
+			)
+		]);
+	} catch (error) {
+		if (error instanceof Error && error.message.includes('malformed JSON')) {
+			throw new ApiFail(
+				409,
+				'workflow_delete_conflict',
+				'The workflow acquired a new project default while it was being deleted; reload and retry'
+			);
+		}
+		throw error;
+	}
 	return { deleted_context: sweep.deleted, cleared_inheritance: clearedInheritance };
 }

@@ -378,7 +378,8 @@ export async function getUsageEvidence(
 					owner,
 					selected.map((candidate) => candidate.id),
 					request.population,
-					cutoff
+					cutoff,
+					actor
 				);
 	if (items.length !== selected.length)
 		throw new Error('Retained records changed while evidence was being assembled');

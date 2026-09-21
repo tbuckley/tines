@@ -334,6 +334,7 @@ export function addTransitionEvent(
 		fromName?: string;
 		toName?: string;
 		forced?: boolean;
+		project?: string;
 	}
 ): void {
 	t.sqlite
@@ -347,7 +348,7 @@ export function addTransitionEvent(
 			USER,
 			opts.apiKeyId,
 			opts.issueId,
-			PROJECT,
+			opts.project ?? PROJECT,
 			JSON.stringify({
 				from_state_id: opts.from ?? OPEN,
 				to_state_id: opts.to ?? REVIEW,

@@ -19,12 +19,14 @@ import {
 import { GET } from './+server';
 import { GET as RUNS_GET } from '../runs/+server';
 import { GET as EVIDENCE_GET } from './evidence/+server';
+import { sha256Hex } from '$lib/server/api/core';
 
 function completionEntry(
 	t: ReturnType<typeof createTestDb>,
 	id: string,
 	issueId: string,
-	createdAt: number
+	createdAt: number,
+	projectId = PROJECT
 ) {
 	t.sqlite
 		.prepare(
@@ -37,7 +39,7 @@ function completionEntry(
 			'issue.transitioned',
 			USER,
 			issueId,
-			PROJECT,
+			projectId,
 			JSON.stringify({
 				state_entry_version: 1,
 				workflow_id: 'wf_standard',
@@ -60,6 +62,34 @@ async function get(t: ReturnType<typeof createTestDb>, query: string) {
 		url
 	};
 	const response = await GET(event as unknown as Parameters<typeof GET>[0]);
+	return { response, body: (await response.json()) as Record<string, unknown> };
+}
+
+async function getWithBearer(t: ReturnType<typeof createTestDb>, query: string, bearer: string) {
+	t.env.BETTER_AUTH_SECRET = 'usage-route-test-secret';
+	const url = new URL(`http://test/api/v1/usage${query}`);
+	const response = await GET({
+		locals: {},
+		platform: { env: t.env, ctx: { waitUntil: () => {} } },
+		request: new Request(url, { headers: { authorization: `Bearer ${bearer}` } }),
+		url
+	} as unknown as Parameters<typeof GET>[0]);
+	return { response, body: (await response.json()) as Record<string, unknown> };
+}
+
+async function evidenceWithBearer(
+	t: ReturnType<typeof createTestDb>,
+	query: string,
+	bearer: string
+) {
+	t.env.BETTER_AUTH_SECRET = 'usage-route-test-secret';
+	const url = new URL(`http://test/api/v1/usage/evidence${query}`);
+	const response = await EVIDENCE_GET({
+		locals: {},
+		platform: { env: t.env, ctx: { waitUntil: () => {} } },
+		request: new Request(url, { headers: { authorization: `Bearer ${bearer}` } }),
+		url
+	} as unknown as Parameters<typeof EVIDENCE_GET>[0]);
 	return { response, body: (await response.json()) as Record<string, unknown> };
 }
 
@@ -125,6 +155,86 @@ describe('GET /api/v1/usage validation and authorization', () => {
 			counters: { distinct_issue_count: 1 }
 		});
 		expect(replay.body.scope).toBe(initial.body.scope);
+	});
+
+	it('filters cohort reports and evidence by the acting key project scope', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(
+			`INSERT INTO project (id, user_id, name, created_at, updated_at)
+			 VALUES ('prj_cohort_other', '${USER}', 'other', ${NOW}, ${NOW})`
+		);
+		const visible = addIssue(t, { id: 'iss_cohort_visible', state: CLOSED });
+		const hidden = addIssue(t, {
+			id: 'iss_cohort_hidden',
+			state: CLOSED,
+			project: 'prj_cohort_other'
+		});
+		const hiddenEvent = addIssue(t, { id: 'iss_cohort_hidden_event', state: CLOSED });
+		completionEntry(t, 'evt_cohort_visible', visible, NOW - 30, PROJECT);
+		completionEntry(t, 'evt_cohort_hidden', hidden, NOW - 20, 'prj_cohort_other');
+		completionEntry(t, 'evt_cohort_hidden_event', hiddenEvent, NOW - 10, 'prj_cohort_other');
+		const bearer = 'cohort-scoped-key';
+		t.sqlite
+			.prepare(
+				`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, permissions, created_at)
+				 VALUES ('key_cohort_scoped', ?, 'cohort', ?, 'tines_cohort', ?, ?)`
+			)
+			.run(
+				USER,
+				await sha256Hex(bearer),
+				JSON.stringify({
+					version: 1,
+					projects: { access: 'read', scope: [PROJECT] },
+					workspace: 'read',
+					control_plane: 'read'
+				}),
+				NOW
+			);
+
+		const report = await getWithBearer(
+			t,
+			`?mode=cohort&workflow=wf_standard&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`,
+			bearer
+		);
+		expect(report.response.status).toBe(200);
+		expect(report.body).toMatchObject({ counters: { distinct_issue_count: 1 } });
+
+		const scope = String(report.body.scope);
+		const evidence = await evidenceWithBearer(
+			t,
+			`?scope=${encodeURIComponent(scope)}&kind=issues`,
+			bearer
+		);
+		expect(evidence.response.status).toBe(200);
+		expect(evidence.body).toMatchObject({
+			total_count: 1,
+			items: [{ issue_id: visible }]
+		});
+		expect(JSON.stringify(evidence.body)).not.toContain(hidden);
+		const entries = await evidenceWithBearer(
+			t,
+			`?scope=${encodeURIComponent(scope)}&kind=entries`,
+			bearer
+		);
+		expect(entries.response.status).toBe(200);
+		expect(entries.body).toMatchObject({
+			total_count: 1,
+			items: [{ event_id: 'evt_cohort_visible' }]
+		});
+
+		const hiddenScope = await get(
+			t,
+			`?mode=cohort&workflow=wf_standard&project=prj_cohort_other&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`
+		);
+		expect(hiddenScope.response.status).toBe(200);
+		const replay = await evidenceWithBearer(
+			t,
+			`?scope=${encodeURIComponent(String(hiddenScope.body.scope))}&kind=issues`,
+			bearer
+		);
+		expect(replay.response.status).toBe(403);
+		expect(replay.body).toMatchObject({ error: { code: 'insufficient_permissions' } });
 	});
 
 	it('pages cohort members including no-run issues and cutoff-redacted attempts', async () => {

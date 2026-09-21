@@ -25,6 +25,8 @@ import {
 	type UsageScopePayload
 } from '$lib/server/usage-scope';
 import type { EvidenceRequest } from './usage-evidence';
+import type { ActorContext } from './core';
+import { projectReadPredicate, requireAccess } from './permissions';
 
 export interface CohortUsageRequest extends UsagePeriodInput {
 	workflow: string;
@@ -309,7 +311,8 @@ async function buildCohortUsage(
 		selected_states: CohortStateProof[];
 		selection_basis: CohortUsageReport['selection_basis'];
 	},
-	evidence?: CohortEvidenceBuild
+	evidence?: CohortEvidenceBuild,
+	actor?: ActorContext
 ): Promise<CohortUsageReport | null> {
 	const period = frozen
 		? { ...frozen, generated_at: generatedAt }
@@ -320,15 +323,30 @@ async function buildCohortUsage(
 		.where('id', '=', request.workflow)
 		.executeTakeFirst();
 	if (workflow && workflow.user_id !== null && workflow.user_id !== owner) return null;
+	let projectId: string | null = null;
 	if (request.project) {
 		const project = await db
 			.selectFrom('project')
 			.select('id')
-			.where('id', '=', request.project)
+			.where((eb) => eb.or([eb('id', '=', request.project!), eb('name', '=', request.project!)]))
 			.where('user_id', '=', owner)
 			.executeTakeFirst();
 		if (!project) return null;
+		projectId = project.id;
+		if (actor)
+			requireAccess(actor, [{ domain: 'project', access: 'read', projectId }], 'usage.read', {
+				projectId
+			});
 	}
+	const visibleEventProject = actor
+		? projectReadPredicate(actor, 'event.project_id')
+		: sql<boolean>`1 = 1`;
+	const visibleWitnessProject = actor
+		? projectReadPredicate(actor, 'w.project_id')
+		: sql<boolean>`1 = 1`;
+	const visibleIssueProject = actor
+		? projectReadPredicate(actor, 'i.project_id')
+		: sql<boolean>`1 = 1`;
 	const observedThrough = frozen?.observed_through ?? generatedAt;
 	const retainedRows = async () => {
 		const result = await sql<{
@@ -347,6 +365,7 @@ async function buildCohortUsage(
 					ELSE json_extract(payload,'$.to_state_category') END AS category
 			FROM event
 			WHERE user_id=${owner} AND created_at<${observedThrough}
+				AND ${visibleEventProject}
 				AND type IN ('issue.created','issue.transitioned','issue.updated') AND json_valid(payload)
 		), ranked AS (
 			SELECT *, ROW_NUMBER() OVER (PARTITION BY state_id ORDER BY created_at DESC,id DESC) AS rn
@@ -535,6 +554,7 @@ async function buildCohortUsage(
 					WHEN (CASE WHEN type IN ('issue.created','issue.transitioned') THEN json_extract(payload,'$.workflow_id') ELSE json_extract(payload,'$.workflow_to_id') END) IS NULL THEN 1
 					WHEN (CASE WHEN type='issue.created' THEN json_extract(payload,'$.state_category') ELSE json_extract(payload,'$.to_state_category') END) IS NULL THEN 1 ELSE 0 END AS unavailable
 			FROM event WHERE user_id=${owner} AND created_at>=${period.from}
+				AND ${visibleEventProject}
 				AND created_at<${observedThrough} AND issue_id>=${seek.issue}
 				AND type IN ('issue.created','issue.transitioned','issue.updated')
 				AND (type<>'issue.updated' OR NOT json_valid(payload)
@@ -544,7 +564,7 @@ async function buildCohortUsage(
 			SELECT *, CASE WHEN issue_id IS NOT NULL AND created_at<${period.to}
 				AND workflow_id=${request.workflow} AND category='done'
 				AND state_id IN (SELECT value FROM json_each(${JSON.stringify(selected.map((state) => state.id))}))
-				AND (${request.project ?? null} IS NULL OR project_id=${request.project ?? null}) THEN 1 ELSE 0 END AS qualifies
+				AND (${projectId} IS NULL OR project_id=${projectId}) THEN 1 ELSE 0 END AS qualifies
 			FROM normalized
 		), ranked AS (
 			SELECT *,
@@ -578,12 +598,15 @@ async function buildCohortUsage(
 			CASE WHEN r.ended_at<${period.to} THEN r.usage END AS usage
 		FROM members m
 		LEFT JOIN event w ON w.id=substr(m.witness_key,21) AND w.user_id=${owner} AND w.issue_id=m.issue_id
+			AND ${visibleWitnessProject}
 		LEFT JOIN issue i ON i.id=m.issue_id
 		LEFT JOIN project p ON p.id=i.project_id
 		LEFT JOIN agent_run r INDEXED BY agent_run_user_issue_created_idx
 			ON r.user_id=${owner} AND r.issue_id=m.issue_id AND r.created_at<${period.to}
+			AND ${visibleIssueProject}
 			AND (r.created_at,r.id)>(CASE WHEN m.issue_id=${seek.issue} THEN ${seek.at} ELSE -1 END,CASE WHEN m.issue_id=${seek.issue} THEN ${seek.run} ELSE '' END)
 		WHERE (i.id IS NULL OR p.user_id=${owner})
+			AND (i.id IS NULL OR ${visibleIssueProject})
 			AND (m.issue_id,COALESCE(r.created_at,-1),COALESCE(r.id,''))>(${seek.issue},${seek.at},${seek.run})
 		ORDER BY m.issue_id,r.created_at,r.id LIMIT 5001`.execute(db);
 		const batch = result.rows;
@@ -640,6 +663,7 @@ async function buildCohortUsage(
 			CASE WHEN json_valid(payload) AND type='issue.created' THEN json_extract(payload,'$.state_category')
 				WHEN json_valid(payload) THEN json_extract(payload,'$.to_state_category') END AS category
 		FROM event WHERE user_id=${owner} AND created_at>=${period.from} AND created_at<${observedThrough}
+			AND ${visibleEventProject}
 			AND type IN ('issue.created','issue.transitioned','issue.updated')
 			AND (type<>'issue.updated' OR NOT json_valid(payload)
 				OR json_extract(payload,'$.workflow_to_id') IS NOT NULL
@@ -649,7 +673,7 @@ async function buildCohortUsage(
 		COALESCE(SUM(CASE WHEN issue_id IS NOT NULL AND created_at<${period.to}
 			AND workflow_id=${request.workflow} AND category='done'
 			AND state_id IN (SELECT value FROM json_each(${JSON.stringify(selected.map((state) => state.id))}))
-			AND (${request.project ?? null} IS NULL OR project_id=${request.project ?? null}) THEN 1 ELSE 0 END),0) AS qualifying,
+			AND (${projectId} IS NULL OR project_id=${projectId}) THEN 1 ELSE 0 END),0) AS qualifying,
 		COALESCE(SUM(CASE WHEN valid=0 THEN 1 ELSE 0 END),0) AS malformed,
 		COALESCE(SUM(CASE WHEN valid=1 AND state_id IS NULL THEN 1 ELSE 0 END),0) AS missing,
 		COALESCE(SUM(CASE WHEN valid=1 AND state_id IS NOT NULL AND (workflow_id IS NULL OR category IS NULL) THEN 1 ELSE 0 END),0) AS unavailable,
@@ -726,9 +750,10 @@ export function getCohortUsage(
 		observed_through: number;
 		selected_states: CohortStateProof[];
 		selection_basis: CohortUsageReport['selection_basis'];
-	}
+	},
+	actor?: ActorContext
 ) {
-	return buildCohortUsage(db, owner, request, generatedAt, frozen);
+	return buildCohortUsage(db, owner, request, generatedAt, frozen, undefined, actor);
 }
 
 export async function getCohortUsageEvidence(
@@ -737,7 +762,8 @@ export async function getCohortUsageEvidence(
 	scopeToken: string,
 	scope: Extract<UsageScopePayload, { mode: 'cohort' }>,
 	request: EvidenceRequest,
-	material: string
+	material: string,
+	actor?: ActorContext
 ): Promise<UsageEvidencePage> {
 	if (request.kind === 'issues' && request.population !== 'all')
 		throw new Error('completed issue evidence uses the all-member population');
@@ -747,6 +773,24 @@ export async function getCohortUsageEvidence(
 		throw new Error('run evidence must select finalized or pending');
 	if (request.population === 'pending' && request.sort === 'cost')
 		throw new Error('pending evidence can only be sorted by time');
+	let scopeProjectId: string | null = null;
+	if (scope.project) {
+		const project = await db
+			.selectFrom('project')
+			.select('id')
+			.where((eb) => eb.or([eb('id', '=', scope.project!), eb('name', '=', scope.project!)]))
+			.where('user_id', '=', owner)
+			.executeTakeFirst();
+		if (!project) throw new Error('Completed-issue project is no longer available');
+		scopeProjectId = project.id;
+		if (actor)
+			requireAccess(
+				actor,
+				[{ domain: 'project', access: 'read', projectId: scopeProjectId }],
+				'usage.read',
+				{ projectId: scopeProjectId }
+			);
+	}
 	let decoded = null;
 	if (request.cursor) {
 		decoded = await verifyUsageCursor(request.cursor, material);
@@ -788,7 +832,8 @@ export async function getCohortUsageEvidence(
 			selected_states: scope.selected_states,
 			selection_basis: scope.selection_basis
 		},
-		evidence
+		evidence,
+		actor
 	);
 	if (!report) throw new Error('Completed-issue selection is no longer available');
 	if (request.member && !evidence.memberFound)
@@ -814,6 +859,7 @@ export async function getCohortUsageEvidence(
 				CASE WHEN json_valid(payload) AND type='issue.created' THEN json_extract(payload,'$.state_category')
 					WHEN json_valid(payload) THEN json_extract(payload,'$.to_state_category') END AS category
 			FROM event WHERE user_id=${owner} AND created_at>=${scope.from} AND created_at<${scope.observed_through}
+				AND ${actor ? projectReadPredicate(actor, 'event.project_id') : sql<boolean>`1 = 1`}
 				AND type IN ('issue.created','issue.transitioned','issue.updated')
 				AND (type<>'issue.updated' OR NOT json_valid(payload)
 					OR json_extract(payload,'$.workflow_to_id') IS NOT NULL
@@ -822,7 +868,7 @@ export async function getCohortUsageEvidence(
 			SELECT *,CASE WHEN issue_id IS NOT NULL AND created_at<${scope.to}
 				AND workflow_id=${scope.workflow} AND category='done'
 				AND state_id IN (SELECT value FROM json_each(${JSON.stringify(scope.selected_states.map((state) => state.id))}))
-				AND (${scope.project} IS NULL OR project_id=${scope.project}) THEN 1 ELSE 0 END AS qualifies
+				AND (${scopeProjectId} IS NULL OR project_id=${scopeProjectId}) THEN 1 ELSE 0 END AS qualifies
 			FROM normalized
 		), ranked AS (
 			SELECT *,SUM(qualifies) OVER (PARTITION BY issue_id ORDER BY created_at DESC,id DESC ROWS UNBOUNDED PRECEDING) AS qualifying_rank,
@@ -833,6 +879,7 @@ export async function getCohortUsageEvidence(
 			LEFT JOIN issue i ON i.id=r.issue_id
 			LEFT JOIN project p ON p.id=i.project_id
 			WHERE r.qualifies=1 AND (i.id IS NULL OR p.user_id=${owner})
+				AND (i.id IS NULL OR ${actor ? projectReadPredicate(actor, 'p.id') : sql<boolean>`1 = 1`})
 		), audited AS (
 			SELECT *,COUNT(*) OVER () AS total_count FROM ranked
 			WHERE issue_id IN (SELECT issue_id FROM members)
@@ -875,7 +922,8 @@ export async function getCohortUsageEvidence(
 					owner,
 					selected.map((candidate) => candidate.id),
 					request.population as 'finalized' | 'pending',
-					scope.to
+					scope.to,
+					actor
 				);
 	if (items.length !== selected.length)
 		throw new Error('Retained records changed while evidence was being assembled');

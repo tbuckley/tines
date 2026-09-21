@@ -720,4 +720,80 @@ describe('workflow permissions', () => {
 			default_workflow_id: workflow.id
 		});
 	});
+
+	it('refuses a project default acquired after deletion preflight', async () => {
+		const t = setup();
+		const workflow = await createWorkflow(t.db, t.env, actor, {
+			name: 'Raced default',
+			states,
+			transitions,
+			initial_state: 'Open'
+		});
+		t.sqlite.exec(
+			`INSERT INTO project (id, user_id, name, created_at, updated_at)
+			 VALUES ('prj_default_race', '${USER}', 'race', 1, 1);
+			UPDATE project SET default_workflow_id = '${workflow.id}' WHERE id = 'prj_1';`
+		);
+		const scoped = {
+			...actor,
+			permissions: {
+				version: 1 as const,
+				projects: { access: 'write' as const, scope: ['prj_1'] },
+				workspace: 'delete' as const,
+				control_plane: 'none' as const
+			}
+		};
+		const beforeEvents = t.all(
+			"SELECT id FROM event WHERE type = 'workflow.deleted' AND json_extract(payload, '$.workflow_id') = ?",
+			workflow.id
+		);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let injected = false;
+		t.env.DB.batch = async (statements) => {
+			if (!injected) {
+				injected = true;
+				t.sqlite
+					.prepare('UPDATE project SET default_workflow_id = ? WHERE id = ?')
+					.run(workflow.id, 'prj_default_race');
+			}
+			return realBatch(statements);
+		};
+		await expect(deleteWorkflow(t.db, t.env, scoped, workflow.id)).rejects.toMatchObject({
+			status: 409,
+			code: 'workflow_delete_conflict'
+		});
+		expect(t.all('SELECT id FROM workflow WHERE id = ?', workflow.id)).toHaveLength(1);
+		expect(t.all('SELECT default_workflow_id FROM project WHERE id = ?', 'prj_1')[0]).toEqual({
+			default_workflow_id: workflow.id
+		});
+		expect(
+			t.all('SELECT default_workflow_id FROM project WHERE id = ?', 'prj_default_race')[0]
+		).toEqual({ default_workflow_id: workflow.id });
+		expect(
+			t.all(
+				"SELECT id FROM event WHERE type = 'workflow.deleted' AND json_extract(payload, '$.workflow_id') = ?",
+				workflow.id
+			)
+		).toEqual(beforeEvents);
+
+		const authorized = {
+			...scoped,
+			permissions: {
+				...scoped.permissions,
+				projects: { access: 'write' as const, scope: ['prj_1', 'prj_default_race'] }
+			}
+		};
+		await expect(deleteWorkflow(t.db, t.env, authorized, workflow.id)).resolves.toEqual({
+			deleted_context: [],
+			cleared_inheritance: []
+		});
+		expect(t.all('SELECT id FROM workflow WHERE id = ?', workflow.id)).toHaveLength(0);
+		expect(
+			t.all(
+				'SELECT default_workflow_id FROM project WHERE id IN (?, ?)',
+				'prj_1',
+				'prj_default_race'
+			)
+		).toEqual([{ default_workflow_id: null }, { default_workflow_id: null }]);
+	});
 });

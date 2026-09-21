@@ -160,7 +160,8 @@ export async function hydrateUsageEvidenceRuns(
 	userId: string,
 	ids: string[],
 	population: 'finalized' | 'pending',
-	cutoff: number
+	cutoff: number,
+	actor?: ActorContext
 ): Promise<(AgentRun | UsagePendingRun)[]> {
 	if (!ids.length) return [];
 	const rows =
@@ -169,6 +170,9 @@ export async function hydrateUsageEvidenceRuns(
 					.select(pendingEvidenceSelection)
 					.where('agent_run.id', 'in', ids)
 					.where('agent_run.created_at', '<', cutoff)
+					.$if(actor !== undefined, (q) =>
+						q.where(projectReadPredicate(actor!, 'issue.project_id'))
+					)
 					.where((eb) =>
 						eb.or([eb('agent_run.ended_at', 'is', null), eb('agent_run.ended_at', '>=', cutoff)])
 					)
@@ -189,6 +193,9 @@ export async function hydrateUsageEvidenceRuns(
 					.where('agent_run.id', 'in', ids)
 					.where('agent_run.created_at', '<', cutoff)
 					.where('agent_run.ended_at', '<', cutoff)
+					.$if(actor !== undefined, (q) =>
+						q.where(projectReadPredicate(actor!, 'issue.project_id'))
+					)
 					.execute();
 	const byId = new Map((rows as unknown as RunRow[]).map((row) => [row.id, row]));
 	const result: (AgentRun | UsagePendingRun)[] = [];
