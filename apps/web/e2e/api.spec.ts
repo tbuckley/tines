@@ -29,10 +29,24 @@ test.describe('auth', () => {
 		expect(res.ok()).toBe(true);
 	});
 
-	test('refuses API-key management over bearer auth', async ({ request }) => {
-		const res = await apiClient(request, ALICE.apiKey).post('/api/v1/api-keys', { name: 'nope' });
-		expect(res.status()).toBe(403);
-		expect((await errorBody(res)).error.code).toBe('session_required');
+	test('lets a full-authority key delegate an explicit subset', async ({ request }) => {
+		const res = await apiClient(request, ALICE.apiKey).post('/api/v1/api-keys', {
+			name: `delegated-${runId}`,
+			permissions: {
+				version: 1,
+				projects: { access: 'read', scope: [RUNROW.projectId] },
+				workspace: 'none',
+				control_plane: 'none'
+			}
+		});
+		expect(res.status()).toBe(201);
+		const created = await res.json();
+		expect(created.permissions).toEqual({
+			version: 1,
+			projects: { access: 'read', scope: [RUNROW.projectId] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
 	});
 });
 

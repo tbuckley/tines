@@ -467,7 +467,7 @@ test.describe.serial('env context items', () => {
 		expect(listText).not.toContain(issueSecretValue);
 	});
 
-	test('a run key reads env items but cannot create, edit or delete them', async ({ request }) => {
+	test('a run key cannot reach env items outside its run project', async ({ request }) => {
 		const runKeyed = apiClient(request, RUNROW.runKey);
 		const create = await runKeyed.post('/api/v1/context', {
 			kind: 'env',
@@ -481,10 +481,9 @@ test.describe.serial('env context items', () => {
 		expect(edit.status()).toBe(403);
 		const del = await runKeyed.delete(`/api/v1/context/${publicItem.id}`);
 		expect(del.status()).toBe(403);
-		// Reads stay open: they never carry a secret.
+		// Project filtering happens before lookup, so the foreign item is absent.
 		const read = await runKeyed.get(`/api/v1/context/${secretItem.id}`);
-		expect(read.status()).toBe(200);
-		expect(await read.text()).not.toContain(secretValue);
+		expect(read.status()).toBe(404);
 		// The owner's items are untouched.
 		expect(
 			(

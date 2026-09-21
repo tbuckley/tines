@@ -12,13 +12,13 @@ describe('API key permissions', () => {
 	it('normalizes the unversioned example and sorts project IDs', () => {
 		expect(
 			parseApiKeyPermissions({
-				projects: { access: 'write', scope: ['prj_b', 'prj_a'] },
+				projects: { access: 'write', scope: ['prj_e2e-b', 'prj_a'] },
 				workspace: 'read',
 				control_plane: 'none'
 			})
 		).toEqual({
 			version: 1,
-			projects: { access: 'write', scope: ['prj_a', 'prj_b'] },
+			projects: { access: 'write', scope: ['prj_a', 'prj_e2e-b'] },
 			workspace: 'read',
 			control_plane: 'none'
 		});

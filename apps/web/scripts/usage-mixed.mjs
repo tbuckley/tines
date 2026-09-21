@@ -357,12 +357,17 @@ try {
 		['arun_mixed_foreign']
 	);
 	for (const population of ['pending', 'finalized']) {
-		const normal = await request('/runs', { ...bounds, population, limit: '100' });
+		const normal = await request('/runs', {
+			...bounds,
+			population,
+			project: 'prj_mixeda',
+			limit: '100'
+		});
 		const asRun = await request('/runs', { ...bounds, population, limit: '100' }, runKey);
 		assert.deepEqual(asRun, normal);
 	}
 	const runReport = await request('/usage', { ...bounds, by: 'project' }, runKey);
-	assertAggregate(runReport.scope_total, selected({}));
+	assertAggregate(runReport.scope_total, selected({ project: 'prj_mixeda' }));
 	assert.deepEqual(
 		comparable(JSON.parse(cli(['usage'], { ...bounds, by: 'project' }, true, runKey))),
 		comparable(runReport)

@@ -92,8 +92,8 @@ for (const operation of ['project', 'workflow', 'state'] as const) {
 					: operation === 'state'
 						? await writer.patch(route, payload)
 						: await writer.delete(route, payload);
-			if (actor === 'run-env') {
-				expect(response.status(), 'run keys cannot delete env through a scope cascade').toBe(403);
+			if (actor.startsWith('run-')) {
+				expect(response.status(), 'run keys cannot cascade outside their run scope').toBe(403);
 				expect((await errorBody(response)).error.code).toBe('run_key_forbidden');
 				expect(await body(await owner.get(route)), 'rejected cascade preserves its scope').toEqual(
 					beforeScope
@@ -102,10 +102,7 @@ for (const operation of ['project', 'workflow', 'state'] as const) {
 				expect(await body(await owner.get(`/api/v1/context/${sibling.id}`))).toEqual(sibling);
 				expect(await relevantEvents(), 'rejected cascade emits no events').toEqual(beforeEvents);
 			} else {
-				expect(
-					response.status(),
-					'human env and run-key ordinary-context cascades stay authorized'
-				).toBe(200);
+				expect(response.status(), 'human and full named-key cascades stay authorized').toBe(200);
 				expect((await owner.get(`/api/v1/context/${item.id}`)).status()).toBe(404);
 				expect((await owner.get(`/api/v1/context/${sibling.id}`)).status()).toBe(404);
 				if (operation === 'state') {

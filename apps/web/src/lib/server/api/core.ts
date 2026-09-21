@@ -345,25 +345,12 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	};
 }
 
-/** API key management requires a browser session, not a key. */
-export async function requireSessionActor(event: RequestEvent): Promise<ActorContext> {
-	const actor = await requireActor(event);
-	if (!actor.viaSession) {
-		throw new ApiFail(
-			403,
-			'session_required',
-			'API keys are managed from the web UI (browser session), not with a key'
-		);
-	}
-	return actor;
-}
-
 export { sha256Hex };
 
 /** Everything a route handler needs: scoped db, env, and the acting user. */
-export async function apiContext(event: RequestEvent, { sessionOnly = false } = {}) {
+export async function apiContext(event: RequestEvent) {
 	if (!event.platform) throw new ApiFail(500, 'no_platform', 'Platform bindings unavailable');
-	const actor = sessionOnly ? await requireSessionActor(event) : await requireActor(event);
+	const actor = await requireActor(event);
 	return {
 		db: getDb(event.platform.env),
 		env: event.platform.env,

@@ -107,6 +107,10 @@ export const RUNROW = {
 	 */
 	runKey: 'tines_e2erunrow000000000000000000000000000000000',
 	runKeyRunId: 'arun_e2e_run_key_active',
+	runKeyIssueId: 'iss_e2e_run_key_active',
+	runKeyIssueNumber: 2,
+	runKeyRunnerId: 'rnr_e2e_run_key_active',
+	runKeyRunnerName: 'run-key-fixture',
 	runKeyName: 'run:runrow'
 };
 

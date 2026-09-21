@@ -260,9 +260,16 @@ statements.push(
 	   'balanced', 'claude-opus-4', '{"input_tokens":1000,"output_tokens":2000,"cost_usd":${RUNROW.costUsd},"cost_source":"provider"}',
 	   'wfs_std_open', 'wfs_std_open', '${RUNROW.providerSessionId}', '${RUNROW.providerUrl}', 'seeded log tail', NULL,
 	   ${runStart}, ${runStart}, ${nowMs});`,
+	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
+	 VALUES ('${RUNROW.runKeyIssueId}', '${RUNROW.projectId}', ${RUNROW.runKeyIssueNumber}, 'Run key fixture', '',
+	   'wf_standard', 'wfs_std_open', ${nowMs + 1}, ${nowMs + 1});`,
+	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier,
+	   config, created_at, updated_at)
+	 VALUES ('${RUNROW.runKeyRunnerId}', '${ALICE.id}', 'local', '${RUNROW.runKeyRunnerName}', 'paused', 1, 30,
+	   'balanced', '{}', ${nowMs + 1}, ${nowMs + 1});`,
 	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, state_id_at_start,
 	   log, created_at, started_at)
-	 VALUES ('${RUNROW.runKeyRunId}', '${ALICE.id}', '${RUNROW.issueId}', '${RUNROW.runnerId}', 'running',
+	 VALUES ('${RUNROW.runKeyRunId}', '${ALICE.id}', '${RUNROW.runKeyIssueId}', '${RUNROW.runKeyRunnerId}', 'running',
 	   'balanced', 'wfs_std_open', 'active run-key fixture', ${nowMs + 1}, ${nowMs + 1});`,
 	// The run's key, for the run-key fence cases in api.spec.ts. Inserted after
 	// the agent_run row it references (api_key.agent_run_id is a FK); expiry is

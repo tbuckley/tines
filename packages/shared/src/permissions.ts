@@ -115,7 +115,7 @@ function projectScopeAt(value: unknown): 'all' | string[] {
 		if (
 			typeof id !== 'string' ||
 			id.length > MAX_PERMISSION_PROJECT_ID_LENGTH ||
-			!/^prj_[A-Za-z0-9]+$/.test(id)
+			!/^prj_[A-Za-z0-9_-]+$/.test(id)
 		) {
 			throw new ApiKeyPermissionsValidationError(
 				'"permissions.projects.scope" entries must be valid project IDs',
