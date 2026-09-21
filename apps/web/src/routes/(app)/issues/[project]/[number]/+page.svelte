@@ -1353,7 +1353,7 @@
 		stateEnteredAt={data.issue.state_entered_at}
 		onmove={requestMove}
 	/>
-	<p class="text-muted-foreground mt-3 text-xs">
+	<p class="text-muted-foreground mt-3 min-w-0 text-xs wrap-anywhere">
 		Workflow:
 		<a href="/workflows/{data.issue.workflow.id}" class="hover:underline"
 			>{data.issue.workflow.name}</a
