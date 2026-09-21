@@ -249,6 +249,32 @@ focusTest.describe.serial('project focus', () => {
 	);
 
 	focusTest(
+		'a failed focus choice reopens the menu and can be retried',
+		async ({ browser, world }) => {
+			const page = await open(browser, DESKTOP);
+			await page.route('**/api/v1/preferences', async (route) => {
+				if (route.request().method() !== 'PATCH') return route.continue();
+				await route.fulfill({
+					status: 500,
+					contentType: 'application/json',
+					body: JSON.stringify({ error: { code: 'focus_failure', message: 'Focus choice failed' } })
+				});
+			});
+
+			await switcher(page).click();
+			await page.getByRole('menuitemradio', { name: world.aName }).click();
+			await expect(page.getByRole('alert')).toHaveText('Focus choice failed');
+			await expect(switcher(page)).toHaveAttribute('aria-expanded', 'true');
+			await expect(switcher(page)).toHaveAttribute('aria-label', 'Project focus: All projects');
+
+			await page.unroute('**/api/v1/preferences');
+			await page.getByRole('menuitemradio', { name: world.aName }).click();
+			await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${world.aName}`);
+			await page.close();
+		}
+	);
+
+	focusTest(
 		'the phone header carries project controls outside the primary navigation',
 		async ({ browser, world }) => {
 			const page = await open(browser, PHONE);
