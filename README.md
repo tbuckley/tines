@@ -181,7 +181,7 @@ Either way you are off the release train until you run `npm install -g tines@lat
 
 ## Publishing the CLI to npm
 
-Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`**. The tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and the build bundles everything — `@tines/shared` and `commander` alike — so the package has **no runtime dependencies**.
+Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`**. The tarball's application payload is only `dist` (see `files` in `packages/cli/package.json`; npm also includes the package metadata and README), `prepublishOnly` rebuilds before every publish, and the build bundles everything — `@tines/shared` and `commander` alike — so the package has **no runtime dependencies**.
 
 Consumers install it with `npm install -g tines`, or run it with no install at all via `npx -y tines` — see "Installing the CLI" above.
 
