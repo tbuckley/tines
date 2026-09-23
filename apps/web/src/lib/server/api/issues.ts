@@ -1750,7 +1750,8 @@ async function transitionMemberIssue(
 	effects: DispatchEffects,
 	id: string,
 	body: TransitionIssueRequest,
-	access: Awaited<ReturnType<typeof resolveIssueAccess>>
+	access: Awaited<ReturnType<typeof resolveIssueAccess>>,
+	beforeCommit?: () => Promise<void>
 ) {
 	if (actor.agentRunId) throw notFound();
 	const issue = await readSharedIssue(db, actor, { id });
@@ -1935,6 +1936,7 @@ async function transitionMemberIssue(
 				AND user_id = ${actor.userId} AND last_request_token = ${token})
 			ON CONFLICT(user_id, version) DO NOTHING`.compile(db)
 		);
+	await beforeCommit?.();
 	const results = await runAtomic(env, writes);
 	if (!results[0]?.meta.changes)
 		throw new ApiFail(409, 'decision_refresh_required', 'Issue changed; refresh and choose again', {
@@ -1950,7 +1952,8 @@ export async function transitionIssue(
 	actor: ActorContext,
 	effects: DispatchEffects,
 	id: string,
-	body: TransitionIssueRequest
+	body: TransitionIssueRequest,
+	beforeMemberCommit?: () => Promise<void>
 ): Promise<IssueDetail | Awaited<ReturnType<typeof readSharedIssue>>> {
 	assertConsentFieldsSupported(actor, body, [
 		'allow_my_agents',
@@ -1969,7 +1972,7 @@ export async function transitionIssue(
 	}
 	const access = await resolveIssueAccess(db, actor, id);
 	if (access.role === 'member')
-		return transitionMemberIssue(db, env, actor, effects, id, body, access);
+		return transitionMemberIssue(db, env, actor, effects, id, body, access, beforeMemberCommit);
 	const current = await getIssueDetail(db, actor.userId, { id });
 	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
 	const decision = await db
@@ -2307,7 +2310,8 @@ export async function createComment(
 	env: Env,
 	actor: ActorContext,
 	issueId: string,
-	body: CreateCommentRequest
+	body: CreateCommentRequest,
+	beforeCommit?: () => Promise<void>
 ): Promise<Comment> {
 	const access = await resolveIssueAccess(db, actor, issueId);
 	if (access.role === 'owner') {
@@ -2319,6 +2323,7 @@ export async function createComment(
 	const id = newId('cmt');
 	const now = Date.now();
 	const guard = currentProjectWriterPredicate(access.projectId, actor, access, issueId);
+	await beforeCommit?.();
 	const results = await runAtomic(env, [
 		sql`INSERT INTO comment (id, issue_id, body, actor_user_id, actor_api_key_id,
 			author_run_id, author_run_name, created_at)

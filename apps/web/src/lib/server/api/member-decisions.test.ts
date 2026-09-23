@@ -6,6 +6,7 @@ import { createComment, updateComment, deleteComment, transitionIssue } from './
 import { readIssueConsent, writeIssueConsent } from './personal-consent';
 import { listSharedEvents } from './shared-events';
 import { eventQuery } from './events';
+import { readSharedIssue } from './shared-issues';
 
 function setup() {
 	const t = createTestDb();
@@ -44,6 +45,54 @@ function setup() {
 }
 
 describe('attributed member decisions', () => {
+	it('keeps member issue reads and writes scoped to a current human or named key', async () => {
+		const { t, issueId, owner, member, outsider } = setup();
+		const namedKey = {
+			...member,
+			apiKeyId: 'key_bob',
+			apiKeyName: 'Bob key',
+			viaSession: false,
+			bearerPresent: true
+		};
+		const runKey = { ...namedKey, agentRunId: 'arun_bob' };
+		t.sqlite.exec(`INSERT INTO user (id,name,email,emailVerified,createdAt,updatedAt)
+			VALUES ('u4','Pending','pending@example.com',1,${NOW},${NOW});
+			INSERT INTO api_key (id,user_id,name,key_hash,key_prefix,created_at)
+			VALUES ('key_bob','u2','Bob key','key_bob_hash','key_bob',${NOW});
+			INSERT INTO project_invitation (id,project_id,email,token_hash,expires_at,created_by_user_id,created_at,updated_at)
+			VALUES ('inv_pending','${PROJECT}','pending@example.com','pending_hash',${NOW + 100000},'${USER}',${NOW},${NOW});`);
+		const pending = { ...member, userId: 'u4', userName: 'Pending' };
+		for (const actor of [member, namedKey]) {
+			const view = await readSharedIssue(t.db, actor, { id: issueId });
+			expect(view.project.owner.id).toBe(owner.userId);
+			expect(view.capabilities.execute).toBe(false);
+		}
+		await expect(readSharedIssue(t.db, runKey, { id: issueId })).rejects.toMatchObject({
+			status: 404
+		});
+		for (const actor of [pending, outsider]) {
+			await expect(readSharedIssue(t.db, actor, { id: issueId })).rejects.toMatchObject({
+				status: 404
+			});
+			await expect(
+				createComment(t.db, t.env, actor, issueId, { body: 'hidden' })
+			).rejects.toMatchObject({
+				status: 404
+			});
+		}
+		const fromKey = await createComment(t.db, t.env, namedKey, issueId, { body: 'named' });
+		expect(fromKey.actor).toMatchObject({ user_id: member.userId, api_key_id: 'key_bob' });
+		await expect(
+			writeIssueConsent(t.db, t.env, namedKey, issueId, {
+				value: 'off',
+				expected_revision: 0,
+				issue_epoch: 0,
+				decision_revision: 0
+			})
+		).rejects.toMatchObject({ status: 403 });
+		expect(t.all('SELECT * FROM issue_personal_choice WHERE issue_id = ?', issueId)).toEqual([]);
+	});
+
 	it('keeps one event in the owner and member feeds, and attributes comment repair', async () => {
 		const { t, issueId, owner, member } = setup();
 		const created = await createComment(t.db, t.env, member, issueId, { body: 'first' });

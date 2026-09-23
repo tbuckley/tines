@@ -1,6 +1,6 @@
 # Shared-project implementation verification · 2026-09-23
 
-**Branch:** `tines/669-project-membership`. **Status:** slice 4 checkpoint;
+**Branch:** `tines/669-project-membership`. **Status:** slice 4 verified;
 the proposed [669 → 670/712 contract](../shared-project-execution-contract.md)
 is unreviewed until the parent lands and review completes. All fixtures ran in
 an isolated local Worker/D1 stack. No production project, run, account, or
@@ -27,11 +27,14 @@ Screenshots from the isolated two-account journey:
 | --- | --- |
 | `pnpm check` | Passed migration, package, shared, CLI, and Svelte/type checks. |
 | `pnpm format:check` | Passed after formatting the slice files. |
-| `pnpm test` | Passed: 333 shared, 719 CLI, 2,277 web unit tests. |
+| `pnpm test` | Passed: 333 shared, 719 CLI, 2,278 web unit tests. |
 | `CI=1 E2E_PORT=8895 pnpm exec playwright test e2e/member-decisions.spec.ts e2e/project-membership.spec.ts` from `apps/web` | 6 passed: invitation/join/read/CLI/privacy and initial member decision journey. |
 | `CI=1 E2E_PORT=8897 pnpm exec playwright test e2e/member-decisions.spec.ts` | 2 passed: browser and CLI decision path, plus native D1 removal between choice preparation and commit. |
 | `CI=1 E2E_PORT=8898 pnpm exec playwright test e2e/native-collaboration.spec.ts e2e/native-schedules.spec.ts` | 22 passed: conversion, owner consent, source ordering, hold, claim/delivery, cancellation slot, and schedule rollback. |
 | `CI=1 E2E_PORT=19002 pnpm exec playwright test e2e/member-decisions.spec.ts` | 2 passed after the final two-account phone/desktop screenshot and decision control changes. |
+| `CI=1 E2E_PORT=19033 pnpm exec playwright test e2e/member-decisions.spec.ts --grep 'native D1 member writes'` | 1 passed: 14 comment/decision winner-order cases against removal, archive, transfer and workflow revision. |
+| `CI=1 E2E_SKIP_BUILD=1 E2E_PORT=19034 pnpm exec playwright test e2e/member-decisions.spec.ts e2e/native-collaboration.spec.ts e2e/native-schedules.spec.ts e2e/project-membership.spec.ts` | 30 passed together, including two-account browser/API/CLI, native D1 and admission regression. |
+| `CI=1 E2E_PORT=19035 pnpm exec playwright test e2e/member-decisions.spec.ts --grep 'native D1 owner hold'` | 1 passed after rebuilding with the hold-order probe. |
 
 The local CLI decision submitted the exact current witness once and created
 no personal choice. Bob's key was refused on both explicit on and off before
@@ -49,11 +52,36 @@ claim losing to off before delivery without a key, and admitted cancellation
 retaining its live slot until acknowledgement. These are observed outcomes of
 the isolated runs, not assertions about untested winner orders.
 
-## Remaining verification for the slice
+## Actor and native write matrix
 
-The focused runs above do not complete the design's full adversarial matrix.
-Deterministic native D1 pre-commit tests are still needed for member comment
-and exact decision versus removal, archive, transfer, and workflow reset;
-the opposing winner orders for those cases; and member/key/run/pending/outsider
-receipt comparisons across issue, Agents, and schedule surfaces. The complete
-E2E/CI and navigation performance gates remain for the parent assembly pass.
+`member-decisions.test.ts` checks owner identity and member session/key reads,
+named-key comment attribution, browser-only consent refusal for that key,
+and content-free 404 for a pending invitee, outsider, and member run key.
+`project-membership.spec.ts` checks pending/wrong-account and outsider privacy,
+accepted member issue/schedule API and CLI projections, and safe pagination.
+`member-decisions.spec.ts` checks Bob's issue and future-schedule browser controls,
+the safe Agents awaiting-decision surface, Alice's phone/desktop issue view,
+and no member run after Bob saves on. `schedule-consent.test.ts` checks member
+schedule roster, key policy intersection, outsider refusal, and inherited
+instance provenance. Existing comment tests check run-self-only moderation.
+
+The native D1 member-write probe changes the authoritative predicate after
+the service read and before the guarded batch. The losing comment/decision
+receipts had no new comment, event, state, or choice side effect. A winning
+write stayed attributed when the competing action happened afterward.
+
+| Predicate changed | Comment loses | Exact decision loses | Write wins first |
+| --- | --- | --- | --- |
+| Member removal | 404 | 409 | One attributed write, then revocation |
+| Project archive | 404 | 409 | One attributed write, then archive |
+| Issue transfer | 404 | 409 | One attributed write, then transfer |
+| Workflow decision revision | Still allowed | 409 | Decision commits, then revision changes |
+
+Owner hold is separate from decision authority: the native probe confirms a
+member decision can commit with a hold winning before the batch, and a hold
+after a member decision does not turn the member's saved choice into a run.
+
+**Parent assembly still owns:** rebase and review against current main and
+Tines/648, run complete E2E/CI and navigation performance gates, review the
+whole acceptance matrix, and mark the proposed 669 → 670/712 contract reviewed
+only after the parent lands and review completes.

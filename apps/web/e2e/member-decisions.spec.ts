@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures';
+import type { APIRequestContext } from '@playwright/test';
 import { ALICE, BOB, BASE_URL } from './constants.mjs';
 import { apiClient, body, gotoHydrated, signIn, signedSessionCookie } from './helpers';
 import { d1, sqlLiteral } from './d1';
@@ -244,4 +245,230 @@ test('native D1 removal wins after member choice preparation without a grant or 
 		d1<{ n: number }>(`SELECT COUNT(*) AS n FROM event WHERE issue_id=${sqlLiteral(issue.id)}`)
 	).toEqual([{ n: before }]);
 	expect((await request.get(`/api/v1/issues/${issue.id}`, { headers })).status()).toBe(404);
+});
+
+async function memberWriteFixture(request: APIRequestContext, name: string) {
+	const owner = apiClient(request, ALICE.apiKey);
+	const project = await body<{ id: string }>(await owner.post('/api/v1/projects', { name }));
+	const destination = await body<{ id: string }>(
+		await owner.post('/api/v1/projects', { name: `${name}-destination` })
+	);
+	const workflow = await body<{ id: string }>(
+		await owner.post('/api/v1/workflows', {
+			name: `${name}-workflow`,
+			initial_state: 'Working',
+			states: [
+				{ name: 'Review', category: 'awaiting_human' },
+				{ name: 'Working', category: 'active' }
+			],
+			transitions: [
+				{ name: 'Review', from: 'Working', to: 'Review' },
+				{ name: 'Start', from: 'Review', to: 'Working' }
+			]
+		})
+	);
+	const issue = await body<{ id: string }>(
+		await owner.post(`/api/v1/projects/${project.id}/issues`, {
+			title: 'Member race target',
+			workflow_id: workflow.id
+		})
+	);
+	await body(await owner.post(`/api/v1/issues/${issue.id}/transition`, { action: 'Review' }));
+	const invite = await body<{ id: string }>(
+		await owner.post(`/api/v1/projects/${project.id}/invitations`, {
+			email: BOB.email,
+			confirm_sharing: true,
+			expected_sharing_revision: 0
+		})
+	);
+	const sink = await body<{ url: string }>(
+		await request.get(`/api/v1/__e2e/invitation-email/${invite.id}`)
+	);
+	const headers = {
+		cookie: `better-auth.session_token=${signedSessionCookie(BOB.sessionToken)}`,
+		origin: BASE_URL
+	};
+	await body(
+		await request.post('/api/v1/invitations/accept', {
+			headers,
+			data: { token: sink.url.split('/').at(-1) }
+		})
+	);
+	return { owner, project, destination, workflow, issue, headers };
+}
+
+type MemberDecisionWitness = {
+	state: { id: string };
+	decision_revision: number;
+	workflow_revision: number;
+	my_choice: { revision: number; epoch: number };
+	workflow: { transitions: { id: string }[] };
+};
+
+test('native D1 member writes obey current access and exact decisions in both winner orders', async ({
+	request,
+	uniqueName
+}) => {
+	test.setTimeout(180_000);
+	for (const kind of ['comment', 'decision'] as const) {
+		for (const action of ['remove', 'archive', 'transfer', 'workflow-reset'] as const) {
+			if (kind === 'comment' && action === 'workflow-reset') continue;
+			for (const winner of ['predicate', 'write'] as const) {
+				const f = await memberWriteFixture(request, uniqueName(`${kind}-${action}-${winner}`));
+				const before = d1<{ n: number }>(
+					`SELECT COUNT(*) AS n FROM event WHERE issue_id=${sqlLiteral(f.issue.id)}`
+				)[0].n;
+				const witness = await body<MemberDecisionWitness>(
+					await request.get(`/api/v1/issues/${f.issue.id}`, { headers: f.headers })
+				);
+				const requestHeaders = {
+					...f.headers,
+					...(winner === 'predicate'
+						? {
+								'x-tines-e2e-member-write-race': action,
+								'x-tines-e2e-member-race-target': f.destination.id
+							}
+						: {})
+				};
+				const write = () =>
+					kind === 'comment'
+						? request.post(`/api/v1/issues/${f.issue.id}/comments`, {
+								headers: requestHeaders,
+								data: { body: `Race comment ${winner}` }
+							})
+						: request.post(`/api/v1/issues/${f.issue.id}/transition`, {
+								headers: requestHeaders,
+								data: {
+									transition_id: witness.workflow.transitions[0].id,
+									expected_state_id: witness.state.id,
+									expected_decision_revision: witness.decision_revision,
+									expected_consent_revision: witness.my_choice.revision,
+									expected_consent_epoch: witness.my_choice.epoch,
+									expected_workflow_revision: witness.workflow_revision
+								}
+							});
+				const response = await write();
+				if (winner === 'predicate') {
+					expect(response.status(), `${kind}/${action} lost`).toBe(kind === 'comment' ? 404 : 409);
+					expect(
+						d1<{ n: number }>(
+							`SELECT COUNT(*) AS n FROM event WHERE issue_id=${sqlLiteral(f.issue.id)}`
+						)[0].n
+					).toBe(before);
+					expect(
+						d1<{ n: number }>(
+							`SELECT COUNT(*) AS n FROM comment WHERE issue_id=${sqlLiteral(f.issue.id)} AND body LIKE 'Race comment%'`
+						)[0].n
+					).toBe(0);
+					if (kind === 'decision') {
+						expect(
+							d1<{ id: string }>(
+								`SELECT state_id AS id FROM issue WHERE id=${sqlLiteral(f.issue.id)}`
+							)[0].id
+						).toBe(witness.state.id);
+					}
+				} else {
+					expect(response.ok(), `${kind}/${action} won`).toBe(true);
+					expect(
+						d1<{ n: number }>(
+							`SELECT COUNT(*) AS n FROM event WHERE issue_id=${sqlLiteral(f.issue.id)}`
+						)[0].n
+					).toBeGreaterThan(before);
+					const target = sqlLiteral(f.issue.id);
+					switch (action) {
+						case 'remove':
+							d1(
+								`UPDATE project_member SET revoked_at=${Date.now()}, revision=revision+1 WHERE project_id=${sqlLiteral(f.project.id)} AND user_id=${sqlLiteral(BOB.id)}`
+							);
+							break;
+						case 'archive':
+							d1(
+								`UPDATE project SET archived_at=${Date.now()} WHERE id=${sqlLiteral(f.project.id)}`
+							);
+							break;
+						case 'transfer':
+							d1(
+								`UPDATE issue SET project_id=${sqlLiteral(f.destination.id)}, decision_revision=decision_revision+1 WHERE id=${target}`
+							);
+							break;
+						case 'workflow-reset':
+							d1(
+								`UPDATE workflow SET decision_revision=decision_revision+1 WHERE id=${sqlLiteral(f.workflow.id)}`
+							);
+							break;
+					}
+				}
+			}
+		}
+	}
+});
+
+test('native D1 owner hold does not rewrite a member decision or admit their agents', async ({
+	request,
+	uniqueName
+}) => {
+	const f = await memberWriteFixture(request, uniqueName('member-hold'));
+	const before = await body<MemberDecisionWitness>(
+		await request.get(`/api/v1/issues/${f.issue.id}`, { headers: f.headers })
+	);
+	const decision = await request.post(`/api/v1/issues/${f.issue.id}/transition`, {
+		headers: { ...f.headers, 'x-tines-e2e-member-write-race': 'hold' },
+		data: {
+			transition_id: before.workflow.transitions[0].id,
+			expected_state_id: before.state.id,
+			expected_decision_revision: before.decision_revision,
+			expected_consent_revision: before.my_choice.revision,
+			expected_consent_epoch: before.my_choice.epoch,
+			expected_workflow_revision: before.workflow_revision
+		}
+	});
+	expect(decision.ok()).toBe(true);
+	expect(
+		d1<{ agent_hold: number }>(`SELECT agent_hold FROM issue WHERE id=${sqlLiteral(f.issue.id)}`)
+	).toEqual([{ agent_hold: 1 }]);
+	expect(
+		d1<{ n: number }>(
+			`SELECT COUNT(*) AS n FROM agent_run WHERE issue_id=${sqlLiteral(f.issue.id)}`
+		)
+	).toEqual([{ n: 0 }]);
+	expect(
+		(
+			await request.post(`/api/v1/issues/${f.issue.id}/comments`, {
+				headers: { ...f.headers, 'x-tines-e2e-member-write-race': 'workflow-reset' },
+				data: { body: 'Comment after workflow revision' }
+			})
+		).status()
+	).toBe(201);
+	const second = await memberWriteFixture(request, uniqueName('member-decision-before-hold'));
+	const witness = await body<MemberDecisionWitness>(
+		await request.get(`/api/v1/issues/${second.issue.id}`, { headers: second.headers })
+	);
+	expect(
+		(
+			await request.post(`/api/v1/issues/${second.issue.id}/transition`, {
+				headers: second.headers,
+				data: {
+					transition_id: witness.workflow.transitions[0].id,
+					expected_state_id: witness.state.id,
+					expected_decision_revision: witness.decision_revision,
+					expected_consent_revision: witness.my_choice.revision,
+					expected_consent_epoch: witness.my_choice.epoch,
+					expected_workflow_revision: witness.workflow_revision
+				}
+			})
+		).ok()
+	).toBe(true);
+	expect(
+		(
+			await second.owner.put(`/api/v1/issues/${second.issue.id}/agent-hold`, {
+				held: true,
+				expected_revision: 0
+			})
+		).ok()
+	).toBe(true);
+	expect(
+		d1<{ n: number }>(
+			`SELECT COUNT(*) AS n FROM agent_run WHERE issue_id=${sqlLiteral(second.issue.id)}`
+		)
+	).toEqual([{ n: 0 }]);
 });

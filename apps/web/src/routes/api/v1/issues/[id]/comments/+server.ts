@@ -4,6 +4,7 @@ import { api, apiContext, readJson } from '$lib/server/api/core';
 import { createComment, getIssueDetail, loadComments } from '$lib/server/api/issues';
 import { resolveIssueAccess } from '$lib/server/api/project-access';
 import { readSharedIssue } from '$lib/server/api/shared-issues';
+import { memberWriteRace } from '$lib/server/api/member-e2e-race';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
@@ -26,6 +27,13 @@ export const GET: RequestHandler = api(async (event) => {
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
 	const body = await readJson<CreateCommentRequest>(event);
-	const comment = await createComment(db, env, actor, event.params.id, body);
+	const comment = await createComment(
+		db,
+		env,
+		actor,
+		event.params.id,
+		body,
+		memberWriteRace(event.request, db, actor, event.params.id)
+	);
 	return json(comment, { status: 201 });
 });
