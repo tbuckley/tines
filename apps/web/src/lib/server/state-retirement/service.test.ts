@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { createTestDb, type TestDb } from '$lib/server/api/test-db';
 import { ApiFail, type ActorContext } from '$lib/server/api/core';
 import { createStateRetirementInventory } from './inventory';
-import { acquireStateRetirementHold } from './service';
+import {
+	acquireStateRetirementHold,
+	applyStateRetirement,
+	prepareStateRetirement
+} from './service';
 
 const actor: ActorContext = {
 	userId: 'hold-u1',
@@ -114,5 +118,68 @@ describe('state retirement hold', () => {
 		).catch((caught) => caught);
 
 		expect(error).toMatchObject({ status: 403, code: 'run_key_forbidden' });
+	});
+
+	it('does not sign while an affected run is still draining', async () => {
+		const { inventory, request } = await reviewedRequest();
+		const hold = await acquireStateRetirementHold(t.db, t.env, actor, request, 101);
+		const error = await prepareStateRetirement(
+			t.db,
+			{ ...t.env, BETTER_AUTH_SECRET: 'retirement-test-secret' },
+			actor,
+			{ hold_id: hold.id },
+			102
+		).catch((caught) => caught);
+		expect(error).toMatchObject({ status: 409, code: 'retirement_active_runs' });
+		expect(await t.db.selectFrom('state_retirement_receipt').selectAll().execute()).toEqual([]);
+	});
+
+	it('prepares, applies once, and recovers the durable receipt', async () => {
+		t.sqlite.exec("DELETE FROM agent_run WHERE id = 'hold-run'");
+		t.sqlite.exec(`
+			INSERT INTO context_item
+				(id,user_id,kind,name,description,project_id,workflow_state_id,label_id,issue_id,body,position,version,created_at,updated_at)
+			VALUES ('root-prompt','hold-u1','prompt','instructions','root','hold-project','hold-root',NULL,NULL,'exact root bytes',0,1,1,1)
+		`);
+		const opActor = { ...actor, apiKeyId: null, viaSession: true };
+		const base = Date.now();
+		const inventory = await createStateRetirementInventory(t.db, opActor, base);
+		const request = {
+			inventory_json: JSON.stringify(inventory),
+			confirmation: { inventory_digest: inventory.inventory_digest }
+		};
+		const hold = await acquireStateRetirementHold(t.db, t.env, opActor, request, base + 1);
+		const signingEnv = { ...t.env, BETTER_AUTH_SECRET: 'retirement-test-secret' };
+		const prepared = await prepareStateRetirement(
+			t.db,
+			signingEnv,
+			opActor,
+			{
+				hold_id: hold.id,
+				inventory_json: JSON.stringify(inventory)
+			},
+			base + 2
+		);
+		expect(prepared.plan_token).toMatch(/^srp1\./);
+		const applyRequest = {
+			plan_token: prepared.plan_token!,
+			inventory_json: prepared.inventory_json,
+			confirmation: { plan_digest: prepared.plan_digest }
+		};
+		const receipt = await applyStateRetirement(t.db, signingEnv, opActor, applyRequest, base + 3);
+		expect(receipt).toMatchObject({
+			version: 1,
+			hold_id: hold.id,
+			plan_digest: prepared.plan_digest
+		});
+		expect(receipt.cleared_pointers).toEqual([
+			{ child_state_id: 'hold-child', parent_state_id: 'hold-root' }
+		]);
+		expect(
+			t.all('SELECT inherits_from_state_id FROM workflow_state WHERE id = ?', 'hold-child')[0]
+		).toEqual({ inherits_from_state_id: null });
+		const recovered = await applyStateRetirement(t.db, signingEnv, opActor, applyRequest, base + 4);
+		expect(recovered).toEqual(receipt);
+		expect(t.all('SELECT id FROM state_retirement_receipt')).toHaveLength(1);
 	});
 });

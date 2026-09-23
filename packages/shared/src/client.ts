@@ -106,8 +106,12 @@ import type {
 } from './usage.js';
 import type {
 	AcquireStateRetirementHoldRequest,
+	ApplyStateRetirementRequest,
+	PrepareStateRetirementRequest,
 	StateRetirementHold,
-	StateRetirementInventoryV1
+	StateRetirementInventoryV1,
+	StateRetirementPlanResponse,
+	StateRetirementReceiptV1
 } from './state-retirement.js';
 
 export interface TimeResponse {
@@ -295,6 +299,12 @@ export function createApiClient(options: ApiClientOptions) {
 			get<StateRetirementInventoryV1>('/api/v1/state-retirement/inventory'),
 		acquireStateRetirementHold: (body: AcquireStateRetirementHoldRequest) =>
 			request<StateRetirementHold>('POST', '/api/v1/state-retirement/holds', body),
+		prepareStateRetirement: (body: PrepareStateRetirementRequest) =>
+			request<StateRetirementPlanResponse>('POST', '/api/v1/state-retirement/prepare', body),
+		applyStateRetirement: (body: ApplyStateRetirementRequest) =>
+			request<StateRetirementReceiptV1>('POST', '/api/v1/state-retirement/apply', body),
+		getStateRetirementReceipt: (id: string) =>
+			get<StateRetirementReceiptV1>(`/api/v1/state-retirement/receipts/${encodeURIComponent(id)}`),
 		getVersion: () => get<VersionResponse>('/api/version'),
 
 		// Projects

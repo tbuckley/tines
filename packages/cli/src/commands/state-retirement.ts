@@ -11,6 +11,22 @@ interface HoldOptions extends CommonOpts {
 	confirmDigest: string;
 }
 
+interface PrepareOptions extends CommonOpts {
+	hold: string;
+	inventory?: string;
+	out: string;
+}
+
+interface ApplyOptions extends CommonOpts {
+	plan: string;
+	inventory?: string;
+	confirmDigest: string;
+}
+
+interface ReceiptOptions extends CommonOpts {
+	receipt: string;
+}
+
 export function register(program: Command): void {
 	const retirement = program
 		.command('state-retirement')
@@ -48,6 +64,66 @@ export function register(program: Command): void {
 		console.log(`Hold: ${hold.id}`);
 		console.log(
 			`${hold.held_states.length} states held · ${hold.active_runs.length} active runs draining`
+		);
+	});
+
+	withCommon(
+		retirement
+			.command('prepare')
+			.description('Prepare a signed, reviewed preservation plan after the drain')
+			.requiredOption('--hold <id>', 'durable state-retirement hold')
+			.option('--inventory <file>', 'optional original inventory JSON used to acquire the hold')
+			.requiredOption('--out <file>', 'write the plan JSON to this file')
+	).action(async (opts: PrepareOptions) => {
+		const plan = await client(opts).prepareStateRetirement({
+			hold_id: opts.hold,
+			...(opts.inventory ? { inventory_json: readFileSync(opts.inventory, 'utf8') } : {})
+		});
+		writeFileSync(opts.out, `${JSON.stringify(plan, null, 2)}\n`, { flag: 'wx' });
+		if (opts.json) return printJson(plan);
+		console.log(`Plan written to ${opts.out}`);
+		console.log(`Digest: ${plan.plan_digest}`);
+		console.log(
+			plan.plan_token ? 'Signed apply token included' : 'Blocked: diagnostics require review'
+		);
+	});
+
+	withCommon(
+		retirement
+			.command('apply')
+			.description('Apply a signed plan once, or recover its durable receipt')
+			.requiredOption('--plan <file>', 'signed plan JSON')
+			.option('--inventory <file>', 'override the post-drain inventory embedded in the plan')
+			.requiredOption('--confirm-digest <digest>', 'confirm the exact plan digest')
+	).action(async (opts: ApplyOptions) => {
+		const plan = JSON.parse(readFileSync(opts.plan, 'utf8')) as {
+			plan_token?: string;
+			inventory_json?: string;
+		};
+		if (!plan.plan_token)
+			throw new Error('plan file has no apply token; blocked plans cannot be applied');
+		const inventoryJson = opts.inventory
+			? readFileSync(opts.inventory, 'utf8')
+			: plan.inventory_json;
+		if (!inventoryJson) throw new Error('plan file has no post-drain inventory; pass --inventory');
+		const receipt = await client(opts).applyStateRetirement({
+			plan_token: plan.plan_token,
+			inventory_json: inventoryJson,
+			confirmation: { plan_digest: opts.confirmDigest }
+		});
+		if (opts.json) return printJson(receipt);
+		console.log(`Receipt: ${receipt.id}`);
+		console.log('If the network failed, rerun the same plan and digest to recover this receipt.');
+	});
+
+	withCommon(
+		retirement.command('receipt <receipt>').description('Read a durable state-retirement receipt')
+	).action(async (receipt: string, opts: ReceiptOptions) => {
+		const value = await client(opts).getStateRetirementReceipt(receipt);
+		if (opts.json) return printJson(value);
+		console.log(`Receipt: ${value.id}`);
+		console.log(
+			`${value.cleared_pointers.length} pointers cleared · ${value.copies.length} context copies`
 		);
 	});
 }

@@ -231,6 +231,65 @@ export interface StateRetirementPlanV1 {
 	rollback: StateRetirementRollbackData;
 }
 
+export interface PrepareStateRetirementRequest {
+	hold_id: string;
+	inventory_json?: string;
+}
+
+export interface StateRetirementPlanResponse {
+	version: 1;
+	plan_id: string;
+	plan_digest: string;
+	inventory_digest: string;
+	issued_at: number;
+	expires_at: number;
+	compiler_version: number;
+	actor_key: string;
+	budget: {
+		statements: number;
+		max_parameters: number;
+		max_sql_bytes: number;
+		max_value_bytes: number;
+	};
+	plan: StateRetirementPlanV1;
+	/** Exact post-drain inventory to use for apply/recovery. */
+	inventory_json: string;
+	plan_token?: string;
+}
+
+export interface ApplyStateRetirementRequest {
+	plan_token: string;
+	inventory_json: string;
+	confirmation: { plan_digest: string };
+}
+
+export interface StateRetirementReceiptV1 {
+	version: 1;
+	id: string;
+	plan_id: string;
+	hold_id: string;
+	owner_id: string;
+	actor_key: string;
+	inventory_digest: string;
+	plan_digest: string;
+	request_digest: string;
+	execution_nonce: string;
+	committed_at: number;
+	cleared_pointers: Array<{
+		child_state_id: string;
+		parent_state_id: string;
+	}>;
+	copies: Array<{
+		source_item_id: string;
+		copy_item_id: string;
+		copy_file_ids: string[];
+		name: string;
+		scope: StateRetirementScope;
+	}>;
+	/** The immutable source snapshot used for rollback and operator review. */
+	source_inventory_digest: string;
+}
+
 export interface StateRetirementPlannerOptions {
 	max_targets?: number;
 	max_labels?: number;
