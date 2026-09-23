@@ -85,6 +85,9 @@ the tests did not change a production project. The native checks observed:
   moving the issue to Done cleared the choice and advanced its epoch.
 - An owner hold canceled an assigned run without an attempt strike. A cancel
   request for an admitted run left its active slot until acknowledgement.
+- A native claim lost to off before delivery without minting a run key; a
+  delivered claim recorded admission evidence and held its slot through off
+  until a matching cleanup acknowledgement.
 
 The runner protocol tests also confirm that a legacy daemon keeps that slot
 until reconciliation and an updated daemon settles it only with a matching
@@ -93,6 +96,7 @@ token after local cleanup.
 The verification commands were `pnpm check`, `pnpm format:check`,
 `pnpm --filter web test`, `pnpm --filter tines test`, and
 `CI=1 E2E_PORT=8897 pnpm test:e2e native-collaboration.spec.ts native-schedules.spec.ts`.
-The focused native run passed 10 tests. The web and CLI suites passed 2,251 and
-719 tests respectively. These results verify the owner slice; member and
+The combined native run passed 10 tests; the added claim/delivery case passed
+in a separate focused run. The web and CLI suites passed 2,251 and 719 tests
+respectively. These results verify the owner slice; member and
 schedule consent paths are delivered by later slices.
