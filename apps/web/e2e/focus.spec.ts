@@ -14,6 +14,7 @@ import {
 	DESKTOP,
 	gotoHydrated,
 	PHONE,
+	readSettled,
 	resetFocus,
 	runCleanupSteps,
 	signIn
@@ -1124,6 +1125,198 @@ test.describe.serial('project controls at every project count', () => {
 		await gotoHydrated(page, '/issues');
 		return page;
 	}
+
+	async function projectMenuGeometry(page: Page) {
+		return readSettled(() =>
+			page.getByRole('menu', { name: 'Project focus' }).evaluate((menu) => {
+				const choices = menu.querySelector<HTMLElement>('[data-testid="project-focus-choices"]');
+				const links = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+				const content = menu.parentElement;
+				if (!choices || !content) throw new Error('Project focus layout is missing its regions');
+				const menuRect = menu.getBoundingClientRect();
+				const contentRect = content.getBoundingClientRect();
+				const linkRects = links.map((link) => {
+					const rect = link.getBoundingClientRect();
+					return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
+				});
+				return {
+					choicesClientHeight: choices.clientHeight,
+					choicesScrollHeight: choices.scrollHeight,
+					choicesScrollTop: choices.scrollTop,
+					menu: {
+						top: menuRect.top,
+						bottom: menuRect.bottom,
+						left: menuRect.left,
+						right: menuRect.right
+					},
+					content: {
+						top: contentRect.top,
+						bottom: contentRect.bottom,
+						left: contentRect.left,
+						right: contentRect.right
+					},
+					linkRects
+				};
+			})
+		);
+	}
+
+	test('keeps a long project menu footer visible while choices scroll', async ({
+		browser,
+		request,
+		uniqueName
+	}) => {
+		test.setTimeout(90_000);
+		const api = apiClient(request, CAROL.apiKey);
+		const projectIds: string[] = [];
+		const projectNames: string[] = [];
+		const contexts: { page: Page; context: Awaited<ReturnType<typeof browser.newContext>> }[] = [];
+		try {
+			for (let index = 0; index < 19; index += 1) {
+				const project = await body<Project>(
+					await api.post('/api/v1/projects', { name: uniqueName(`carol-long-${index}`) })
+				);
+				projectIds.push(project.id);
+				projectNames.push(project.name);
+			}
+			expect(
+				(await api.patch('/api/v1/preferences', { focused_project_id: projectIds[0] })).ok()
+			).toBe(true);
+
+			for (const { label, viewport, theme } of [
+				{ label: 'desktop-light', viewport: DESKTOP, theme: 'light' },
+				{ label: 'desktop-dark', viewport: DESKTOP, theme: 'dark' },
+				{ label: 'phone-light', viewport: PHONE, theme: 'light' },
+				{ label: 'phone-dark', viewport: PHONE, theme: 'dark' }
+			] as const) {
+				const context = await browser.newContext({ viewport, colorScheme: theme });
+				await signIn(context, CAROL.sessionToken);
+				contexts.push({ context, page: await context.newPage() });
+				const page = contexts.at(-1)!.page;
+				await context.addInitScript((savedTheme) => {
+					localStorage.setItem('tines:theme', savedTheme);
+				}, theme);
+				await gotoHydrated(page, '/issues');
+				await expect(page.locator('html')).toHaveClass(
+					theme === 'dark' ? /\bdark\b/ : /^(?!.*\bdark\b)/
+				);
+				await switcher(page).click();
+				const choices = page.getByTestId('project-focus-choices');
+				await expect(page.getByRole('menu', { name: 'Project focus' }).locator('..')).toHaveCSS(
+					'transform',
+					'none'
+				);
+				const manage = page.getByRole('menuitem', { name: 'Manage projects' });
+				await expect(page.getByRole('menuitemradio', { name: projectNames[0] })).toBeFocused();
+
+				const initial = await projectMenuGeometry(page);
+				const layoutTolerance = 1;
+				expect(initial.choicesScrollTop).toBe(0);
+				expect(initial.choicesScrollHeight).toBeGreaterThan(initial.choicesClientHeight);
+				expect(initial.linkRects).toHaveLength(3);
+				for (const rect of initial.linkRects) {
+					expect(rect.top).toBeGreaterThanOrEqual(initial.menu.top - layoutTolerance);
+					expect(rect.bottom).toBeLessThanOrEqual(initial.menu.bottom + layoutTolerance);
+					expect(rect.left).toBeGreaterThanOrEqual(initial.menu.left - layoutTolerance);
+					expect(rect.right).toBeLessThanOrEqual(initial.menu.right + layoutTolerance);
+				}
+				expect(initial.content.top).toBeGreaterThanOrEqual(8 - layoutTolerance);
+				expect(initial.content.right).toBeLessThanOrEqual(viewport.width - 8 + layoutTolerance);
+				expect(initial.content.bottom).toBeLessThanOrEqual(viewport.height - 8 + layoutTolerance);
+
+				const pageScrollBefore = await page.evaluate(() => window.scrollY);
+				await choices.hover();
+				await page.mouse.wheel(0, 650);
+				await expect
+					.poll(async () => choices.evaluate((element) => element.scrollTop))
+					.toBeGreaterThan(0);
+				expect(await page.evaluate(() => window.scrollY)).toBe(pageScrollBefore);
+				const scrolled = await projectMenuGeometry(page);
+				expect(await choices.locator('[role="menuitem"]').count()).toBe(0);
+				expect(scrolled.linkRects).toHaveLength(initial.linkRects.length);
+				for (const [index, initialRect] of initial.linkRects.entries()) {
+					const scrolledRect = scrolled.linkRects[index]!;
+					expect(scrolledRect.top).toBeCloseTo(initialRect.top, 1);
+					expect(scrolledRect.bottom).toBeCloseTo(initialRect.bottom, 1);
+					expect(scrolledRect.left).toBeCloseTo(initialRect.left, 1);
+					expect(scrolledRect.right).toBeCloseTo(initialRect.right, 1);
+				}
+				for (const rect of scrolled.linkRects) {
+					expect(rect.top).toBeGreaterThanOrEqual(scrolled.menu.top - layoutTolerance);
+					expect(rect.bottom).toBeLessThanOrEqual(scrolled.menu.bottom + layoutTolerance);
+					expect(rect.left).toBeGreaterThanOrEqual(scrolled.menu.left - layoutTolerance);
+					expect(rect.right).toBeLessThanOrEqual(scrolled.menu.right + layoutTolerance);
+				}
+
+				await gotoHydrated(page, '/issues');
+				await switcher(page).click();
+				await manage.click();
+				await expect(page).toHaveURL('/projects');
+				await expect(page.getByRole('heading', { name: 'Projects', level: 1 })).toBeVisible();
+				await page.close();
+				contexts.pop();
+				await context.close();
+
+				// Keep the label in the loop so failures identify the exact viewport/theme.
+				expect(label).toMatch(/^(desktop|phone)-(light|dark)$/);
+			}
+
+			const shortContext = await browser.newContext({ viewport: PHONE });
+			await signIn(shortContext, CAROL.sessionToken);
+			contexts.push({ context: shortContext, page: await shortContext.newPage() });
+			const shortPage = contexts.at(-1)!.page;
+			await gotoHydrated(shortPage, '/issues');
+			await switcher(shortPage).click();
+			await shortPage.setViewportSize({ width: 390, height: 320 });
+			await expect(shortPage.getByRole('menuitem', { name: 'New project' })).toBeVisible();
+			const short = await projectMenuGeometry(shortPage);
+			expect(short.choicesScrollHeight).toBeGreaterThan(short.choicesClientHeight);
+			expect(short.choicesClientHeight).toBeLessThan(320);
+			for (const rect of short.linkRects) {
+				expect(rect.bottom).toBeLessThanOrEqual(short.menu.bottom + 1);
+			}
+
+			await shortPage.unroute('**/api/v1/preferences');
+			await shortPage.route('**/api/v1/preferences', async (route) => {
+				if (route.request().method() !== 'PATCH') return route.continue();
+				await route.fulfill({
+					status: 500,
+					contentType: 'application/json',
+					body: JSON.stringify({ error: { code: 'focus_failure', message: 'Focus choice failed' } })
+				});
+			});
+			await shortPage.getByRole('menuitemradio', { name: projectNames[1] }).click();
+			await expect(shortPage.getByRole('alert')).toHaveText('Focus choice failed');
+			await expect(shortPage.getByRole('menuitem', { name: 'Manage projects' })).toBeVisible();
+			await expect(shortPage.getByRole('menuitem', { name: 'New project' })).toBeVisible();
+		} finally {
+			await runCleanupSteps([
+				{
+					name: 'reset Carol focus',
+					run: async () => {
+						const res = await api.patch('/api/v1/preferences', {
+							focused_project_id: null,
+							last_project_id: null
+						});
+						expect(res.ok()).toBe(true);
+					}
+				},
+				{
+					name: 'close long-menu browser contexts',
+					run: async () => {
+						for (const { context } of contexts) await context.close();
+					}
+				},
+				...projectIds.map((id) => ({
+					name: `delete Carol project ${id}`,
+					run: async () => {
+						expect((await api.post(`/api/v1/projects/${id}/unarchive`)).ok()).toBe(true);
+						expect((await api.delete(`/api/v1/projects/${id}`)).status()).toBe(204);
+					}
+				}))
+			]);
+		}
+	});
 
 	test('offers actions at zero and one project, then shows focus at two', async ({
 		browser,
