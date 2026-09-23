@@ -37,6 +37,7 @@ import {
 	revokeInheritedScheduleQueries
 } from './schedule-consent';
 import { assertConsentFieldsSupported } from './personal-consent';
+import { projectReadPredicate, requireAccess } from './permissions';
 
 // ---------------------------------------------------------------------------
 // Recurrence input validation
@@ -328,6 +329,47 @@ export async function listSchedules(
 	};
 }
 
+export async function listSchedulesForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	filters: ScheduleListFilters,
+	page: Page
+): Promise<{ items: Schedule[]; hasMore: boolean }> {
+	let q = scheduleQuery(db, actor.userId).where(
+		projectReadPredicate(actor, 'scheduled_task.project_id')
+	);
+	if (filters.projectId) q = q.where('scheduled_task.project_id', '=', filters.projectId);
+	if (filters.project) {
+		const p = filters.project;
+		q = q.where((eb) => eb.or([eb('project.id', '=', p), eb('project.name', '=', p)]));
+	}
+	if (filters.enabled !== undefined) {
+		q = q.where('scheduled_task.enabled', '=', filters.enabled ? 1 : 0);
+	}
+	if (!filters.projectId && !filters.project) {
+		if ((filters.archived ?? 'false') === 'false') q = q.where('project.archived_at', 'is', null);
+		else if (filters.archived === 'true') q = q.where('project.archived_at', 'is not', null);
+	}
+	if (page.cursor) {
+		const { createdAt, id } = page.cursor;
+		q = q.where((eb) =>
+			eb.or([
+				eb('scheduled_task.created_at', '<', createdAt),
+				eb.and([eb('scheduled_task.created_at', '=', createdAt), eb('scheduled_task.id', '<', id)])
+			])
+		);
+	}
+	const rows = await q
+		.orderBy('scheduled_task.created_at desc')
+		.orderBy('scheduled_task.id desc')
+		.limit(page.limit + 1)
+		.execute();
+	return {
+		items: rows.slice(0, page.limit).map(serializeSchedule),
+		hasMore: rows.length > page.limit
+	};
+}
+
 export async function getSchedule(
 	db: Kysely<Database>,
 	userId: string,
@@ -340,15 +382,35 @@ export async function getSchedule(
 	return serializeSchedule(row);
 }
 
-/** The exec-shaped row (owner, initial state) for run-now, user-scoped. */
-async function getScheduleExecRow(
+export async function getScheduleForActor(
 	db: Kysely<Database>,
-	userId: string,
+	actor: ActorContext,
+	id: string
+): Promise<Schedule> {
+	const row = await scheduleQuery(db, actor.userId)
+		.where(projectReadPredicate(actor, 'scheduled_task.project_id'))
+		.where('scheduled_task.id', '=', id)
+		.executeTakeFirst();
+	if (!row) throw notFound();
+	const schedule = serializeSchedule(row);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'read', projectId: schedule.project_id }],
+		'schedule.read',
+		{ projectId: schedule.project_id }
+	);
+	return schedule;
+}
+
+async function getScheduleExecRowForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
 	id: string
 ): Promise<ScheduleExecRow> {
 	const row = await scheduleExecQuery(db)
 		.where('scheduled_task.id', '=', id)
-		.where('project.user_id', '=', userId)
+		.where('project.user_id', '=', actor.userId)
+		.where(projectReadPredicate(actor, 'scheduled_task.project_id'))
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	return row;
@@ -501,10 +563,22 @@ export async function updateSchedule(
 ): Promise<Schedule> {
 	assertConsentFieldsSupported(actor, body);
 	const currentRow = await scheduleQuery(db, actor.userId)
+		.where(projectReadPredicate(actor, 'scheduled_task.project_id'))
 		.where('scheduled_task.id', '=', id)
 		.executeTakeFirst();
 	if (!currentRow) throw notFound();
 	const current = serializeSchedule(currentRow);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: current.project_id }],
+		'schedule.update',
+		{ projectId: current.project_id }
+	);
+	if (body.workflow_id !== undefined || body.state !== undefined) {
+		requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'schedule.update', {
+			projectId: current.project_id
+		});
+	}
 	const revision = currentRow.definition_revision;
 	await assertWritable(db, actor, scheduleProject(current));
 
@@ -666,6 +740,7 @@ export async function updateSchedule(
 	]);
 	if (results.at(-1)?.results?.length !== 1) {
 		const latestRow = await scheduleQuery(db, actor.userId)
+			.where(projectReadPredicate(actor, 'scheduled_task.project_id'))
 			.where('scheduled_task.id', '=', id)
 			.executeTakeFirst();
 		if (!latestRow) throw notFound();
@@ -677,7 +752,7 @@ export async function updateSchedule(
 			'Schedule changed while it was being edited. Reload the schedule and try again.'
 		);
 	}
-	return getSchedule(db, actor.userId, id);
+	return getScheduleForActor(db, actor, id);
 }
 
 export async function deleteSchedule(
@@ -686,7 +761,13 @@ export async function deleteSchedule(
 	actor: ActorContext,
 	id: string
 ): Promise<void> {
-	const current = await getSchedule(db, actor.userId, id);
+	const current = await getScheduleForActor(db, actor, id);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'delete', projectId: current.project_id }],
+		'schedule.delete',
+		{ projectId: current.project_id }
+	);
 	await assertWritable(db, actor, scheduleProject(current));
 	const now = Date.now();
 	const eventId = newId('evt');
@@ -750,7 +831,13 @@ export async function runScheduleNow(
 	id: string,
 	beforeCommit?: () => Promise<void>
 ): Promise<string> {
-	const prepared = await getScheduleExecRow(db, actor.userId, id);
+	const prepared = await getScheduleExecRowForActor(db, actor, id);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: prepared.project_id }],
+		'schedule.run',
+		{ projectId: prepared.project_id }
+	);
 	let attemptSchedule = prepared;
 	const preparedStart = {
 		definition_revision: prepared.definition_revision,
@@ -796,26 +883,25 @@ export async function runScheduleNow(
 				});
 			case 'not_found':
 				throw notFound();
-			case 'count_changed':
-				{
-					const refreshed = await getScheduleExecRow(db, actor.userId, id);
-					const startChanged =
-						refreshed.definition_revision !== preparedStart.definition_revision ||
-						refreshed.workflow_id !== preparedStart.workflow_id ||
-						refreshed.state_id !== preparedStart.state_id ||
-						refreshed.start_state_id !== preparedStart.start_state_id ||
-						refreshed.start_state_name !== preparedStart.start_state_name ||
-						refreshed.start_state_category !== preparedStart.start_state_category;
-					if (startChanged) {
-						throw new ApiFail(
-							409,
-							'schedule_changed',
-							'Schedule changed while Run now was being prepared. Reload the schedule and try again.'
-						);
-					}
-					attemptSchedule = refreshed;
+			case 'count_changed': {
+				const refreshed = await getScheduleExecRowForActor(db, actor, id);
+				const startChanged =
+					refreshed.definition_revision !== preparedStart.definition_revision ||
+					refreshed.workflow_id !== preparedStart.workflow_id ||
+					refreshed.state_id !== preparedStart.state_id ||
+					refreshed.start_state_id !== preparedStart.start_state_id ||
+					refreshed.start_state_name !== preparedStart.start_state_name ||
+					refreshed.start_state_category !== preparedStart.start_state_category;
+				if (startChanged) {
+					throw new ApiFail(
+						409,
+						'schedule_changed',
+						'Schedule changed while Run now was being prepared. Reload the schedule and try again.'
+					);
 				}
+				attemptSchedule = refreshed;
 				continue;
+			}
 			case 'definition_changed':
 			case 'start_changed':
 				throw new ApiFail(

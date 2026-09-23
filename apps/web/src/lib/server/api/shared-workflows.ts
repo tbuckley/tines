@@ -3,12 +3,14 @@ import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { notFound, type ActorContext } from './core';
 import { resolveProjectAccess } from './project-access';
+import { projectReadPredicate } from './permissions';
 
 /** A workflow is visible only through a current member project that uses it. */
-const usedByMemberProject = (userId: string) => sql<boolean>`EXISTS (
+const usedByMemberProject = (actor: ActorContext) => sql<boolean>`EXISTS (
 	SELECT 1 FROM project p JOIN project_member m ON m.project_id = p.id
-	WHERE m.user_id = ${userId} AND m.revoked_at IS NULL AND p.shared_at IS NOT NULL
-	AND p.user_id != ${userId} AND (
+	WHERE m.user_id = ${actor.userId} AND m.revoked_at IS NULL AND p.shared_at IS NOT NULL
+	AND ${projectReadPredicate(actor, 'p.id')}
+	AND p.user_id != ${actor.userId} AND (
 		p.default_workflow_id = w.id OR
 		EXISTS (SELECT 1 FROM issue i WHERE i.project_id = p.id AND i.workflow_id = w.id) OR
 		EXISTS (SELECT 1 FROM scheduled_task s WHERE s.project_id = p.id AND s.workflow_id = w.id)
@@ -22,7 +24,7 @@ export async function listSharedWorkflows(
 	const rows = await db
 		.selectFrom('workflow as w')
 		.select('w.id')
-		.where(usedByMemberProject(actor.userId))
+		.where(usedByMemberProject(actor))
 		.orderBy('w.created_at')
 		.execute();
 	return Promise.all(rows.map((row) => readSharedWorkflow(db, actor, row.id)));
@@ -46,7 +48,7 @@ export async function readSharedWorkflow(
 			'w.updated_at'
 		])
 		.where('w.id', '=', workflowId)
-		.where(usedByMemberProject(actor.userId))
+		.where(usedByMemberProject(actor))
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	const source = await db
@@ -57,6 +59,7 @@ export async function readSharedWorkflow(
 		.select(['p.id', 'm.revision'])
 		.where('m.revoked_at', 'is', null)
 		.where('p.shared_at', 'is not', null)
+		.where(projectReadPredicate(actor, 'p.id'))
 		.where((eb) =>
 			eb.or([
 				eb('p.default_workflow_id', '=', workflowId),

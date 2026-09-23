@@ -2,6 +2,7 @@ import {
 	recordDispatchEffects,
 	TEST_NOOP_DISPATCH_EFFECTS
 } from '$lib/server/api/test-dispatch-effects';
+import { FULL_API_KEY_PERMISSIONS } from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
 	NOW,
@@ -593,7 +594,12 @@ describe('private issue transfer path', () => {
 	});
 
 	it('lets run keys preview the blocker but never commit', async () => {
-		const runActor = { ...actor, viaSession: false, agentRunId: 'arun_self' };
+		const runActor = {
+			...actor,
+			viaSession: false,
+			agentRunId: 'arun_self',
+			permissions: FULL_API_KEY_PERMISSIONS
+		};
 		const preview = await previewIssueTransfer(t.env, runActor, issueId, DESTINATION, NOW);
 		expect(preview).toMatchObject({
 			can_commit: false,

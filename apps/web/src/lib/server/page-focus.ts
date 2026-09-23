@@ -5,6 +5,7 @@ import type { Database } from '$lib/server/db';
 import { resolveFocus, setFocus } from './api/preferences';
 import { listProjects } from './api/projects';
 import { listSharedProjects } from './api/shared-projects';
+import { sessionActor } from './api/core';
 
 /** Resolve the sticky focus and consume the legacy `?project=` one-shot. */
 export async function resolvePageFocus(
@@ -18,7 +19,7 @@ export async function resolvePageFocus(
 	let notice: FocusNotice | null = null;
 	if (ref) {
 		const [owned, shared] = await Promise.all([
-			listProjects(db, userId, { archived: 'all' }),
+			listProjects(db, sessionActor({ id: userId }), { archived: 'all' }),
 			listSharedProjects(
 				db,
 				{ userId, userName: '', apiKeyId: null, apiKeyName: null, viaSession: true },

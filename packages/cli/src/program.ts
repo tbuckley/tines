@@ -5,6 +5,7 @@
  */
 import { Command } from 'commander';
 import { register as registerContext } from './commands/context.js';
+import { register as registerApiKeys } from './commands/api-keys.js';
 import { register as registerIssues } from './commands/issues.js';
 import { register as registerJournal } from './commands/journal.js';
 import { register as registerLabels } from './commands/labels.js';
@@ -28,6 +29,7 @@ program.name('tines').description('CLI for Tines').version(cliVersion()).enableP
 
 registerTime(program);
 registerLogin(program);
+registerApiKeys(program);
 registerProjects(program);
 registerWorkflows(program);
 registerIssues(program);

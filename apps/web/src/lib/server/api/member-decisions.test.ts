@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { FULL_API_KEY_PERMISSIONS } from '@tines/shared';
 import { NOW, PROJECT, REVIEW, OPEN, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
 import { createTestDb } from './test-db';
 import { TEST_NOOP_DISPATCH_EFFECTS } from './test-dispatch-effects';
@@ -52,7 +53,8 @@ describe('attributed member decisions', () => {
 			apiKeyId: 'key_bob',
 			apiKeyName: 'Bob key',
 			viaSession: false,
-			bearerPresent: true
+			bearerPresent: true,
+			permissions: FULL_API_KEY_PERMISSIONS
 		};
 		const runKey = { ...namedKey, agentRunId: 'arun_bob' };
 		t.sqlite.exec(`INSERT INTO user (id,name,email,emailVerified,createdAt,updatedAt)
@@ -91,6 +93,52 @@ describe('attributed member decisions', () => {
 			})
 		).rejects.toMatchObject({ status: 403 });
 		expect(t.all('SELECT * FROM issue_personal_choice WHERE issue_id = ?', issueId)).toEqual([]);
+	});
+
+	it('intersects membership writes with the named key project scope', async () => {
+		const { t, issueId, member } = setup();
+		const readKey = {
+			...member,
+			viaSession: false,
+			apiKeyId: 'key_read',
+			permissions: {
+				...FULL_API_KEY_PERMISSIONS,
+				projects: { access: 'read' as const, scope: [PROJECT] }
+			}
+		};
+		const writeKey = {
+			...readKey,
+			apiKeyId: 'key_write',
+			permissions: {
+				...readKey.permissions,
+				projects: { access: 'write' as const, scope: [PROJECT] }
+			}
+		};
+		const foreignKey = {
+			...writeKey,
+			permissions: {
+				...writeKey.permissions,
+				projects: { access: 'write' as const, scope: ['prj_elsewhere'] }
+			}
+		};
+		t.sqlite
+			.prepare(
+				'INSERT INTO api_key (id,user_id,name,key_hash,key_prefix,created_at) VALUES (?,?,?,?,?,?)'
+			)
+			.run('key_write', member.userId, 'Write key', 'write_hash', 'write', NOW);
+		expect((await readSharedIssue(t.db, readKey, { id: issueId })).id).toBe(issueId);
+		await expect(
+			createComment(t.db, t.env, readKey, issueId, { body: 'denied' })
+		).rejects.toMatchObject({
+			code: 'insufficient_permissions'
+		});
+		await expect(readSharedIssue(t.db, foreignKey, { id: issueId })).rejects.toMatchObject({
+			code: 'insufficient_permissions'
+		});
+		await createComment(t.db, t.env, writeKey, issueId, { body: 'allowed' });
+		expect(t.all('SELECT body FROM comment WHERE issue_id = ?', issueId)).toContainEqual({
+			body: 'allowed'
+		});
 	});
 
 	it('keeps one event in the owner and member feeds, and attributes comment repair', async () => {

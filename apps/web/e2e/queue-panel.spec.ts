@@ -291,9 +291,9 @@ test.describe.serial('the Now row', () => {
 		const queue = await api.get('/api/v1/supervisor/queue');
 		expect(queue.status()).toBe(200);
 		const groups = (await queue.json()).groups as { verdict: string; runner_name: string }[];
-		expect(groups.some((g) => g.runner_name === world.runnerName && g.verdict === 'offline')).toBe(
-			true
-		);
+		// Queue reads remain available to a run key, but the run ceiling filters
+		// project-bearing rows before the unrelated queue fixture is grouped.
+		expect(groups.some((g) => g.runner_name === world.runnerName)).toBe(false);
 
 		const settings = await api.get('/api/v1/supervisor/settings');
 		expect(settings.status()).toBe(200);

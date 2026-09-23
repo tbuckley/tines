@@ -2,6 +2,7 @@ import {
 	recordDispatchEffects,
 	TEST_NOOP_DISPATCH_EFFECTS
 } from '$lib/server/api/test-dispatch-effects';
+import { FULL_API_KEY_PERMISSIONS } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import { addIssue, seedBase, USER } from '../supervisor/test-fixtures';
 import { addIssueLink, removeIssueLink } from './issue-links';
@@ -13,7 +14,8 @@ const actor: ActorContext = {
 	userName: 'Alice',
 	apiKeyId: 'key_first',
 	apiKeyName: 'first-agent',
-	viaSession: false
+	viaSession: false,
+	permissions: FULL_API_KEY_PERMISSIONS
 };
 
 const competingActor: ActorContext = {

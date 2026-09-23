@@ -3,6 +3,7 @@ import type { Database } from '$lib/server/db';
 import type { ActorContext } from './core';
 import { resolveProjectAccess } from './project-access';
 import { notFound } from './core';
+import { projectReadPredicate } from './permissions';
 
 /** Explicit member projection: no default workflow library or owner account fields. */
 export async function readSharedProject(
@@ -96,6 +97,7 @@ export async function listSharedProjects(
 		.where('m.user_id', '=', actor.userId)
 		.where('m.revoked_at', 'is', null)
 		.where('p.shared_at', 'is not', null)
+		.where(projectReadPredicate(actor, 'p.id'))
 		.orderBy('p.created_at');
 	if (archived === 'false') query = query.where('p.archived_at', 'is', null);
 	if (archived === 'true') query = query.where('p.archived_at', 'is not', null);

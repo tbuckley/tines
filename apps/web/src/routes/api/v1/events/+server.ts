@@ -9,7 +9,10 @@ import {
 } from '$lib/server/api/events';
 import { listSharedEvents } from '$lib/server/api/shared-events';
 import { resolveAccessibleProjectRef, resolveProjectAccess } from '$lib/server/api/project-access';
+import { resolveIssueAccess } from '$lib/server/api/project-access';
 import type { RequestHandler } from './$types';
+import { projectExpressionReadPredicate, requireAccess } from '$lib/server/api/permissions';
+import { sql } from 'kysely';
 
 /** Global activity feed, newest first. */
 export const GET: RequestHandler = api(async (event) => {
@@ -27,6 +30,17 @@ export const GET: RequestHandler = api(async (event) => {
 		}
 	}
 	const projectAccess = projectId ? await resolveProjectAccess(db, actor, projectId) : null;
+	if (issue) {
+		try {
+			await resolveIssueAccess(db, actor, issue);
+		} catch (error) {
+			if (error instanceof ApiFail && (error.status === 403 || error.status === 404))
+				return json({ items: [], next_cursor: null });
+			throw error;
+		}
+	}
+	if (!issue && !project)
+		requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'event.read');
 	const since = eventTimeParam(params, 'since');
 	const until = eventTimeParam(params, 'until');
 	const types = params.get('type')?.split(',').filter(Boolean);
@@ -36,7 +50,12 @@ export const GET: RequestHandler = api(async (event) => {
 		until,
 		type: types,
 		state: params.get('state') ?? undefined
-	});
+	}).where(
+		projectExpressionReadPredicate(
+			actor,
+			sql<string | null>`coalesce(event.project_id, issue.project_id)`
+		)
+	);
 	if (issue) q = q.where('event.issue_id', '=', issue);
 	if (projectId) q = q.where('event.project_id', '=', projectId);
 	else if (project)

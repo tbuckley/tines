@@ -25,7 +25,7 @@ vi.mock('$lib/server/api/projects', () => ({
 vi.mock('$lib/server/api/project-access', () => ({
 	resolveProjectAccess: vi.fn(async () => ({ role: 'owner' }))
 }));
-vi.mock('$lib/server/api/labels', () => ({ listLabels: vi.fn(async () => []) }));
+vi.mock('$lib/server/api/labels', () => ({ listLabelsInternal: vi.fn(async () => []) }));
 vi.mock('$lib/server/api/workflows', () => ({ loadWorkflows: vi.fn(async () => []) }));
 vi.mock('$lib/server/api/context', () => ({
 	listContextItems: vi.fn(async () => ({ items: [], hasMore: false }))

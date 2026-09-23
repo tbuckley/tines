@@ -408,6 +408,8 @@ export async function sweepSchedules(env: Env, now: number = Date.now()): Promis
 		.where('scheduled_task.enabled', '=', 1)
 		.where('scheduled_task.next_run_at', '<=', now)
 		.where('project.archived_at', 'is', null)
+		.orderBy('scheduled_task.next_run_at', 'asc')
+		.orderBy('scheduled_task.id', 'asc')
 		.execute();
 	for (const schedule of due) {
 		try {

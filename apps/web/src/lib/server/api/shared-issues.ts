@@ -5,6 +5,7 @@ import type { Artifact, ArtifactDetail, ArtifactVersion, ArtifactType } from '@t
 import { ApiFail, notFound, type ActorContext } from './core';
 import { resolveIssueAccess, resolveProjectAccess } from './project-access';
 import { sharedEventPayload } from './shared-events';
+import { projectReadPredicate } from './permissions';
 
 const SAFE_EVENTS = new Set([
 	'issue.created',
@@ -417,6 +418,7 @@ export async function listSharedIssues(
 		])
 		.where('m.revoked_at', 'is', null)
 		.where('p.shared_at', 'is not', null)
+		.where(projectReadPredicate(actor, 'i.project_id'))
 		.orderBy('i.created_at', backwards ? 'asc' : 'desc')
 		.orderBy('i.id', backwards ? 'asc' : 'desc')
 		.limit(limit + 1);

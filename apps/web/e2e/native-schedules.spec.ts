@@ -191,6 +191,51 @@ test.describe.serial('native D1 scheduled execution fences', () => {
 		expect(rows[0].next_run_at).toBeGreaterThan(occurrence);
 	});
 
+	test('cron rejects a stale due-schedule snapshot after an earlier schedule edits it', async ({
+		request,
+		uniqueName
+	}) => {
+		const first = await fixture(request, uniqueName('native-definition-first'));
+		const stale = await fixture(request, uniqueName('native-definition-stale'));
+		const firstDue = Date.now() - 10_000;
+		const staleDue = firstDue + 1_000;
+		d1(
+			`UPDATE scheduled_task SET enabled=1,next_run_at=${firstDue} WHERE id=${sqlLiteral(first.schedule.id)}`
+		);
+		d1(
+			`UPDATE scheduled_task SET enabled=1,next_run_at=${staleDue} WHERE id=${sqlLiteral(stale.schedule.id)}`
+		);
+		const beforeStale = scheduleRows(stale.schedule.id)[0];
+		const trigger = `edit_due_schedule_${Date.now().toString(36)}`;
+		d1(`CREATE TRIGGER ${trigger} AFTER INSERT ON issue
+			WHEN NEW.scheduled_task_id=${sqlLiteral(first.schedule.id)}
+			BEGIN
+				UPDATE scheduled_task
+				SET title_template='Edited during sweep', definition_revision=definition_revision+1
+				WHERE id=${sqlLiteral(stale.schedule.id)};
+			END`);
+		try {
+			const response = await request.get('/__scheduled?cron=*+*+*+*+*');
+			expect(response.ok()).toBe(true);
+			await expectSingleCreatedInstance(first);
+			expect(issueRows(stale.schedule.id)).toHaveLength(1);
+			expect(eventRows(stale.project.id, 'issue.created')).toHaveLength(1);
+			expect(scheduleRows(stale.schedule.id)[0]).toMatchObject({
+				run_count: beforeStale.run_count,
+				last_run_at: beforeStale.last_run_at,
+				next_run_at: staleDue,
+				definition_revision: beforeStale.definition_revision + 1
+			});
+			expect(
+				d1<{ title_template: string }>(
+					`SELECT title_template FROM scheduled_task WHERE id=${sqlLiteral(stale.schedule.id)}`
+				)
+			).toEqual([{ title_template: 'Edited during sweep' }]);
+		} finally {
+			d1(`DROP TRIGGER IF EXISTS ${trigger}`);
+		}
+	});
+
 	test('pause and archive committed before issuance prevent cron and manual work', async ({
 		request,
 		uniqueName

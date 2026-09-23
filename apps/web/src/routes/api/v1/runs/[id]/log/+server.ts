@@ -14,7 +14,7 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
 	const raw = event.url.searchParams.get('raw') === '1';
-	const result = await getFullRunLog(db, env, actor.userId, event.params.id, raw);
+	const result = await getFullRunLog(db, env, actor, event.params.id, raw);
 	if (result.kind === 'expired') {
 		error(410, 'This run log has passed its retention window; only the tail remains');
 	}

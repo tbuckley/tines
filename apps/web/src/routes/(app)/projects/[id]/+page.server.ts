@@ -1,9 +1,9 @@
 import { error } from '@sveltejs/kit';
 import { truncate } from '$lib/format';
 import { listContextItems } from '$lib/server/api/context';
-import { ApiFail } from '$lib/server/api/core';
+import { ApiFail, sessionActor } from '$lib/server/api/core';
 import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
-import { listLabels } from '$lib/server/api/labels';
+import { listLabelsInternal } from '$lib/server/api/labels';
 import { getProject } from '$lib/server/api/projects';
 import { resolveProjectAccess } from '$lib/server/api/project-access';
 import { readSharedProject } from '$lib/server/api/shared-projects';
@@ -66,7 +66,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		throw e;
 	}
 
-	const project = await getProject(db, userId, params.id).catch((e) => {
+	const project = await getProject(db, actor, params.id).catch((e) => {
 		const status = e instanceof ApiFail ? e.status : 500;
 		error(status, status === 404 ? `No project has the ID “${truncate(params.id)}”.` : 'Not found');
 	});
@@ -112,10 +112,10 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 			page
 		),
 		countIssuesByCategory(db, userId, scope),
-		listLabels(db, userId),
+		listLabelsInternal(db, userId),
 		loadWorkflows(db, userId),
 		listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 }),
-		listContextItems(db, userId, { project: project.id }, { cursor: null, limit: 100 }),
+		listContextItems(db, actor, { project: project.id }, { cursor: null, limit: 100 }),
 		listRoutingRules(db, userId)
 	]);
 	// The inline agent-routing rows: this project's own rules, or — when it

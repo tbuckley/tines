@@ -17,7 +17,8 @@ import { readRunLog } from '$lib/server/supervisor/run-log';
 import { cancelRun } from '$lib/server/supervisor/engine';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { retainedStartWorkflow, retainedIssueWorkflow, retainedWorkflow } from './usage-ledger';
-import { ApiFail, notFound, type ActorContext, type Page } from './core';
+import { ApiFail, notFound, sessionActor, type ActorContext, type Page } from './core';
+import { projectReadPredicate, requireAccess } from './permissions';
 
 function evidenceBaseQuery(db: Kysely<Database>, userId: string) {
 	return (
@@ -159,7 +160,8 @@ export async function hydrateUsageEvidenceRuns(
 	userId: string,
 	ids: string[],
 	population: 'finalized' | 'pending',
-	cutoff: number
+	cutoff: number,
+	actor?: ActorContext
 ): Promise<(AgentRun | UsagePendingRun)[]> {
 	if (!ids.length) return [];
 	const rows =
@@ -168,6 +170,9 @@ export async function hydrateUsageEvidenceRuns(
 					.select(pendingEvidenceSelection)
 					.where('agent_run.id', 'in', ids)
 					.where('agent_run.created_at', '<', cutoff)
+					.$if(actor !== undefined, (q) =>
+						q.where(projectReadPredicate(actor!, 'issue.project_id'))
+					)
 					.where((eb) =>
 						eb.or([eb('agent_run.ended_at', 'is', null), eb('agent_run.ended_at', '>=', cutoff)])
 					)
@@ -188,6 +193,9 @@ export async function hydrateUsageEvidenceRuns(
 					.where('agent_run.id', 'in', ids)
 					.where('agent_run.created_at', '<', cutoff)
 					.where('agent_run.ended_at', '<', cutoff)
+					.$if(actor !== undefined, (q) =>
+						q.where(projectReadPredicate(actor!, 'issue.project_id'))
+					)
 					.execute();
 	const byId = new Map((rows as unknown as RunRow[]).map((row) => [row.id, row]));
 	const result: (AgentRun | UsagePendingRun)[] = [];
@@ -368,29 +376,32 @@ interface RunListResult<T> {
 
 export function listRuns(
 	db: Kysely<Database>,
-	userId: string,
+	actor: ActorContext | string,
 	filters: RunListFilters & { population: 'pending' },
 	page: Page
 ): Promise<RunListResult<UsagePendingRun>>;
 export function listRuns(
 	db: Kysely<Database>,
-	userId: string,
+	actor: ActorContext | string,
 	filters: RunListFilters & { population?: 'finalized' | undefined },
 	page: Page
 ): Promise<RunListResult<AgentRun>>;
 export function listRuns(
 	db: Kysely<Database>,
-	userId: string,
+	actor: ActorContext | string,
 	filters: RunListFilters,
 	page: Page
 ): Promise<RunListResult<AgentRun | UsagePendingRun>>;
 export async function listRuns(
 	db: Kysely<Database>,
-	userId: string,
+	actorInput: ActorContext | string,
 	filters: RunListFilters,
 	page: Page
 ): Promise<RunListResult<AgentRun | UsagePendingRun>> {
-	let q = runQuery(db, userId);
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'run.read');
+	const userId = actor.userId;
+	let q = runQuery(db, userId).where(projectReadPredicate(actor, 'issue.project_id'));
 	if (filters.projectId === 'unknown')
 		q = q.where(filters.population ? 'issue.project_id' : 'project.id', 'is', null);
 	else if (filters.projectId) q = q.where('issue.project_id', '=', filters.projectId);
@@ -565,10 +576,15 @@ export async function listRuns(
 
 export async function getRun(
 	db: Kysely<Database>,
-	userId: string,
+	actorInput: ActorContext | string,
 	id: string
 ): Promise<AgentRunDetail> {
-	const row = await runQuery(db, userId).where('agent_run.id', '=', id).executeTakeFirst();
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'run.read');
+	const row = await runQuery(db, actor.userId)
+		.where('agent_run.id', '=', id)
+		.where(projectReadPredicate(actor, 'issue.project_id'))
+		.executeTakeFirst();
 	if (!row) throw notFound();
 	return serializeRunDetail(row);
 }
@@ -589,25 +605,29 @@ export type FullRunLogResult =
 export async function getFullRunLog(
 	db: Kysely<Database>,
 	env: Env,
-	userId: string,
+	actorInput: ActorContext | string,
 	id: string,
 	raw = false
 ): Promise<FullRunLogResult> {
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'run.read');
 	const run = await db
 		.selectFrom('agent_run')
+		.leftJoin('issue', 'issue.id', 'agent_run.issue_id')
 		.select([
-			'id',
-			'user_id',
-			'log',
-			'log_bytes_dropped',
-			'log_part_count',
-			'log_compacted_through',
-			'log_sealed',
-			'log_raw_bytes',
-			'log_objects_deleted_at'
+			'agent_run.id',
+			'agent_run.user_id',
+			'agent_run.log',
+			'agent_run.log_bytes_dropped',
+			'agent_run.log_part_count',
+			'agent_run.log_compacted_through',
+			'agent_run.log_sealed',
+			'agent_run.log_raw_bytes',
+			'agent_run.log_objects_deleted_at'
 		])
-		.where('id', '=', id)
-		.where('user_id', '=', userId)
+		.where('agent_run.id', '=', id)
+		.where('agent_run.user_id', '=', actor.userId)
+		.where(projectReadPredicate(actor, 'issue.project_id'))
 		.executeTakeFirst();
 	if (!run) throw notFound();
 	if (raw) {
@@ -637,8 +657,25 @@ export async function cancelRunForRequest(
 	effects: DispatchEffects,
 	runId: string
 ): Promise<AgentRunDetail> {
+	const run = await db
+		.selectFrom('agent_run')
+		.innerJoin('issue', 'issue.id', 'agent_run.issue_id')
+		.select(['agent_run.issue_id', 'issue.project_id'])
+		.where('agent_run.id', '=', runId)
+		.where('agent_run.user_id', '=', actor.userId)
+		.executeTakeFirst();
+	if (!run) throw notFound();
+	requireAccess(
+		actor,
+		[
+			{ domain: 'control_plane', access: 'write' },
+			{ domain: 'project', access: 'write', projectId: run.project_id }
+		],
+		'run.cancel',
+		{ projectId: run.project_id, issueId: run.issue_id }
+	);
 	const result = await cancelRun(db, env, actor.userId, runId);
 	assertCancelable(result.kind);
 	effects.signalDispatch();
-	return getRun(db, actor.userId, runId);
+	return getRun(db, actor, runId);
 }

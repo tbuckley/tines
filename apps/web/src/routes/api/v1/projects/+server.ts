@@ -9,7 +9,7 @@ export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	const archived = readArchived(event.url.searchParams);
 	const [owned, shared] = await Promise.all([
-		listProjects(db, actor.userId, { archived }),
+		listProjects(db, actor, { archived }),
 		listSharedProjects(db, actor, archived)
 	]);
 	const body = { items: [...owned, ...shared], next_cursor: null };

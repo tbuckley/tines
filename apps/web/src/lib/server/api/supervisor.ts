@@ -45,8 +45,14 @@ import {
 	prepareStageStats,
 	type StatsEvent
 } from '$lib/server/supervisor/stats';
-import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
+import { ApiFail, requireString, runAtomic, sessionActor, type ActorContext } from './core';
 import { applyEventWindow, eventInsert, eventQuery, serializeEvent } from './events';
+import {
+	accessAllowed,
+	projectReadPredicate,
+	requireAccess,
+	requireExecutionDelegation
+} from './permissions';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { effectiveAutomationEnabled } from '../supervisor/settings';
 
@@ -166,8 +172,11 @@ async function assertRosterStatesExist(
 
 export async function getSupervisorSettings(
 	db: Kysely<Database>,
-	userId: string
+	actorInput: ActorContext | string
 ): Promise<SupervisorSettings> {
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'supervisor.read');
+	const userId = actor.userId;
 	const row = await db
 		.selectFrom('supervisor_settings')
 		.selectAll()
@@ -207,6 +216,10 @@ export async function updateSupervisorSettings(
 	effects: DispatchEffects,
 	body: UpdateSupervisorSettingsRequest
 ): Promise<SupervisorSettingsResponse> {
+	requireAccess(actor, [{ domain: 'control_plane', access: 'write' }], 'supervisor.update');
+	if (body.github_pat !== undefined) {
+		requireExecutionDelegation(actor, 'supervisor.update_credential');
+	}
 	const current = await getSupervisorSettings(db, actor.userId);
 
 	let enabled = current.enabled;
@@ -399,13 +412,21 @@ function refOf(row: QueueRefRow, queuePosition: number | null): QueueIssueRef {
  * Nothing is materialised: this runs on request, on the Agents page load and
  * for `tines supervisor status`.
  */
-export async function loadFleetQueue(
+async function loadFleetQueueScoped(
 	db: Kysely<Database>,
 	userId: string,
 	now: number = Date.now(),
-	options: { project?: string } = {}
+	options: { project?: string } = {},
+	actor?: ActorContext
 ): Promise<FleetQueue> {
 	const project = options.project ? await resolveProjectRef(db, userId, options.project) : null;
+	if (actor && project)
+		requireAccess(
+			actor,
+			[{ domain: 'project', access: 'read', projectId: project.id }],
+			'supervisor.read',
+			{ projectId: project.id }
+		);
 	const [settings, allEligible, runners, rules, counts, parkedRows, humanRow] = await Promise.all([
 		loadDispatchSettings(db, userId),
 		loadEligibleIssues(db, userId),
@@ -415,7 +436,11 @@ export async function loadFleetQueue(
 		// Parked issues are excluded from the eligible set by definition, so
 		// they need their own read. Same eligibility joins, `needs_attention`
 		// flipped: these are the issues a human has to resume.
-		queueRefQuery(db, userId, project?.id).where('issue.needs_attention', '=', 1).execute(),
+		(() => {
+			let q = queueRefQuery(db, userId, project?.id).where('issue.needs_attention', '=', 1);
+			if (actor) q = q.where(projectReadPredicate(actor, 'issue.project_id'));
+			return q.execute();
+		})(),
 		// Human stages get a summary line only, so a count and a min suffice.
 		db
 			.selectFrom('issue')
@@ -425,15 +450,26 @@ export async function loadFleetQueue(
 			.where('project.archived_at', 'is', null)
 			.where('st.category', '=', 'awaiting_human')
 			.$if(project !== null, (q) => q.where('issue.project_id', '=', project!.id))
+			.$if(actor !== undefined, (q) => q.where(projectReadPredicate(actor!, 'issue.project_id')))
 			.select((eb) => [
 				eb.fn.countAll<number>().as('n'),
 				eb.fn.min(sql<number>`COALESCE(issue.state_entered_at, issue.created_at)`).as('oldest')
 			])
 			.executeTakeFirst()
 	]);
-	const eligible = project
+	const projectEligible = project
 		? allEligible.filter((issue) => issue.project_id === project.id)
 		: allEligible;
+	const eligible = actor
+		? projectEligible.filter((issue) =>
+				accessAllowed(
+					actor,
+					[{ domain: 'project', access: 'read', projectId: issue.project_id }],
+					'supervisor.read',
+					{ projectId: issue.project_id, issueId: issue.id }
+				)
+			)
+		: projectEligible;
 
 	// The queue the explainer reports positions in: eligible issues that would
 	// actually route somewhere, oldest-`updated_at` first.
@@ -525,6 +561,24 @@ export async function loadFleetQueue(
 			oldest_entered_at: humanRow?.oldest ?? null
 		}
 	};
+}
+
+export function loadFleetQueue(
+	db: Kysely<Database>,
+	userId: string,
+	now: number = Date.now(),
+	options: { project?: string } = {}
+): Promise<FleetQueue> {
+	return loadFleetQueueScoped(db, userId, now, options);
+}
+
+export function loadFleetQueueForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	now: number = Date.now(),
+	options: { project?: string } = {}
+): Promise<FleetQueue> {
+	return loadFleetQueueScoped(db, actor.userId, now, options, actor);
 }
 
 /** The eligibility joins plus the ref columns, ordered by the wait clock. */
@@ -669,7 +723,8 @@ export async function loadStageStats(
 		phase?: (name: 'read' | 'prepare' | 'base' | 'markers', durationMs: number) => void;
 		/** Local retained profiler: reproduce the pre-Tines/518 marker loop. */
 		profileRepeatPreparation?: boolean;
-	}
+	},
+	actor?: ActorContext
 ): Promise<StageStatsReport> {
 	const windowMs = parseStatsWindow(query.window);
 	if (query.compare !== undefined && query.compare !== 'previous' && query.compare !== 'none') {
@@ -679,6 +734,13 @@ export async function loadStageStats(
 	}
 	const compare = query.compare !== 'none';
 	const project = query.project ? await resolveProjectRef(db, userId, query.project) : null;
+	if (actor && project)
+		requireAccess(
+			actor,
+			[{ domain: 'project', access: 'read', projectId: project.id }],
+			'supervisor.read',
+			{ projectId: project.id }
+		);
 	// Both windows are scanned in one pass; `compare=none` still reads them,
 	// which keeps the query plan (and the cache) identical.
 	const scanFrom = now - 2 * windowMs;
@@ -720,6 +782,7 @@ export async function loadStageStats(
 				]);
 			q = applyEventWindow(q, { since: scanFrom, until: now, type: [...STATS_EVENT_TYPES] });
 			if (project) q = q.where('event.project_id', '=', project.id);
+			if (actor) q = q.where(projectReadPredicate(actor, 'event.project_id'));
 			return q.execute();
 		})(),
 		(() => {
@@ -743,12 +806,17 @@ export async function loadStageStats(
 					'agent_run.ended_at as ended_at'
 				]);
 			if (project) q = q.where('issue.project_id', '=', project.id);
+			if (actor) q = q.where(projectReadPredicate(actor, 'issue.project_id'));
 			return q.execute();
 		})(),
 		db
 			.selectFrom('agent_run')
+			.leftJoin('issue as outcome_issue', 'outcome_issue.id', 'agent_run.issue_id')
 			.where('user_id', '=', userId)
 			.where('outcome', 'is not', null)
+			.$if(actor !== undefined, (q) =>
+				q.where(projectReadPredicate(actor!, 'outcome_issue.project_id'))
+			)
 			.select((eb) => eb.fn.min<number | null>('ended_at').as('since'))
 			.executeTakeFirst(),
 		(() => {
@@ -779,6 +847,11 @@ export async function loadStageStats(
 			if (project) {
 				q = q.where((eb) =>
 					eb.or([eb('project_id', 'is', null), eb('project_id', '=', project.id)])
+				);
+			}
+			if (actor) {
+				q = q.where((eb) =>
+					eb.or([eb('project_id', 'is', null), projectReadPredicate(actor, 'event.project_id')])
 				);
 			}
 			return q.execute();
@@ -968,7 +1041,8 @@ export async function loadSentBackDrilldown(
 	db: Kysely<Database>,
 	userId: string,
 	query: { state: string; window?: string; project?: string; until?: number },
-	now: number = Date.now()
+	now: number = Date.now(),
+	actor?: ActorContext
 ): Promise<SentBackDrilldown> {
 	const windowMs = parseStatsWindow(query.window);
 	if (query.until !== undefined) {
@@ -982,6 +1056,13 @@ export async function loadSentBackDrilldown(
 	}
 	const since = now - windowMs;
 	const project = query.project ? await resolveProjectRef(db, userId, query.project) : null;
+	if (actor && project)
+		requireAccess(
+			actor,
+			[{ domain: 'project', access: 'read', projectId: project.id }],
+			'supervisor.read',
+			{ projectId: project.id }
+		);
 	const states = await db
 		.selectFrom('workflow_state as st')
 		.innerJoin('workflow as wf', 'wf.id', 'st.workflow_id')
@@ -1011,6 +1092,11 @@ export async function loadSentBackDrilldown(
 		query.state
 	);
 	if (project) transitions = transitions.where('event.project_id', '=', project.id);
+	if (actor) {
+		transitions = transitions
+			.where(projectReadPredicate(actor, 'event.project_id'))
+			.where(projectReadPredicate(actor, 'issue.project_id'));
+	}
 	const events = (await transitions.execute())
 		.map(serializeEvent)
 		.sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id));
@@ -1034,9 +1120,22 @@ export async function loadSentBackDrilldown(
 			commentChunks.map((ids) =>
 				db
 					.selectFrom('comment')
-					.select(['id', 'issue_id', 'body', 'created_at', 'actor_api_key_id', 'actor_user_id'])
-					.where('issue_id', 'in', ids)
-					.where('created_at', '<=', latestTransitionAt)
+					.innerJoin('issue', 'issue.id', 'comment.issue_id')
+					.innerJoin('project', 'project.id', 'issue.project_id')
+					.select([
+						'comment.id as id',
+						'comment.issue_id as issue_id',
+						'comment.body as body',
+						'comment.created_at as created_at',
+						'comment.actor_api_key_id as actor_api_key_id',
+						'comment.actor_user_id as actor_user_id'
+					])
+					.where('comment.issue_id', 'in', ids)
+					.where('project.user_id', '=', userId)
+					.where('comment.created_at', '<=', latestTransitionAt)
+					.$if(actor !== undefined, (q) =>
+						q.where(projectReadPredicate(actor!, 'issue.project_id'))
+					)
 					.execute()
 			)
 		)
@@ -1056,6 +1155,12 @@ export async function loadSentBackDrilldown(
 		.where('kind', '=', 'prompt')
 		.where('name', '=', 'instructions')
 		.where('workflow_state_id', '=', state.id)
+		.where((eb) =>
+			eb.or([
+				eb('context_item.project_id', 'is', null),
+				actor ? projectReadPredicate(actor, 'context_item.project_id') : sql<boolean>`1 = 1`
+			])
+		)
 		.executeTakeFirst();
 	// Resolve prompt generations from their lifecycle events, not from the
 	// currently-live row: delete/recreate gives the replacement a new id.
@@ -1064,6 +1169,12 @@ export async function loadSentBackDrilldown(
 		.select(sql<string>`json_extract(created.payload, '$.context_id')`.as('context_id'))
 		.where('created.user_id', '=', userId)
 		.where('created.type', '=', 'context.created')
+		.where((eb) =>
+			eb.or([
+				eb('created.project_id', 'is', null),
+				actor ? projectReadPredicate(actor, 'created.project_id') : sql<boolean>`1 = 1`
+			])
+		)
 		.where(sql<string>`json_extract(created.payload, '$.kind')`, '=', 'prompt')
 		.where(sql<string>`json_extract(created.payload, '$.name')`, '=', 'instructions')
 		.where(
@@ -1081,6 +1192,12 @@ export async function loadSentBackDrilldown(
 					.select(['id', 'type', 'payload', 'created_at'])
 					.where('user_id', '=', userId)
 					.where('type', 'in', ['context.created', 'context.updated', 'context.deleted'])
+					.where((eb) =>
+						eb.or([
+							eb('event.project_id', 'is', null),
+							actor ? projectReadPredicate(actor, 'event.project_id') : sql<boolean>`1 = 1`
+						])
+					)
 					.where((eb) => {
 						const lifecycleId = sql<string>`json_extract(event.payload, '$.context_id')`;
 						const relevant = eb(lifecycleId, 'in', relevantPromptIds);

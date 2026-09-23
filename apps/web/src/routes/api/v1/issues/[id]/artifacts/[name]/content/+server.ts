@@ -1,4 +1,4 @@
-import { artifactContentResponse } from '$lib/server/api/artifacts';
+import { artifactContentResponseForActor } from '$lib/server/api/artifacts';
 import { sharedArtifactContent } from '$lib/server/api/shared-issues';
 import { resolveIssueAccess } from '$lib/server/api/project-access';
 import { api, apiContext, ApiFail } from '$lib/server/api/core';
@@ -24,6 +24,6 @@ export const GET: RequestHandler = api(async (event) => {
 		path: event.url.searchParams.get('path') ?? undefined
 	};
 	return access.role === 'owner'
-		? artifactContentResponse(db, env, actor.userId, event.params.id, event.params.name, options)
+		? artifactContentResponseForActor(db, env, actor, event.params.id, event.params.name, options)
 		: sharedArtifactContent(db, env, actor, event.params.id, event.params.name, options);
 });

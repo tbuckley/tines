@@ -2,6 +2,7 @@ import type { UpdatePreferencesRequest, UserPreferences } from '@tines/shared';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
+import { accessAllowed, requireAccess } from './permissions';
 
 /**
  * Per-user UI preferences: the project focus (Tines/259). The row is created
@@ -33,6 +34,26 @@ export async function getPreferences(
 	};
 }
 
+export async function getPreferencesForActor(
+	db: Kysely<Database>,
+	actor: ActorContext
+): Promise<UserPreferences> {
+	requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'preference.read');
+	const preferences = await getPreferences(db, actor.userId);
+	const visible = (id: string | null) =>
+		id !== null &&
+		accessAllowed(actor, [{ domain: 'project', access: 'read', projectId: id }], 'project.read', {
+			projectId: id
+		});
+	return {
+		...preferences,
+		focused_project_id: visible(preferences.focused_project_id)
+			? preferences.focused_project_id
+			: null,
+		last_project_id: visible(preferences.last_project_id) ? preferences.last_project_id : null
+	};
+}
+
 /**
  * Both pointers must name one of the actor's *live* projects: a focus is by
  * definition live, and `last_project_id` keeps the same rule so New issue
@@ -40,19 +61,22 @@ export async function getPreferences(
  */
 async function requireLiveProject(
 	db: Kysely<Database>,
-	userId: string,
+	actor: ActorContext,
 	value: unknown,
 	field: string
 ): Promise<string> {
 	const id = requireString(value, field, { max: 100 });
+	requireAccess(actor, [{ domain: 'project', access: 'read', projectId: id }], 'project.read', {
+		projectId: id
+	});
 	const row = await db
 		.selectFrom('project')
 		.select('id')
 		.where('id', '=', id)
 		.where(
 			field === 'focused_project_id'
-				? sql<boolean>`(user_id = ${userId} OR (shared_at IS NOT NULL AND EXISTS (SELECT 1 FROM project_member m WHERE m.project_id = project.id AND m.user_id = ${userId} AND m.revoked_at IS NULL)))`
-				: sql<boolean>`user_id = ${userId}`
+				? sql<boolean>`(user_id = ${actor.userId} OR (shared_at IS NOT NULL AND EXISTS (SELECT 1 FROM project_member m WHERE m.project_id = project.id AND m.user_id = ${actor.userId} AND m.revoked_at IS NULL)))`
+				: sql<boolean>`user_id = ${actor.userId}`
 		)
 		.where('archived_at', 'is', null)
 		.executeTakeFirst();
@@ -77,7 +101,7 @@ export async function updatePreferences(
 		focused =
 			body.focused_project_id === null
 				? null
-				: await requireLiveProject(db, actor.userId, body.focused_project_id, 'focused_project_id');
+				: await requireLiveProject(db, actor, body.focused_project_id, 'focused_project_id');
 	}
 
 	let last = current.last_project_id;
@@ -85,7 +109,7 @@ export async function updatePreferences(
 		last =
 			body.last_project_id === null
 				? null
-				: await requireLiveProject(db, actor.userId, body.last_project_id, 'last_project_id');
+				: await requireLiveProject(db, actor, body.last_project_id, 'last_project_id');
 	} else if (
 		focused !== null &&
 		focused !== current.focused_project_id &&

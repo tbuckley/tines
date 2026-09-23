@@ -32,6 +32,7 @@ import { eventInsert } from './events';
 import { assertStatesNotScheduled, assertWorkflowNotScheduled } from './schedules';
 import { releaseAssignedIssueQueries } from '../supervisor/consent-admission';
 import { invalidateWorkflowSchedulePermissionQueries } from './schedule-consent';
+import { projectReadPredicate, requireAccess } from './permissions';
 
 interface ResolvedState {
 	id: string;
@@ -771,6 +772,42 @@ export async function loadWorkflow(
 	return wf;
 }
 
+/** Request-facing workflow reads; internal planners use the owner-scoped loaders above. */
+export async function loadWorkflowsForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	id?: string
+): Promise<WorkflowResponse[]> {
+	requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'workflow.read');
+	const workflows = await loadWorkflows(db, actor.userId, id);
+	if (workflows.length === 0) return workflows;
+	let counts = db
+		.selectFrom('issue')
+		.innerJoin('project', 'project.id', 'issue.project_id')
+		.select(['issue.workflow_id', (eb) => eb.fn.countAll<number>().as('n')])
+		.where('project.user_id', '=', actor.userId)
+		.where(projectReadPredicate(actor, 'project.id'))
+		.groupBy('issue.workflow_id');
+	if (id !== undefined) counts = counts.where('issue.workflow_id', '=', id);
+	const visibleCounts = new Map(
+		(await counts.execute()).map((row) => [row.workflow_id, Number(row.n)])
+	);
+	return workflows.map((workflow) => ({
+		...workflow,
+		issue_count: visibleCounts.get(workflow.id) ?? 0
+	}));
+}
+
+export async function loadWorkflowForActor(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	id: string
+): Promise<WorkflowResponse> {
+	const [workflow] = await loadWorkflowsForActor(db, actor, id);
+	if (!workflow) throw notFound();
+	return workflow;
+}
+
 // ---------------------------------------------------------------------------
 // Structural identity (shared by library import and starters)
 
@@ -984,6 +1021,7 @@ export async function createWorkflow(
 	body: CreateWorkflowRequest
 ): Promise<WorkflowResponse> {
 	const { name, description, def } = validateWorkflowCreateFields(body);
+	requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'workflow.create');
 	const id = newId('wf');
 	const inh = await resolveInheritance(db, actor.userId, { id, name }, def.states, []);
 	const now = Date.now();
@@ -999,6 +1037,7 @@ export async function updateWorkflow(
 	id: string,
 	body: UpdateWorkflowRequest
 ): Promise<WorkflowResponse> {
+	requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'workflow.update');
 	const current = await loadWorkflow(db, actor.userId, id);
 	if (current.is_system) {
 		throw new ApiFail(
@@ -1059,6 +1098,10 @@ export async function updateWorkflow(
 	// between this check and the batch makes the whole batch fail.
 	const keptIds = new Set(def.states.map((s) => s.id));
 	const removedStates = current.states.filter((s) => !keptIds.has(s.id));
+	const transitionDiff = diffTransitions(current.transitions, def.transitions);
+	if (removedStates.length > 0 || transitionDiff.removed > 0) {
+		requireAccess(actor, [{ domain: 'workspace', access: 'delete' }], 'workflow.update');
+	}
 	if (removedStates.length > 0) {
 		const occupied = await db
 			.selectFrom('issue')
@@ -1163,7 +1206,6 @@ export async function updateWorkflow(
 			(s) => !s.isNew && currentById.get(s.id) && currentById.get(s.id)!.category !== s.category
 		)
 		.map((s) => ({ state: s.name, from: currentById.get(s.id)!.category, to: s.category }));
-	const transitionDiff = diffTransitions(current.transitions, def.transitions);
 	const semanticChanged =
 		statesAdded.length > 0 ||
 		statesRemoved.length > 0 ||
@@ -1397,7 +1439,23 @@ export async function deleteWorkflow(
 	id: string,
 	{ forceDeleteContext = false, forceClearInheritance = false } = {}
 ): Promise<{ deleted_context: DeletedContextItem[]; cleared_inheritance: ClearedInheritance[] }> {
+	requireAccess(actor, [{ domain: 'workspace', access: 'delete' }], 'workflow.delete');
 	const wf = await loadWorkflow(db, actor.userId, id);
+	const defaultProjects = await db
+		.selectFrom('project')
+		.select('id')
+		.where('user_id', '=', actor.userId)
+		.where('default_workflow_id', '=', id)
+		.execute();
+	requireAccess(
+		actor,
+		defaultProjects.map((project) => ({
+			domain: 'project' as const,
+			access: 'write' as const,
+			projectId: project.id
+		})),
+		'workflow.delete'
+	);
 	if (wf.is_system) {
 		throw new ApiFail(403, 'workflow_read_only', 'The standard workflow cannot be deleted');
 	}
@@ -1447,39 +1505,75 @@ export async function deleteWorkflow(
 		const base = wf.states.find((s) => s.id === baseId);
 		return base ? `${wf.name} / ${base.name}` : baseId;
 	});
-	await runAtomic(env, [
-		...sweep.queries,
-		db
-			.updateTable('project')
-			.set({ default_workflow_id: null })
-			.where('default_workflow_id', '=', id)
-			.compile(),
-		db.deleteFrom('workflow_transition').where('workflow_id', '=', id).compile(),
-		// Same pre-null as a state removal: the self-FK has no ON DELETE action.
-		db
-			.updateTable('workflow_state')
-			.set({ inherits_from_state_id: null })
-			.where('inherits_from_state_id', 'in', stateIds)
-			.compile(),
-		db.deleteFrom('workflow_state').where('workflow_id', '=', id).compile(),
-		db.deleteFrom('workflow').where('id', '=', id).compile(),
-		eventInsert(db, actor, {
-			type: 'workflow.deleted',
-			payload: {
-				workflow_id: id,
-				name: wf.name,
-				...(clearedInheritance.length
-					? {
-							inheritance_changed: clearedInheritance.map((c) => ({
-								workflow: c.workflow_name,
-								state: c.state_name,
-								from: c.was,
-								to: null
-							}))
-						}
-					: {})
-			}
-		})
-	]);
+	const admittedDefaultIds = defaultProjects.map((project) => project.id);
+	const admittedDefaults = admittedDefaultIds.length
+		? sql`p.id IN (${sql.join(
+				admittedDefaultIds.map((projectId) => sql`${projectId}`),
+				sql`, `
+			)})`
+		: sql`0 = 1`;
+	const defaultPointerWitness = sql<boolean>`NOT EXISTS (
+		SELECT 1 FROM project p
+		WHERE p.default_workflow_id = ${id}
+			AND NOT (${admittedDefaults})
+	)`;
+	const clearDefaultProjects = db
+		.updateTable('project')
+		.set({ default_workflow_id: null })
+		.where('default_workflow_id', '=', id)
+		.where('id', 'in', admittedDefaultIds.length ? admittedDefaultIds : ['__no_admitted_project__'])
+		.compile();
+	try {
+		await runAtomic(env, [
+			// The witness must run before any cascade statement: a pointer added
+			// after preflight must refuse the whole batch, not get cleared as if it
+			// had been admitted.
+			sql`SELECT CASE WHEN ${defaultPointerWitness} THEN 1 ELSE json_extract('x', '$[') END`.compile(
+				db
+			),
+			...sweep.queries,
+			clearDefaultProjects,
+			db.deleteFrom('workflow_transition').where('workflow_id', '=', id).compile(),
+			// Same pre-null as a state removal: the self-FK has no ON DELETE action.
+			db
+				.updateTable('workflow_state')
+				.set({ inherits_from_state_id: null })
+				.where('inherits_from_state_id', 'in', stateIds)
+				.compile(),
+			db.deleteFrom('workflow_state').where('workflow_id', '=', id).compile(),
+			db.deleteFrom('workflow').where('id', '=', id).compile(),
+			eventInsert(db, actor, {
+				type: 'workflow.deleted',
+				payload: {
+					workflow_id: id,
+					name: wf.name,
+					...(clearedInheritance.length
+						? {
+								inheritance_changed: clearedInheritance.map((c) => ({
+									workflow: c.workflow_name,
+									state: c.state_name,
+									from: c.was,
+									to: null
+								}))
+							}
+						: {})
+				}
+			}),
+			// Re-check every project pointer after the cascade has run. SQLite's
+			// lazy CASE error rolls the entire D1 batch back on a lost witness.
+			sql`SELECT CASE WHEN ${defaultPointerWitness} THEN 1 ELSE json_extract('x', '$[') END`.compile(
+				db
+			)
+		]);
+	} catch (error) {
+		if (error instanceof Error && error.message.includes('malformed JSON')) {
+			throw new ApiFail(
+				409,
+				'workflow_delete_conflict',
+				'The workflow acquired a new project default while it was being deleted; reload and retry'
+			);
+		}
+		throw error;
+	}
 	return { deleted_context: sweep.deleted, cleared_inheritance: clearedInheritance };
 }

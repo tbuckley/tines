@@ -26,7 +26,7 @@ const disclosure = (page: Page) => page.getByTestId('run-keys');
 const runKeyRow = (page: Page, runnerName: string) =>
 	disclosure(page).locator('li').filter({ hasText: runnerName });
 
-const activeRunRef = `run on ${RUNROW.projectName}/${RUNROW.issueNumber}`;
+const activeRunRef = `run on ${RUNROW.projectName}/${RUNROW.runKeyIssueNumber}`;
 
 /**
  * Open the disclosure. `bind:open` re-asserts its initial value when hydration
@@ -85,17 +85,17 @@ test.describe.serial('API keys page', () => {
 		await page.goto('/settings/api-keys');
 		await openDisclosure(page);
 
-		const row = runKeyRow(page, RUNROW.runnerName);
+		const row = runKeyRow(page, RUNROW.runKeyRunnerName);
 		await expect(row).toHaveCount(1);
 		await expect(row.getByRole('link', { name: activeRunRef })).toHaveAttribute(
 			'href',
-			`/issues/${RUNROW.projectName}/${RUNROW.issueNumber}`
+			`/issues/${RUNROW.projectName}/${RUNROW.runKeyIssueNumber}`
 		);
 		// The runner is what a human recognises; the prefix still identifies the key.
-		await expect(row).toContainText(RUNROW.runnerName);
+		await expect(row).toContainText(RUNROW.runKeyRunnerName);
 		await expect(row).toContainText(RUNROW.runKey.slice(0, 14));
 		// The run id is available on hover without spending a line on it.
-		await expect(row.locator('p').first()).toHaveAttribute('title', new RegExp(RUNROW.runId));
+		await expect(row.locator('p').first()).toHaveAttribute('title', new RegExp(RUNROW.runKeyRunId));
 
 		// The revoked run key is hidden until asked for.
 		await expect(disclosure(page).getByText(RUNROW_FAILED.runnerName)).toHaveCount(0);
@@ -117,10 +117,8 @@ test.describe.serial('API keys page', () => {
 		await expect(revokedRow).toContainText('revoked');
 		// A revoked key can never act again, so it carries no action.
 		await expect(revokedRow.getByRole('button', { name: 'Revoke' })).toHaveCount(0);
-		// Both seeded runs worked the same issue, so both rows carry its ref —
-		// the label names the run, not the key.
-		await expect(revokedRow).toContainText(activeRunRef);
-		await expect(runKeyRow(page, RUNROW.runnerName)).toHaveCount(1);
+		await expect(revokedRow).toContainText(`run on ${RUNROW.projectName}/${RUNROW.issueNumber}`);
+		await expect(runKeyRow(page, RUNROW.runKeyRunnerName)).toHaveCount(1);
 
 		// Arriving at the URL directly opens the disclosure with the box ticked.
 		await gotoHydrated(page, '/settings/api-keys?revoked=1');
@@ -138,19 +136,19 @@ test.describe.serial('API keys page', () => {
 		await gotoHydrated(page, '/settings/api-keys');
 		await openDisclosure(page);
 
-		await runKeyRow(page, RUNROW.runnerName).getByRole('button', { name: 'Revoke' }).click();
+		await runKeyRow(page, RUNROW.runKeyRunnerName).getByRole('button', { name: 'Revoke' }).click();
 
 		// The shared confirm is bits-ui's alert-dialog variant: role="alertdialog".
 		const dialog = page.getByRole('alertdialog');
-		await expect(dialog).toContainText(`${RUNROW.projectName}/${RUNROW.issueNumber}`);
-		await expect(dialog).toContainText(RUNROW.runnerName);
+		await expect(dialog).toContainText(`${RUNROW.projectName}/${RUNROW.runKeyIssueNumber}`);
+		await expect(dialog).toContainText(RUNROW.runKeyRunnerName);
 		await expect(dialog).toContainText(/cuts the agent off mid-run/i);
 
 		// Cancel — api.spec.ts's fence cases authenticate with this key.
 		await dialog.getByRole('button', { name: 'Cancel' }).click();
 		await expect(dialog).toBeHidden();
 		await expect(
-			runKeyRow(page, RUNROW.runnerName).getByRole('button', { name: 'Revoke' })
+			runKeyRow(page, RUNROW.runKeyRunnerName).getByRole('button', { name: 'Revoke' })
 		).toHaveCount(1);
 	});
 
@@ -164,5 +162,105 @@ test.describe.serial('API keys page', () => {
 			ratio: 1
 		});
 		await expect(disclosure(page).locator('summary')).toBeInViewport({ ratio: 1 });
+	});
+
+	test('creates, enforces, edits, and revokes a selected-project key', async ({ page }) => {
+		await gotoHydrated(page, '/settings/api-keys');
+		await page.getByRole('button', { name: 'New key' }).click();
+		const dialog = page.getByRole('dialog');
+		await dialog.getByLabel('Name').fill('scoped browser key');
+		await dialog.getByLabel('Permissions').selectOption('project-automation');
+		await dialog.getByLabel(RUNROW.projectName).check();
+		await dialog.getByRole('button', { name: 'Create key' }).click();
+		await expect(dialog.getByText('API key created')).toBeVisible();
+		const secret = (await dialog.locator('code').first().innerText()).trim();
+
+		const headers = { authorization: `Bearer ${secret}` };
+		const projects = await page.request.get('/api/v1/projects', { headers });
+		expect(projects.status()).toBe(200);
+		expect((await projects.json()).items.map((project: { id: string }) => project.id)).toEqual([
+			RUNROW.projectId
+		]);
+		const control = await page.request.get('/api/v1/api-keys', { headers });
+		expect(control.status()).toBe(403);
+
+		await dialog.getByRole('button', { name: 'Done' }).click();
+		const row = userKeyList(page).locator('li').filter({ hasText: 'scoped browser key' });
+		await expect(row).toContainText('Projects write (1 selected project)');
+		await row.getByRole('button', { name: 'Edit' }).click();
+		const edit = page.getByRole('dialog');
+		await edit.getByLabel('Permissions JSON').fill(
+			JSON.stringify({
+				version: 1,
+				projects: { access: 'read', scope: [RUNROW.projectId] },
+				workspace: 'none',
+				control_plane: 'none'
+			})
+		);
+		await edit.getByRole('button', { name: 'Save' }).click();
+		await expect(edit).toBeHidden();
+		await expect(row).toContainText('Projects read (1 selected project)');
+
+		const denied = await page.request.post(`/api/v1/projects/${RUNROW.projectId}/issues`, {
+			headers,
+			data: { title: 'must not be created' }
+		});
+		expect(denied.status()).toBe(403);
+
+		await row.getByRole('button', { name: 'Revoke' }).click();
+		await page.getByRole('alertdialog').getByRole('button', { name: 'Revoke key' }).click();
+		await expect(row).toContainText('revoked');
+	});
+
+	test('an over-granted run key stays bound for context, journals, and links', async ({ page }) => {
+		const sessionHeaders = { authorization: `Bearer ${ALICE.apiKey}` };
+		const runHeaders = { authorization: `Bearer ${RUNROW.runKey}` };
+		const createIssue = async (title: string) => {
+			const response = await page.request.post(`/api/v1/projects/${RUNROW.projectId}/issues`, {
+				headers: sessionHeaders,
+				data: { title }
+			});
+			expect(response.status()).toBe(201);
+			return (await response.json()) as { id: string };
+		};
+		const unrelated = await createIssue('run-bound unrelated one');
+		const other = await createIssue('run-bound unrelated two');
+
+		const boundContext = await page.request.post('/api/v1/context', {
+			headers: runHeaders,
+			data: { kind: 'prompt', name: 'run-bound-note', body: 'ok', issue_id: RUNROW.runKeyIssueId }
+		});
+		expect(boundContext.status()).toBe(201);
+		for (const data of [
+			{ kind: 'prompt', name: 'unrelated-note', body: 'no', issue_id: unrelated.id },
+			{ kind: 'prompt', name: 'shared-state-note', body: 'no', workflow_state_id: 'wfs_std_open' }
+		]) {
+			const denied = await page.request.post('/api/v1/context', { headers: runHeaders, data });
+			expect(denied.status()).toBe(403);
+			expect((await denied.json()).error.code).toBe('run_key_forbidden');
+		}
+		const journal = await page.request.post('/api/v1/context', {
+			headers: runHeaders,
+			data: {
+				kind: 'prompt',
+				name: 'journal',
+				body: 'bound lesson',
+				project_id: RUNROW.projectId,
+				workflow_state_id: 'wfs_std_open'
+			}
+		});
+		expect(journal.status()).toBe(201);
+
+		const allowedLink = await page.request.post(`/api/v1/issues/${RUNROW.runKeyIssueId}/links`, {
+			headers: runHeaders,
+			data: { kind: 'blocks', issue_id: unrelated.id }
+		});
+		expect(allowedLink.status()).toBe(201);
+		const deniedLink = await page.request.post(`/api/v1/issues/${unrelated.id}/links`, {
+			headers: runHeaders,
+			data: { kind: 'blocks', issue_id: other.id }
+		});
+		expect(deniedLink.status()).toBe(403);
+		expect((await deniedLink.json()).error.code).toBe('run_key_forbidden');
 	});
 });

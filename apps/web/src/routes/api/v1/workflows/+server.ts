@@ -1,14 +1,17 @@
 import { json } from '@sveltejs/kit';
 import type { CreateWorkflowRequest, ListResponse, WorkflowResponse } from '@tines/shared';
 import { api, apiContext, readJson } from '$lib/server/api/core';
-import { createWorkflow, loadWorkflows } from '$lib/server/api/workflows';
+import { createWorkflow, loadWorkflowsForActor } from '$lib/server/api/workflows';
 import { listSharedWorkflows } from '$lib/server/api/shared-workflows';
+import { accessAllowed } from '$lib/server/api/permissions';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	const [owned, shared] = await Promise.all([
-		loadWorkflows(db, actor.userId),
+		accessAllowed(actor, [{ domain: 'workspace', access: 'read' }], 'workflow.read')
+			? loadWorkflowsForActor(db, actor)
+			: Promise.resolve([]),
 		listSharedWorkflows(db, actor)
 	]);
 	const ids = new Set(owned.map((item) => item.id));

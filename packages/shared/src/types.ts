@@ -2,6 +2,7 @@
 
 import type { SchedulePreset } from './schedule.js';
 import type { EffortApplicationStatus, EffortCapabilities, EffortSource } from './effort.js';
+import type { ApiKeyPermissions } from './permissions.js';
 
 export type StateCategory = 'backlog' | 'active' | 'awaiting_human' | 'done';
 
@@ -639,7 +640,8 @@ export interface AllowedTransition {
 }
 
 export interface IssueDetail extends Issue {
-	workflow: Workflow;
+	/** Full shared workflow definition; omitted when workspace read is unavailable. */
+	workflow?: Workflow;
 	comments: Comment[];
 	/** The named transitions legally available from the current state. */
 	allowed_transitions: AllowedTransition[];
@@ -665,6 +667,8 @@ export interface IssueDetail extends Issue {
 	/** Prompt-only metadata, emitted when launch comment selection is requested. */
 	launch_comments?: { latest_completed_run_comment_id: string | null };
 	permission_receipt?: IssueConsentReceipt;
+	/** Independent domains omitted from this composite response. */
+	redacted?: ('workspace' | 'control_plane' | 'project_links')[];
 }
 
 // ---------------------------------------------------------------------------
@@ -3270,6 +3274,7 @@ export const EVENT_TYPES = [
 	'workflow.updated',
 	'workflow.deleted',
 	'api_key.created',
+	'api_key.permissions_updated',
 	'api_key.revoked',
 	'scheduled_task.created',
 	'scheduled_task.personal_permission_changed',
@@ -3341,11 +3346,25 @@ export interface ApiKey {
 	created_at: number;
 	last_used_at: number | null;
 	revoked_at: number | null;
+	/** Stored authority. Run keys are additionally constrained by run_restrictions. */
+	permissions: ApiKeyPermissions;
+	/** Stored policy intersected with the run ceiling; equal to permissions for named keys. */
+	effective_permissions: ApiKeyPermissions;
 	/**
 	 * Set on *run keys*: the agent run this key was minted for, resolved to the
 	 * runner and the run's issue. Absent on user-created keys.
 	 */
 	run?: ActorRun | null;
+	/** Present for a run key, whose stored policy is only an upper bound. */
+	run_restrictions?: {
+		policy: 'run-v1';
+		run_id: string;
+		issue_id: string;
+		project_id: string;
+		launch_state_id: string;
+	} | null;
+	/** False for revoked, expired, detached, or ended run keys. */
+	usable?: boolean;
 }
 
 /** Which run keys a listing includes alongside the user's own keys. */
@@ -3366,6 +3385,20 @@ export interface ApiKeyCreated extends ApiKey {
 
 export interface CreateApiKeyRequest {
 	name: string;
+	/** Omitted only for compatibility with old clients; means full authority. */
+	permissions?: ApiKeyPermissions;
+}
+
+export interface UpdateApiKeyRequest {
+	permissions: ApiKeyPermissions;
+	expected_permissions: ApiKeyPermissions;
+}
+
+export interface ApiKeyAuthority {
+	stored_permissions: ApiKeyPermissions;
+	effective_permissions: ApiKeyPermissions;
+	run_restrictions: ApiKey['run_restrictions'];
+	usable: boolean;
 }
 
 // ---------------------------------------------------------------------------

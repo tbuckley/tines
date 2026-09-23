@@ -3,6 +3,7 @@ import { partitionProjects } from '$lib/archived';
 import { clearStaleFocus, resolveFocus } from '$lib/server/api/preferences';
 import { listProjects } from '$lib/server/api/projects';
 import { listSharedProjects } from '$lib/server/api/shared-projects';
+import { sessionActor } from '$lib/server/api/core';
 import { getDb } from '$lib/server/db';
 import type { LayoutServerLoad } from './$types';
 
@@ -28,18 +29,8 @@ export const load: LayoutServerLoad = async ({ locals, platform, depends, url })
 
 	const db = getDb(platform!.env);
 	const [all, shared, resolved] = await Promise.all([
-		listProjects(db, locals.user.id, { archived: 'all' }),
-		listSharedProjects(
-			db,
-			{
-				userId: locals.user.id,
-				userName: locals.user.name,
-				apiKeyId: null,
-				apiKeyName: null,
-				viaSession: true
-			},
-			'all'
-		),
+		listProjects(db, sessionActor(locals.user), { archived: 'all' }),
+		listSharedProjects(db, sessionActor(locals.user), 'all'),
 		resolveFocus(db, locals.user.id)
 	]);
 

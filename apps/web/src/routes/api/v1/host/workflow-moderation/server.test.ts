@@ -91,7 +91,12 @@ describe('host moderation route boundary', () => {
 	});
 
 	it('denies every route to run keys even when their account is a configured moderator', async () => {
-		const runId = addRun(t, { issueId: addIssue(t), runnerId: addRunner(t) });
+		const runId = addRun(t, {
+			issueId: addIssue(t),
+			runnerId: addRunner(t),
+			status: 'running',
+			startedAt: Date.now()
+		});
 		const keyId = addRunKey(t, runId);
 		const bearer = 'moderator-run-secret';
 		t.sqlite

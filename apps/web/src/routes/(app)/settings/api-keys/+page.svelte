@@ -1,6 +1,14 @@
 <script lang="ts">
-	import type { ApiKey, ApiKeyCreated } from '@tines/shared';
-	import { ApiError, runRefLabel } from '@tines/shared';
+	import type { ApiKey, ApiKeyCreated, ApiKeyPermissions } from '@tines/shared';
+	import {
+		ApiError,
+		FULL_API_KEY_PERMISSIONS,
+		PROJECT_AUTOMATION_API_KEY_PERMISSIONS,
+		READ_ONLY_API_KEY_PERMISSIONS,
+		RUNNER_SETUP_API_KEY_PERMISSIONS,
+		parseApiKeyPermissions,
+		runRefLabel
+	} from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconKey from '@tabler/icons-svelte/icons/key';
@@ -42,10 +50,45 @@
 
 	let createOpen = $state(false);
 	let name = $state('');
+	let preset = $state<'full' | 'read-only' | 'project-automation' | 'runner-setup'>('full');
+	let selectedProjectIds = $state<string[]>([]);
+	let allProjects = $state(false);
 	let creating = $state(false);
 	let created = $state<ApiKeyCreated | null>(null);
 	let copied = $state(false);
 	let errorMessage = $state<string | null>(null);
+	let editingKey = $state<ApiKey | null>(null);
+	let editPermissions = $state('');
+	let editError = $state<string | null>(null);
+	let editConflict = $state(false);
+	let savingEdit = $state(false);
+	const availableProjects = $derived([...data.projects, ...data.archivedProjects]);
+
+	function permissionsForCreate(): ApiKeyPermissions {
+		const base =
+			preset === 'read-only'
+				? READ_ONLY_API_KEY_PERMISSIONS
+				: preset === 'project-automation'
+					? PROJECT_AUTOMATION_API_KEY_PERMISSIONS
+					: preset === 'runner-setup'
+						? RUNNER_SETUP_API_KEY_PERMISSIONS
+						: FULL_API_KEY_PERMISSIONS;
+		const permissions = parseApiKeyPermissions(JSON.parse(JSON.stringify(base)));
+		if (preset === 'project-automation') {
+			permissions.projects.scope = allProjects ? 'all' : [...selectedProjectIds];
+		}
+		return permissions;
+	}
+
+	function permissionSummary(permissions: ApiKeyPermissions): string {
+		const scope =
+			permissions.projects.scope === 'all'
+				? 'all projects'
+				: permissions.projects.scope.length === 0
+					? 'no projects'
+					: `${permissions.projects.scope.length} selected project${permissions.projects.scope.length === 1 ? '' : 's'}`;
+		return `Projects ${permissions.projects.access} (${scope}) · Workspace ${permissions.workspace} · Control plane ${permissions.control_plane}`;
+	}
 
 	async function create(e: SubmitEvent) {
 		e.preventDefault();
@@ -53,8 +96,11 @@
 		creating = true;
 		errorMessage = null;
 		try {
-			created = await api.createApiKey({ name });
+			created = await api.createApiKey({ name, permissions: permissionsForCreate() });
 			name = '';
+			preset = 'full';
+			selectedProjectIds = [];
+			allProjects = false;
 			await invalidateAll();
 		} catch (err) {
 			errorMessage = err instanceof ApiError ? err.message : 'Failed to create the key.';
@@ -75,6 +121,49 @@
 		created = null;
 		copied = false;
 		errorMessage = null;
+	}
+
+	function openEdit(key: ApiKey) {
+		editingKey = key;
+		editPermissions = JSON.stringify(key.permissions, null, 2);
+		editError = null;
+		editConflict = false;
+	}
+
+	async function reloadEdit() {
+		if (!editingKey) return;
+		const fresh = await api.getApiKey(editingKey.id);
+		editingKey = fresh;
+		editPermissions = JSON.stringify(fresh.permissions, null, 2);
+		editError = null;
+		editConflict = false;
+	}
+
+	async function saveEdit(event: SubmitEvent) {
+		event.preventDefault();
+		if (!editingKey || savingEdit) return;
+		savingEdit = true;
+		editError = null;
+		editConflict = false;
+		try {
+			const permissions = parseApiKeyPermissions(JSON.parse(editPermissions));
+			await api.updateApiKey(editingKey.id, {
+				permissions,
+				expected_permissions: editingKey.permissions
+			});
+			editingKey = null;
+			await invalidateAll();
+		} catch (err) {
+			if (err instanceof ApiError && err.code === 'permissions_conflict') editConflict = true;
+			editError =
+				err instanceof SyntaxError
+					? 'Permissions must be valid JSON.'
+					: err instanceof ApiError
+						? err.message
+						: 'Failed to update permissions.';
+		} finally {
+			savingEdit = false;
+		}
 	}
 
 	/**
@@ -155,15 +244,21 @@
 						{/if}
 					</p>
 					<p class="text-muted-foreground font-mono text-xs">{key.key_prefix}…</p>
+					<p class="text-muted-foreground mt-1 text-xs">
+						{permissionSummary(key.permissions)}
+					</p>
 				</div>
 				<div class="text-muted-foreground hidden text-right text-xs sm:block">
 					<p>created {formatDateTime(key.created_at)}</p>
 					<p>{key.last_used_at ? `last used ${relativeTime(key.last_used_at)}` : 'never used'}</p>
 				</div>
 				{#if !key.revoked_at}
-					<Button size="sm" variant="outline" onclick={() => revoke(key.id, key.name)}
-						>Revoke</Button
-					>
+					<div class="flex gap-2">
+						<Button size="sm" variant="outline" onclick={() => openEdit(key)}>Edit</Button>
+						<Button size="sm" variant="outline" onclick={() => revoke(key.id, key.name)}
+							>Revoke</Button
+						>
+					</div>
 				{/if}
 			</li>
 		{/each}
@@ -245,6 +340,35 @@
 {/if}
 
 <Modal
+	open={editingKey !== null}
+	title={editingKey ? `Edit ${editingKey.name}` : 'Edit API key'}
+	onclose={() => (editingKey = null)}
+>
+	<form onsubmit={saveEdit} class="space-y-4">
+		<p class="text-muted-foreground text-sm">
+			Replace the complete stored policy. Levels are cumulative; selected project IDs are explicit.
+		</p>
+		<label class="block space-y-1.5 text-sm font-medium">
+			Permissions JSON
+			<textarea
+				bind:value={editPermissions}
+				rows="12"
+				spellcheck="false"
+				class="border-input bg-background mt-1 w-full rounded-md border p-3 font-mono text-xs"
+			></textarea>
+		</label>
+		{#if editError}<p class="text-destructive text-sm">{editError}</p>{/if}
+		{#if editConflict}
+			<Button type="button" variant="outline" onclick={reloadEdit}>Reload saved permissions</Button>
+		{/if}
+		<div class="flex justify-end gap-2">
+			<Button type="button" variant="ghost" onclick={() => (editingKey = null)}>Cancel</Button>
+			<PendingButton type="submit" pending={savingEdit} pendingLabel="Saving…">Save</PendingButton>
+		</div>
+	</form>
+</Modal>
+
+<Modal
 	bind:open={createOpen}
 	title={created ? 'API key created' : 'New API key'}
 	onclose={closeCreate}
@@ -255,6 +379,7 @@
 				Copy the key for <span class="font-medium">{created.name}</span> now —
 				<span class="font-medium">it will not be shown again.</span>
 			</p>
+			<p class="text-muted-foreground text-xs">{permissionSummary(created.permissions)}</p>
 			<div class="flex items-center gap-2">
 				<code
 					class="bg-muted min-w-0 flex-1 overflow-x-auto rounded-md px-3 py-2 font-mono text-xs"
@@ -283,6 +408,44 @@
 					Name it after the agent or machine that will use it — actions show up as “via this key”.
 				</p>
 			</div>
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="key-preset">Permissions</label>
+				<select
+					id="key-preset"
+					bind:value={preset}
+					class="border-input bg-background h-9 w-full rounded-md border px-3 text-sm"
+				>
+					<option value="full">Full authority</option>
+					<option value="read-only">Read only</option>
+					<option value="project-automation">Project automation</option>
+					<option value="runner-setup">Runner setup</option>
+				</select>
+				<p class="text-muted-foreground text-xs">
+					{permissionSummary(permissionsForCreate())}
+				</p>
+			</div>
+			{#if preset === 'project-automation'}
+				<fieldset class="space-y-2 rounded-md border p-3">
+					<legend class="px-1 text-sm font-medium">Project scope</legend>
+					<label class="flex items-center gap-2 text-sm">
+						<input type="checkbox" bind:checked={allProjects} class="accent-primary" />
+						All projects
+					</label>
+					{#if !allProjects}
+						{#each availableProjects as project (project.id)}
+							<label class="flex items-center gap-2 text-sm">
+								<input
+									type="checkbox"
+									value={project.id}
+									bind:group={selectedProjectIds}
+									class="accent-primary"
+								/>
+								{project.name}{project.archived_at ? ' (archived)' : ''}
+							</label>
+						{/each}
+					{/if}
+				</fieldset>
+			{/if}
 			{#if errorMessage}
 				<p class="text-destructive text-sm">{errorMessage}</p>
 			{/if}
@@ -294,7 +457,8 @@
 					type="submit"
 					pending={creating}
 					pendingLabel="Creating…"
-					disabled={!name.trim()}
+					disabled={!name.trim() ||
+						(preset === 'project-automation' && !allProjects && selectedProjectIds.length === 0)}
 				>
 					Create key
 				</PendingButton>

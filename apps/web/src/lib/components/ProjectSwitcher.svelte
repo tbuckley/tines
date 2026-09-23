@@ -109,63 +109,68 @@
 			sideOffset={6}
 			align="start"
 			collisionPadding={8}
-			class="bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 ring-foreground/10 z-50 w-64 max-w-[calc(100vw-1rem)] rounded-lg p-1 shadow-md ring-1 outline-none"
+			class="bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 ring-foreground/10 z-50 flex max-h-[min(calc(100dvh-16px),var(--bits-popover-content-available-height,calc(100dvh-16px)))] w-64 max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-lg p-1 shadow-md ring-1 outline-none"
 		>
 			<div
 				bind:this={menu}
 				role="menu"
 				aria-label="Project focus"
 				tabindex="-1"
-				class="max-h-80 overflow-y-auto"
+				class="flex min-h-0 flex-col overflow-hidden"
 				onkeydown={moveFocus}
 			>
-				{#each projects.length > 0 ? [null, ...projects] : [] as project (project?.id ?? 'all')}
-					{@const on = (focus?.id ?? null) === (project?.id ?? null)}
-					<button
-						type="button"
-						role="menuitemradio"
-						aria-checked={on}
-						class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
-						onclick={() => choose(project?.id ?? null)}
-					>
-						<span class="w-4 shrink-0">
-							{#if on}<IconCheck size={14} stroke={2} />{/if}
-						</span>
-						<span class="truncate {project ? '' : 'font-medium'}"
-							>{project?.name ?? 'All projects'}</span
+				{#if projects.length > 0}
+					<div class="max-h-80 min-h-0 overflow-y-auto" data-testid="project-focus-choices">
+						{#each [null, ...projects] as project (project?.id ?? 'all')}
+							{@const on = (focus?.id ?? null) === (project?.id ?? null)}
+							<button
+								type="button"
+								role="menuitemradio"
+								aria-checked={on}
+								class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
+								onclick={() => choose(project?.id ?? null)}
+							>
+								<span class="w-4 shrink-0">
+									{#if on}<IconCheck size={14} stroke={2} />{/if}
+								</span>
+								<span class="truncate {project ? '' : 'font-medium'}"
+									>{project?.name ?? 'All projects'}</span
+								>
+							</button>
+						{/each}
+					</div>
+				{/if}
+				<div class="shrink-0 {projects.length > 0 ? 'border-border mt-1 border-t pt-1' : ''}">
+					{#if focus}
+						<a
+							href="/projects/{focus.id}"
+							role="menuitem"
+							class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
+							onclick={() => (open = false)}
 						>
-					</button>
-				{/each}
-				{#if projects.length > 0}<div class="bg-border my-1 h-px"></div>{/if}
-				{#if focus}
+							<span class="w-4 shrink-0"></span> Open project
+						</a>
+					{/if}
 					<a
-						href="/projects/{focus.id}"
+						href={navMemory.projectsHref}
 						role="menuitem"
 						class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
 						onclick={() => (open = false)}
 					>
-						<span class="w-4 shrink-0"></span> Open project
+						<span class="w-4 shrink-0"></span> Manage projects
 					</a>
-				{/if}
-				<a
-					href={navMemory.projectsHref}
-					role="menuitem"
-					class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
-					onclick={() => (open = false)}
-				>
-					<span class="w-4 shrink-0"></span> Manage projects
-				</a>
-				<a
-					href="/projects?new=1"
-					role="menuitem"
-					class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
-					onclick={() => (open = false)}
-				>
-					<span class="w-4 shrink-0"></span> New project
-				</a>
-				{#if error}
-					<p class="text-destructive px-2 py-1.5 text-xs" role="alert">{error}</p>
-				{/if}
+					<a
+						href="/projects?new=1"
+						role="menuitem"
+						class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
+						onclick={() => (open = false)}
+					>
+						<span class="w-4 shrink-0"></span> New project
+					</a>
+					{#if error}
+						<p class="text-destructive px-2 py-1.5 text-xs" role="alert">{error}</p>
+					{/if}
+				</div>
 			</div>
 		</Popover.Content>
 	</Popover.Portal>

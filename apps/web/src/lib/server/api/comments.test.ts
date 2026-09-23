@@ -6,9 +6,11 @@
  * fix what it wrote itself.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
+import { FULL_API_KEY_PERMISSIONS } from '@tines/shared';
 import {
 	NOW,
 	OPEN,
+	PROJECT,
 	USER,
 	addComment,
 	addIssue,
@@ -43,7 +45,9 @@ const pat: ActorContext = {
 	apiKeyId: PAT_KEY,
 	apiKeyName: 'laptop',
 	viaSession: false,
-	agentRunId: null
+	agentRunId: null,
+	permissions: FULL_API_KEY_PERMISSIONS,
+	runRestriction: null
 };
 
 let t: TestDb;
@@ -78,7 +82,15 @@ function runActor(issueId: string, opts: { id?: string } = {}): ActorContext {
 		apiKeyId: keyId,
 		apiKeyName: `run ${runId}`,
 		viaSession: false,
-		agentRunId: runId
+		agentRunId: runId,
+		permissions: FULL_API_KEY_PERMISSIONS,
+		runRestriction: {
+			policy: 'run-v1',
+			runId,
+			issueId,
+			projectId: PROJECT,
+			launchStateId: OPEN
+		}
 	};
 }
 
@@ -339,6 +351,28 @@ describe('deleteComment', () => {
 });
 
 describe('comment authorization', () => {
+	it('requires project delete for hard deletion and leaves the comment intact on denial', async () => {
+		const issue = addIssue(t);
+		const created = await createComment(t.db, t.env, session, issue, { body: 'keep me' });
+		const writeOnly: ActorContext = {
+			...pat,
+			permissions: {
+				version: 1,
+				projects: { access: 'write', scope: [PROJECT] },
+				workspace: 'none',
+				control_plane: 'none'
+			}
+		};
+
+		await expect(deleteComment(t.db, t.env, writeOnly, issue, created.id)).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions',
+			details: { operation: 'comment.delete', domain: 'project', access: 'delete' }
+		});
+		expect(await loadComments(t.db, issue)).toMatchObject([{ id: created.id, body: 'keep me' }]);
+		expect(events(issue).map((event) => event.type)).not.toContain('issue.comment_deleted');
+	});
+
 	it('lets a session and a named key edit and delete a run key’s comment', async () => {
 		const issue = addIssue(t);
 		const run = runActor(issue);

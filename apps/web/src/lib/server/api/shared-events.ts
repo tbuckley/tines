@@ -2,6 +2,7 @@ import type { TinesEvent } from '@tines/shared';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { notFound, type ActorContext } from './core';
+import { projectReadPredicate } from './permissions';
 
 /** Member history has an explicit type and field allowlist. Payloads are private by default. */
 const EVENT_TYPES = [
@@ -106,6 +107,7 @@ export async function listSharedEvents(
 		])
 		.where('m.revoked_at', 'is', null)
 		.where('p.shared_at', 'is not', null)
+		.where(projectReadPredicate(actor, 'p.id'))
 		.where('p.user_id', '!=', actor.userId)
 		.where('e.type', 'in', EVENT_TYPES)
 		.where(

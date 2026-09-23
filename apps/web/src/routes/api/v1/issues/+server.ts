@@ -8,7 +8,7 @@ import {
 	readArchived,
 	readPage
 } from '$lib/server/api/core';
-import { listIssues } from '$lib/server/api/issues';
+import { listIssuesForActor } from '$lib/server/api/issues';
 import { listSharedIssues } from '$lib/server/api/shared-issues';
 import { resolveAccessibleProjectRef, resolveProjectAccess } from '$lib/server/api/project-access';
 import type { RequestHandler } from './$types';
@@ -43,7 +43,7 @@ export const GET: RequestHandler = api(async (event) => {
 		brief: ['1', 'true'].includes(params.get('brief') ?? ''),
 		archived: readArchived(params)
 	};
-	const owner = await listIssues(db, actor.userId, filters, page);
+	const owner = await listIssuesForActor(db, actor, filters, page);
 	const member =
 		(namedProject && !projectId) || projectAccess?.role === 'owner' || actor.agentRunId
 			? { items: [], hasMore: false }

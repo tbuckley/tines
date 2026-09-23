@@ -1,8 +1,8 @@
 import { json } from '@sveltejs/kit';
 import { api, apiContext, notFound } from '$lib/server/api/core';
-import { getIssueDetail } from '$lib/server/api/issues';
 import { readSharedIssue } from '$lib/server/api/shared-issues';
 import { resolveProjectAccess } from '$lib/server/api/project-access';
+import { getIssueDetailForActor } from '$lib/server/api/issues';
 import type { RequestHandler } from './$types';
 
 /** Lookup by human-facing ref: project id + per-project issue number. */
@@ -13,9 +13,9 @@ export const GET: RequestHandler = api(async (event) => {
 	const access = await resolveProjectAccess(db, actor, event.params.id);
 	return json(
 		access.role === 'owner'
-			? await getIssueDetail(
+			? await getIssueDetailForActor(
 					db,
-					actor.userId,
+					actor,
 					{ projectId: event.params.id, number },
 					{ round: true }
 				)

@@ -21,6 +21,7 @@
 		MODEL_TIERS,
 		RECOGNIZED_EFFORT_VALUES,
 		RUNNER_NAME_PATTERN,
+		RUNNER_SETUP_API_KEY_PERMISSIONS,
 		utilizationLabel
 	} from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
@@ -462,7 +463,10 @@
 		if (!nameReady || creatingKey || createdKey) return;
 		creatingKey = true;
 		try {
-			createdKey = await api.createApiKey({ name: `runner ${trimmedName}` });
+			createdKey = await api.createApiKey({
+				name: `runner ${trimmedName}`,
+				permissions: RUNNER_SETUP_API_KEY_PERMISSIONS
+			});
 		} catch (err) {
 			showError(err);
 		} finally {

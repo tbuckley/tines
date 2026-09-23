@@ -461,3 +461,23 @@ the coalesced pass; scheduling failure cannot turn an already committed move int
 a refusal, and the periodic sweep remains authoritative.
 
 > 2026-09-23 project-sharing decision: [SHARING_2026-09-23.md](../projects/SHARING_2026-09-23.md) supersedes this spec’s single-owner assumptions for shared projects. This historical spec remains unchanged otherwise.
+### Explicit API-key authority (2026-09-21, Tines/648)
+
+This decision supersedes the phase-one full-owner named-key model and the
+path/method run-key fence above. Every API key stores a versioned policy with
+three independent cumulative domains: project (`read|write|delete`, over all
+projects or an explicit ID set), workspace (`none|read|write|delete`), and
+control plane (`none|read|write|delete`). Authorization follows the semantic
+operation and its fields, not its URL. Mixed operations require every domain;
+for example, changing an issue pin requires project write and control-plane
+write. Existing rows and inserts from an older worker receive an explicit full
+policy from the database default.
+
+Run keys use the same stored policy, intersected with a second `run-v1` ceiling
+that confines project reads to the run project and issue mutations to the bound
+issue. The ceiling preserves only the documented journal and fleet-read
+exceptions and cannot be widened by storing a broader policy. Key creation and
+updates may delegate only an effective subset of the manager's authority;
+permission updates use an expected-policy compare-and-swap and append an audit
+event. The old URL fence remains only during rollout and is removed after the
+semantic operation inventory has coverage.

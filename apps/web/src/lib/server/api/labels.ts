@@ -21,15 +21,22 @@ import {
 	requireString,
 	runAtomic,
 	runKeyForbidden,
+	sessionActor,
 	type ActorContext
 } from './core';
 import { assertWritable, issueProject } from './archive';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
-import { contextItemQuery, deleteContextItem } from './context';
+import { findAttachedContext, sweepAttachedContext } from './context';
 import { routingRuleDeletes, rulesScopedToLabel } from './routing';
 import { eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
 import { scopeLabel } from './scope';
+import {
+	accessAllowed,
+	contextReadPredicate,
+	projectReadPredicate,
+	requireAccess
+} from './permissions';
 
 /**
  * Exactly what `newId('lbl')` mints (16 chars of `ID_ALPHABET`). A ref of
@@ -128,18 +135,35 @@ export async function resolveLabelRef(
 }
 
 /** The whole library, with usage counts. Small enough to need no paging. */
-export async function listLabels(db: Kysely<Database>, userId: string): Promise<LabelWithUsage[]> {
+export async function listLabels(
+	db: Kysely<Database>,
+	actor: ActorContext
+): Promise<LabelWithUsage[]> {
+	requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'label.read');
+	const userId = actor.userId;
+	const controlReadable = accessAllowed(
+		actor,
+		[{ domain: 'control_plane', access: 'read' }],
+		'routing_rule.read'
+	);
 	const rows = await db
 		.selectFrom('label')
 		.selectAll('label')
 		.select([
-			sql<number>`(SELECT COUNT(*) FROM issue_label il WHERE il.label_id = label.id)`.as(
-				'issue_count'
-			),
-			sql<number>`(SELECT COUNT(*) FROM context_item ci WHERE ci.label_id = label.id)`.as(
-				'context_item_count'
-			),
-			sql<number>`(SELECT COUNT(*) FROM routing_rule rr WHERE rr.label_id = label.id)`.as(
+			sql<number>`(SELECT COUNT(*) FROM issue_label il
+				JOIN issue label_issue ON label_issue.id = il.issue_id
+				WHERE il.label_id = label.id
+					AND ${projectReadPredicate(actor, 'label_issue.project_id')})`.as('issue_count'),
+			sql<number>`(SELECT COUNT(*) FROM context_item ci
+				LEFT JOIN issue label_context_issue ON label_context_issue.id = ci.issue_id
+				WHERE ci.label_id = label.id AND ${contextReadPredicate(actor, {
+					project: 'ci.project_id',
+					issueProject: 'label_context_issue.project_id',
+					state: 'ci.workflow_state_id',
+					label: 'ci.label_id'
+				})})`.as('context_item_count'),
+			sql<number>`(SELECT COUNT(*) FROM routing_rule rr WHERE rr.label_id = label.id
+				AND ${controlReadable ? projectReadPredicate(actor, 'rr.project_id') : sql<boolean>`0 = 1`})`.as(
 				'routing_rule_count'
 			)
 		])
@@ -152,6 +176,14 @@ export async function listLabels(db: Kysely<Database>, userId: string): Promise<
 		context_item_count: Number(r.context_item_count),
 		routing_rule_count: Number(r.routing_rule_count)
 	}));
+}
+
+/** Trusted owner/session boundary for page loaders and internal delivery. */
+export function listLabelsInternal(
+	db: Kysely<Database>,
+	userId: string
+): Promise<LabelWithUsage[]> {
+	return listLabels(db, sessionActor({ id: userId }));
 }
 
 async function resolveByName(
@@ -212,6 +244,7 @@ export async function createLabel(
 	actor: ActorContext,
 	body: CreateLabelRequest
 ): Promise<Label> {
+	requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'label.create');
 	const name = normalizeLabelName(body.name);
 	const color = normalizeColor(body.color, defaultLabelColor(name));
 	const description = optionalString(body.description, 'description') ?? '';
@@ -237,6 +270,7 @@ export async function updateLabel(
 	labelRef: string,
 	body: UpdateLabelRequest
 ): Promise<Label> {
+	requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'label.update');
 	const label = await resolveLabelRef(db, actor.userId, labelRef);
 	if (!label) throw notFound();
 
@@ -286,27 +320,45 @@ export async function deleteLabel(
 	labelRef: string,
 	options: { force?: boolean } = {}
 ): Promise<DeleteLabelResponse> {
+	requireAccess(actor, [{ domain: 'workspace', access: 'delete' }], 'label.delete');
 	const label = await resolveLabelRef(db, actor.userId, labelRef);
 	if (!label) throw notFound();
-	const scopedItems = (
-		await contextItemQuery(db, actor.userId).where('context_item.label_id', '=', label.id).execute()
-	).map((row) => ({
-		id: row.id,
-		kind: row.kind as ContextKind,
-		name: row.name,
-		scope_label: scopeLabel({
-			projectId: row.project_id,
-			projectName: row.scope_project_name,
-			workflowStateId: row.workflow_state_id,
-			stateName: row.scope_state_name,
-			labelId: row.label_id,
-			labelName: row.scope_label_name,
-			issueId: row.issue_id,
-			issueProjectName: row.scope_issue_project_name,
-			issueNumber: row.scope_issue_number
-		})
+	const attachedContext = await findAttachedContext(db, actor.userId, { labelId: label.id });
+	const scopedItems = attachedContext.map((item) => ({
+		id: item.id,
+		kind: item.kind,
+		name: item.name,
+		scope_label: scopeLabel(item.scope)
 	}));
 	const scopedRules = await rulesScopedToLabel(db, actor.userId, label.id);
+	const issueProjects = await db
+		.selectFrom('issue_label')
+		.innerJoin('issue', 'issue.id', 'issue_label.issue_id')
+		.select(['issue.id as issue_id', 'issue.project_id'])
+		.distinct()
+		.where('issue_label.label_id', '=', label.id)
+		.execute();
+	requireAccess(
+		actor,
+		[
+			...issueProjects.map((row) => ({
+				domain: 'project' as const,
+				access: 'write' as const,
+				projectId: row.project_id
+			})),
+			...(scopedRules.length ? ([{ domain: 'control_plane', access: 'delete' }] as const) : []),
+			...scopedRules.map((rule) =>
+				rule.project_id
+					? {
+							domain: 'project' as const,
+							access: 'write' as const,
+							projectId: rule.project_id
+						}
+					: { domain: 'project' as const, access: 'write' as const, scope: 'all' as const }
+			)
+		],
+		'label.delete'
+	);
 	if ((scopedItems.length > 0 || scopedRules.length > 0) && !options.force) {
 		const parts: string[] = [];
 		if (scopedItems.length > 0) {
@@ -334,17 +386,48 @@ export async function deleteLabel(
 			{ context_items: scopedItems, routing_rules: scopedRules }
 		);
 	}
-	for (const item of scopedItems) {
-		await deleteContextItem(db, env, actor, item.id);
-	}
+	const contextSweep = sweepAttachedContext(
+		db,
+		actor,
+		attachedContext,
+		options.force === true,
+		`delete label "${label.name}"`
+	);
 	const used = await db
 		.selectFrom('issue_label')
 		.select((eb) => eb.fn.countAll<number>().as('n'))
 		.where('label_id', '=', label.id)
 		.executeTakeFirst();
 	const issueCount = Number(used?.n ?? 0);
+	const plannedContextIds = JSON.stringify(attachedContext.map((item) => item.id));
+	const plannedRuleIds = JSON.stringify(scopedRules.map((rule) => rule.id));
+	const plannedIssueIds = JSON.stringify(issueProjects.map((row) => row.issue_id));
+	// The reads above are a plan, not authorization by themselves. A context
+	// item, routing rule, or issue assignment can appear before the batch. Fail
+	// before the first sweep statement so a late dependency cannot be left
+	// pointing at a deleted label or be detached without its project witness.
+	const cascadeWitness = sql<boolean>`EXISTS (
+			SELECT 1 FROM label WHERE id = ${label.id} AND user_id = ${actor.userId}
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM context_item
+			WHERE label_id = ${label.id}
+				AND id NOT IN (SELECT value FROM json_each(${plannedContextIds}))
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM routing_rule
+			WHERE label_id = ${label.id}
+				AND id NOT IN (SELECT value FROM json_each(${plannedRuleIds}))
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM issue_label
+			WHERE label_id = ${label.id}
+				AND issue_id NOT IN (SELECT value FROM json_each(${plannedIssueIds}))
+		)`;
 
 	await runAtomic(env, [
+		sql`SELECT CASE WHEN ${cascadeWitness} THEN 1 ELSE json_extract('x', '$[') END`.compile(db),
+		...contextSweep.queries,
 		// A label-scoped rule goes with the label: see `routingRuleDeletes`.
 		...routingRuleDeletes(db, actor, scopedRules),
 		// Explicit, because D1 does not enforce foreign keys by default.
@@ -429,7 +512,7 @@ export async function resolveOrCreateLabels(
 	}
 
 	if (unknown.length > 0) {
-		const known = await listLabels(db, actor.userId);
+		const known = await listLabels(db, actor);
 		// For a human every other miss was created, so `unknown` here can only
 		// hold stale ids - a page that loaded before someone deleted the label.
 		const why = actor.agentRunId
@@ -562,7 +645,7 @@ async function assertLabelsDoNotRoute(
 	actor: ActorContext,
 	labels: Label[]
 ): Promise<void> {
-	if (!actor.agentRunId || labels.length === 0) return;
+	if (labels.length === 0) return;
 	const rules = await db
 		.selectFrom('routing_rule')
 		.select(['id', 'label_id'])
@@ -575,11 +658,14 @@ async function assertLabelsDoNotRoute(
 		.execute();
 	if (rules.length === 0) return;
 	const routed = labels.filter((l) => rules.some((r) => r.label_id === l.id));
-	throw runKeyForbidden({
-		reason: 'routing_label',
-		labels: routed.map((l) => l.name),
-		rule_ids: rules.map((r) => r.id)
-	});
+	if (actor.agentRunId) {
+		throw runKeyForbidden({
+			reason: 'routing_label',
+			labels: routed.map((l) => l.name),
+			rule_ids: rules.map((r) => r.id)
+		});
+	}
+	requireAccess(actor, [{ domain: 'control_plane', access: 'write' }], 'label.assign', {});
 }
 
 /**
@@ -595,8 +681,20 @@ export async function addIssueLabels(
 	refs: unknown
 ): Promise<AddIssueLabelsResponse> {
 	const issue = await requireIssue(db, actor.userId, issueRef);
+	requireAccess(
+		actor,
+		[
+			{ domain: 'project', access: 'write', projectId: issue.project_id },
+			{ domain: 'workspace', access: 'read' }
+		],
+		'label.assign',
+		{ projectId: issue.project_id, issueId: issue.id }
+	);
 	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	const { labels, toCreate } = await resolveOrCreateLabels(db, actor, refs);
+	if (toCreate.length > 0) {
+		requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'label.create');
+	}
 	await assertLabelsDoNotRoute(db, actor, labels);
 
 	const already = new Set((await loadIssueLabels(db, issue.id)).map((l) => l.id));
@@ -632,6 +730,15 @@ export async function removeIssueLabel(
 	labelRef: string
 ): Promise<void> {
 	const issue = await requireIssue(db, actor.userId, issueRef);
+	requireAccess(
+		actor,
+		[
+			{ domain: 'project', access: 'write', projectId: issue.project_id },
+			{ domain: 'workspace', access: 'read' }
+		],
+		'label.remove',
+		{ projectId: issue.project_id, issueId: issue.id }
+	);
 	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	const label = await resolveLabelRef(db, actor.userId, labelRef);
 	const attached = label

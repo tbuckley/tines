@@ -8,6 +8,7 @@ import {
 	TEST_NOOP_DISPATCH_EFFECTS
 } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it, beforeEach } from 'vitest';
+import { FULL_API_KEY_PERMISSIONS, type ApiKeyPermissions } from '@tines/shared';
 import {
 	NOW,
 	OPEN,
@@ -41,11 +42,25 @@ const actor: ActorContext = {
 	viaSession: true
 };
 
+function keyActor(permissions: ApiKeyPermissions): ActorContext {
+	return {
+		...actor,
+		apiKeyId: 'key_scoped',
+		apiKeyName: 'scoped',
+		viaSession: false,
+		permissions
+	};
+}
+
 let t: TestDb;
 
 beforeEach(() => {
 	t = createTestDb();
 	seedBase(t);
+	t.sqlite.exec(
+		`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+		 VALUES ('key_scoped', '${USER}', 'scoped', 'hash_scoped', 'tines_scoped', ${NOW})`
+	);
 });
 
 const events = () =>
@@ -83,14 +98,14 @@ describe('project name boundary', () => {
 			name: accepted
 		});
 
-		const before = (await listProjects(t.db, USER, { archived: 'all' })).map((p) => p.name);
+		const before = (await listProjects(t.db, actor, { archived: 'all' })).map((p) => p.name);
 		const e = await failure(() => createProject(t.db, t.env, actor, { name: 'b'.repeat(201) }));
 		expect(e).toMatchObject({
 			status: 422,
 			code: 'invalid_field',
 			message: '"name" must be at most 200 characters'
 		});
-		expect((await listProjects(t.db, USER, { archived: 'all' })).map((p) => p.name)).toEqual(
+		expect((await listProjects(t.db, actor, { archived: 'all' })).map((p) => p.name)).toEqual(
 			before
 		);
 	});
@@ -108,7 +123,7 @@ describe('project name boundary', () => {
 				code: 'invalid_field',
 				message: '"name" must be at most 200 characters'
 			});
-			expect((await getProject(t.db, USER, PROJECT)).name).toBe(accepted);
+			expect((await getProject(t.db, actor, PROJECT)).name).toBe(accepted);
 		}
 	});
 });
@@ -307,16 +322,105 @@ describe('listProjects', () => {
 		`);
 		await archiveProject(t.db, t.env, actor, PROJECT, NOW);
 
-		expect((await listProjects(t.db, USER)).map((p) => p.name)).toEqual(['other']);
-		expect((await listProjects(t.db, USER, { archived: 'false' })).map((p) => p.name)).toEqual([
+		expect((await listProjects(t.db, actor)).map((p) => p.name)).toEqual(['other']);
+		expect((await listProjects(t.db, actor, { archived: 'false' })).map((p) => p.name)).toEqual([
 			'other'
 		]);
-		expect((await listProjects(t.db, USER, { archived: 'true' })).map((p) => p.name)).toEqual([
+		expect((await listProjects(t.db, actor, { archived: 'true' })).map((p) => p.name)).toEqual([
 			'demo'
 		]);
-		expect((await listProjects(t.db, USER, { archived: 'all' })).map((p) => p.name).sort()).toEqual(
-			['demo', 'other']
+		expect(
+			(await listProjects(t.db, actor, { archived: 'all' })).map((p) => p.name).sort()
+		).toEqual(['demo', 'other']);
+	});
+
+	it('filters selected-project keys and hides excluded project details', async () => {
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+				VALUES ('prj_2', '${USER}', 'other', ${NOW}, ${NOW});
+		`);
+		const scoped = keyActor({
+			version: 1,
+			projects: { access: 'read', scope: [PROJECT] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+
+		expect((await listProjects(t.db, scoped, { archived: 'all' })).map((p) => p.id)).toEqual([
+			PROJECT
+		]);
+		await expect(getProject(t.db, scoped, 'prj_2')).rejects.toMatchObject({ status: 404 });
+	});
+
+	it('intersects an over-granted run key with its run project', async () => {
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+				VALUES ('prj_2', '${USER}', 'other', ${NOW}, ${NOW});
+		`);
+		const run = {
+			...keyActor(FULL_API_KEY_PERMISSIONS),
+			agentRunId: 'arun_1',
+			runRestriction: {
+				policy: 'run-v1' as const,
+				runId: 'arun_1',
+				issueId: 'iss_1',
+				projectId: PROJECT,
+				launchStateId: OPEN
+			}
+		};
+
+		expect((await listProjects(t.db, run, { archived: 'all' })).map((p) => p.id)).toEqual([
+			PROJECT
+		]);
+		await expect(getProject(t.db, run, 'prj_2')).rejects.toMatchObject({
+			status: 403,
+			code: 'run_key_forbidden',
+			details: { operation: 'project.read', reason: 'outside_run_project' }
+		});
+	});
+});
+
+describe('project permissions', () => {
+	it('requires all-project write to create and leaves the database unchanged on denial', async () => {
+		const selected = keyActor({
+			version: 1,
+			projects: { access: 'write', scope: [PROJECT] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+		const before = t.all('SELECT id FROM project');
+
+		await expect(createProject(t.db, t.env, selected, { name: 'blocked' })).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions'
+		});
+		expect(t.all('SELECT id FROM project')).toEqual(before);
+
+		const created = await createProject(
+			t.db,
+			t.env,
+			keyActor({ ...selected.permissions!, projects: { access: 'write', scope: 'all' } }),
+			{ name: 'allowed' }
 		);
+		expect(created.name).toBe('allowed');
+	});
+
+	it('allows write-level edits but requires delete for hard deletion', async () => {
+		const writer = keyActor({
+			version: 1,
+			projects: { access: 'write', scope: [PROJECT] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+		await expect(
+			updateProject(t.db, t.env, writer, PROJECT, { name: 'renamed' })
+		).resolves.toMatchObject({ name: 'renamed' });
+		await expect(deleteProject(t.db, t.env, writer, PROJECT)).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions',
+			details: { operation: 'project.delete', access: 'delete' }
+		});
+		expect(t.all('SELECT name FROM project WHERE id = ?', PROJECT)[0].name).toBe('renamed');
 	});
 });
 

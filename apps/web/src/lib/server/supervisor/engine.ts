@@ -9,6 +9,7 @@
  */
 import {
 	ACTIVE_RUN_STATUSES,
+	serializeApiKeyPermissions,
 	LAUNCH_STALL_MS,
 	RUN_KEY_SLACK_MS,
 	RUNNER_OFFLINE_FAIL_MS,
@@ -453,6 +454,14 @@ export async function mintRunKeyAndFlip(
 		localAdmission?: { runnerId: string; instanceId: string; ceiling: number };
 	}
 ): Promise<{ keyId: string; secret: string } | null> {
+	const binding = await db
+		.selectFrom('agent_run')
+		.innerJoin('issue', 'issue.id', 'agent_run.issue_id')
+		.select(['issue.project_id'])
+		.where('agent_run.id', '=', input.runId)
+		.where('agent_run.user_id', '=', input.userId)
+		.executeTakeFirst();
+	if (!binding) return null;
 	const secret = `tines_${randomString(40)}`;
 	const keyId = newId('key');
 	const legacyName = `run ${input.runId}`;
@@ -496,6 +505,12 @@ export async function mintRunKeyAndFlip(
 				)`,
 				key_hash: await sha256Hex(secret),
 				key_prefix: secret.slice(0, 14),
+				permissions: serializeApiKeyPermissions({
+					version: 1,
+					projects: { access: 'write', scope: [binding.project_id] },
+					workspace: 'write',
+					control_plane: 'read'
+				}),
 				agent_run_id: input.runId,
 				expires_at: input.now + input.maxRunMinutes * 60_000 + RUN_KEY_SLACK_MS,
 				created_at: input.now,

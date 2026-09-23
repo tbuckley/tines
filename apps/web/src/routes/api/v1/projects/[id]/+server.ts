@@ -11,7 +11,7 @@ export const GET: RequestHandler = api(async (event) => {
 	const access = await resolveProjectAccess(db, actor, event.params.id);
 	return json(
 		access.role === 'owner'
-			? await getProject(db, actor.userId, event.params.id)
+			? await getProject(db, actor, event.params.id)
 			: await readSharedProject(db, actor, event.params.id)
 	);
 });

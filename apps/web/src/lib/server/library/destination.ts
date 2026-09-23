@@ -1,6 +1,8 @@
 import { sql, type Kysely, type RawBuilder, type SqlBool } from 'kysely';
 import type { Database } from '$lib/server/db';
 import type { LabelColor, StateCategory } from '@tines/shared';
+import type { ActorContext } from '$lib/server/api/core';
+import { projectExpressionReadPredicate } from '$lib/server/api/permissions';
 
 export interface DestinationWorkflow {
 	id: string;
@@ -95,15 +97,17 @@ const choice = (
  * whole-account version: unrelated edits and heartbeats do not stale a plan.
  */
 export function packageDestinationExpression(
-	userId: string,
+	actor: ActorContext,
 	selected?: DestinationSelection
 ): RawBuilder<string> {
+	const userId = actor.userId;
 	const workflowPredicate = choice(
 		selected,
 		() =>
 			sql<boolean>`(${inList('w.id', selected!.workflow_ids)} OR ${inList('w.name', selected!.workflow_names)})`
 	);
-	const projectPredicate = choice(selected, () => inList('p.id', selected!.project_ids));
+	const authorizedProject = projectExpressionReadPredicate(actor, sql<string | null>`p.id`);
+	const projectPredicate = sql<boolean>`${authorizedProject} AND ${choice(selected, () => inList('p.id', selected!.project_ids))}`;
 	const labelPredicate = choice(
 		selected,
 		() =>
@@ -128,23 +132,43 @@ export function packageDestinationExpression(
  ) AS row_json FROM workflow w WHERE (w.user_id=${userId} OR w.user_id IS NULL) AND ${workflowPredicate} ORDER BY w.id`);
 	return sql<string>`json_object(
   'workflows',${workflows},
-  'projects',${jsonList(sql`SELECT ${jsonRow('p', ['id', 'user_id', 'name', 'archived_at'])} AS row_json FROM project p WHERE p.user_id=${userId} AND ${projectPredicate} ORDER BY p.id`)},
+	  'projects',${jsonList(sql`SELECT ${jsonRow('p', ['id', 'user_id', 'name', 'archived_at'])} AS row_json FROM project p WHERE p.user_id=${userId} AND ${projectPredicate} ORDER BY p.id`)},
   'labels',${jsonList(sql`SELECT ${jsonRow('l', ['id', 'user_id', 'name', 'color'])} AS row_json FROM label l WHERE l.user_id=${userId} AND ${labelPredicate} ORDER BY l.id`)},
-  'schedules',${jsonList(sql`SELECT ${jsonRow('s', ['id', 'project_id', 'name'])} AS row_json FROM scheduled_task s JOIN project p ON p.id=s.project_id WHERE p.user_id=${userId} AND ${schedulePredicate} ORDER BY s.id`)},
-  'rules',${jsonList(sql`SELECT ${jsonRow('r', ['id', 'project_id', 'workflow_state_id', 'label_id', 'targets'])} AS row_json FROM routing_rule r WHERE r.user_id=${userId} AND ${rulePredicate} ORDER BY r.id`)},
+	  'schedules',${jsonList(sql`SELECT ${jsonRow('s', ['id', 'project_id', 'name'])} AS row_json FROM scheduled_task s JOIN project p ON p.id=s.project_id WHERE p.user_id=${userId} AND ${authorizedProject} AND ${schedulePredicate} ORDER BY s.id`)},
+	  'rules',${jsonList(sql`SELECT ${jsonRow('r', ['id', 'project_id', 'workflow_state_id', 'label_id', 'targets'])} AS row_json FROM routing_rule r WHERE r.user_id=${userId} AND (r.project_id IS NULL OR ${projectExpressionReadPredicate(actor, sql<string | null>`r.project_id`)}) AND ${rulePredicate} ORDER BY r.id`)},
   'runners',${jsonList(sql`SELECT json_object('id',r.id,'name',r.name,'type',r.type,'status',r.status,'default_tier',r.default_tier,'tiers',r.tiers,'config',r.config,'has_api_key',CASE WHEN r.secret_enc IS NULL THEN 0 ELSE 1 END) AS row_json FROM runner r WHERE r.user_id=${userId} AND ${runnerPredicate} ORDER BY r.id`)}
  )`;
 }
 export async function readPackageDestination(
 	db: Kysely<Database>,
-	userId: string,
+	actor: ActorContext,
 	selected?: DestinationSelection
 ) {
 	const row = await sql<{
 		projection: string;
-	}>`SELECT ${packageDestinationExpression(userId, selected)} AS projection`.execute(db);
+	}>`SELECT ${packageDestinationExpression(actor, selected)} AS projection`.execute(db);
 	const raw = row.rows[0].projection;
 	return { raw, data: JSON.parse(raw) as PackageDestination };
+}
+
+/** Trusted browser-session/test helper; API callers must keep the actor-aware path. */
+export async function readPackageDestinationInternal(
+	db: Kysely<Database>,
+	userId: string,
+	selected?: DestinationSelection
+) {
+	return readPackageDestination(
+		db,
+		{
+			userId,
+			userName: '',
+			apiKeyId: null,
+			apiKeyName: null,
+			viaSession: true,
+			runRestriction: null
+		},
+		selected
+	);
 }
 
 /** Same selection semantics as SQL; applied to the coherent initial read. */

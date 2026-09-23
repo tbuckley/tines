@@ -8,9 +8,10 @@ import {
 	readArchived,
 	readPage
 } from '$lib/server/api/core';
-import { listSchedules } from '$lib/server/api/schedules';
+import { listSchedulesForActor } from '$lib/server/api/schedules';
 import { readSharedScheduleSummary } from '$lib/server/api/schedule-consent';
 import { resolveAccessibleProjectRef, resolveProjectAccess } from '$lib/server/api/project-access';
+import { projectReadPredicate } from '$lib/server/api/permissions';
 import type { RequestHandler } from './$types';
 
 /** Global schedule list across projects. */
@@ -30,9 +31,9 @@ export const GET: RequestHandler = api(async (event) => {
 	}
 	const access = projectId ? await resolveProjectAccess(db, actor, projectId) : null;
 	const archived = readArchived(params);
-	const owner = await listSchedules(
+	const owner = await listSchedulesForActor(
 		db,
-		actor.userId,
+		actor,
 		{
 			projectId: projectId ?? undefined,
 			project: namedProject && !projectId ? namedProject : undefined,
@@ -52,6 +53,7 @@ export const GET: RequestHandler = api(async (event) => {
 			.select(['s.id', 's.created_at', 's.project_id', 'm.revision'])
 			.where('m.revoked_at', 'is', null)
 			.where('p.shared_at', 'is not', null)
+			.where(projectReadPredicate(actor, 'p.id'))
 			.orderBy('s.created_at desc')
 			.orderBy('s.id desc')
 			.limit(page.limit + 1);

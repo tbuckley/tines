@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { FULL_API_KEY_PERMISSIONS } from '@tines/shared';
 import { createTestDb } from './test-db';
 import type { ActorContext } from './core';
 import {
@@ -206,7 +207,17 @@ describe('invitations and membership', () => {
 			'https://example.test'
 		);
 		await acceptInvitation(t.db, t.env, member, t.token());
-		const keyOwner = { ...owner, viaSession: false };
+		const keyOwner = {
+			...owner,
+			viaSession: false,
+			apiKeyId: 'key_owner',
+			permissions: FULL_API_KEY_PERMISSIONS
+		};
+		t.sqlite
+			.prepare(
+				'INSERT INTO api_key (id,user_id,name,key_hash,key_prefix,created_at) VALUES (?,?,?,?,?,?)'
+			)
+			.run('key_owner', owner.userId, 'Owner key', 'owner_key_hash', 'ownerkey', Date.now());
 		const issue = await createIssue(
 			t.db,
 			t.env,

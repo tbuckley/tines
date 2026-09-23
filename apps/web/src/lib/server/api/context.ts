@@ -56,6 +56,7 @@ import {
 	optionalString,
 	requireString,
 	runAtomic,
+	sessionActor,
 	type ActorContext,
 	runKeyForbidden,
 	type Page
@@ -72,6 +73,12 @@ import {
 	type ResolvedScope,
 	type ScopeIds
 } from './scope';
+import {
+	accessAllowed,
+	contextReadPredicate,
+	contextRequirements,
+	requireAccess
+} from './permissions';
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -478,11 +485,20 @@ export async function loadFiles(
 
 export async function getContextItem(
 	db: Kysely<Database>,
-	userId: string,
+	actorInput: ActorContext | string,
 	id: string
 ): Promise<ContextItem> {
-	const row = await contextItemQuery(db, userId)
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	const row = await contextItemQuery(db, actor.userId)
 		.where('context_item.id', '=', id)
+		.where(
+			contextReadPredicate(actor, {
+				project: 'context_item.project_id',
+				issueProject: 'scope_issue.project_id',
+				state: 'context_item.workflow_state_id',
+				label: 'context_item.label_id'
+			})
+		)
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	const files =
@@ -527,11 +543,20 @@ export interface ContextItemFilters {
  */
 export async function listContextItems(
 	db: Kysely<Database>,
-	userId: string,
+	actorInput: ActorContext | string,
 	filters: ContextItemFilters,
 	page: Page
 ): Promise<{ items: ContextItem[]; hasMore: boolean }> {
-	let q = contextItemQuery(db, userId);
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	const userId = actor.userId;
+	let q = contextItemQuery(db, userId).where(
+		contextReadPredicate(actor, {
+			project: 'context_item.project_id',
+			issueProject: 'scope_issue.project_id',
+			state: 'context_item.workflow_state_id',
+			label: 'context_item.label_id'
+		})
+	);
 	if (filters.kind) {
 		q = q.where('context_item.kind', '=', requireKind(filters.kind));
 	}
@@ -977,6 +1002,24 @@ export async function createContextItem(
 		labelId: body.label_id ?? null,
 		issueId: body.issue_id ?? null
 	});
+	const boundJournal = await isBoundRunJournal(db, actor, {
+		kind,
+		name,
+		project_id: scope.projectId,
+		workflow_state_id: scope.workflowStateId,
+		issue_id: scope.issueId
+	});
+	requireAccess(
+		actor,
+		contextRequirements(scope, 'write', { env: kind === 'env' }),
+		boundJournal ? 'journal.create' : 'context.create',
+		{
+			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
+			issueId: scope.issueId ?? undefined,
+			issueScoped: scope.issueId === actor.runRestriction?.issueId,
+			boundJournal
+		}
+	);
 	await assertScopeWritable(db, actor, scope);
 	await assertNameAvailable(db, actor.userId, kind, name, scope);
 
@@ -991,7 +1034,7 @@ export async function createContextItem(
 		now
 	});
 	await runContextWrite(env, queries);
-	return getContextItem(db, actor.userId, id);
+	return getContextItem(db, actor, id);
 }
 
 /**
@@ -1106,6 +1149,30 @@ export async function updateContextItem(
 	}
 	const scope =
 		scopeTouched || scopeChanged ? await resolveScope(db, actor.userId, targetIds) : currentScope;
+	const oldBoundJournal = await isBoundRunJournal(db, actor, row);
+	const newBoundJournal = await isBoundRunJournal(db, actor, {
+		kind,
+		name,
+		project_id: scope.projectId,
+		workflow_state_id: scope.workflowStateId,
+		issue_id: scope.issueId
+	});
+	requireAccess(
+		actor,
+		[
+			...contextRequirements(currentScope, 'write', { env: kind === 'env' }),
+			...(scopeChanged ? contextRequirements(scope, 'write', { env: kind === 'env' }) : [])
+		],
+		oldBoundJournal && newBoundJournal ? 'journal.rewrite' : 'context.update',
+		{
+			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
+			issueId: scope.issueId ?? undefined,
+			issueScoped:
+				currentScope.issueId === actor.runRestriction?.issueId &&
+				scope.issueId === actor.runRestriction?.issueId,
+			boundJournal: oldBoundJournal && newBoundJournal
+		}
+	);
 	// Moving an item *into* an archived project is a write on that project too.
 	if (scopeChanged) await assertScopeWritable(db, actor, scope);
 
@@ -1296,7 +1363,7 @@ export async function updateContextItem(
 		if (body.expected_version !== undefined || attempt >= 3) throw versionConflict(fresh);
 		return updateContextItem(db, env, actor, id, body, attempt + 1);
 	}
-	return getContextItem(db, actor.userId, id);
+	return getContextItem(db, actor, id);
 }
 
 export async function deleteContextItem(
@@ -1311,6 +1378,18 @@ export async function deleteContextItem(
 	if (!row) throw notFound();
 	fenceRunKeyEnvWrite(actor, row.kind);
 	const scope = rowScope(row);
+	const boundJournal = await isBoundRunJournal(db, actor, row);
+	requireAccess(
+		actor,
+		contextRequirements(scope, 'delete', { env: row.kind === 'env' }),
+		'context.delete',
+		{
+			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
+			issueId: scope.issueId ?? undefined,
+			issueScoped: scope.issueId === actor.runRestriction?.issueId,
+			boundJournal
+		}
+	);
 	await assertScopeWritable(db, actor, scope);
 	await runAtomic(env, [
 		db.deleteFrom('context_item_file').where('context_item_id', '=', id).compile(),
@@ -1377,6 +1456,18 @@ export async function appendContextItem(
 		validatePromptBody(nextBody);
 
 		const scope = rowScope(row);
+		const boundJournal = await isBoundRunJournal(db, actor, row);
+		requireAccess(
+			actor,
+			contextRequirements(scope, 'write'),
+			boundJournal ? 'journal.append' : 'context.append',
+			{
+				projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
+				issueId: scope.issueId ?? undefined,
+				issueScoped: scope.issueId === actor.runRestriction?.issueId,
+				boundJournal
+			}
+		);
 		const newVersion = row.version + 1;
 		const now = Date.now();
 		const results = await runAtomic(env, [
@@ -1406,7 +1497,7 @@ export async function appendContextItem(
 				newVersion
 			)
 		]);
-		if ((results[0]?.meta.changes ?? 0) > 0) return getContextItem(db, actor.userId, id);
+		if ((results[0]?.meta.changes ?? 0) > 0) return getContextItem(db, actor, id);
 		// Lost the race: with an explicit expectation that's a conflict;
 		// otherwise re-read and re-append onto the fresh body.
 		if (body.expected_version !== undefined || attempt >= 4) {
@@ -1441,6 +1532,24 @@ export function isJournal(row: {
 		row.workflow_state_id !== null &&
 		row.issue_id === null
 	);
+}
+
+/** True only for the journal exception bound to this run's launch-state root. */
+async function isBoundRunJournal(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	row: {
+		kind: string;
+		name: string;
+		project_id: string | null;
+		workflow_state_id: string | null;
+		issue_id: string | null;
+	}
+): Promise<boolean> {
+	const run = actor.runRestriction;
+	if (!run || !isJournal(row) || row.project_id !== run.projectId) return false;
+	const chain = await resolveStateChain(db, run.launchStateId);
+	return chain.length > 0 && row.workflow_state_id === chain[0];
 }
 
 /**
@@ -2082,7 +2191,8 @@ export async function envDigest(entries: ResolvedEnvEntry[]): Promise<string> {
 export async function contextSummaryForIssue(
 	db: Kysely<Database>,
 	userId: string,
-	target: { projectId: string; stateId: string; issueId: string }
+	target: { projectId: string; stateId: string; issueId: string },
+	actor?: ActorContext
 ): Promise<ContextSummary> {
 	// This predicate must track `matchingItemsQuery`'s: a badge that disagrees
 	// with the panel is a bug report. The state clause spans the inheritance
@@ -2111,7 +2221,17 @@ export async function contextSummaryForIssue(
 				)
 		)
 		.selectFrom('context_item')
-		.select(['kind', 'name'])
+		.select([
+			'kind',
+			'name',
+			'project_id',
+			'workflow_state_id',
+			'label_id',
+			'issue_id',
+			sql<string | null>`(SELECT project_id FROM issue WHERE id = context_item.issue_id)`.as(
+				'issue_project_id'
+			)
+		])
 		.where('user_id', '=', userId)
 		.where((eb) =>
 			eb.and([
@@ -2134,14 +2254,35 @@ export async function contextSummaryForIssue(
 			])
 		)
 		.execute();
+	const visible = actor
+		? rows.filter((row) =>
+				accessAllowed(
+					actor,
+					contextRequirements(
+						{
+							projectId: row.project_id,
+							issueProjectId: row.issue_project_id,
+							workflowStateId: row.workflow_state_id,
+							labelId: row.label_id
+						},
+						'read'
+					),
+					'context.read',
+					{
+						projectId: row.issue_project_id ?? row.project_id ?? undefined,
+						issueId: row.issue_id ?? undefined
+					}
+				)
+			)
+		: rows;
 	return {
-		prompts: rows.filter((r) => r.kind === 'prompt').length,
-		skills: new Set(rows.filter((r) => r.kind === 'skill').map((r) => r.name)).size,
-		repos: new Set(rows.filter((r) => r.kind === 'repo').map((r) => r.name)).size,
+		prompts: visible.filter((r) => r.kind === 'prompt').length,
+		skills: new Set(visible.filter((r) => r.kind === 'skill').map((r) => r.name)).size,
+		repos: new Set(visible.filter((r) => r.kind === 'repo').map((r) => r.name)).size,
 		// Artifacts are issue-scoped by construction, so the matching rows are
 		// exactly this issue's attachments (a badge count, not effective context).
-		artifacts: rows.filter((r) => r.kind === 'artifact').length,
-		envs: new Set(rows.filter((r) => r.kind === 'env').map((r) => r.name)).size
+		artifacts: visible.filter((r) => r.kind === 'artifact').length,
+		envs: new Set(visible.filter((r) => r.kind === 'env').map((r) => r.name)).size
 	};
 }
 
@@ -2303,7 +2444,7 @@ export function issueBlock(
 	lines.push(
 		'### Current state',
 		'',
-		`${issue.state.name} (${issue.state.category}), in workflow "${issue.workflow.name}".`,
+		`${issue.state.name} (${issue.state.category}), in workflow "${issue.workflow?.name ?? issue.workflow_id}".`,
 		''
 	);
 	// Labels are classification the agent both reads and writes, so the block
@@ -2562,6 +2703,7 @@ export interface AttachedContextItem {
 	id: string;
 	kind: ContextKind;
 	name: string;
+	version: number;
 	scope: ResolvedScope;
 }
 
@@ -2573,7 +2715,7 @@ function toDeleted(item: AttachedContextItem): DeletedContextItem {
 export async function findAttachedContext(
 	db: Kysely<Database>,
 	userId: string,
-	anchor: { projectId?: string; stateIds?: string[] }
+	anchor: { projectId?: string; stateIds?: string[]; labelId?: string }
 ): Promise<AttachedContextItem[]> {
 	if (anchor.stateIds !== undefined && anchor.stateIds.length === 0) return [];
 	let q = contextItemQuery(db, userId);
@@ -2581,6 +2723,7 @@ export async function findAttachedContext(
 	if (anchor.stateIds !== undefined) {
 		q = q.where('context_item.workflow_state_id', 'in', anchor.stateIds);
 	}
+	if (anchor.labelId !== undefined) q = q.where('context_item.label_id', '=', anchor.labelId);
 	const rows = await q
 		.orderBy('context_item.created_at asc')
 		.orderBy('context_item.id asc')
@@ -2589,6 +2732,7 @@ export async function findAttachedContext(
 		id: row.id,
 		kind: row.kind as ContextKind,
 		name: row.name,
+		version: row.version,
 		scope: rowScope(row)
 	}));
 }
@@ -2617,22 +2761,59 @@ export function sweepAttachedContext(
 		);
 	}
 	// Apply the same write boundary as direct deletion before building any cascade.
-	for (const item of items) fenceRunKeyEnvWrite(actor, item.kind);
-	const queries = items.flatMap((item) => [
-		db.deleteFrom('context_item_file').where('context_item_id', '=', item.id).compile(),
-		db.deleteFrom('context_item').where('id', '=', item.id).compile(),
-		eventInsert(db, actor, {
-			type: 'context.deleted',
-			...eventRefs(item.scope),
-			payload: {
-				context_id: item.id,
-				kind: item.kind,
-				name: item.name,
-				scope: scopeEventPayload(item.scope),
-				forced: true
+	for (const item of items) {
+		fenceRunKeyEnvWrite(actor, item.kind);
+		requireAccess(
+			actor,
+			contextRequirements(item.scope, 'delete', { env: item.kind === 'env' }),
+			'context.delete',
+			{
+				projectId: item.scope.issueProjectId ?? item.scope.projectId ?? undefined,
+				issueId: item.scope.issueId ?? undefined
 			}
-		})
-	]);
+		);
+	}
+	const queries = items.flatMap((item) => {
+		const eventId = newId('evt');
+		const witness = sql<boolean>`EXISTS (
+			SELECT 1 FROM context_item current
+			WHERE current.id = ${item.id}
+				AND current.version = ${item.version}
+				AND current.project_id IS ${item.scope.projectId}
+				AND current.workflow_state_id IS ${item.scope.workflowStateId}
+				AND current.label_id IS ${item.scope.labelId}
+				AND current.issue_id IS ${item.scope.issueId}
+		)`;
+		const admitted = sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`;
+		return [
+			eventInsert(
+				db,
+				actor,
+				{
+					id: eventId,
+					type: 'context.deleted',
+					...eventRefs(item.scope),
+					payload: {
+						context_id: item.id,
+						kind: item.kind,
+						name: item.name,
+						scope: scopeEventPayload(item.scope),
+						forced: true
+					}
+				},
+				{ predicate: witness }
+			),
+			// SQLite CASE is lazy: a lost witness raises and rolls back the whole
+			// D1 batch instead of letting the enclosing anchor cascade partially.
+			sql`SELECT CASE WHEN ${admitted} THEN 1 ELSE json_extract('x', '$[') END`.compile(db),
+			db
+				.deleteFrom('context_item_file')
+				.where('context_item_id', '=', item.id)
+				.where(admitted)
+				.compile(),
+			db.deleteFrom('context_item').where('id', '=', item.id).where(admitted).compile()
+		];
+	});
 	return { queries, deleted: items.map(toDeleted) };
 }
 

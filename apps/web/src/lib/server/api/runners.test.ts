@@ -162,11 +162,11 @@ describe('deleteRunner (db batch)', () => {
 
 		// Runner gone; the other survives.
 		expect(t.all(`SELECT id FROM runner`).map((r) => r.id)).toEqual(['rnr_2']);
-		// Its runs are gone, and the run key kept its row but lost provenance.
+		// Its runs are gone, and the run key is revoked before losing provenance.
 		expect(t.all(`SELECT id FROM agent_run WHERE runner_id = 'rnr_1'`)).toEqual([]);
-		expect(t.all(`SELECT agent_run_id FROM api_key WHERE id = 'key_1'`)).toEqual([
-			{ agent_run_id: null }
-		]);
+		const retiredKey = t.all(`SELECT agent_run_id, revoked_at FROM api_key WHERE id = 'key_1'`)[0];
+		expect(retiredKey.agent_run_id).toBeNull();
+		expect(retiredKey.revoked_at).not.toBeNull();
 		// Pin cleared (tier too).
 		expect(t.all(`SELECT pinned_runner_id, pinned_tier FROM issue WHERE id = 'iss_1'`)).toEqual([
 			{ pinned_runner_id: null, pinned_tier: null }
@@ -209,6 +209,34 @@ describe('deleteRunner (db batch)', () => {
 		expect(t.all(`SELECT pinned_runner_id FROM issue WHERE id = 'iss_1'`)).toEqual([
 			{ pinned_runner_id: 'rnr_1' }
 		]);
+	});
+
+	it('requires authority for every pin, rule, and run before a forced cascade', async () => {
+		const t = createTestDb();
+		seedRemovalFixture(t);
+		const restricted: ActorContext = {
+			...actor,
+			apiKeyId: 'key_scoped',
+			viaSession: false,
+			permissions: {
+				version: 1,
+				projects: { access: 'delete', scope: ['prj_1'] },
+				workspace: 'read',
+				control_plane: 'delete'
+			},
+			runRestriction: null
+		};
+		await expect(
+			deleteRunner(t.db, t.env, restricted, TEST_NOOP_DISPATCH_EFFECTS, 'rnr_1', true)
+		).rejects.toMatchObject({
+			code: 'insufficient_permissions',
+			details: { operation: 'runner.delete', domain: 'project', access: 'write' }
+		});
+		expect(t.all("SELECT id FROM runner WHERE id='rnr_1'")).toEqual([{ id: 'rnr_1' }]);
+		expect(t.all("SELECT pinned_runner_id FROM issue WHERE id='iss_1'")).toEqual([
+			{ pinned_runner_id: 'rnr_1' }
+		]);
+		expect(t.all('SELECT type FROM event')).toEqual([]);
 	});
 
 	it('a run going active between the guard read and the batch no-ops everything (TOCTOU)', async () => {

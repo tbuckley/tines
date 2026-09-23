@@ -43,7 +43,7 @@ for (const other of candidates) if (other !== db) other.close();
 seedMixed(db);
 for (const [id, key, owner, run] of [
 	['mixed_key', localKey, user, null],
-	['mixed_run_key', runKey, user, 'arun_mixed_143'],
+	['mixed_run_key', runKey, user, 'arun_mixed_144'],
 	['mixed_foreign_key', foreignKey, foreignUser, null]
 ])
 	db.prepare(
@@ -58,6 +58,7 @@ for (const [id, key, owner, run] of [
 		run,
 		Date.now() + 3600000
 	);
+db.prepare("UPDATE agent_run SET api_key_id='mixed_run_key' WHERE id='arun_mixed_144'").run();
 db.close();
 if (!process.argv.includes('--skip-build'))
 	execFileSync('pnpm', ['build'], { cwd: webDir, stdio: 'inherit' });
@@ -297,12 +298,7 @@ try {
 		cliCalls++;
 		assert.ok(rendered.includes(`Usage evidence · ${kind}`));
 	}
-	assert.deepEqual(
-		comparable(
-			await request('/usage', { ...bounds, mode: 'cohort', workflow: 'wf_mixed' }, runKey)
-		),
-		comparable(cohort.report)
-	);
+	await request('/usage', { ...bounds, mode: 'cohort', workflow: 'wf_mixed' }, runKey, 403);
 	await request(
 		'/usage',
 		{ ...bounds, mode: 'cohort', workflow: 'wf_mixedforeign' },
@@ -361,12 +357,17 @@ try {
 		['arun_mixed_foreign']
 	);
 	for (const population of ['pending', 'finalized']) {
-		const normal = await request('/runs', { ...bounds, population, limit: '100' });
+		const normal = await request('/runs', {
+			...bounds,
+			population,
+			project: 'prj_mixeda',
+			limit: '100'
+		});
 		const asRun = await request('/runs', { ...bounds, population, limit: '100' }, runKey);
 		assert.deepEqual(asRun, normal);
 	}
 	const runReport = await request('/usage', { ...bounds, by: 'project' }, runKey);
-	assertAggregate(runReport.scope_total, selected({}));
+	assertAggregate(runReport.scope_total, selected({ project: 'prj_mixeda' }));
 	assert.deepEqual(
 		comparable(JSON.parse(cli(['usage'], { ...bounds, by: 'project' }, true, runKey))),
 		comparable(runReport)

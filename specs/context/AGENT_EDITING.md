@@ -629,3 +629,10 @@ unchanged.
   only contributes atomicity via `initial_prompt` / per-new-state
   `prompt` pass-through fields. Default names `conventions` (project) and
   `instructions` (state) are plain conventions with no special behavior.
+
+## Decision update — 2026-09-21 scoped credential enforcement (Tines/648)
+
+The proposal convention remains the human workflow, but API enforcement now backs it: context
+operations require every populated scope domain, env writes additionally require control-plane
+write, and a run key may write only its exact launch-state-root journal. A missing launch anchor
+fails closed; it never falls through to another state or issue. See `specs/api-keys/SPEC.md`.

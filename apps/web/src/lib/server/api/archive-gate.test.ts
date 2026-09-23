@@ -9,6 +9,7 @@
  * Reads are never gated; the last block pins that.
  */
 import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import { FULL_API_KEY_PERMISSIONS } from '@tines/shared';
 import { describe, expect, it, beforeEach } from 'vitest';
 import { NOW, OPEN, PROJECT, USER, addRun, addRunner, seedBase } from '../supervisor/test-fixtures';
 import { explainDispatch } from '../supervisor/explain';
@@ -140,7 +141,9 @@ beforeEach(async () => {
 		apiKeyId: `key_${runId}`,
 		apiKeyName: `run ${runId}`,
 		viaSession: false,
-		agentRunId: runId
+		agentRunId: runId,
+		permissions: FULL_API_KEY_PERMISSIONS,
+		runRestriction: null
 	};
 	// A comment the run authored: run keys may only edit their own, so the
 	// author check must not stand in for the gate in the rows below.

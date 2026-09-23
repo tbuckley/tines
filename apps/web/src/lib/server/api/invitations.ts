@@ -4,6 +4,18 @@ import { newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, requireString, runAtomic, type ActorContext } from './core';
 import { assertCapability, resolveProjectAccess } from './project-access';
 import { recordIsolatedInvitation, sendInvitationEmail } from './invitation-email';
+import { requireAccess } from './permissions';
+
+function requirePeopleWrite(actor: ActorContext, projectId: string) {
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId }],
+		'project.people.write',
+		{
+			projectId
+		}
+	);
+}
 
 const WEEK = 7 * 24 * 60 * 60 * 1000;
 function randomToken(): string {
@@ -64,6 +76,7 @@ export async function listInvitations(
 ) {
 	noRunKey(actor);
 	assertCapability(await resolveProjectAccess(db, actor, projectId), 'invite');
+	requirePeopleWrite(actor, projectId);
 	return db
 		.selectFrom('project_invitation')
 		.select([
@@ -100,6 +113,7 @@ export async function createInvitation(
 	noRunKey(actor);
 	const access = await resolveProjectAccess(db, actor, projectId);
 	assertCapability(access, 'invite');
+	requirePeopleWrite(actor, projectId);
 	if (access.archivedAt !== null)
 		throw new ApiFail(422, 'project_archived', 'Unarchive the project before inviting people');
 	const email = emailAddress(body.email);
@@ -315,6 +329,7 @@ export async function resendInvitation(
 ) {
 	noRunKey(actor);
 	assertCapability(await resolveProjectAccess(db, actor, projectId), 'invite');
+	requirePeopleWrite(actor, projectId);
 	const current = await db
 		.selectFrom('project_invitation as i')
 		.innerJoin('project as p', 'p.id', 'i.project_id')
@@ -383,6 +398,7 @@ export async function cancelInvitation(
 ) {
 	noRunKey(actor);
 	assertCapability(await resolveProjectAccess(db, actor, projectId), 'invite');
+	requirePeopleWrite(actor, projectId);
 	const result = await db
 		.updateTable('project_invitation')
 		.set({ canceled_at: Date.now() })
@@ -565,8 +581,10 @@ export async function removeMember(
 ) {
 	noRunKey(actor);
 	const access = await resolveProjectAccess(db, actor, projectId);
-	if (actor.userId !== memberId) assertCapability(access, 'invite');
-	else assertCapability(access, 'leave');
+	if (actor.userId !== memberId) {
+		assertCapability(access, 'invite');
+		requirePeopleWrite(actor, projectId);
+	} else assertCapability(access, 'leave');
 	if (memberId === access.ownerId)
 		throw new ApiFail(403, 'owner_cannot_leave', 'The project owner cannot leave');
 	if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 1)

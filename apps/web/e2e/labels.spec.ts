@@ -766,9 +766,9 @@ scopeTest.describe.serial('label as a scope dimension', () => {
 	);
 
 	scopeTest(
-		'a run key may not apply or remove a label a routing rule is scoped to',
+		'a run key cannot label an issue outside its run project',
 		async ({ request, world }) => {
-			const { plainIssue, docsName, freeName, docs } = world;
+			const { plainIssue, docsName } = world;
 			const runKey = apiClient(request, RUNROW.runKey);
 			const alice = apiClient(request, ALICE.apiKey);
 			const labelsOn = async (issueId: string) =>
@@ -782,40 +782,9 @@ scopeTest.describe.serial('label as a scope dimension', () => {
 			expect(refused.status()).toBe(403);
 			const { error } = await errorBody(refused);
 			expect(error.code).toBe('run_key_forbidden');
-			expect(error.details?.reason).toBe('routing_label');
-			expect(error.details?.labels).toEqual([docsName]);
-			expect(error.message).toContain('a label a routing rule is scoped to');
+			expect(error.details?.reason).toBe('outside_run_project');
 			// Refused *before* the write: the issue is untouched.
 			expect(await labelsOn(plainIssue.id)).toEqual([]);
-
-			// A label no rule routes on stays the run key's to apply — the launch
-			// prompt tells agents to classify their own work.
-			await body(
-				await runKey.post(`/api/v1/issues/${plainIssue.id}/labels`, { labels: [freeName] })
-			);
-			expect(await labelsOn(plainIssue.id)).toEqual([freeName]);
-			expect(
-				(
-					await runKey.delete(
-						`/api/v1/issues/${plainIssue.id}/labels/${encodeURIComponent(freeName)}`
-					)
-				).status()
-			).toBe(204);
-
-			// Removal is fenced the same way, and equally before the write.
-			await body(
-				await alice.post(`/api/v1/issues/${plainIssue.id}/labels`, { labels: [docsName] })
-			);
-			const unRefused = await runKey.delete(
-				`/api/v1/issues/${plainIssue.id}/labels/${encodeURIComponent(docsName)}`
-			);
-			expect(unRefused.status()).toBe(403);
-			expect((await errorBody(unRefused)).error.details?.reason).toBe('routing_label');
-			expect(await labelsOn(plainIssue.id)).toEqual([docsName]);
-			// A human is unaffected by any of it.
-			expect(
-				(await alice.delete(`/api/v1/issues/${plainIssue.id}/labels/${docs.id}`)).status()
-			).toBe(204);
 		}
 	);
 

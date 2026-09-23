@@ -94,6 +94,7 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'workflow.updated': { name: 'Engineering' },
 	'workflow.deleted': { name: 'Engineering' },
 	'api_key.created': { name: 'laptop' },
+	'api_key.permissions_updated': { name: 'laptop' },
 	'api_key.revoked': { name: 'laptop' },
 	'scheduled_task.created': { name: 'Daily triage' },
 	'scheduled_task.personal_permission_changed': { schedule_id: 'sch_1', value: 'on' },

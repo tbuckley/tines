@@ -12,7 +12,7 @@ import type {
 	SupervisorSettings
 } from '@tines/shared';
 import { expect, test } from './fixtures';
-import { ALICE, BASE_URL, BOB, RUNROW } from './constants.mjs';
+import { ALICE, BASE_URL, BOB, RUNNER_CONCURRENCY, RUNROW } from './constants.mjs';
 import { spawnDaemon, transitionHarnessCommand, type Daemon } from './daemon';
 import { apiClient, body, clickUntil, gotoHydrated } from './helpers';
 
@@ -111,222 +111,227 @@ async function startPollProxy(): Promise<{
 	};
 }
 
-test('the Now remedy persists 1→3 through real daemon polls, restart, re-registration, and lowering', async ({
-	page,
-	request
-}) => {
-	test.setTimeout(120_000);
-	const api = apiClient(request, ALICE.apiKey);
-	const markerDir = mkdtempSync(join(tmpdir(), 'tines-concurrency-markers-'));
-	const proxy = await startPollProxy();
-	let daemon: Daemon | null = null;
-	let runner: Runner | undefined;
-	let project: Project | undefined;
-	let rule: RoutingRule | undefined;
-	let originalSettings: SupervisorSettings | undefined;
-	try {
-		daemon = spawnDaemon({
-			apiKey: ALICE.apiKey,
-			name,
-			command: barrierCommand(markerDir, 'first'),
-			maxConcurrent: 3,
-			allowRemoteConcurrency: true,
-			url: proxy.url
-		});
-		await expect
-			.poll(
-				async () => {
-					const listed = await body<{ items: Runner[] }>(await api.get('/api/v1/runners'));
-					runner = listed.items.find((item) => item.name === name);
-					return [runner?.max_concurrent, runner?.concurrency_control?.status];
-				},
-				{ timeout: 20_000, message: daemon.output() }
-			)
-			.toEqual([1, 'applied']);
+test.describe('isolated runner concurrency', () => {
+	test.use({ signedIn: RUNNER_CONCURRENCY });
+	test('the Now remedy persists 1→3 through real daemon polls, restart, re-registration, and lowering', async ({
+		page,
+		request
+	}) => {
+		test.setTimeout(120_000);
+		const api = apiClient(request, RUNNER_CONCURRENCY.apiKey);
+		const markerDir = mkdtempSync(join(tmpdir(), 'tines-concurrency-markers-'));
+		const proxy = await startPollProxy();
+		let daemon: Daemon | null = null;
+		let runner: Runner | undefined;
+		let project: Project | undefined;
+		let rule: RoutingRule | undefined;
+		let originalSettings: SupervisorSettings | undefined;
+		try {
+			daemon = spawnDaemon({
+				apiKey: RUNNER_CONCURRENCY.apiKey,
+				name,
+				command: barrierCommand(markerDir, 'first'),
+				maxConcurrent: 3,
+				allowRemoteConcurrency: true,
+				url: proxy.url
+			});
+			await expect
+				.poll(
+					async () => {
+						const listed = await body<{ items: Runner[] }>(await api.get('/api/v1/runners'));
+						runner = listed.items.find((item) => item.name === name);
+						return [runner?.max_concurrent, runner?.concurrency_control?.status];
+					},
+					{ timeout: 20_000, message: daemon.output() }
+				)
+				.toEqual([1, 'applied']);
 
-		project = await body<Project>(await api.post('/api/v1/projects', { name }));
-		for (let i = 1; i <= 3; i++) {
+			project = await body<Project>(await api.post('/api/v1/projects', { name }));
+			for (let i = 1; i <= 3; i++) {
+				expect(
+					(
+						await api.post(`/api/v1/projects/${project.id}/issues`, {
+							title: `parallel ${i} ${name}`
+						})
+					).status()
+				).toBe(201);
+			}
+			rule = await body<RoutingRule>(
+				await api.post('/api/v1/routing-rules', {
+					project_id: project.id,
+					targets: [{ runner_id: runner!.id }]
+				})
+			);
+			originalSettings = await body<SupervisorSettings>(
+				await api.get('/api/v1/supervisor/settings')
+			);
 			expect(
 				(
-					await api.post(`/api/v1/projects/${project.id}/issues`, {
-						title: `parallel ${i} ${name}`
+					await api.put('/api/v1/supervisor/settings', {
+						enabled: true,
+						quota: { type: 'global_cap', limit: 3 }
 					})
 				).status()
-			).toBe(201);
-		}
-		rule = await body<RoutingRule>(
-			await api.post('/api/v1/routing-rules', {
-				project_id: project.id,
-				targets: [{ runner_id: runner!.id }]
-			})
-		);
-		originalSettings = await body<SupervisorSettings>(await api.get('/api/v1/supervisor/settings'));
-		expect(
-			(
-				await api.put('/api/v1/supervisor/settings', {
-					enabled: true,
-					quota: { type: 'global_cap', limit: 3 }
+			).toBe(200);
+			await expect.poll(() => files(markerDir, 'first-'), { timeout: 30_000 }).toBe(1);
+
+			await gotoHydrated(page, '/agents');
+			const panel = page.getByRole('region', { name: 'Waiting for an agent' });
+			await expect(panel).toContainText(`at capacity on ${name} (1/1)`);
+			const dialog = page.getByRole('dialog');
+			const capField = dialog.locator('#edit-concurrent');
+			await clickUntil(panel.getByRole('button', { name: `Raise cap on ${name}` }), () =>
+				expect(capField).toBeVisible({ timeout: 1000 })
+			);
+			await capField.fill('3');
+			await dialog.getByRole('button', { name: /^Save/ }).click();
+			await expect.poll(() => files(markerDir, 'first-'), { timeout: 30_000 }).toBe(3);
+			await expect
+				.poll(async () => {
+					runner = await body<Runner>(await api.get(`/api/v1/runners/${runner!.id}`));
+					return [runner.max_concurrent, runner.concurrency_control?.applied_cap];
 				})
-			).status()
-		).toBe(200);
-		await expect.poll(() => files(markerDir, 'first-'), { timeout: 30_000 }).toBe(1);
+				.toEqual([3, 3]);
+			const sustainedFrom = proxy.polls();
+			await expect.poll(proxy.polls, { timeout: 20_000 }).toBeGreaterThanOrEqual(sustainedFrom + 3);
+			releaseMarkers(markerDir, 'first');
+			await expect
+				.poll(async () => {
+					const active = await body<{ items: { runner_id: string }[] }>(
+						await api.get('/api/v1/runs?active=true')
+					);
+					return active.items.filter((run) => run.runner_id === runner!.id).length;
+				})
+				.toBe(0);
 
-		await gotoHydrated(page, '/agents');
-		const panel = page.getByRole('region', { name: 'Waiting for an agent' });
-		await expect(panel).toContainText(`at capacity on ${name} (1/1)`);
-		const dialog = page.getByRole('dialog');
-		const capField = dialog.locator('#edit-concurrent');
-		await clickUntil(panel.getByRole('button', { name: `Raise cap on ${name}` }), () =>
-			expect(capField).toBeVisible({ timeout: 1000 })
-		);
-		await capField.fill('3');
-		await dialog.getByRole('button', { name: /^Save/ }).click();
-		await expect.poll(() => files(markerDir, 'first-'), { timeout: 30_000 }).toBe(3);
-		await expect
-			.poll(async () => {
-				runner = await body<Runner>(await api.get(`/api/v1/runners/${runner!.id}`));
-				return [runner.max_concurrent, runner.concurrency_control?.applied_cap];
-			})
-			.toEqual([3, 3]);
-		const sustainedFrom = proxy.polls();
-		await expect.poll(proxy.polls, { timeout: 20_000 }).toBeGreaterThanOrEqual(sustainedFrom + 3);
-		releaseMarkers(markerDir, 'first');
-		await expect
-			.poll(async () => {
-				const active = await body<{ items: { runner_id: string }[] }>(
-					await api.get('/api/v1/runs?active=true')
-				);
-				return active.items.filter((run) => run.runner_id === runner!.id).length;
-			})
-			.toBe(0);
+			const configDir = daemon.configDir;
+			daemon.stop();
+			await new Promise((resolve) => daemon!.proc.once('exit', resolve));
+			const restartFrom = proxy.polls();
+			daemon = spawnDaemon({
+				apiKey: RUNNER_CONCURRENCY.apiKey,
+				name,
+				command: barrierCommand(markerDir, 'lower'),
+				maxConcurrent: 3,
+				allowRemoteConcurrency: true,
+				configDir,
+				url: proxy.url
+			});
+			await expect.poll(daemon.output, { timeout: 20_000 }).toContain('reconnecting as runner');
+			await expect.poll(proxy.polls, { timeout: 20_000 }).toBeGreaterThanOrEqual(restartFrom + 2);
+			await expect
+				.poll(
+					async () => {
+						runner = await body<Runner>(await api.get(`/api/v1/runners/${runner!.id}`));
+						return [runner.max_concurrent, runner.concurrency_control?.status];
+					},
+					{ timeout: 20_000, message: daemon.output() }
+				)
+				.toEqual([3, 'applied']);
+			const runnerId = runner!.id;
 
-		const configDir = daemon.configDir;
-		daemon.stop();
-		await new Promise((resolve) => daemon!.proc.once('exit', resolve));
-		const restartFrom = proxy.polls();
-		daemon = spawnDaemon({
-			apiKey: ALICE.apiKey,
-			name,
-			command: barrierCommand(markerDir, 'lower'),
-			maxConcurrent: 3,
-			allowRemoteConcurrency: true,
-			configDir,
-			url: proxy.url
-		});
-		await expect.poll(daemon.output, { timeout: 20_000 }).toContain('reconnecting as runner');
-		await expect.poll(proxy.polls, { timeout: 20_000 }).toBeGreaterThanOrEqual(restartFrom + 2);
-		await expect
-			.poll(
-				async () => {
+			// Delete the stored runner credential, then hold the new daemon's first
+			// policy poll. Registration must preserve the identity and web request,
+			// while truthfully making the control unavailable until that poll lands.
+			daemon.stop();
+			await new Promise((resolve) => daemon!.proc.once('exit', resolve));
+			rmSync(join(configDir, 'runners.json'), { force: true });
+			const firstPolicyPoll = proxy.holdNextPoll();
+			daemon = spawnDaemon({
+				apiKey: RUNNER_CONCURRENCY.apiKey,
+				name,
+				command: barrierCommand(markerDir, 'lower'),
+				maxConcurrent: 3,
+				allowRemoteConcurrency: true,
+				configDir,
+				url: proxy.url
+			});
+			await firstPolicyPoll.arrived;
+			const awaitingPolicy = await body<Runner>(await api.get(`/api/v1/runners/${runnerId}`));
+			expect(awaitingPolicy).toMatchObject({ id: runnerId, max_concurrent: 3 });
+			expect(awaitingPolicy.concurrency_control).toMatchObject({
+				status: 'unavailable',
+				reason: 'awaiting_policy',
+				requested_cap: 3
+			});
+			expect(daemon.output()).toContain(`registered runner "${name}" (${runnerId})`);
+			firstPolicyPoll.release();
+			await expect
+				.poll(
+					async () => {
+						runner = await body<Runner>(await api.get(`/api/v1/runners/${runner!.id}`));
+						return [runner.max_concurrent, runner.concurrency_control?.status];
+					},
+					{ timeout: 20_000, message: daemon.output() }
+				)
+				.toEqual([3, 'applied']);
+
+			for (let i = 1; i <= 4; i++) {
+				expect(
+					(
+						await api.post(`/api/v1/projects/${project.id}/issues`, { title: `lower ${i} ${name}` })
+					).status()
+				).toBe(201);
+			}
+			await expect.poll(() => files(markerDir, 'lower-'), { timeout: 30_000 }).toBe(3);
+			await gotoHydrated(page, '/agents');
+			const card = page.locator(`#runner-${runnerId}`);
+			await card.getByRole('button', { name: 'Edit', exact: true }).click();
+			await dialog.locator('#edit-concurrent').fill('1');
+			await dialog.getByRole('button', { name: /^Save/ }).click();
+			await expect
+				.poll(async () => {
 					runner = await body<Runner>(await api.get(`/api/v1/runners/${runner!.id}`));
 					return [runner.max_concurrent, runner.concurrency_control?.status];
-				},
-				{ timeout: 20_000, message: daemon.output() }
-			)
-			.toEqual([3, 'applied']);
-		const runnerId = runner!.id;
-
-		// Delete the stored runner credential, then hold the new daemon's first
-		// policy poll. Registration must preserve the identity and web request,
-		// while truthfully making the control unavailable until that poll lands.
-		daemon.stop();
-		await new Promise((resolve) => daemon!.proc.once('exit', resolve));
-		rmSync(join(configDir, 'runners.json'), { force: true });
-		const firstPolicyPoll = proxy.holdNextPoll();
-		daemon = spawnDaemon({
-			apiKey: ALICE.apiKey,
-			name,
-			command: barrierCommand(markerDir, 'lower'),
-			maxConcurrent: 3,
-			allowRemoteConcurrency: true,
-			configDir,
-			url: proxy.url
-		});
-		await firstPolicyPoll.arrived;
-		const awaitingPolicy = await body<Runner>(await api.get(`/api/v1/runners/${runnerId}`));
-		expect(awaitingPolicy).toMatchObject({ id: runnerId, max_concurrent: 3 });
-		expect(awaitingPolicy.concurrency_control).toMatchObject({
-			status: 'unavailable',
-			reason: 'awaiting_policy',
-			requested_cap: 3
-		});
-		expect(daemon.output()).toContain(`registered runner "${name}" (${runnerId})`);
-		firstPolicyPoll.release();
-		await expect
-			.poll(
-				async () => {
-					runner = await body<Runner>(await api.get(`/api/v1/runners/${runner!.id}`));
-					return [runner.max_concurrent, runner.concurrency_control?.status];
-				},
-				{ timeout: 20_000, message: daemon.output() }
-			)
-			.toEqual([3, 'applied']);
-
-		for (let i = 1; i <= 4; i++) {
-			expect(
-				(
-					await api.post(`/api/v1/projects/${project.id}/issues`, { title: `lower ${i} ${name}` })
-				).status()
-			).toBe(201);
-		}
-		await expect.poll(() => files(markerDir, 'lower-'), { timeout: 30_000 }).toBe(3);
-		await gotoHydrated(page, '/agents');
-		const card = page.locator(`#runner-${runnerId}`);
-		await card.getByRole('button', { name: 'Edit', exact: true }).click();
-		await dialog.locator('#edit-concurrent').fill('1');
-		await dialog.getByRole('button', { name: /^Save/ }).click();
-		await expect
-			.poll(async () => {
-				runner = await body<Runner>(await api.get(`/api/v1/runners/${runner!.id}`));
-				return [runner.max_concurrent, runner.concurrency_control?.status];
-			})
-			.toEqual([1, 'applied']);
-		// Release exactly one active harness. The global quota now permits a
-		// replacement (2/3), but the lowered cap (2 active over cap 1) must not.
-		releaseMarkers(markerDir, 'lower', 1);
-		await expect
-			.poll(async () => {
-				const active = await body<{ items: { runner_id: string }[] }>(
-					await api.get('/api/v1/runs?active=true')
-				);
-				return active.items.filter((run) => run.runner_id === runner!.id).length;
-			})
-			.toBe(2);
-		const loweredFrom = proxy.polls();
-		await expect.poll(proxy.polls, { timeout: 20_000 }).toBeGreaterThanOrEqual(loweredFrom + 2);
-		expect(files(markerDir, 'lower-')).toBe(3);
-		const active = await body<{ items: { runner_id: string }[] }>(
-			await api.get('/api/v1/runs?active=true')
-		);
-		expect(active.items.filter((run) => run.runner_id === runnerId)).toHaveLength(2);
-	} finally {
-		await api.put('/api/v1/supervisor/settings', { enabled: false });
-		if (runner) {
-			const active = await body<{ items: { id: string; runner_id: string }[] }>(
+				})
+				.toEqual([1, 'applied']);
+			// Release exactly one active harness. The global quota now permits a
+			// replacement (2/3), but the lowered cap (2 active over cap 1) must not.
+			releaseMarkers(markerDir, 'lower', 1);
+			await expect
+				.poll(async () => {
+					const active = await body<{ items: { runner_id: string }[] }>(
+						await api.get('/api/v1/runs?active=true')
+					);
+					return active.items.filter((run) => run.runner_id === runner!.id).length;
+				})
+				.toBe(2);
+			const loweredFrom = proxy.polls();
+			await expect.poll(proxy.polls, { timeout: 20_000 }).toBeGreaterThanOrEqual(loweredFrom + 2);
+			expect(files(markerDir, 'lower-')).toBe(3);
+			const active = await body<{ items: { runner_id: string }[] }>(
 				await api.get('/api/v1/runs?active=true')
 			);
-			for (const run of active.items.filter((item) => item.runner_id === runner!.id))
-				await api.post(`/api/v1/runs/${run.id}/cancel`);
+			expect(active.items.filter((run) => run.runner_id === runnerId)).toHaveLength(2);
+		} finally {
+			await api.put('/api/v1/supervisor/settings', { enabled: false });
+			if (runner) {
+				const active = await body<{ items: { id: string; runner_id: string }[] }>(
+					await api.get('/api/v1/runs?active=true')
+				);
+				for (const run of active.items.filter((item) => item.runner_id === runner!.id))
+					await api.post(`/api/v1/runs/${run.id}/cancel`);
+			}
+			daemon?.kill();
+			if (rule) await api.delete(`/api/v1/routing-rules/${rule.id}`);
+			if (runner) await api.delete(`/api/v1/runners/${runner.id}`, { force: true });
+			if (project) {
+				const issues = await body<{ items: IssueDetail[] }>(
+					await api.get(`/api/v1/projects/${project.id}/issues`)
+				);
+				for (const issue of issues.items) await api.delete(`/api/v1/issues/${issue.id}`);
+				await api.delete(`/api/v1/projects/${project.id}`);
+			}
+			if (originalSettings) {
+				await api.put('/api/v1/supervisor/settings', {
+					enabled: originalSettings.enabled,
+					quota: originalSettings.quota
+				});
+			}
+			await proxy.close();
+			rmSync(markerDir, { recursive: true, force: true });
 		}
-		daemon?.kill();
-		if (rule) await api.delete(`/api/v1/routing-rules/${rule.id}`);
-		if (runner) await api.delete(`/api/v1/runners/${runner.id}`, { force: true });
-		if (project) {
-			const issues = await body<{ items: IssueDetail[] }>(
-				await api.get(`/api/v1/projects/${project.id}/issues`)
-			);
-			for (const issue of issues.items) await api.delete(`/api/v1/issues/${issue.id}`);
-			await api.delete(`/api/v1/projects/${project.id}`);
-		}
-		if (originalSettings) {
-			await api.put('/api/v1/supervisor/settings', {
-				enabled: originalSettings.enabled,
-				quota: originalSettings.quota
-			});
-		}
-		await proxy.close();
-		rmSync(markerDir, { recursive: true, force: true });
-	}
+	});
 });
 
 test('the HTTP boundary rejects stale, excessive, opted-out, legacy, cross-account and run-key writes', async ({

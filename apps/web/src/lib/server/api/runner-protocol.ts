@@ -65,7 +65,7 @@ import { effectiveAutomationEnabled } from '$lib/server/supervisor/settings';
 import { priceCodexUsage } from '$lib/server/supervisor/codex-pricing';
 import { pricingCatalogFor } from '$lib/server/supervisor/user-rates';
 import { listArtifacts } from './artifacts';
-import { listLabels } from './labels';
+import { listLabelsInternal } from './labels';
 import {
 	buildLaunchPrompt,
 	buildResumePrompt,
@@ -866,7 +866,7 @@ async function deliverAssignedRun(
 		getIssueDetail(db, run.user_id, { id: run.issue_id }, { round: true, launchComments: true }),
 		effectiveContextForIssue(db, run.user_id, run.issue_id),
 		listArtifacts(db, run.user_id, run.issue_id),
-		listLabels(db, run.user_id)
+		listLabelsInternal(db, run.user_id)
 	]);
 	const issueRef = `${issue.project_name}/${issue.number}`;
 	// Env items ride beside the bundle, never inside it (the bundle is written

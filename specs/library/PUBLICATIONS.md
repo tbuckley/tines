@@ -118,3 +118,11 @@ the candidate. The focused responsive receipt names the frozen workflow and publ
 reduced motion skips its opacity-only entrance. A lost-response or other recoverable failure keeps
 the same candidate and confirmation behind Retry. Leaving through the workflow and explicitly
 publishing a revision prepares a new candidate and stable URL; the prior public bytes never change.
+
+## Decision update — 2026-09-21 scoped publication authority (Tines/648)
+
+Validation and public reads remain public or read-only as documented. Preparing a private candidate
+requires workspace write because it freezes shared workflow material; listing/results require
+workspace read, and publish/withdraw/restore require workspace write. Run keys may validate and
+prepare only within their semantic ceiling and can never commit publication state. Replay rechecks
+current authority; a proof or candidate is not a capability. See `specs/api-keys/SPEC.md`.

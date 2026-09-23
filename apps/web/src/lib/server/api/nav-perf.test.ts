@@ -178,7 +178,7 @@ describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipp
 		const started = performance.now();
 		const result = await callLoad(
 			load,
-			event(env, `/issues/demo/${number}`, { project: 'demo', number: String(number) })
+			event(env, `/issues/${PROJECT}/${number}`, { project: PROJECT, number: String(number) })
 		);
 		// What blocks first paint: `load` has resolved, so SvelteKit can render
 		// and the View Transition can commit. The streamed panels are still in

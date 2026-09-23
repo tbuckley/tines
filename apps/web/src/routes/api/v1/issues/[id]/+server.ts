@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { UpdateIssueRequest } from '@tines/shared';
 import { api, apiContext, readJson } from '$lib/server/api/core';
-import { getIssueDetail, updateIssue } from '$lib/server/api/issues';
+import { getIssueDetailForActor, updateIssue } from '$lib/server/api/issues';
 import { readSharedIssue } from '$lib/server/api/shared-issues';
 import { resolveIssueAccess } from '$lib/server/api/project-access';
 import { removeMember } from '$lib/server/api/invitations';
@@ -38,7 +38,7 @@ export const GET: RequestHandler = api(async (event) => {
 			: undefined;
 	return json(
 		access.role === 'owner'
-			? await getIssueDetail(db, actor.userId, { id: event.params.id }, { round: true })
+			? await getIssueDetailForActor(db, actor, { id: event.params.id }, { round: true })
 			: await readSharedIssue(db, actor, { id: event.params.id }, beforeFinalCheck)
 	);
 });

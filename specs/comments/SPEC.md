@@ -68,3 +68,6 @@ ids for every comment: the comment you just wrote is the one you legitimately
 need to fix.
 
 > 2026-09-23 project-sharing decision: [SHARING_2026-09-23.md](../projects/SHARING_2026-09-23.md) supersedes this spec’s single-owner assumptions for shared projects. This historical spec remains unchanged otherwise.
+# 2026-09-21 — API-key scope enforcement (Tines/648)
+
+Comment reads and writes require authority on the issue's project. Hard deletion requires project delete in addition to the existing author/run ownership rule. Run keys remain confined to their bound issue. See `../api-keys/SPEC.md`.

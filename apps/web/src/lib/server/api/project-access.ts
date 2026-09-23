@@ -1,6 +1,7 @@
 import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { ApiFail, notFound, type ActorContext } from './core';
+import { accessAllowed, requireAccess } from './permissions';
 
 export type ProjectAccess = {
 	projectId: string;
@@ -34,6 +35,9 @@ export async function resolveProjectAccess(
 		.where('p.id', '=', projectId)
 		.executeTakeFirst();
 	if (!row) throw notFound();
+	requireAccess(actor, [{ domain: 'project', access: 'read', projectId }], 'project.read', {
+		projectId
+	});
 	if (row.user_id === actor.userId)
 		return {
 			projectId,
@@ -142,7 +146,16 @@ export async function resolveAccessibleProjectRef(
 			])
 		)
 		.execute();
-	const visible = actor.agentRunId ? rows.filter((row) => row.owner_id === actor.userId) : rows;
+	const visible = rows.filter(
+		(row) =>
+			(!actor.agentRunId || row.owner_id === actor.userId) &&
+			accessAllowed(
+				actor,
+				[{ domain: 'project', access: 'read', projectId: row.id }],
+				'project.read',
+				{ projectId: row.id }
+			)
+	);
 	if (!visible.length) throw notFound();
 	if (visible.length > 1)
 		throw new ApiFail(

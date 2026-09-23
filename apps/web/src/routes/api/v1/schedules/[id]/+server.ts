@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { UpdateScheduleRequest } from '@tines/shared';
 import { api, apiContext, readJson } from '$lib/server/api/core';
-import { deleteSchedule, getSchedule, updateSchedule } from '$lib/server/api/schedules';
+import { deleteSchedule, getScheduleForActor, updateSchedule } from '$lib/server/api/schedules';
 import { readSharedScheduleSummary } from '$lib/server/api/schedule-consent';
 import { resolveProjectAccess } from '$lib/server/api/project-access';
 import { notFound } from '$lib/server/api/core';
@@ -16,7 +16,7 @@ export const GET: RequestHandler = api(async (event) => {
 		.executeTakeFirst();
 	if (!schedule) throw notFound();
 	const access = await resolveProjectAccess(db, actor, schedule.project_id);
-	if (access.role === 'owner') return json(await getSchedule(db, actor.userId, event.params.id));
+	if (access.role === 'owner') return json(await getScheduleForActor(db, actor, event.params.id));
 	const summary = await readSharedScheduleSummary(db, actor, event.params.id, async () => true);
 	if (
 		(await resolveProjectAccess(db, actor, schedule.project_id)).membershipRevision !==

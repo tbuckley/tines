@@ -16,6 +16,7 @@ import {
 	type UsageScopePayload
 } from '$lib/server/usage-scope';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 const recognized = [
 	'window',
@@ -96,6 +97,20 @@ export const GET: RequestHandler = api(async (event) => {
 		const issueId = replayPayload?.mode === 'issue' ? replayPayload.issue : params.get('issue');
 		if (!issueId)
 			throw new ApiFail(422, 'invalid_field', 'issue mode requires issue', { field: 'issue' });
+		const issue = await db
+			.selectFrom('issue')
+			.innerJoin('project', 'project.id', 'issue.project_id')
+			.select(['issue.id', 'issue.project_id'])
+			.where('issue.id', '=', issueId)
+			.where('project.user_id', '=', actor.userId)
+			.executeTakeFirst();
+		if (!issue) throw notFound();
+		requireAccess(
+			actor,
+			[{ domain: 'project', access: 'read', projectId: issue.project_id }],
+			'usage.issue',
+			{ projectId: issue.project_id, issueId: issue.id }
+		);
 		const contradictions = replay
 			? []
 			: recognized.filter((name) => !['mode', 'issue'].includes(name) && params.has(name));
@@ -134,6 +149,17 @@ export const GET: RequestHandler = api(async (event) => {
 		return json(report, { headers: { 'cache-control': 'private, no-store' } });
 	}
 	if (mode === 'cohort') {
+		requireAccess(
+			actor,
+			[
+				{ domain: 'control_plane', access: 'read' },
+				{ domain: 'workspace', access: 'read' }
+			],
+			// Cohort reports are account-wide operational analysis, not a
+			// run-scoped usage read. Keep this as a distinct operation so the
+			// run ceiling cannot admit it through the ordinary usage allowlist.
+			'usage.cohort.read'
+		);
 		const cohortPayload = replayPayload?.mode === 'cohort' ? replayPayload : null;
 		const workflow = cohortPayload?.workflow ?? params.get('workflow');
 		if (!workflow)
@@ -190,7 +216,8 @@ export const GET: RequestHandler = api(async (event) => {
 							selected_states: cohortPayload.selected_states,
 							selection_basis: cohortPayload.selection_basis
 						}
-					: undefined
+					: undefined,
+				actor
 			);
 			if (!report) throw notFound();
 			report.scope =
@@ -227,6 +254,8 @@ export const GET: RequestHandler = api(async (event) => {
 	const by = (
 		replayPayload?.mode === 'period' ? replayPayload.by : (params.get('by') ?? 'workflow')
 	) as UsageBy;
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'usage.read');
+	requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'usage.read');
 	if (!['project', 'workflow', 'state', 'outcome', 'runner', 'tier'].includes(by))
 		throw new ApiFail(422, 'invalid_field', 'Invalid usage grouping', { field: 'by' });
 	const periodPayload = replayPayload?.mode === 'period' ? replayPayload : null;
@@ -279,25 +308,31 @@ export const GET: RequestHandler = api(async (event) => {
 	)
 		throw notFound();
 	try {
-		const report = await getUsage(db, actor.userId, {
-			window: periodPayload
-				? undefined
-				: ((params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined),
-			from: periodPayload
-				? new Date(periodPayload.from).toISOString()
-				: (params.get('from') ?? undefined),
-			to: periodPayload
-				? new Date(periodPayload.to).toISOString()
-				: (params.get('to') ?? undefined),
-			project: selected?.project ?? params.get('project') ?? undefined,
-			workflow: selected?.workflow ?? params.get('workflow') ?? undefined,
-			state: selected?.state ?? params.get('state') ?? undefined,
-			runner: selected?.runner ?? params.get('runner') ?? undefined,
-			tier: selected?.tier ?? params.get('tier') ?? undefined,
-			outcome: outcome as never,
-			accounting_status: accounting as UsageAccountingStatus | undefined,
-			by
-		});
+		const report = await getUsage(
+			db,
+			actor.userId,
+			{
+				window: periodPayload
+					? undefined
+					: ((params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined),
+				from: periodPayload
+					? new Date(periodPayload.from).toISOString()
+					: (params.get('from') ?? undefined),
+				to: periodPayload
+					? new Date(periodPayload.to).toISOString()
+					: (params.get('to') ?? undefined),
+				project: selected?.project ?? params.get('project') ?? undefined,
+				workflow: selected?.workflow ?? params.get('workflow') ?? undefined,
+				state: selected?.state ?? params.get('state') ?? undefined,
+				runner: selected?.runner ?? params.get('runner') ?? undefined,
+				tier: selected?.tier ?? params.get('tier') ?? undefined,
+				outcome: outcome as never,
+				accounting_status: accounting as UsageAccountingStatus | undefined,
+				by
+			},
+			Date.now(),
+			actor
+		);
 		// A replay freezes the operator-visible period basis as well as its
 		// instants. Current supervisor settings must not relabel an old scope.
 		if (periodPayload) {

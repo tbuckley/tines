@@ -4,6 +4,7 @@ import { newId, type Database } from '$lib/server/db';
 import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
 import { releaseAssignedIssueQueries } from '../supervisor/consent-admission';
+import { requireAccess } from './permissions';
 
 export async function writeIssueHold(
 	db: Kysely<Database>,
@@ -35,6 +36,15 @@ export async function writeIssueHold(
 		.where('p.user_id', '=', actor.userId)
 		.executeTakeFirst();
 	if (!current || current.shared_at === null) throw notFound();
+	requireAccess(
+		actor,
+		[
+			{ domain: 'project', access: 'write', projectId: current.project_id },
+			{ domain: 'control_plane', access: 'write' }
+		],
+		'issue.hold',
+		{ projectId: current.project_id, issueId }
+	);
 	if (current.category === 'done')
 		throw new ApiFail(422, 'issue_terminal', 'A done issue cannot be held');
 	if (current.hold_revision !== body.expected_revision) {
