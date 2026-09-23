@@ -470,12 +470,12 @@ export async function updateSchedule(
 	id: string,
 	body: UpdateScheduleRequest
 ): Promise<Schedule> {
-	const current = await getSchedule(db, actor.userId, id);
-	const revisionRow = await db
-		.selectFrom('scheduled_task')
-		.select('definition_revision')
-		.where('id', '=', id)
-		.executeTakeFirstOrThrow();
+	const currentRow = await scheduleQuery(db, actor.userId)
+		.where('scheduled_task.id', '=', id)
+		.executeTakeFirst();
+	if (!currentRow) throw notFound();
+	const current = serializeSchedule(currentRow);
+	const revision = currentRow.definition_revision;
 	await assertWritable(db, actor, scheduleProject(current));
 
 	const name =
@@ -576,7 +576,6 @@ export async function updateSchedule(
 	const changed = Object.keys(payload).length > 2;
 	if (!changed && nextRunAt === current.next_run_at) return current;
 	const eventId = newId('evt');
-	const revision = revisionRow.definition_revision;
 	const updateQuery = db
 		.updateTable('scheduled_task')
 		.set({
@@ -598,6 +597,14 @@ export async function updateSchedule(
 		})
 		.where('id', '=', id)
 		.where('definition_revision', '=', revision)
+		.where(
+			sql<boolean>`EXISTS (
+				SELECT 1 FROM project
+				WHERE project.id = ${current.project_id}
+				  AND project.user_id = ${actor.userId}
+				  AND project.archived_at IS NULL
+			)`
+		)
 		.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`)
 		.compile();
 	const results = await runAtomic(env, [
@@ -606,12 +613,26 @@ export async function updateSchedule(
 			actor,
 			{ id: eventId, type: 'scheduled_task.updated', projectId: current.project_id, payload },
 			{
-				predicate: sql<boolean>`EXISTS (SELECT 1 FROM scheduled_task WHERE id = ${id} AND definition_revision = ${revision})`
+				predicate: sql<boolean>`EXISTS (
+						SELECT 1 FROM scheduled_task
+						JOIN project ON project.id = scheduled_task.project_id
+						WHERE scheduled_task.id = ${id}
+						  AND scheduled_task.definition_revision = ${revision}
+						  AND scheduled_task.project_id = ${current.project_id}
+						  AND project.user_id = ${actor.userId}
+						  AND project.archived_at IS NULL
+					)`
 			}
 		),
 		updateQuery
 	]);
 	if (results[1]?.meta.changes !== 1) {
+		const latestRow = await scheduleQuery(db, actor.userId)
+			.where('scheduled_task.id', '=', id)
+			.executeTakeFirst();
+		if (!latestRow) throw notFound();
+		const latest = serializeSchedule(latestRow);
+		await assertWritable(db, actor, scheduleProject(latest));
 		throw new ApiFail(
 			409,
 			'schedule_changed',
@@ -660,14 +681,23 @@ export async function runScheduleNow(
 	effects: DispatchEffects,
 	id: string
 ): Promise<string> {
-	let prepared = await getScheduleExecRow(db, actor.userId, id);
+	const prepared = await getScheduleExecRow(db, actor.userId, id);
+	let attemptSchedule = prepared;
+	const preparedStart = {
+		definition_revision: prepared.definition_revision,
+		workflow_id: prepared.workflow_id,
+		state_id: prepared.state_id,
+		start_state_id: prepared.start_state_id,
+		start_state_name: prepared.start_state_name,
+		start_state_category: prepared.start_state_category
+	};
 	for (let attempt = 0; attempt < 3; attempt += 1) {
 		await assertWritable(db, actor, {
-			id: prepared.project_id,
-			name: prepared.project_name,
-			archived_at: prepared.project_archived_at
+			id: attemptSchedule.project_id,
+			name: attemptSchedule.project_name,
+			archived_at: attemptSchedule.project_archived_at
 		});
-		const execution = buildScheduleExecution(db, prepared, {
+		const execution = buildScheduleExecution(db, attemptSchedule, {
 			now: Date.now(),
 			mode: { kind: 'manual', actor: { userId: actor.userId, apiKeyId: actor.apiKeyId } }
 		});
@@ -682,7 +712,7 @@ export async function runScheduleNow(
 				throw new ApiFail(
 					422,
 					'schedule_blocked',
-					`Schedule "${prepared.name}" requires all previous instances to be closed; ${blockers.length} still open: ${blockers
+					`Schedule "${attemptSchedule.name}" requires all previous instances to be closed; ${blockers.length} still open: ${blockers
 						.map((b) => `${b.project_name}/${b.number} "${b.title}"`)
 						.join(', ')}`,
 					{ open_instances: blockers }
@@ -690,14 +720,31 @@ export async function runScheduleNow(
 			}
 			case 'archived':
 				throw projectArchivedError({
-					id: prepared.project_id,
-					name: prepared.project_name,
+					id: attemptSchedule.project_id,
+					name: attemptSchedule.project_name,
 					archived_at: receipt.archived_at ?? Date.now()
 				});
 			case 'not_found':
 				throw notFound();
 			case 'count_changed':
-				prepared = await getScheduleExecRow(db, actor.userId, id);
+				{
+					const refreshed = await getScheduleExecRow(db, actor.userId, id);
+					const startChanged =
+						refreshed.definition_revision !== preparedStart.definition_revision ||
+						refreshed.workflow_id !== preparedStart.workflow_id ||
+						refreshed.state_id !== preparedStart.state_id ||
+						refreshed.start_state_id !== preparedStart.start_state_id ||
+						refreshed.start_state_name !== preparedStart.start_state_name ||
+						refreshed.start_state_category !== preparedStart.start_state_category;
+					if (startChanged) {
+						throw new ApiFail(
+							409,
+							'schedule_changed',
+							'Schedule changed while Run now was being prepared. Reload the schedule and try again.'
+						);
+					}
+					attemptSchedule = refreshed;
+				}
 				continue;
 			case 'definition_changed':
 			case 'start_changed':

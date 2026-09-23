@@ -192,7 +192,7 @@ export function buildScheduleExecution(
 
 	const eventPayload =
 		opts.mode.kind === 'manual'
-			? sql`json_object('title', ${title}, 'workflow_id', ${schedule.workflow_id}, 'state_id', ${schedule.start_state_id}, 'state_name', ${schedule.start_state_name}, 'scheduled_task_id', ${schedule.id}, 'scheduled_task_name', ${schedule.name}, 'manual', 1)`
+			? sql`json_object('title', ${title}, 'workflow_id', ${schedule.workflow_id}, 'state_id', ${schedule.start_state_id}, 'state_name', ${schedule.start_state_name}, 'scheduled_task_id', ${schedule.id}, 'scheduled_task_name', ${schedule.name}, 'manual', json('true'))`
 			: sql`json_object('title', ${title}, 'workflow_id', ${schedule.workflow_id}, 'state_id', ${schedule.start_state_id}, 'state_name', ${schedule.start_state_name}, 'scheduled_task_id', ${schedule.id}, 'scheduled_task_name', ${schedule.name})`;
 	const createdEvent = sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
@@ -201,7 +201,7 @@ export function buildScheduleExecution(
 
 	const skipPayload = sql`json_object(
 		'schedule_id', ${schedule.id}, 'name', ${schedule.name}, 'occurrence', ${due},
-		'blocking', COALESCE((SELECT json_group_array(json_object('issue_id', b.id, 'project_id', b.project_id, 'project_name', b.project_name, 'number', b.number, 'title', b.title))
+		'blocking', COALESCE((SELECT json_group_array(json_object('issue_id', b.id, 'project_id', b.project_id, 'project_name', b.project_name, 'number', b.number))
 			FROM (SELECT i.id, i.project_id, p.name AS project_name, i.number, i.title
 				FROM issue i JOIN project p ON p.id = i.project_id JOIN workflow_state bs ON bs.id = i.state_id
 				WHERE i.scheduled_task_id = ${schedule.id} AND bs.category <> 'done'
@@ -270,7 +270,10 @@ export function parseExecutionReceipt(
 	result: { results?: unknown[] },
 	expected: { issueId: string; createdEventId: string; skippedEventId: string | null }
 ): ExecutionReceipt {
-	const row = result.results?.[0] as Record<string, unknown> | undefined;
+	const row =
+		result.results?.length === 1
+			? (result.results[0] as Record<string, unknown> | undefined)
+			: undefined;
 	const statuses: ExecutionStatus[] = [
 		'created',
 		'skipped',
@@ -293,14 +296,31 @@ export function parseExecutionReceipt(
 		throw new Error('Malformed scheduled-task execution receipt');
 	let blocking: ExecutionReceipt['blocking'];
 	try {
-		const value = JSON.parse(String(row.blocking ?? '[]'));
+		if (typeof row.blocking !== 'string') throw new Error('missing blocking');
+		const value = JSON.parse(row.blocking);
 		if (!Array.isArray(value)) throw new Error('not an array');
+		if (
+			value.some(
+				(entry) =>
+					typeof entry !== 'object' ||
+					entry === null ||
+					Array.isArray(entry) ||
+					typeof (entry as Record<string, unknown>).issue_id !== 'string' ||
+					typeof (entry as Record<string, unknown>).project_id !== 'string' ||
+					typeof (entry as Record<string, unknown>).project_name !== 'string' ||
+					!Number.isInteger((entry as Record<string, unknown>).number) ||
+					typeof (entry as Record<string, unknown>).title !== 'string'
+			)
+		)
+			throw new Error('invalid blocker');
 		blocking = value as ExecutionReceipt['blocking'];
 	} catch {
 		throw new Error('Malformed scheduled-task blocker receipt');
 	}
-	const archivedAt = row.archived_at == null ? null : Number(row.archived_at);
-	if (archivedAt !== null && !Number.isFinite(archivedAt))
+	if (!Object.prototype.hasOwnProperty.call(row, 'archived_at'))
+		throw new Error('Malformed scheduled-task archive receipt');
+	const archivedAt = row.archived_at == null ? null : row.archived_at;
+	if (archivedAt !== null && (typeof archivedAt !== 'number' || !Number.isFinite(archivedAt)))
 		throw new Error('Malformed scheduled-task archive receipt');
 	return {
 		status: row.status as ExecutionStatus,

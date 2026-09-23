@@ -3,7 +3,7 @@ import {
 	TEST_NOOP_DISPATCH_EFFECTS
 } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
-import { sweepSchedules } from '../schedule-sweep';
+import { parseExecutionReceipt, sweepSchedules } from '../schedule-sweep';
 import type { ActorContext } from './core';
 import { createIssue } from './issues';
 import { archiveProject, unarchiveProject } from './projects';
@@ -58,6 +58,46 @@ async function createSchedule(
 }
 
 describe('schedule start state', () => {
+	it('refuses to retry Run now with a definition changed during count contention', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let first = true;
+		t.env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			if (first) {
+				first = false;
+				t.sqlite
+					.prepare(
+						`UPDATE scheduled_task
+						 SET run_count = run_count + 1
+						 WHERE id = ?`
+					)
+					.run(schedule.id);
+			}
+			const result = await realBatch<T>(statements);
+			if (!first) {
+				t.sqlite
+					.prepare(
+						`UPDATE scheduled_task
+						 SET title_template = 'Edited while busy', definition_revision = definition_revision + 1
+						 WHERE id = ?`
+					)
+					.run(schedule.id);
+				first = true;
+			}
+			return result;
+		};
+
+		await expect(
+			runScheduleNow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, schedule.id)
+		).rejects.toMatchObject({ status: 409, code: 'schedule_changed' });
+		expect(t.all(`SELECT id FROM issue WHERE scheduled_task_id = ?`, schedule.id)).toHaveLength(1);
+		expect(t.all(`SELECT title_template FROM scheduled_task WHERE id = ?`, schedule.id)).toEqual([
+			{ title_template: 'Edited while busy' }
+		]);
+	});
+
 	it('makes concurrent Run now calls share the commit-time all-closed gate', async () => {
 		const t = createTestDb();
 		seed(t);
@@ -219,12 +259,12 @@ describe('schedule start state', () => {
 			.run(due, schedule.id);
 		const realBatch = t.env.DB.batch.bind(t.env.DB);
 		let paused = false;
-		t.env.DB.batch = async (statements) => {
+		t.env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
 			if (!paused) {
 				paused = true;
 				t.sqlite.prepare(`UPDATE scheduled_task SET enabled = 0 WHERE id = ?`).run(schedule.id);
 			}
-			return realBatch(statements);
+			return realBatch<T>(statements);
 		};
 
 		await sweepSchedules(t.env, Date.now());
@@ -257,6 +297,101 @@ describe('schedule start state', () => {
 		await expect(
 			updateSchedule(t.db, t.env, actor, schedule.id, { state: 'Nope' })
 		).rejects.toMatchObject({ code: 'unknown_state' });
+	});
+
+	it('refuses a stale schedule writer without overwriting the competing edit', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let injected = false;
+		t.env.DB.batch = async (statements: Parameters<Env['DB']['batch']>[0]) => {
+			if (!injected) {
+				injected = true;
+				t.sqlite
+					.prepare(
+						`UPDATE scheduled_task
+						 SET name = 'Competing edit', title_template = 'Competing edit',
+						     definition_revision = definition_revision + 1
+						 WHERE id = ?`
+					)
+					.run(schedule.id);
+			}
+			return realBatch(statements);
+		};
+
+		await expect(
+			updateSchedule(t.db, t.env, actor, schedule.id, { name: 'Stale edit' })
+		).rejects.toMatchObject({ status: 409, code: 'schedule_changed' });
+		expect(
+			t.all(`SELECT name, title_template FROM scheduled_task WHERE id = ?`, schedule.id)
+		).toEqual([{ name: 'Competing edit', title_template: 'Competing edit' }]);
+		expect(t.all(`SELECT type FROM event WHERE type = 'scheduled_task.updated'`)).toEqual([]);
+	});
+
+	it('refuses a schedule edit when its project archives at the commit boundary', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let injected = false;
+		t.env.DB.batch = async (statements: Parameters<Env['DB']['batch']>[0]) => {
+			if (!injected) {
+				injected = true;
+				t.sqlite
+					.prepare(`UPDATE project SET archived_at = ? WHERE id = ?`)
+					.run(Date.now(), 'prj_1');
+			}
+			return realBatch(statements);
+		};
+
+		await expect(
+			updateSchedule(t.db, t.env, actor, schedule.id, { name: 'Archived race' })
+		).rejects.toMatchObject({ status: 422, code: 'project_archived' });
+		expect(t.all(`SELECT name FROM scheduled_task WHERE id = ?`, schedule.id)).toEqual([
+			{ name: 'Daily triage' }
+		]);
+		expect(t.all(`SELECT type FROM event WHERE type = 'scheduled_task.updated'`)).toEqual([]);
+	});
+});
+
+describe('schedule execution receipts', () => {
+	const expected = { issueId: 'iss_1', createdEventId: 'evt_1', skippedEventId: null };
+	const valid = {
+		status: 'blocked',
+		issue_id: expected.issueId,
+		created_event_id: expected.createdEventId,
+		skipped_event_id: null,
+		archived_at: null,
+		blocking: '[]'
+	};
+
+	it.each([
+		[
+			'missing status',
+			(() => {
+				const row = { ...valid };
+				delete (row as Record<string, unknown>).status;
+				return row;
+			})()
+		],
+		['missing issue id', { ...valid, issue_id: undefined }],
+		['missing created event id', { ...valid, created_event_id: undefined }],
+		[
+			'missing blocking',
+			(() => {
+				const row = { ...valid };
+				delete (row as Record<string, unknown>).blocking;
+				return row;
+			})()
+		],
+		['non-object blocker', { ...valid, blocking: '[1]' }],
+		['missing blocker field', { ...valid, blocking: '[{"issue_id":"iss_2"}]' }],
+		['invalid archive value', { ...valid, archived_at: 'not-a-number' }]
+	] as const)('fails closed for %s', (_name, row) => {
+		expect(() => parseExecutionReceipt({ results: [row] }, expected)).toThrow(
+			/Malformed scheduled-task/i
+		);
 	});
 });
 
