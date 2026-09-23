@@ -575,7 +575,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			);
 			expect(alias.id).toBe(issueId);
 			await gotoHydrated(page, `/issues/${sourceName}/${sourceNumber}?keep=1#activity`);
-			await expect(page).toHaveURL(new RegExp(`/issues/${destinationName}/2\\?keep=1#activity$`));
+			await expect(page).toHaveURL(new RegExp(`/issues/${moved.project_id}/2\\?keep=1#activity$`));
 
 			// The issue's own project no longer offers itself as a destination.
 			await clickToOpen(page.getByTestId('move-to-project'), modal);
