@@ -72,7 +72,9 @@ ambiguous across the archive boundary.
    state-scoped context writes (`tines journal append` included) are still
    refused.
 3. **No automation.** The dispatch pass and the schedule sweep skip archived
-   projects; `tines issues dispatch` reports the `project_archived` check
+   projects; the schedule execution batch also re-checks `project.archived_at`
+   at commit time, so an archive committed after the due-list read cannot
+   create an issue or skip/bookkeeping event. `tines issues dispatch` reports the `project_archived` check
    ("project <name> is archived (since YYYY-MM-DD) — nothing dispatches").
 4. **Resolvable.** Refs, URLs, artifacts, context bundles, activity and every
    other read keep working; `getProject` is unfiltered.

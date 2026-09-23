@@ -35,6 +35,7 @@ A per-project entity owned (like everything else) by the project's user. It has:
 - **Gate** (`require_all_closed`): when set, an occurrence only creates an issue if every previous instance from this schedule is in a `done`-category state.
 - **Enabled flag**: paused schedules keep their configuration and history but never fire.
 - Bookkeeping: `next_run_at` (precomputed next occurrence, drives the sweep), `last_run_at`, and `run_count` (number of issues created by this schedule, including the initial one).
+- Concurrency fence: `definition_revision` increments for every persisted definition edit. Cron and Run now prepare from a revision and re-check it inside their single D1 batch; stale manual requests return `409 schedule_changed`, while stale cron work is silent and is reconsidered by the next sweep.
 
 ### Recurrence
 
@@ -109,7 +110,7 @@ One new table and one new column, in a new numbered migration:
 scheduled_task  id, project_id, name, title_template, description_template, workflow_id,
                 state_id?,   -- start state; NULL = the workflow's initial state (ON DELETE SET NULL)
                 cron, preset(JSON)?, timezone, require_all_closed, enabled,
-                next_run_at, last_run_at?, run_count, created_at, updated_at
+                next_run_at, last_run_at?, run_count, definition_revision, created_at, updated_at
                 -- unique on (project_id, name); index on (enabled, next_run_at) for the sweep
 issue           + scheduled_task_id?   -- ON DELETE SET NULL
 ```
@@ -126,7 +127,8 @@ Notes:
 A **Cloudflare Cron Trigger** sweeps for due schedules:
 
 - `wrangler.jsonc` gains `triggers: { crons: ["*/30 * * * *"] }`. The worker entry becomes a small custom module that re-exports the SvelteKit-generated worker's `fetch` and adds a `scheduled()` handler (the adapter's `_worker.js` alone has no scheduled hook). The handler calls sweep logic living in `lib/server/` with the same D1 binding.
-- **Sweep**: select schedules where `enabled = 1 AND next_run_at <= now`, then per schedule, in one transaction: re-check due-ness, run the gate check, create the issue (or emit `scheduled_task.skipped`), update `last_run_at`/`run_count`, and advance `next_run_at` to the next future occurrence. Advancing `next_run_at` transactionally is what makes overlapping sweeps harmless — a second sweep no longer sees the schedule as due. One schedule failing must not abort the rest of the sweep.
+- **Execution batch**: select schedules where `enabled = 1 AND next_run_at <= now`, then per schedule, in one D1 batch shared with Run now: re-check the schedule revision, live project/archive state, workflow start state, count fence, due cursor (cron only), and gate. The batch creates the issue and its dependent `issue.created` event, or emits `scheduled_task.skipped`, then updates bookkeeping and returns a final receipt. An issue/event pair and bookkeeping cannot commit from incompatible eligibility; a losing cron call leaves no event or cursor advance. One schedule failing must not abort the rest of the sweep.
+- **Run now**: uses the same batch but omits the enabled and due-cursor predicates, so paused schedules remain manually runnable. A current blocker returns the existing `422 schedule_blocked` with blocker refs; archive remains `422 project_archived`; a changed revision/start returns `409 schedule_changed`; count-only contention reloads and retries at most twice. Dispatch is signalled only after a `created` receipt.
 - **Effective resolution**: an occurrence fires at the first sweep at or after its nominal time, so creation timestamps lag the schedule by up to the sweep interval. With the sub-hourly guardrail this is negligible.
 - **Local dev / e2e**: `wrangler dev --test-scheduled` exposes `GET /__scheduled?cron=…` to fire the handler on demand; the e2e suite uses this to test the sweep deterministically (no clock-dependent waits — seed schedules with `next_run_at` in the past and trigger a sweep).
 

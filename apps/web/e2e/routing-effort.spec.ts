@@ -39,6 +39,40 @@ async function waitFor<T>(read: () => Promise<T | undefined>, timeout = 45_000):
 	}
 }
 
+async function waitForEndedRun<T extends Pick<AgentRun, 'id' | 'ended_at'>>(
+	readRuns: () => Promise<readonly T[]>,
+	expectedRunId: string
+): Promise<T> {
+	return waitFor(async () => {
+		const items = await readRuns();
+		return items.find((item) => item.id === expectedRunId && item.ended_at !== null);
+	});
+}
+
+test('waits for the named routed-effort run when another run ends first', async () => {
+	const issueId = 'issue-routing-effort';
+	const unrelatedRunId = 'run-unrelated';
+	const targetRunId = 'run-target';
+	type SnapshotRun = Pick<AgentRun, 'id' | 'issue_id' | 'ended_at'>;
+	const unrelated = { id: unrelatedRunId, issue_id: issueId, ended_at: '2026-09-23T00:00:01Z' };
+	const snapshots: readonly SnapshotRun[][] = [
+		[unrelated],
+		[unrelated, { id: targetRunId, issue_id: issueId, ended_at: null }],
+		[unrelated, { id: targetRunId, issue_id: issueId, ended_at: '2026-09-23T00:00:02Z' }]
+	];
+	let reads = 0;
+	const ended = await waitForEndedRun(async () => snapshots[reads++] ?? [], targetRunId);
+
+	expect(ended).toMatchObject({ id: targetRunId, issue_id: issueId });
+	expect(reads).toBe(3);
+
+	const completedTarget = await waitForEndedRun(
+		async () => [{ id: targetRunId, issue_id: issueId, ended_at: '2026-09-23T00:00:03Z' }],
+		targetRunId
+	);
+	expect(completedTarget.id).toBe(targetRunId);
+});
+
 test('round-trips and clears a model-aware routing effort in the existing dialog', async ({
 	context,
 	page,
@@ -290,7 +324,7 @@ if (process.argv[2] === '--version') {
 				title: 'Freeze a launch-time effort rejection'
 			})
 		);
-		await waitFor(async () => {
+		const assigned = await waitFor(async () => {
 			const runs = await body<ListResponse<AgentRun>>(
 				await api.get(`/api/v1/runs?issue=${failedIssue.id}`)
 			);
@@ -298,12 +332,13 @@ if (process.argv[2] === '--version') {
 		});
 		writeFileSync(probeFailureFile, 'fail');
 		daemon?.kill('SIGCONT');
-		const failed = await waitFor(async () => {
+		const failed = await waitForEndedRun(async () => {
 			const runs = await body<ListResponse<AgentRun>>(
 				await api.get(`/api/v1/runs?issue=${failedIssue.id}`)
 			);
-			return runs.items.find((item) => item.ended_at !== null);
-		});
+			return runs.items;
+		}, assigned.id);
+		expect(failed.id).toBe(assigned.id);
 		expect(failed.status).toBe('failed');
 		expect(failed.requested_effort).toBe('ultra');
 		expect(failed.resolved_effort).toBe('ultra');
