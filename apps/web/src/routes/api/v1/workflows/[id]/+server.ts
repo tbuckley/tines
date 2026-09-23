@@ -1,12 +1,12 @@
 import { json } from '@sveltejs/kit';
 import type { DeleteAnchorRequest, UpdateWorkflowRequest } from '@tines/shared';
 import { api, apiContext, readJson, readOptionalJson } from '$lib/server/api/core';
-import { deleteWorkflow, loadWorkflow, updateWorkflow } from '$lib/server/api/workflows';
+import { deleteWorkflow, loadWorkflowForActor, updateWorkflow } from '$lib/server/api/workflows';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	return json(await loadWorkflow(db, actor.userId, event.params.id));
+	return json(await loadWorkflowForActor(db, actor, event.params.id));
 });
 
 export const PATCH: RequestHandler = api(async (event) => {

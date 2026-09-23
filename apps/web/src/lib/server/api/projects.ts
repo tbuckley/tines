@@ -26,8 +26,9 @@ import { eventInsert } from './events';
 import { projectScheduleDeletions, rearmScheduleQueries } from './schedules';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { resolveStarter, starterQueries, type StarterRegistry } from './starters';
+import { projectReadPredicate, requireAccess } from './permissions';
 
-function projectQuery(db: Kysely<Database>, userId: string) {
+function projectQuery(db: Kysely<Database>, actor: ActorContext) {
 	return db
 		.selectFrom('project')
 		.selectAll('project')
@@ -38,7 +39,8 @@ function projectQuery(db: Kysely<Database>, userId: string) {
 				.select((eb2) => eb2.fn.countAll<number>().as('n'))
 				.as('issue_count')
 		)
-		.where('project.user_id', '=', userId);
+		.where('project.user_id', '=', actor.userId)
+		.where(projectReadPredicate(actor, 'project.id'));
 }
 
 type ProjectRow = Awaited<ReturnType<ReturnType<typeof projectQuery>['execute']>>[number];
@@ -62,10 +64,10 @@ function serializeProject(row: ProjectRow): Project {
  */
 export async function listProjects(
 	db: Kysely<Database>,
-	userId: string,
+	actor: ActorContext,
 	{ archived = 'false' }: ProjectListFilters = {}
 ): Promise<Project[]> {
-	let q = projectQuery(db, userId).orderBy('project.created_at asc');
+	let q = projectQuery(db, actor).orderBy('project.created_at asc');
 	if (archived === 'false') q = q.where('project.archived_at', 'is', null);
 	if (archived === 'true') q = q.where('project.archived_at', 'is not', null);
 	const rows = await q.execute();
@@ -74,11 +76,19 @@ export async function listProjects(
 
 export async function getProject(
 	db: Kysely<Database>,
-	userId: string,
+	actor: ActorContext,
 	id: string
 ): Promise<Project> {
-	const row = await projectQuery(db, userId).where('project.id', '=', id).executeTakeFirst();
+	if (actor.runRestriction) {
+		requireAccess(actor, [{ domain: 'project', access: 'read', projectId: id }], 'project.read', {
+			projectId: id
+		});
+	}
+	const row = await projectQuery(db, actor).where('project.id', '=', id).executeTakeFirst();
 	if (!row) throw notFound();
+	requireAccess(actor, [{ domain: 'project', access: 'read', projectId: id }], 'project.read', {
+		projectId: id
+	});
 	return serializeProject(row);
 }
 
@@ -145,6 +155,10 @@ export async function createProject(
 	// missing input 422s before any read, let alone any write.
 	const resolvedStarter = resolveStarter(body.starter, opts.starters);
 	const { name, description } = validateProjectFields(body);
+	requireAccess(actor, [{ domain: 'project', access: 'write', scope: 'all' }], 'project.create');
+	if (resolvedStarter) {
+		requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'project.create');
+	}
 	await assertNameAvailable(db, actor.userId, name);
 	if (resolvedStarter?.starter.default_workflow && body.default_workflow_id != null) {
 		throw new ApiFail(
@@ -155,6 +169,7 @@ export async function createProject(
 		);
 	}
 	if (body.default_workflow_id != null) {
+		requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'project.create');
 		await assertWorkflowAccessible(db, actor.userId, body.default_workflow_id);
 	}
 	const now = Date.now();
@@ -210,7 +225,7 @@ export async function createProject(
 		...(seed?.queries ?? []),
 		...(plan?.after ?? [])
 	]);
-	const project = await getProject(db, actor.userId, id);
+	const project = await getProject(db, actor, id);
 	return plan ? { ...project, starter: plan.applied } : project;
 }
 
@@ -221,7 +236,10 @@ export async function updateProject(
 	id: string,
 	body: UpdateProjectRequest
 ): Promise<Project> {
-	const current = await getProject(db, actor.userId, id);
+	const current = await getProject(db, actor, id);
+	requireAccess(actor, [{ domain: 'project', access: 'write', projectId: id }], 'project.update', {
+		projectId: id
+	});
 	await assertWritable(db, actor, current);
 	const name =
 		body.name !== undefined
@@ -237,6 +255,9 @@ export async function updateProject(
 		await assertNameAvailable(db, actor.userId, name, id);
 	}
 	if (defaultWorkflowId != null && defaultWorkflowId !== current.default_workflow_id) {
+		requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'project.update', {
+			projectId: id
+		});
 		await assertWorkflowAccessible(db, actor.userId, defaultWorkflowId);
 	}
 
@@ -261,7 +282,7 @@ export async function updateProject(
 			}
 		})
 	]);
-	return getProject(db, actor.userId, id);
+	return getProject(db, actor, id);
 }
 
 export async function deleteProject(
@@ -271,7 +292,10 @@ export async function deleteProject(
 	id: string,
 	{ forceDeleteContext = false } = {}
 ): Promise<DeletedContextItem[]> {
-	const project = await getProject(db, actor.userId, id);
+	const project = await getProject(db, actor, id);
+	requireAccess(actor, [{ domain: 'project', access: 'delete', projectId: id }], 'project.delete', {
+		projectId: id
+	});
 	await assertWritable(db, actor, project);
 	if (project.issue_count > 0) {
 		throw new ApiFail(
@@ -388,7 +412,10 @@ export async function archiveProject(
 	id: string,
 	now = Date.now()
 ): Promise<ArchiveProjectResponse> {
-	const project = await getProject(db, actor.userId, id);
+	const project = await getProject(db, actor, id);
+	requireAccess(actor, [{ domain: 'project', access: 'write', projectId: id }], 'project.archive', {
+		projectId: id
+	});
 	const schedulesPaused = await enabledScheduleCount(db, id);
 	const draining = await drainingRuns(db, id);
 	const report = (p: Project): ArchiveProjectResponse => ({
@@ -418,7 +445,7 @@ export async function archiveProject(
 			}
 		})
 	]);
-	return report(await getProject(db, actor.userId, id));
+	return report(await getProject(db, actor, id));
 }
 
 export async function unarchiveProject(
@@ -429,7 +456,13 @@ export async function unarchiveProject(
 	id: string,
 	now = Date.now()
 ): Promise<UnarchiveProjectResponse> {
-	const project = await getProject(db, actor.userId, id);
+	const project = await getProject(db, actor, id);
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: id }],
+		'project.unarchive',
+		{ projectId: id }
+	);
 	if (project.archived_at === null) {
 		effects.signalDispatch();
 		return { project, schedules_resumed: 0 };
@@ -458,7 +491,7 @@ export async function unarchiveProject(
 	]);
 	effects.signalDispatch();
 	return {
-		project: await getProject(db, actor.userId, id),
+		project: await getProject(db, actor, id),
 		schedules_resumed: rearm.queries.length
 	};
 }

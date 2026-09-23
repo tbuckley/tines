@@ -3,11 +3,19 @@ import {
 	TEST_NOOP_DISPATCH_EFFECTS
 } from '$lib/server/api/test-dispatch-effects';
 import { describe, expect, it } from 'vitest';
+import { FULL_API_KEY_PERMISSIONS, type ApiKeyPermissions } from '@tines/shared';
 import { parseExecutionReceipt, sweepSchedules } from '../schedule-sweep';
 import type { ActorContext } from './core';
 import { createIssue } from './issues';
 import { archiveProject, unarchiveProject } from './projects';
-import { getSchedule, runScheduleNow, updateSchedule } from './schedules';
+import {
+	deleteSchedule,
+	getSchedule,
+	getScheduleForActor,
+	listSchedulesForActor,
+	runScheduleNow,
+	updateSchedule
+} from './schedules';
 import { createTestDb, type TestDb } from './test-db';
 import { updateWorkflow } from './workflows';
 
@@ -74,6 +82,208 @@ async function createSchedule(
 	});
 	return res.schedule!;
 }
+
+function scopedActor(permissions: ApiKeyPermissions): ActorContext {
+	return {
+		...actor,
+		apiKeyId: 'key_scoped',
+		apiKeyName: 'scoped',
+		viaSession: false,
+		permissions,
+		runRestriction: null
+	};
+}
+
+describe('scoped schedule permissions', () => {
+	it('requires project write to edit or run a visible schedule without side effects', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		t.sqlite.exec(`
+			INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+			VALUES ('key_scoped', 'u1', 'scoped', 'hash', 'prefix', ${NOW})
+		`);
+		const reader = scopedActor({
+			version: 1,
+			projects: { access: 'read', scope: ['prj_1'] },
+			workspace: 'read',
+			control_plane: 'none'
+		});
+		const effects = recordDispatchEffects();
+		const before = {
+			schedules: t.all('SELECT * FROM scheduled_task'),
+			issues: t.all('SELECT * FROM issue'),
+			events: t.all('SELECT * FROM event')
+		};
+
+		await expect(
+			updateSchedule(t.db, t.env, reader, schedule.id, { name: 'Unauthorized edit' })
+		).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions',
+			details: { operation: 'schedule.update', domain: 'project', access: 'write' }
+		});
+		expect(t.all('SELECT * FROM scheduled_task')).toEqual(before.schedules);
+		expect(t.all('SELECT * FROM issue')).toEqual(before.issues);
+		expect(t.all('SELECT * FROM event')).toEqual(before.events);
+		expect(effects.count()).toBe(0);
+
+		await expect(runScheduleNow(t.db, t.env, reader, effects, schedule.id)).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions',
+			details: { operation: 'schedule.run', domain: 'project', access: 'write' }
+		});
+		expect(t.all('SELECT * FROM scheduled_task')).toEqual(before.schedules);
+		expect(t.all('SELECT * FROM issue')).toEqual(before.issues);
+		expect(t.all('SELECT * FROM event')).toEqual(before.events);
+		expect(effects.count()).toBe(0);
+	});
+
+	it('requires workspace read only for workflow and state changes', async () => {
+		const t = createTestDb();
+		seed(t);
+		seedCustomWorkflow(t);
+		const schedule = await createSchedule(t);
+		t.sqlite.exec(`
+			INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+			VALUES ('key_scoped', 'u1', 'scoped', 'hash', 'prefix', ${NOW})
+		`);
+		const projectWriter = scopedActor({
+			version: 1,
+			projects: { access: 'write', scope: ['prj_1'] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+		await expect(
+			updateSchedule(t.db, t.env, projectWriter, schedule.id, { name: 'Allowed edit' })
+		).resolves.toMatchObject({ name: 'Allowed edit' });
+		const before = {
+			schedules: t.all('SELECT * FROM scheduled_task'),
+			issues: t.all('SELECT * FROM issue'),
+			events: t.all('SELECT * FROM event')
+		};
+
+		for (const change of [{ workflow_id: 'wf_2' }, { state: 'Human Review' }]) {
+			await expect(
+				updateSchedule(t.db, t.env, projectWriter, schedule.id, change)
+			).rejects.toMatchObject({
+				status: 403,
+				code: 'insufficient_permissions',
+				details: { operation: 'schedule.update', domain: 'workspace', access: 'read' }
+			});
+			expect(t.all('SELECT * FROM scheduled_task')).toEqual(before.schedules);
+			expect(t.all('SELECT * FROM issue')).toEqual(before.issues);
+			expect(t.all('SELECT * FROM event')).toEqual(before.events);
+		}
+
+		const workspaceReader = scopedActor({
+			...projectWriter.permissions!,
+			workspace: 'read'
+		});
+		await expect(
+			updateSchedule(t.db, t.env, workspaceReader, schedule.id, {
+				workflow_id: 'wf_2',
+				state: 'Doing'
+			})
+		).resolves.toMatchObject({ workflow_id: 'wf_2', state_id: 'wfs_c_doing' });
+	});
+
+	it('filters schedule pages and hides details outside selected projects', async () => {
+		const t = createTestDb();
+		seed(t);
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_2', 'u1', 'other', ${NOW}, ${NOW})
+		`);
+		const visible = await createSchedule(t);
+		const hidden = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'prj_2', {
+			title: 'Hidden daily',
+			schedule: { preset: { kind: 'daily', time: '10:00' } }
+		});
+		const scoped = scopedActor({
+			version: 1,
+			projects: { access: 'read', scope: ['prj_1'] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+
+		await expect(
+			listSchedulesForActor(t.db, scoped, {}, { cursor: null, limit: 1 })
+		).resolves.toMatchObject({ items: [{ id: visible.id }], hasMore: false });
+		await expect(getScheduleForActor(t.db, scoped, hidden.schedule!.id)).rejects.toMatchObject({
+			status: 404,
+			code: 'not_found'
+		});
+
+		const writer = scopedActor({
+			version: 1,
+			projects: { access: 'write', scope: ['prj_1'] },
+			workspace: 'read',
+			control_plane: 'none'
+		});
+		const issueCount = t.all('SELECT id FROM issue').length;
+		await expect(
+			updateSchedule(t.db, t.env, writer, hidden.schedule!.id, { enabled: false })
+		).rejects.toMatchObject({ status: 404, code: 'not_found' });
+		await expect(
+			runScheduleNow(t.db, t.env, writer, TEST_NOOP_DISPATCH_EFFECTS, hidden.schedule!.id)
+		).rejects.toMatchObject({ status: 404, code: 'not_found' });
+		expect(t.all('SELECT id FROM issue')).toHaveLength(issueCount);
+	});
+
+	it('allows reversible edits but requires project delete for permanent removal', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		t.sqlite.exec(`
+			INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+			VALUES ('key_scoped', 'u1', 'scoped', 'hash', 'prefix', ${NOW})
+		`);
+		const scoped = scopedActor({
+			version: 1,
+			projects: { access: 'write', scope: ['prj_1'] },
+			workspace: 'read',
+			control_plane: 'none'
+		});
+
+		await expect(
+			updateSchedule(t.db, t.env, scoped, schedule.id, { enabled: false })
+		).resolves.toMatchObject({ enabled: false });
+		await expect(deleteSchedule(t.db, t.env, scoped, schedule.id)).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions',
+			details: { operation: 'schedule.delete', domain: 'project', access: 'delete' }
+		});
+		await expect(getSchedule(t.db, 'u1', schedule.id)).resolves.toMatchObject({ enabled: false });
+	});
+
+	it('denies run-now to an over-granted run key before creating an instance', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		const scoped: ActorContext = {
+			...scopedActor(FULL_API_KEY_PERMISSIONS),
+			agentRunId: 'run_1',
+			runRestriction: {
+				policy: 'run-v1',
+				runId: 'run_1',
+				issueId: 'iss_bound',
+				projectId: 'prj_1',
+				launchStateId: 'wfs_std_open'
+			}
+		};
+		const before = t.all('SELECT id FROM issue').length;
+
+		await expect(
+			runScheduleNow(t.db, t.env, scoped, TEST_NOOP_DISPATCH_EFFECTS, schedule.id)
+		).rejects.toMatchObject({
+			status: 403,
+			code: 'run_key_forbidden',
+			details: { operation: 'schedule.run', reason: 'operation_forbidden' }
+		});
+		expect(t.all('SELECT id FROM issue')).toHaveLength(before);
+	});
+});
 
 describe('schedule start state', () => {
 	it('refuses to retry Run now with a definition changed during count contention', async () => {

@@ -3,6 +3,7 @@ import { api, apiContext } from '$lib/server/api/core';
 import { buildLibraryV3Document } from '$lib/server/api/library-v3-export';
 import { buildLibraryDocument } from '$lib/server/api/library';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 /**
  * The whole reusable library as one portable document. Read-only, and
@@ -11,6 +12,14 @@ import type { RequestHandler } from './$types';
  */
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
+	requireAccess(
+		actor,
+		[
+			{ domain: 'project', access: 'read', scope: 'all' },
+			{ domain: 'workspace', access: 'read' }
+		],
+		'library.export'
+	);
 	const includeJournals = event.url.searchParams.get('journals') !== 'false';
 	const doc = await (
 		event.url.searchParams.get('version') === '2' ? buildLibraryDocument : buildLibraryV3Document

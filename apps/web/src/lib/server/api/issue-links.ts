@@ -12,6 +12,7 @@ import { assertWritable } from './archive';
 import { eventInsert } from './events';
 import type { QueryGuard } from './query-guard';
 import { nextIssueNumber } from '../issue-address';
+import { requireAccess } from './permissions';
 
 export interface LinkEdge {
 	source: string;
@@ -188,8 +189,22 @@ export async function prepareCreateIssueLinkPlan(
 	for (const item of requested) {
 		const endpoint = byId.get(item.otherId);
 		if (!endpoint) throw notFound();
+		requireAccess(
+			actor,
+			[{ domain: 'project', access: 'write', projectId: endpoint.project_id }],
+			'issue_link.create',
+			{ projectId: endpoint.project_id, issueId: endpoint.id }
+		);
 		await assertWritable(db, actor, endpointProject(endpoint), { issueId: endpoint.id });
 	}
+	// A prospective issue is not the run's bound issue, so a run key cannot
+	// attach a relationship while creating an unrelated issue.
+	requireAccess(
+		actor,
+		[{ domain: 'project', access: 'write', projectId: prospective.projectId }],
+		'issue_link.create',
+		{ projectId: prospective.projectId, issueId: prospective.id }
+	);
 
 	return {
 		prospective,
@@ -713,6 +728,15 @@ export async function addIssueLink(
 	// issue missing = 404 too (cross-user references must be indistinguishable
 	// from nonexistent ones).
 	if (!issue || !other) throw notFound();
+	requireAccess(
+		actor,
+		[
+			{ domain: 'project', access: 'write', projectId: issue.project_id },
+			{ domain: 'project', access: 'write', projectId: other.project_id }
+		],
+		'issue_link.create',
+		{ projectId: issue.project_id, issueId: issue.id }
+	);
 	// Both ends are gated: a draining run's exemption covers its own issue
 	// only, so linking it to another issue in the archived project still 422s.
 	await assertWritable(db, actor, endpointProject(issue), { issueId: issue.id });
@@ -778,6 +802,18 @@ export async function removeIssueLink(
 	if (!link || (link.source_issue_id !== issueId && link.target_issue_id !== issueId)) {
 		throw notFound();
 	}
+	requireAccess(
+		actor,
+		[
+			{ domain: 'project', access: 'write', projectId: link.source_project_id },
+			{ domain: 'project', access: 'write', projectId: link.target_project_id }
+		],
+		'issue_link.remove',
+		{
+			projectId: link.source_issue_id === issueId ? link.source_project_id : link.target_project_id,
+			issueId
+		}
+	);
 	await assertWritable(
 		db,
 		actor,

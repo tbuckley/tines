@@ -2,7 +2,7 @@ import { error, redirect } from '@sveltejs/kit';
 import { issuePageHref } from '$lib/issue-pagination';
 import { ApiFail } from '$lib/server/api/core';
 import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
-import { listLabels } from '$lib/server/api/labels';
+import { listLabelsInternal } from '$lib/server/api/labels';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
 import { issuePagination, readIssuePage } from '$lib/server/issue-pagination';
@@ -85,7 +85,7 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 		),
 		countIssuesByCategory(db, userId, scope),
 		loadWorkflows(db, userId),
-		listLabels(db, userId)
+		listLabelsInternal(db, userId)
 	]);
 
 	// `projects` and `focus` come from the app layout.

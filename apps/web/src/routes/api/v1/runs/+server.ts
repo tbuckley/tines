@@ -293,7 +293,7 @@ export const GET: RequestHandler = api(async (event) => {
 		throw notFound();
 	const { items, hasMore, nextBoundary, scanComplete } = await listRuns(
 		db,
-		actor.userId,
+		actor,
 		{
 			issue: params.get('issue') ?? undefined,
 			runner: params.get('runner') ?? undefined,

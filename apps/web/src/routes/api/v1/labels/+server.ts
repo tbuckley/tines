@@ -7,7 +7,7 @@ import type { RequestHandler } from './$types';
 /** The whole library; a user's label vocabulary is small enough not to page. */
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	return json({ items: await listLabels(db, actor.userId) });
+	return json({ items: await listLabels(db, actor) });
 });
 
 export const POST: RequestHandler = api(async (event) => {

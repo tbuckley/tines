@@ -3,7 +3,7 @@ import { truncate } from '$lib/format';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail, loadIssue } from '$lib/server/api/issues';
-import { listLabels } from '$lib/server/api/labels';
+import { listLabelsInternal } from '$lib/server/api/labels';
 import { listRunners } from '$lib/server/api/runners';
 import { listRoutingRules } from '$lib/server/api/routing';
 import { hasAnyRun, listRuns } from '$lib/server/api/runs';
@@ -12,6 +12,7 @@ import { mintUsageScope, usageKeyMaterial } from '$lib/server/usage-scope';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { explainDispatch } from '$lib/server/supervisor/explain';
 import { getDb } from '$lib/server/db';
+import { sessionActor } from '$lib/server/api/core';
 import type { PageServerLoad } from './$types';
 
 /**
@@ -38,6 +39,7 @@ export const load: PageServerLoad = async ({
 }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
+	const actor = sessionActor(locals.user!);
 
 	// Mutations and the live poll refresh this page alone (see +page.svelte);
 	// invalidateAll() would also re-run the layout for no reason.
@@ -94,7 +96,7 @@ export const load: PageServerLoad = async ({
 		detailPromise,
 		eventsPromise,
 		// The whole vocabulary, for the labels picker in the aside.
-		listLabels(db, userId)
+		listLabelsInternal(db, userId)
 	]);
 
 	// The artifacts ride along on the detail (fetched in the same wave); expose
@@ -142,7 +144,7 @@ export const load: PageServerLoad = async ({
 			// Artifacts have their own panel; the context list shows the rest.
 			contextItems: listContextItems(
 				db,
-				userId,
+				actor,
 				{ issue: issue.id },
 				{ cursor: null, limit: 100 }
 			).then((page) => page.items.filter((i) => i.kind !== 'artifact')),

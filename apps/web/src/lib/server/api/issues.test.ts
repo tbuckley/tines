@@ -2,7 +2,11 @@ import {
 	recordDispatchEffects,
 	TEST_NOOP_DISPATCH_EFFECTS
 } from '$lib/server/api/test-dispatch-effects';
-import type { WorkflowResponse } from '@tines/shared';
+import {
+	FULL_API_KEY_PERMISSIONS,
+	type ApiKeyPermissions,
+	type WorkflowResponse
+} from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
 	CLOSED,
@@ -23,14 +27,16 @@ import {
 	countOpenIssuesByWorkflow,
 	createIssue,
 	getIssueDetail,
+	getIssueDetailForActor,
 	listIssues,
+	listIssuesForActor,
 	loadIssue,
 	resumeIssue,
 	resolveStateRef,
 	transitionIssue,
 	updateIssue
 } from './issues';
-import { createLabel, listLabels } from './labels';
+import { createLabel, listLabelsInternal } from './labels';
 import { listArtifacts } from './artifacts';
 import { getArtifactStore } from '$lib/server/artifact-store';
 import { runScheduleNow } from './schedules';
@@ -64,6 +70,168 @@ const workflow: WorkflowResponse = {
 	created_at: 0,
 	updated_at: 0
 };
+
+function scopedActor(permissions: ApiKeyPermissions): ActorContext {
+	return {
+		userId: USER,
+		userName: 'alice',
+		apiKeyId: 'key_scoped',
+		apiKeyName: 'scoped',
+		viaSession: false,
+		permissions,
+		runRestriction: null
+	};
+}
+
+describe('scoped issue permissions', () => {
+	it('filters collections before pagination and 404s detail outside the selected scope', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_2', '${USER}', 'other', 1, 1)
+		`);
+		const visible = addIssue(t, { project: PROJECT, title: 'visible' });
+		const hidden = addIssue(t, { project: 'prj_2', title: 'hidden' });
+		const actor = scopedActor({
+			version: 1,
+			projects: { access: 'read', scope: [PROJECT] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+
+		await expect(
+			listIssuesForActor(t.db, actor, {}, { cursor: null, limit: 1 })
+		).resolves.toMatchObject({ items: [{ id: visible }], hasMore: false });
+		await expect(getIssueDetailForActor(t.db, actor, { id: hidden })).rejects.toMatchObject({
+			status: 404,
+			code: 'not_found'
+		});
+	});
+
+	it('redacts workspace, control-plane, and out-of-scope link expansions independently', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_2', '${USER}', 'other', 1, 1)
+		`);
+		const visible = addIssue(t, { project: PROJECT, id: 'iss_visible', title: 'visible' });
+		const hidden = addIssue(t, { project: 'prj_2', id: 'iss_hidden', title: 'hidden' });
+		t.sqlite.exec(`
+			INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at)
+			VALUES ('lnk_hidden', '${visible}', '${hidden}', 'blocks', 1);
+			INSERT INTO context_item
+				(id, user_id, kind, name, description, issue_id, position, version, created_at, updated_at)
+			VALUES ('ctx_visible', '${USER}', 'prompt', 'visible', '', '${visible}', 0, 1, 1, 1);
+			INSERT INTO context_item
+				(id, user_id, kind, name, description, workflow_state_id, position, version, created_at, updated_at)
+			VALUES ('ctx_shared', '${USER}', 'prompt', 'shared', '', '${OPEN}', 1, 1, 1, 1);
+		`);
+		const actor = scopedActor({
+			version: 1,
+			projects: { access: 'read', scope: [PROJECT] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+
+		const detail = await getIssueDetailForActor(t.db, actor, { id: visible }, { round: true });
+		expect(detail.workflow).toBeUndefined();
+		expect(detail.round).toBeUndefined();
+		expect(detail.redacted).toEqual(['workspace', 'control_plane', 'project_links']);
+		expect(detail.links.blocks).toEqual([]);
+		expect(detail.context_summary.prompts).toBe(1);
+		expect(detail.allowed_transitions.length).toBeGreaterThan(0);
+	});
+
+	it('allows content writes but rejects pin fields without control-plane write', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const issue = addIssue(t, { title: 'original' });
+		const runner = addRunner(t);
+		t.sqlite.exec(`
+			INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+			VALUES ('key_scoped', '${USER}', 'scoped', 'hash', 'prefix', 1)
+		`);
+		const actor = scopedActor({
+			version: 1,
+			projects: { access: 'write', scope: [PROJECT] },
+			workspace: 'read',
+			control_plane: 'none'
+		});
+
+		await expect(
+			updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue, { title: 'allowed' })
+		).resolves.toMatchObject({ title: 'allowed' });
+		await expect(
+			updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issue, {
+				title: 'must not land',
+				pinned_runner_id: runner
+			})
+		).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions',
+			details: { operation: 'issue.pin', domain: 'control_plane', access: 'write' }
+		});
+		expect(await getIssueDetail(t.db, USER, { id: issue })).toMatchObject({
+			title: 'allowed',
+			pinned_runner_id: null
+		});
+	});
+
+	it('requires workspace write before an issue create can introduce a label', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const actor = scopedActor({
+			version: 1,
+			projects: { access: 'write', scope: [PROJECT] },
+			workspace: 'read',
+			control_plane: 'none'
+		});
+
+		await expect(
+			createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+				title: 'must not land',
+				labels: ['new-label']
+			})
+		).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions',
+			details: { operation: 'label.create', domain: 'workspace', access: 'write' }
+		});
+		expect(t.all('SELECT id FROM issue')).toEqual([]);
+		expect(t.all('SELECT id FROM label')).toEqual([]);
+	});
+
+	it('keeps an over-granted run key from embedding a schedule in issue creation', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const actor: ActorContext = {
+			...scopedActor(FULL_API_KEY_PERMISSIONS),
+			agentRunId: 'run_1',
+			runRestriction: {
+				policy: 'run-v1',
+				runId: 'run_1',
+				issueId: 'iss_bound',
+				projectId: PROJECT,
+				launchStateId: OPEN
+			}
+		};
+
+		await expect(
+			createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+				title: 'must not land',
+				schedule: { preset: { kind: 'daily', time: '09:00' } }
+			})
+		).rejects.toMatchObject({
+			status: 403,
+			code: 'run_key_forbidden',
+			details: { operation: 'schedule.create', reason: 'operation_forbidden' }
+		});
+		expect(t.all('SELECT id FROM issue')).toEqual([]);
+		expect(t.all('SELECT id FROM scheduled_task')).toEqual([]);
+	});
+});
 
 describe('allowedTransitions', () => {
 	it('lists only transitions leaving the given state, with target state data', () => {
@@ -847,7 +1015,13 @@ describe('createIssue with labels', () => {
 		viaSession: true
 	};
 	/** A run key — fenced to the existing vocabulary. Key id null: see labels.test.ts. */
-	const runKey: ActorContext = { ...human, viaSession: false, agentRunId: 'arun_1' };
+	const runKey: ActorContext = {
+		...human,
+		viaSession: false,
+		agentRunId: 'arun_1',
+		permissions: FULL_API_KEY_PERMISSIONS,
+		runRestriction: null
+	};
 
 	const create = (actor: ActorContext, labels: string[]) =>
 		createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
@@ -861,10 +1035,9 @@ describe('createIssue with labels', () => {
 		const issue = await create(human, ['bug', 'p1']);
 		expect(issue.labels.map((l) => l.name)).toEqual(['bug', 'p1']);
 		// They land in the library too, each used exactly once.
-		expect((await listLabels(t.db, USER)).map((l) => `${l.name}:${l.issue_count}`)).toEqual([
-			'bug:1',
-			'p1:1'
-		]);
+		expect((await listLabelsInternal(t.db, USER)).map((l) => `${l.name}:${l.issue_count}`)).toEqual(
+			['bug:1', 'p1:1']
+		);
 		const event = t.all(
 			`SELECT payload FROM event WHERE issue_id = ? AND type = 'issue.created'`,
 			issue.id
@@ -891,7 +1064,7 @@ describe('createIssue with labels', () => {
 		expect((caught as ApiFail).code).toBe('unknown_label');
 		// The whole point of resolving before the batch: no half-created issue.
 		expect(issueCount()).toBe(0);
-		expect(await listLabels(t.db, USER)).toEqual([]);
+		expect(await listLabelsInternal(t.db, USER)).toEqual([]);
 	});
 
 	it('dispatch effects: createIssue stays silent when the durable batch rejects', async () => {
@@ -913,13 +1086,13 @@ describe('createIssue with labels', () => {
 		await createLabel(t.db, t.env, human, { name: 'bug' });
 		const issue = await create(runKey, ['BUG']);
 		expect(issue.labels.map((l) => l.name)).toEqual(['bug']);
-		expect(await listLabels(t.db, USER)).toHaveLength(1);
+		expect(await listLabelsInternal(t.db, USER)).toHaveLength(1);
 	});
 
 	it('dedupes names that differ only by case within one create', async () => {
 		const issue = await create(human, ['bug', 'Bug']);
 		expect(issue.labels.map((l) => l.name)).toEqual(['bug']);
-		expect(await listLabels(t.db, USER)).toHaveLength(1);
+		expect(await listLabelsInternal(t.db, USER)).toHaveLength(1);
 	});
 
 	it('filters on a label applied at creation time', async () => {

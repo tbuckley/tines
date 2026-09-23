@@ -8,9 +8,11 @@ import {
 	resolveHostedPublicSnapshot
 } from '$lib/server/publications/public';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'library.prepare');
 	const body = await readOptionalJson<{ choices?: unknown }>(event);
 	if (Object.keys(body).some((key) => key !== 'choices'))
 		throw new ApiFail(422, 'invalid_field', 'Unknown hosted installation field');

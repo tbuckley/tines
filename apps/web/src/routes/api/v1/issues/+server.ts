@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { IssueListItem, ListResponse } from '@tines/shared';
 import { api, apiContext, encodeCursor, readArchived, readPage } from '$lib/server/api/core';
-import { listIssues } from '$lib/server/api/issues';
+import { listIssuesForActor } from '$lib/server/api/issues';
 import type { RequestHandler } from './$types';
 
 /** Global issue list across projects. */
@@ -9,9 +9,9 @@ export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	const page = readPage(event);
 	const params = event.url.searchParams;
-	const { items, hasMore } = await listIssues(
+	const { items, hasMore } = await listIssuesForActor(
 		db,
-		actor.userId,
+		actor,
 		{
 			project: params.get('project') ?? undefined,
 			state: params.get('state') ?? undefined,

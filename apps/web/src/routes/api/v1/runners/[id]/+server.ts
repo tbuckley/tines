@@ -6,7 +6,7 @@ import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	return json(await getRunner(db, actor.userId, event.params.id));
+	return json(await getRunner(db, actor, event.params.id));
 });
 
 export const PATCH: RequestHandler = api(async (event) => {

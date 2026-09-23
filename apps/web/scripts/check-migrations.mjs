@@ -19,7 +19,10 @@ import { readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const GRANDFATHERED_DUPLICATES = new Set(['0010']);
+// Both 0040 names have been applied: run_key_stage_snapshot in production and
+// api_key_permissions on the shared preview database. Both contain
+// non-idempotent ADD COLUMN statements, so renaming either would rerun it.
+const GRANDFATHERED_DUPLICATES = new Set(['0010', '0040']);
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 const files = readdirSync(dir).sort();

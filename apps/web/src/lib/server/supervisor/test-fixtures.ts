@@ -278,6 +278,7 @@ export function addRunKey(t: TestDb, runId: string, opts: { id?: string } = {}):
 			VALUES (?, ?, ?, ?, ?, ?, ?)`
 		)
 		.run(id, USER, `run ${runId}`, `hash_${id}`, id.slice(0, 8), runId, NOW);
+	t.sqlite.prepare('UPDATE agent_run SET api_key_id = ? WHERE id = ?').run(id, runId);
 	return id;
 }
 
@@ -333,6 +334,7 @@ export function addTransitionEvent(
 		fromName?: string;
 		toName?: string;
 		forced?: boolean;
+		project?: string;
 	}
 ): void {
 	t.sqlite
@@ -346,7 +348,7 @@ export function addTransitionEvent(
 			USER,
 			opts.apiKeyId,
 			opts.issueId,
-			PROJECT,
+			opts.project ?? PROJECT,
 			JSON.stringify({
 				from_state_id: opts.from ?? OPEN,
 				to_state_id: opts.to ?? REVIEW,

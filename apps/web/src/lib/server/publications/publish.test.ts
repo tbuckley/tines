@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	canonicalizeLibraryValue,
+	FULL_API_KEY_PERMISSIONS,
 	parsePublicWorkflowDocument,
 	withLibraryDocumentDigest
 } from '@tines/shared';
@@ -329,7 +330,13 @@ describe('publication commit', () => {
 			publishPublication(
 				t.db,
 				envFor(t),
-				{ ...actor, apiKeyId: 'run', viaSession: false, agentRunId: 'arun_1' },
+				{
+					...actor,
+					apiKeyId: 'run',
+					viaSession: false,
+					agentRunId: 'arun_1',
+					permissions: FULL_API_KEY_PERMISSIONS
+				},
 				proof.candidate_id,
 				confirmation(proof)
 			)

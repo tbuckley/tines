@@ -16,15 +16,16 @@ import {
 	isTierOnlyTargets,
 	routingScopeSpecificity
 } from '@tines/shared';
-import type { CompiledQuery, Kysely } from 'kysely';
+import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
-import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
+import { ApiFail, notFound, runAtomic, sessionActor, type ActorContext } from './core';
 import { eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
 import { requireTier } from './runners';
 import { resolveEffort, resolveTier, type TierResolvable } from '$lib/server/supervisor/logic';
 import { resolveScope, scopeLabel, toContextScope } from './scope';
+import { accessAllowed, requireAccess, type Requirement } from './permissions';
 
 // ---------------------------------------------------------------------------
 // Scope: three nullable dimensions (no issue — pins cover that), AND semantics
@@ -33,6 +34,29 @@ export interface RuleScopeIds {
 	projectId: string | null;
 	workflowStateId: string | null;
 	labelId: string | null;
+}
+
+function routingRequirements(
+	scope: RuleScopeIds,
+	access: 'read' | 'write' | 'delete'
+): Requirement[] {
+	return [
+		{ domain: 'control_plane', access },
+		...(scope.projectId
+			? ([
+					{
+						domain: 'project',
+						access: access === 'read' ? 'read' : 'write',
+						projectId: scope.projectId
+					}
+				] as const)
+			: access === 'read'
+				? []
+				: ([{ domain: 'project', access: 'write', scope: 'all' }] as const)),
+		...(scope.workflowStateId || scope.labelId
+			? ([{ domain: 'workspace', access: 'read' }] as const)
+			: [])
+	];
 }
 
 /**
@@ -438,13 +462,22 @@ function rowScopeIds(row: RuleRow): RuleScopeIds {
  */
 export async function listRoutingRules(
 	db: Kysely<Database>,
-	userId: string
+	actorInput: ActorContext | string
 ): Promise<RoutingRuleWithWarnings[]> {
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'routing.read');
+	const userId = actor.userId;
 	const [rows, runnersById] = await Promise.all([
 		ruleQuery(db, userId).execute(),
 		loadRunnersById(db, userId)
 	]);
-	const entries = rows.map((row) => ({ row, rule: serializeRule(row, runnersById) }));
+	const entries = rows
+		.filter((row) =>
+			accessAllowed(actor, routingRequirements(rowScopeIds(row), 'read'), 'routing.read', {
+				projectId: row.project_id ?? undefined
+			})
+		)
+		.map((row) => ({ row, rule: serializeRule(row, runnersById) }));
 	const forShadowing: RuleForShadowing[] = entries.map(({ row, rule }) => ({
 		id: row.id,
 		...rowScopeIds(row),
@@ -496,11 +529,16 @@ export function routingRulesForProject(
 
 export async function getRoutingRule(
 	db: Kysely<Database>,
-	userId: string,
+	actorInput: ActorContext | string,
 	id: string
 ): Promise<RoutingRule> {
+	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
+	const userId = actor.userId;
 	const row = await ruleQuery(db, userId).where('routing_rule.id', '=', id).executeTakeFirst();
 	if (!row) throw notFound();
+	requireAccess(actor, routingRequirements(rowScopeIds(row), 'read'), 'routing.read', {
+		projectId: row.project_id ?? undefined
+	});
 	return serializeRule(row, await loadRunnersById(db, userId));
 }
 
@@ -605,6 +643,9 @@ export async function createRoutingRule(
 		workflowStateId: body.workflow_state_id ?? null,
 		labelId: body.label_id ?? null
 	};
+	requireAccess(actor, routingRequirements(scope, 'write'), 'routing.create', {
+		projectId: scope.projectId ?? undefined
+	});
 	const label = scopeLabel(
 		await resolveScope(
 			db,
@@ -666,6 +707,15 @@ export async function updateRoutingRule(
 		scope.projectId !== row.project_id ||
 		scope.workflowStateId !== row.workflow_state_id ||
 		scope.labelId !== row.label_id;
+	requireAccess(
+		actor,
+		[
+			...routingRequirements(rowScopeIds(row), 'write'),
+			...(scopeChanged ? routingRequirements(scope, 'write') : [])
+		],
+		'routing.update',
+		{ projectId: scope.projectId ?? row.project_id ?? undefined }
+	);
 	const label = scopeLabel(
 		await resolveScope(
 			db,
@@ -744,6 +794,7 @@ export async function rulesScopedToLabel(
 		id: string;
 		project_id: string | null;
 		workflow_state_id: string | null;
+		label_id: string | null;
 		scope_label: string;
 	}[]
 > {
@@ -752,6 +803,7 @@ export async function rulesScopedToLabel(
 		id: row.id,
 		project_id: row.project_id,
 		workflow_state_id: row.workflow_state_id,
+		label_id: row.label_id,
 		scope_label: rowScope(row).label
 	}));
 }
@@ -769,22 +821,41 @@ export function routingRuleDeletes(
 		id: string;
 		project_id: string | null;
 		workflow_state_id: string | null;
+		label_id: string | null;
 		scope_label: string;
 	}[]
 ): CompiledQuery[] {
-	return rules.flatMap((rule) => [
-		db.deleteFrom('routing_rule').where('id', '=', rule.id).compile(),
-		eventInsert(db, actor, {
-			type: 'routing_rule.deleted',
-			projectId: rule.project_id,
-			payload: {
-				rule_id: rule.id,
-				scope_label: rule.scope_label,
-				workflow_state_id: rule.workflow_state_id,
-				via: 'label.deleted'
-			}
-		})
-	]);
+	return rules.flatMap((rule) => {
+		const eventId = newId('evt');
+		const witness = sql<boolean>`EXISTS (
+			SELECT 1 FROM routing_rule current
+			WHERE current.id = ${rule.id}
+				AND current.project_id IS ${rule.project_id}
+				AND current.workflow_state_id IS ${rule.workflow_state_id}
+				AND current.label_id IS ${rule.label_id}
+		)`;
+		const admitted = sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`;
+		return [
+			eventInsert(
+				db,
+				actor,
+				{
+					id: eventId,
+					type: 'routing_rule.deleted',
+					projectId: rule.project_id,
+					payload: {
+						rule_id: rule.id,
+						scope_label: rule.scope_label,
+						workflow_state_id: rule.workflow_state_id,
+						via: 'label.deleted'
+					}
+				},
+				{ predicate: witness }
+			),
+			sql`SELECT CASE WHEN ${admitted} THEN 1 ELSE json_extract('x', '$[') END`.compile(db),
+			db.deleteFrom('routing_rule').where('id', '=', rule.id).where(admitted).compile()
+		];
+	});
 }
 
 export async function deleteRoutingRule(
@@ -798,6 +869,9 @@ export async function deleteRoutingRule(
 		.where('routing_rule.id', '=', id)
 		.executeTakeFirst();
 	if (!row) throw notFound();
+	requireAccess(actor, routingRequirements(rowScopeIds(row), 'delete'), 'routing.delete', {
+		projectId: row.project_id ?? undefined
+	});
 	await runAtomic(env, [
 		db.deleteFrom('routing_rule').where('id', '=', id).compile(),
 		eventInsert(db, actor, {

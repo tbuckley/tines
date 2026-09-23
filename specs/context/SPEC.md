@@ -414,3 +414,6 @@ process environment only.
 
 CLI: `tines context create --kind env --name NAME --value <v|@file|-> [--secret] [--hint <text>]`;
 `tines context edit <id> [--value …] [--secret] [--hint …]`.
+# 2026-09-21 — API-key scope enforcement (Tines/648)
+
+Context authorization now derives requirements from every populated anchor. Project and issue anchors require project authority; state, label, and global anchors require workspace authority; env mutations additionally require control-plane authority. Re-scoping checks both source and destination. Run journal writes are limited to the exact project plus launch-state inheritance root described in `../api-keys/SPEC.md`.

@@ -164,6 +164,10 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'workflow.updated': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
 	'workflow.deleted': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
 	'api_key.created': (_ev, p) => [text('created API key'), name(p.name)],
+	'api_key.permissions_updated': (_ev, p) => [
+		text('updated permissions for API key'),
+		name(p.name)
+	],
 	'api_key.revoked': (_ev, p) => [text('revoked API key'), name(p.name)],
 	'scheduled_task.created': (ev, p) => [text(`${action(ev.type)} schedule`), name(p.name)],
 	'scheduled_task.updated': (ev, p) => [text(`${action(ev.type)} schedule`), name(p.name)],

@@ -8,7 +8,6 @@
 import type { IssueTransferPreview, IssueTransferResult } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import { createTestDb, type TestDb } from '$lib/server/api/test-db';
-import { isControlPlanePath } from '$lib/server/api/core';
 import { NOW, PROJECT, USER, addIssue, seedBase } from '$lib/server/supervisor/test-fixtures';
 import { GET, POST } from './+server';
 
@@ -113,11 +112,5 @@ describe('the issue transfer route', () => {
 			)
 		);
 		expect(noToken.status).toBe(422);
-	});
-
-	it('fences the commit from run keys while leaving the review readable', () => {
-		const path = `/api/v1/issues/iss_1/transfer`;
-		expect(isControlPlanePath(path, 'GET')).toBe(false);
-		expect(isControlPlanePath(path, 'POST')).toBe(true);
 	});
 });

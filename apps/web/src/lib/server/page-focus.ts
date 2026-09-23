@@ -4,6 +4,7 @@ import type { FocusNotice } from '$lib/focus-types';
 import type { Database } from '$lib/server/db';
 import { resolveFocus, setFocus } from './api/preferences';
 import { listProjects } from './api/projects';
+import { sessionActor } from './api/core';
 
 /** Resolve the sticky focus and consume the legacy `?project=` one-shot. */
 export async function resolvePageFocus(
@@ -16,7 +17,7 @@ export async function resolvePageFocus(
 	const ref = url.searchParams.get('project');
 	let notice: FocusNotice | null = null;
 	if (ref) {
-		const all = await listProjects(db, userId, { archived: 'all' });
+		const all = await listProjects(db, sessionActor({ id: userId }), { archived: 'all' });
 		const hit = all.find((project) => project.id === ref || project.name === ref);
 		if (hit?.archived_at === null) {
 			await setFocus(db, env, userId, hit.id);

@@ -1,12 +1,12 @@
 import { json } from '@sveltejs/kit';
 import type { UpdateScheduleRequest } from '@tines/shared';
 import { api, apiContext, readJson } from '$lib/server/api/core';
-import { deleteSchedule, getSchedule, updateSchedule } from '$lib/server/api/schedules';
+import { deleteSchedule, getScheduleForActor, updateSchedule } from '$lib/server/api/schedules';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	return json(await getSchedule(db, actor.userId, event.params.id));
+	return json(await getScheduleForActor(db, actor, event.params.id));
 });
 
 export const PATCH: RequestHandler = api(async (event) => {

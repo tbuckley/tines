@@ -106,6 +106,11 @@ export const RUNROW = {
 	 * `expires_at <= now` predicate, which the 2030 expiry keeps clear.
 	 */
 	runKey: 'tines_e2erunrow000000000000000000000000000000000',
+	runKeyRunId: 'arun_e2e_run_key_active',
+	runKeyIssueId: 'iss_e2e_run_key_active',
+	runKeyIssueNumber: 3,
+	runKeyRunnerId: 'rnr_e2e_run_key_active',
+	runKeyRunnerName: 'run-key-fixture',
 	runKeyName: 'run:runrow'
 };
 
@@ -257,6 +262,15 @@ export const RUNNER_E2E = {
 	apiKey: 'tines_e2erunner000000000000000000000000000000000',
 	apiKeyName: 'runner-key',
 	sessionToken: 'e2e-session-runner'
+};
+/** Exclusive to runner-concurrency.spec.ts, whose cap journey needs no shared active runs. */
+export const RUNNER_CONCURRENCY = {
+	id: 'usr_e2e_runner_concurrency',
+	name: 'Runner Concurrency E2E',
+	email: 'runner-concurrency@e2e.test',
+	apiKey: 'tines_e2erunnerconcurrency00000000000000000000000',
+	apiKeyName: 'runner-concurrency-key',
+	sessionToken: 'e2e-session-runner-concurrency'
 };
 export const EXPLAINER_REMEDIES = {
 	id: 'usr_e2e_explainer_remedies',

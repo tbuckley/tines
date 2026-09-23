@@ -30,6 +30,7 @@ import type {
 	IssueTransferResult,
 	IssueTransferSchedule
 } from '@tines/shared';
+import { requireAccess } from './permissions';
 
 interface WitnessIssue {
 	id: string;
@@ -340,6 +341,16 @@ export async function previewIssueTransfer(
 	if (section.source.user_id !== actor.userId || section.destination.user_id !== actor.userId) {
 		throw notFound();
 	}
+	requireAccess(
+		actor,
+		[
+			{ domain: 'project', access: 'read', projectId: section.source.id },
+			{ domain: 'project', access: 'read', projectId: section.destination.id },
+			{ domain: 'workspace', access: 'read' }
+		],
+		'issue_transfer.preview',
+		{ projectId: section.source.id, issueId }
+	);
 	const noop = section.source.id === section.destination.id;
 	const run = await activeRun(db, issueId);
 	const blockers = blockersFor(actor, section, run);
@@ -562,6 +573,16 @@ export async function commitIssueTransfer(
 	if (section.source.user_id !== actor.userId || section.destination.user_id !== actor.userId) {
 		throw notFound();
 	}
+	requireAccess(
+		actor,
+		[
+			{ domain: 'project', access: 'write', projectId: section.source.id },
+			{ domain: 'project', access: 'write', projectId: section.destination.id },
+			{ domain: 'workspace', access: 'read' }
+		],
+		'issue_transfer.commit',
+		{ projectId: section.source.id, issueId }
+	);
 	if (
 		section.issue.project_id !== payload.s ||
 		section.issue.project_assignment_token !== payload.a

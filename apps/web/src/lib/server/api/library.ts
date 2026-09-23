@@ -22,6 +22,7 @@ import { applyLibraryV3Import, planLibraryV3Import } from './library-v3-import';
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { ApiFail, requireString, type ActorContext } from './core';
+import { requireAccess } from './permissions';
 import {
 	contextItemQuery,
 	createContextItem,
@@ -982,6 +983,15 @@ export async function applyImport(
 	effects: DispatchEffects,
 	request: ImportLibraryRequest
 ): Promise<ImportLibraryResponse> {
+	requireAccess(
+		actor,
+		[
+			{ domain: 'control_plane', access: 'write' },
+			{ domain: 'project', access: 'write', scope: 'all' },
+			{ domain: 'workspace', access: 'write' }
+		],
+		'library.import'
+	);
 	if (request.document?.version === 3)
 		return applyLibraryV3Import(db, env, actor, effects, request);
 	const plan = await planImport(db, actor.userId, request);

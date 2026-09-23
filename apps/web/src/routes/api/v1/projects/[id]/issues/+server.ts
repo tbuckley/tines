@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { CreateIssueRequest, IssueListItem, ListResponse } from '@tines/shared';
 import { api, apiContext, encodeCursor, readJson, readPage } from '$lib/server/api/core';
-import { createIssue, listIssues } from '$lib/server/api/issues';
+import { createIssue, listIssuesForActor } from '$lib/server/api/issues';
 import { readIssueCreateMultipart } from '$lib/server/api/issue-create-files';
 import { addIssueLink } from '$lib/server/api/issue-links';
 import { getProject } from '$lib/server/api/projects';
@@ -11,12 +11,12 @@ import type { RequestHandler } from './$types';
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	// 404 for a project the user doesn't own, before filtering by it.
-	await getProject(db, actor.userId, event.params.id);
+	await getProject(db, actor, event.params.id);
 	const page = readPage(event);
 	const params = event.url.searchParams;
-	const { items, hasMore } = await listIssues(
+	const { items, hasMore } = await listIssuesForActor(
 		db,
-		actor.userId,
+		actor,
 		{
 			projectId: event.params.id,
 			workflow: params.get('workflow') ?? undefined,
@@ -49,7 +49,7 @@ export const POST: RequestHandler = api(async (event) => {
 			.startsWith('multipart/form-data')
 	) {
 		// Reject foreign/archived projects before consuming a potentially large body.
-		const project = await getProject(db, actor.userId, event.params.id);
+		const project = await getProject(db, actor, event.params.id);
 		await assertWritable(db, actor, project);
 		const parsed = await readIssueCreateMultipart(event.request);
 		const race =

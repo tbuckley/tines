@@ -4,9 +4,11 @@ import { api, apiContext, ApiFail, requireJsonObject } from '$lib/server/api/cor
 import { readLibraryEnvelope } from '$lib/server/library/transport';
 import { prepareWorkflowPackage } from '$lib/server/library/plan';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
+	requireAccess(actor, [{ domain: 'control_plane', access: 'read' }], 'library.prepare');
 	const raw = await readLibraryEnvelope(event.request);
 	let body;
 	try {

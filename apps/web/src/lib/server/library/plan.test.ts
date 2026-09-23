@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { withLibraryDocumentDigest } from '@tines/shared';
+import { FULL_API_KEY_PERMISSIONS, withLibraryDocumentDigest } from '@tines/shared';
 import {
 	automatedPackage,
 	inheritedPackage
@@ -13,7 +13,7 @@ import {
 	validatePackageAllocation,
 	PACKAGE_PLAN_TTL_MS
 } from './token';
-import { readPackageDestination } from './destination';
+import { readPackageDestinationInternal } from './destination';
 
 const actor = {
 	userId: USER,
@@ -66,7 +66,7 @@ async function automatedFixture() {
 describe('signed workflow package preparation and reconstruction', () => {
 	it('is read-only, returns complete content, budgets the receipt and signs a 15-minute replayable plan', async () => {
 		const f = await fixture();
-		const before = await readPackageDestination(f.t.db, USER);
+		const before = await readPackageDestinationInternal(f.t.db, USER);
 		const preview = await f.prepare();
 		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
 		expect(payload.expires_at - payload.issued_at).toBe(PACKAGE_PLAN_TTL_MS);
@@ -82,7 +82,7 @@ describe('signed workflow package preparation and reconstruction', () => {
 				)
 			).size
 		).toBe(preview.operations.length);
-		expect((await readPackageDestination(f.t.db, USER)).raw).toBe(before.raw);
+		expect((await readPackageDestinationInternal(f.t.db, USER)).raw).toBe(before.raw);
 		expect(await f.t.db.selectFrom('event').selectAll().execute()).toEqual([]);
 		const replay = await reconstructPackagePlan(f.t.db, actor, f.raw, payload);
 		expect(replay.resolved).toEqual(preview.resolved);
@@ -100,7 +100,13 @@ describe('signed workflow package preparation and reconstruction', () => {
 	});
 	it('binds account and exact actor identity; run keys may prepare but another actor must reprepare', async () => {
 		const f = await fixture();
-		const runActor = { ...actor, viaSession: false, apiKeyId: 'run-key', agentRunId: 'run' };
+		const runActor = {
+			...actor,
+			viaSession: false,
+			apiKeyId: 'run-key',
+			agentRunId: 'run',
+			permissions: FULL_API_KEY_PERMISSIONS
+		};
 		const preview = await prepareWorkflowPackage(f.t.db, env, runActor, f.raw, f.choices);
 		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
 		await expect(reconstructPackagePlan(f.t.db, actor, f.raw, payload)).rejects.toMatchObject({

@@ -7,6 +7,7 @@ import {
 import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { ApiFail, runAtomic, runKeyForbidden, type ActorContext } from '../api/core';
+import { requireAccess } from '../api/permissions';
 import { validatePackageBatch } from './budgets';
 import { compilePackageInstall, packageReceipt } from './install-queries';
 import { packageRequestDigest, reconstructPackagePlan } from './plan';
@@ -79,6 +80,15 @@ export async function installWorkflowPackage(
 	request: WorkflowPackageInstallRequest,
 	beforeAtomic?: (source: PackagePlanPayload['source']) => Promise<void>
 ): Promise<WorkflowPackageReceipt> {
+	requireAccess(
+		actor,
+		[
+			{ domain: 'control_plane', access: 'write' },
+			{ domain: 'project', access: 'write', scope: 'all' },
+			{ domain: 'workspace', access: 'write' }
+		],
+		'library.install'
+	);
 	if (actor.agentRunId) throw runKeyForbidden({ path: '/api/v1/library/install' });
 	const payload = await verifyPackagePlan(request.plan_token, packageKeyMaterial(env));
 	const actorKey = packageActorKey(actor);

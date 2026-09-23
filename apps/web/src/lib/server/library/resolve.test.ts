@@ -6,7 +6,7 @@ import {
 } from '../../../../../../packages/shared/src/library/fixtures';
 import { createTestDb } from '../api/test-db';
 import { USER, PROJECT, seedBase, addRunner } from '../supervisor/test-fixtures';
-import { readPackageDestination, selectPackageDestination } from './destination';
+import { readPackageDestinationInternal, selectPackageDestination } from './destination';
 import { allocatePackageObjects, resolvePackageDestination, resolvePackageNames } from './resolve';
 
 async function fixture(scheduled = false) {
@@ -22,7 +22,7 @@ async function fixture(scheduled = false) {
 		resolvePackageDestination(
 			doc,
 			chosen,
-			(await readPackageDestination(t.db, USER)).data,
+			(await readPackageDestinationInternal(t.db, USER)).data,
 			allocation,
 			now
 		);
@@ -218,9 +218,9 @@ describe('destination package resolution (read-only)', () => {
 	});
 	it('selected SQL witness matches the same projection from the coherent initial snapshot', async () => {
 		const f = await fixture();
-		const initial = await readPackageDestination(f.t.db, USER);
+		const initial = await readPackageDestinationInternal(f.t.db, USER);
 		const plan = resolvePackageDestination(f.doc, f.choices, initial.data, f.allocation, f.now);
-		const selected = await readPackageDestination(f.t.db, USER, plan.selection);
+		const selected = await readPackageDestinationInternal(f.t.db, USER, plan.selection);
 		expect(selected.data).toEqual(selectPackageDestination(initial.data, plan.selection));
 		expect(JSON.parse(selected.raw)).toEqual(selected.data);
 		expect(selected.raw).not.toMatch(/secret_enc|runner_token_hash|last_seen_at/);

@@ -10,6 +10,7 @@ import { api, apiContext } from '$lib/server/api/core';
 import { getIssueDetail } from '$lib/server/api/issues';
 import { listLabels } from '$lib/server/api/labels';
 import type { RequestHandler } from './$types';
+import { requireIssueAccess } from '$lib/server/api/permissions';
 
 /**
  * Launch prompt: the stitched context plus the generated issue block. A pure
@@ -22,6 +23,10 @@ import type { RequestHandler } from './$types';
  */
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
+	await requireIssueAccess(db, actor, event.params.id, 'read', 'context.read', [
+		{ domain: 'workspace', access: 'read' },
+		{ domain: 'control_plane', access: 'read' }
+	]);
 	const [issue, context, artifacts, labels] = await Promise.all([
 		getIssueDetail(
 			db,
@@ -31,7 +36,7 @@ export const GET: RequestHandler = api(async (event) => {
 		),
 		effectiveContextForIssue(db, actor.userId, event.params.id),
 		listArtifacts(db, actor.userId, event.params.id),
-		listLabels(db, actor.userId)
+		listLabels(db, actor)
 	]);
 	const labelNames = labels.map((l) => l.name);
 	const body: LaunchPromptResponse = {

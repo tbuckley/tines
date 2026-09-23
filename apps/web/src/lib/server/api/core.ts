@@ -1,5 +1,11 @@
 import type { D1Result } from '@cloudflare/workers-types';
-import type { ApiErrorBody, ArchivedFilter } from '@tines/shared';
+import {
+	FULL_API_KEY_PERMISSIONS,
+	parseApiKeyPermissions,
+	type ApiErrorBody,
+	type ApiKeyPermissions,
+	type ArchivedFilter
+} from '@tines/shared';
 import { json, type RequestEvent } from '@sveltejs/kit';
 import type { CompiledQuery } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
@@ -199,82 +205,39 @@ export interface ActorContext {
 	viaSession: boolean;
 	/** Set when the key is a run key (bound to an agent run). */
 	agentRunId?: string | null;
+	/** Required on request actors. Optional only for legacy session test fixtures. */
+	permissions?: ApiKeyPermissions;
+	runRestriction?: {
+		policy: 'run-v1';
+		runId: string;
+		issueId: string;
+		projectId: string;
+		launchStateId: string;
+	} | null;
 }
 
-// ---------------------------------------------------------------------------
-// Run keys: api_key rows with agent_run_id set. They carry issue-action
-// authority but are fenced off the control plane — an agent must not be able
-// to raise its own budget, un-park itself, re-route work, or touch
-// credentials. Ordinary named keys keep their full authority.
-//
-// The fence is per method, not per path: a surface an agent must *understand*
-// to do its job can be readable while its writes stay fenced (the label
-// library is the one such surface today).
-
-/**
- * A fenced surface. Every method is fenced unless `readable` is set, in which
- * case GET/HEAD pass: reading is classification, writing is control.
- */
-type ControlPlaneRule = { pattern: RegExp; readable?: boolean };
-
-const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
-	// The fleet's shape is legible to a run (Tines/256): an agent already reads
-	// its own dispatch explainer, which names runners, their status and their
-	// caps, so the fleet reads behind `tines supervisor status` disclose nothing
-	// new. Only the GETs open — `register`, `rotate-token` and the PATCH/DELETE
-	// writes stay fenced (`poll` is runner-token auth, never a run key), and the
-	// settings GET nulls `github_pat_hint` for run keys.
-	{ pattern: /^\/api\/v1\/runners(\/|$)/, readable: true },
-	{ pattern: /^\/api\/v1\/routing-rules(\/|$)/ },
-	{ pattern: /^\/api\/v1\/supervisor\/settings(\/|$)/, readable: true },
-	{ pattern: /^\/api\/v1\/supervisor\/rates(\/|$)/, readable: true },
-	{ pattern: /^\/api\/v1\/issues\/[^/]+\/resume$/ },
-	// Moving an issue between projects is an operator act: an agent may review
-	// the move (the preview is the argument it makes to its owner) but the POST
-	// is fenced, so a run cannot re-home itself into different guidance.
-	{ pattern: /^\/api\/v1\/issues\/[^/]+\/transfer$/, readable: true },
-	{ pattern: /^\/api\/v1\/api-keys(\/|$)/ },
-	{ pattern: /^\/api\/v1\/host\/workflow-moderation(\/|$)/ },
-	// The label library is vocabulary, not classification: run keys may read it
-	// (`tines labels list` — the launch prompt points at it) and may apply and
-	// remove existing labels (/issues/:id/labels stays open to them), but
-	// cannot mint, rename, or delete the terms themselves.
-	{ pattern: /^\/api\/v1\/labels(\/|$)/, readable: true },
-	// Bulk library writes: an agent must propose context changes, not apply
-	// a whole library over the top of them.
-	{ pattern: /^\/api\/v1\/import(\/|$)/ },
-	// Preparing/recovering is read-only; committing an installation is an
-	// operator action and is also denied again inside the install service.
-	{ pattern: /^\/api\/v1\/library\/install$/ },
-	// Agents may validate and prepare publication proofs, but only a human or
-	// named key may publish, withdraw, restore, or install the hosted snapshot.
-	{ pattern: /^\/api\/v1\/publications\/[^/]+\/(publish|withdraw|restore)$/ },
-	// Archiving is an operator act: an agent must not freeze (or thaw) the
-	// project it is working in, least of all the one draining around it.
-	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ },
-	// Per-user UI preferences (the project focus): an agent has no focus of its
-	// own and must not read or move its owner's. GET is fenced too.
-	{ pattern: /^\/api\/v1\/preferences(\/|$)/ }
-];
-
-/** SvelteKit answers HEAD from the GET handler, so both are reads. */
-const READ_METHODS = new Set(['GET', 'HEAD']);
-
-/** True when a run key must not make `method` requests to `pathname`. */
-export function isControlPlanePath(pathname: string, method: string): boolean {
-	const read = READ_METHODS.has(method.toUpperCase());
-	return CONTROL_PLANE_RULES.some((r) => r.pattern.test(pathname) && !(read && r.readable));
+/** Full owner authority for trusted browser-session entry points. */
+export function sessionActor(user: { id: string; name?: string }): ActorContext {
+	return {
+		userId: user.id,
+		userName: user.name ?? '',
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true,
+		permissions: FULL_API_KEY_PERMISSIONS,
+		runRestriction: null
+	};
 }
 
 /**
- * The fence's 403, shared by the path fence and field-level guards (pins on
- * PATCH /issues/:id live on an otherwise run-key-legal route).
+ * Compatibility error for the remaining semantic run-key guards. New
+ * authorization is operation-based in permissions.ts, never route-based.
  */
 export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 	return new ApiFail(
 		403,
 		'run_key_forbidden',
-		'Run keys cannot modify runners, routing rules, supervisor settings, model rates, parked issues, issue pins, or API keys, ' +
+		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys, ' +
 			'cannot create, edit or delete env context items, ' +
 			'cannot import a library or install a workflow package, cannot archive or unarchive projects, cannot create, rename, or delete ' +
 			'labels, and cannot apply or remove a label a routing rule is scoped to (reading the library and ' +
@@ -285,42 +248,16 @@ export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 	);
 }
 
-/**
- * Gate applied to every key-authenticated request: expired run keys are dead
- * (401), and live run keys get 403s on the control plane, pointing at the
- * proposal convention instead.
- */
-export function assertRunKeyAllowed(
-	key: { agentRunId: string | null; expiresAt: number | null },
-	pathname: string,
-	method: string,
-	now = Date.now()
-): void {
-	if (key.expiresAt !== null && key.expiresAt <= now) {
-		throw new ApiFail(
-			401,
-			'run_key_expired',
-			'This run key has expired; the run it belonged to is over'
-		);
-	}
-	if (key.agentRunId !== null && isControlPlanePath(pathname, method)) {
-		throw runKeyForbidden();
-	}
-}
-
 export async function requireActor(event: RequestEvent): Promise<ActorContext> {
-	if (event.locals.user) {
-		return {
-			userId: event.locals.user.id,
-			userName: event.locals.user.name,
-			apiKeyId: null,
-			apiKeyName: null,
-			viaSession: true
-		};
-	}
-
 	const header = event.request.headers.get('authorization');
 	const key = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+	// An Authorization header is an explicit credential choice. Never let a
+	// malformed or unsupported bearer fall through to the browser session:
+	// doing so turns a failed API-key request into a successful owner request.
+	if (header === null && event.locals.user) {
+		return sessionActor(event.locals.user);
+	}
+
 	if (!key || !event.platform) {
 		throw new ApiFail(
 			401,
@@ -334,12 +271,20 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	const row = await db
 		.selectFrom('api_key')
 		.innerJoin('user', 'user.id', 'api_key.user_id')
+		.leftJoin('agent_run as run', 'run.id', 'api_key.agent_run_id')
+		.leftJoin('issue as run_issue', 'run_issue.id', 'run.issue_id')
 		.select([
 			'api_key.id',
 			'api_key.user_id',
 			'api_key.name',
 			'api_key.agent_run_id',
 			'api_key.expires_at',
+			'api_key.permissions',
+			'run.status as run_status',
+			'run.api_key_id as run_api_key_id',
+			'run.issue_id as run_issue_id',
+			'run.state_id_at_start as run_launch_state_id',
+			'run_issue.project_id as run_project_id',
 			'user.name as user_name'
 		])
 		.where('api_key.key_hash', '=', hash)
@@ -348,11 +293,40 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	if (!row) {
 		throw new ApiFail(401, 'unauthorized', 'Invalid or revoked API key');
 	}
-	assertRunKeyAllowed(
-		{ agentRunId: row.agent_run_id, expiresAt: row.expires_at },
-		event.url.pathname,
-		event.request.method
-	);
+	let permissions: ApiKeyPermissions;
+	try {
+		permissions = parseApiKeyPermissions(JSON.parse(row.permissions));
+	} catch {
+		throw new ApiFail(401, 'invalid_key_permissions', 'API key permissions are invalid');
+	}
+	// Expiry is credential validity. Operation authorization is semantic and
+	// enforced by the service guards; the legacy path fence is not consulted.
+	if (row.expires_at !== null && row.expires_at <= Date.now()) {
+		throw new ApiFail(
+			401,
+			'run_key_expired',
+			'This run key has expired; the run it belonged to is over'
+		);
+	}
+	let runRestriction: ActorContext['runRestriction'] = null;
+	if (row.agent_run_id !== null) {
+		if (
+			(row.run_status !== 'launching' && row.run_status !== 'running') ||
+			row.run_api_key_id !== row.id ||
+			!row.run_issue_id ||
+			!row.run_project_id ||
+			!row.run_launch_state_id
+		) {
+			throw new ApiFail(401, 'run_key_inactive', 'This run key is no longer active');
+		}
+		runRestriction = {
+			policy: 'run-v1',
+			runId: row.agent_run_id,
+			issueId: row.run_issue_id,
+			projectId: row.run_project_id,
+			launchStateId: row.run_launch_state_id
+		};
+	}
 
 	const touch = db
 		.updateTable('api_key')
@@ -368,29 +342,18 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 		apiKeyId: row.id,
 		apiKeyName: row.name,
 		viaSession: false,
-		agentRunId: row.agent_run_id
+		agentRunId: row.agent_run_id,
+		permissions,
+		runRestriction
 	};
-}
-
-/** API key management requires a browser session, not a key. */
-export async function requireSessionActor(event: RequestEvent): Promise<ActorContext> {
-	const actor = await requireActor(event);
-	if (!actor.viaSession) {
-		throw new ApiFail(
-			403,
-			'session_required',
-			'API keys are managed from the web UI (browser session), not with a key'
-		);
-	}
-	return actor;
 }
 
 export { sha256Hex };
 
 /** Everything a route handler needs: scoped db, env, and the acting user. */
-export async function apiContext(event: RequestEvent, { sessionOnly = false } = {}) {
+export async function apiContext(event: RequestEvent) {
 	if (!event.platform) throw new ApiFail(500, 'no_platform', 'Platform bindings unavailable');
-	const actor = sessionOnly ? await requireSessionActor(event) : await requireActor(event);
+	const actor = await requireActor(event);
 	return {
 		db: getDb(event.platform.env),
 		env: event.platform.env,

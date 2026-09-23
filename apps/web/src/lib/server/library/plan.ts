@@ -12,6 +12,7 @@ import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { sha256Hex } from '$lib/server/crypto';
 import { ApiFail, type ActorContext } from '../api/core';
+import { requireAccess } from '../api/permissions';
 import { readPackageDestination, selectPackageDestination } from './destination';
 import { allocatePackageObjects, resolvePackageDestination, type ResolvedPackage } from './resolve';
 import { validatePackageBatch } from './budgets';
@@ -60,6 +61,14 @@ export async function prepareWorkflowPackage(
 	choices: unknown = {},
 	source?: HostedPublicationBinding
 ): Promise<PrepareWorkflowPackageResponse> {
+	requireAccess(
+		actor,
+		[
+			{ domain: 'control_plane', access: 'read' },
+			{ domain: 'workspace', access: 'read' }
+		],
+		'library.prepare'
+	);
 	const material = packageKeyMaterial(env);
 	const document = await requireWorkflowDocument(documentJson);
 	if (
@@ -71,7 +80,7 @@ export async function prepareWorkflowPackage(
 	const allocation = allocatePackageObjects(document);
 	const issuedAt = Date.now();
 	for (let attempt = 0; attempt < 3; attempt++) {
-		const initial = await readPackageDestination(db, actor.userId);
+		const initial = await readPackageDestination(db, actor);
 		const resolved = resolvePackageDestination(
 			document,
 			choices,
@@ -79,7 +88,7 @@ export async function prepareWorkflowPackage(
 			allocation,
 			issuedAt
 		);
-		const witness = await readPackageDestination(db, actor.userId, resolved.selection);
+		const witness = await readPackageDestination(db, actor, resolved.selection);
 		if (
 			canonicalizeLibraryValue(witness.data) !==
 			canonicalizeLibraryValue(selectPackageDestination(initial.data, resolved.selection))
@@ -223,7 +232,7 @@ export async function reconstructPackagePlan(
 			'plan_stale',
 			'The package plan expired or its compiler changed; prepare again'
 		);
-	const witness = await readPackageDestination(db, actor.userId, payload.selection);
+	const witness = await readPackageDestination(db, actor, payload.selection);
 	if ((await sha256Hex(witness.raw)) !== payload.witness_hash)
 		throw new ApiFail(409, 'plan_stale', 'The reviewed destination changed; prepare again');
 	const resolved = resolvePackageDestination(

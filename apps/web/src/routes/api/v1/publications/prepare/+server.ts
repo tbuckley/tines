@@ -9,6 +9,7 @@ import { api, apiContext, ApiFail, requireJsonObject } from '$lib/server/api/cor
 import { readLibraryEnvelope } from '$lib/server/library/transport';
 import { preparePublication } from '$lib/server/publications/prepare';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 const exactKeys = (value: Record<string, unknown>, allowed: string[]) =>
 	Object.keys(value).every((key) => allowed.includes(key));
@@ -64,6 +65,14 @@ function validDraftSource(source: Record<string, unknown>) {
 
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
+	requireAccess(
+		actor,
+		[
+			{ domain: 'control_plane', access: 'write' },
+			{ domain: 'workspace', access: 'read' }
+		],
+		'publication.prepare'
+	);
 	let body: Record<string, unknown>;
 	try {
 		body = requireJsonObject(parseStrictLibraryJson(await readLibraryEnvelope(event.request)));

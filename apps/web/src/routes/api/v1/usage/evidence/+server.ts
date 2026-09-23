@@ -5,6 +5,7 @@ import { getCohortUsageEvidence } from '$lib/server/api/usage-cohorts';
 import { getIssueUsage, getUsage } from '$lib/server/api/usage';
 import { usageKeyMaterial, verifyUsageScope } from '$lib/server/usage-scope';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 const recognized = [
 	'scope',
@@ -50,6 +51,31 @@ export const GET: RequestHandler = api(async (event) => {
 		});
 	}
 	if (scope.owner !== actor.userId) throw notFound();
+	if (scope.mode === 'issue') {
+		const issue = await db
+			.selectFrom('issue')
+			.innerJoin('project', 'project.id', 'issue.project_id')
+			.select(['issue.id', 'issue.project_id'])
+			.where('issue.id', '=', scope.issue)
+			.where('project.user_id', '=', actor.userId)
+			.executeTakeFirst();
+		if (!issue) throw notFound();
+		requireAccess(
+			actor,
+			[{ domain: 'project', access: 'read', projectId: issue.project_id }],
+			'usage.issue',
+			{ projectId: issue.project_id, issueId: issue.id }
+		);
+	} else {
+		requireAccess(
+			actor,
+			[
+				{ domain: 'control_plane', access: 'read' },
+				{ domain: 'workspace', access: 'read' }
+			],
+			scope.mode === 'cohort' ? 'usage.cohort.read' : 'usage.read'
+		);
+	}
 	const kind = (params.get('kind') ?? 'issues') as 'issues' | 'runs' | 'entries';
 	const population = (params.get('population') ??
 		(scope.mode === 'cohort' && kind !== 'runs' ? 'all' : 'finalized')) as
@@ -94,9 +120,18 @@ export const GET: RequestHandler = api(async (event) => {
 						scopeToken,
 						scope,
 						evidenceRequest,
-						material
+						material,
+						actor
 					)
-				: await getUsageEvidence(db, actor.userId, scopeToken, scope, evidenceRequest, material);
+				: await getUsageEvidence(
+						db,
+						actor.userId,
+						scopeToken,
+						scope,
+						evidenceRequest,
+						material,
+						actor
+					);
 		if (scope.mode !== 'cohort' && params.has('member') && result.total_count === 0)
 			throw new Error('member is not a contributor in this selection');
 		if (scope.mode === 'cohort')
@@ -104,12 +139,18 @@ export const GET: RequestHandler = api(async (event) => {
 		const parent =
 			scope.mode === 'issue'
 				? await getIssueUsage(db, actor.userId, scope.issue, scope.cutoff)
-				: await getUsage(db, actor.userId, {
-						from: new Date(scope.from).toISOString(),
-						to: new Date(scope.to).toISOString(),
-						...scope.filters,
-						by: scope.by
-					});
+				: await getUsage(
+						db,
+						actor.userId,
+						{
+							from: new Date(scope.from).toISOString(),
+							to: new Date(scope.to).toISOString(),
+							...scope.filters,
+							by: scope.by
+						},
+						Date.now(),
+						actor
+					);
 		const parentTotal = parent?.mode === 'issue' ? parent.issue.aggregate : parent?.matching_total;
 		if (parent?.mode === 'issue') {
 			result.attempt_count = parent.issue.attempt_count;
@@ -121,6 +162,7 @@ export const GET: RequestHandler = api(async (event) => {
 		}
 		return json(result, { headers: { 'cache-control': 'private, no-store' } });
 	} catch (error) {
+		if (error instanceof ApiFail) throw error;
 		throw new ApiFail(422, 'invalid_evidence_selection', (error as Error).message, {
 			remedy: 'restart evidence from its usage report'
 		});

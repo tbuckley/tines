@@ -8,7 +8,7 @@ export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	// At most one rule per scope keeps this list small; no pagination needed.
 	const body: ListResponse<RoutingRule> = {
-		items: await listRoutingRules(db, actor.userId),
+		items: await listRoutingRules(db, actor),
 		next_cursor: null
 	};
 	return json(body);

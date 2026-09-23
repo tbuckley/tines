@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { ListResponse, Schedule } from '@tines/shared';
 import { api, apiContext, encodeCursor, readArchived, readPage } from '$lib/server/api/core';
-import { listSchedules } from '$lib/server/api/schedules';
+import { listSchedulesForActor } from '$lib/server/api/schedules';
 import type { RequestHandler } from './$types';
 
 /** Global schedule list across projects. */
@@ -10,9 +10,9 @@ export const GET: RequestHandler = api(async (event) => {
 	const page = readPage(event);
 	const params = event.url.searchParams;
 	const enabledRaw = params.get('enabled');
-	const { items, hasMore } = await listSchedules(
+	const { items, hasMore } = await listSchedulesForActor(
 		db,
-		actor.userId,
+		actor,
 		{
 			project: params.get('project') ?? undefined,
 			enabled: enabledRaw === null ? undefined : ['1', 'true'].includes(enabledRaw),

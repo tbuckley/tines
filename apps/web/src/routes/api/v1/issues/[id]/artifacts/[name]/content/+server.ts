@@ -1,4 +1,4 @@
-import { artifactContentResponse } from '$lib/server/api/artifacts';
+import { artifactContentResponseForActor } from '$lib/server/api/artifacts';
 import { api, apiContext, ApiFail } from '$lib/server/api/core';
 import type { RequestHandler } from './$types';
 
@@ -15,7 +15,7 @@ export const GET: RequestHandler = api(async (event) => {
 			});
 		}
 	}
-	return artifactContentResponse(db, env, actor.userId, event.params.id, event.params.name, {
+	return artifactContentResponseForActor(db, env, actor, event.params.id, event.params.name, {
 		version,
 		inline: ['1', 'true'].includes(event.url.searchParams.get('inline') ?? ''),
 		path: event.url.searchParams.get('path') ?? undefined

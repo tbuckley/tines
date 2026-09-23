@@ -4,9 +4,11 @@ import { api, apiContext, ApiFail, readJson, requireJsonObject } from '$lib/serv
 import { publishPublication } from '$lib/server/publications/publish';
 import { runE2ePublicationRaceMutation } from '$lib/server/publications/e2e-race';
 import type { RequestHandler } from './$types';
+import { requireAccess } from '$lib/server/api/permissions';
 
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
+	requireAccess(actor, [{ domain: 'control_plane', access: 'write' }], 'publication.publish');
 	const body = requireJsonObject(await readJson<unknown>(event));
 	if (
 		Object.keys(body).some(

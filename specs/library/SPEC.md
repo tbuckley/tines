@@ -161,3 +161,6 @@ Owned-workflow browser publishing may derive frozen snapshot bytes from a verifi
 publication draft. The additive trust boundary and immutable-field allowlist are recorded in
 [PUBLICATIONS.md](PUBLICATIONS.md#decision-update--2026-09-15-owned-publication-drafts-tines552)
 and [FORMAT_V3.md](FORMAT_V3.md#decision-update--2026-09-15-tines552-publication-draft-boundary).
+# 2026-09-21 — API-key scope enforcement (Tines/648)
+
+Whole-library export requires workspace read and all-project read. Validation/preparation require control-plane read; applying an import or installation requires control-plane write plus all-project and workspace write, checked again in the service boundary. Signed plans describe work but do not carry the preparer's authority. See `../api-keys/SPEC.md`.

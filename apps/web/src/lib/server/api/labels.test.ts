@@ -2,10 +2,15 @@ import {
 	recordDispatchEffects,
 	TEST_NOOP_DISPATCH_EFFECTS
 } from '$lib/server/api/test-dispatch-effects';
-import { compareLabelNames, defaultLabelColor, LABEL_COLORS } from '@tines/shared';
+import {
+	compareLabelNames,
+	defaultLabelColor,
+	FULL_API_KEY_PERMISSIONS,
+	LABEL_COLORS
+} from '@tines/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PROJECT, USER, addIssue, addRunner, seedBase } from '../supervisor/test-fixtures';
-import { ApiFail, isControlPlanePath, runAtomic, type ActorContext } from './core';
+import { ApiFail, runAtomic, type ActorContext } from './core';
 import { listIssues } from './issues';
 import {
 	addIssueLabels,
@@ -14,6 +19,7 @@ import {
 	labelInserts,
 	deleteLabel,
 	listLabels,
+	listLabelsInternal,
 	normalizeLabelName,
 	removeIssueLabel,
 	resolveOrCreateLabels,
@@ -42,7 +48,8 @@ const runKey: ActorContext = {
 	apiKeyId: null,
 	apiKeyName: null,
 	viaSession: false,
-	agentRunId: 'arun_1'
+	agentRunId: 'arun_1',
+	permissions: FULL_API_KEY_PERMISSIONS
 };
 
 let t: TestDb;
@@ -51,7 +58,7 @@ beforeEach(() => {
 	seedBase(t);
 });
 
-const names = async () => (await listLabels(t.db, USER)).map((l) => l.name);
+const names = async () => (await listLabelsInternal(t.db, USER)).map((l) => l.name);
 
 describe('normalizeLabelName', () => {
 	it('trims and accepts ordinary names', () => {
@@ -87,7 +94,7 @@ describe('the label library', () => {
 	it('creates a label with a derived color and lists it with usage', async () => {
 		const label = await createLabel(t.db, t.env, human, { name: 'bug' });
 		expect(label.color).toBe(defaultLabelColor('bug'));
-		expect(await listLabels(t.db, USER)).toEqual([
+		expect(await listLabelsInternal(t.db, USER)).toEqual([
 			expect.objectContaining({ name: 'bug', issue_count: 0 })
 		]);
 	});
@@ -147,6 +154,50 @@ describe('the label library', () => {
 		await expect(
 			deleteLabel(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, 'nope')
 		).rejects.toMatchObject({ status: 404 });
+	});
+
+	it('filters every usage count by independent project and control authority', async () => {
+		const label = await createLabel(t.db, t.env, human, { name: 'scoped' });
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_hidden', '${USER}', 'hidden', 1, 1);
+		`);
+		const visible = addIssue(t, { id: 'iss_visible', project: PROJECT });
+		const hidden = addIssue(t, { id: 'iss_hidden', project: 'prj_hidden' });
+		t.sqlite.exec(`
+			INSERT INTO issue_label (issue_id, label_id, created_at)
+			VALUES ('${visible}', '${label.id}', 1), ('${hidden}', '${label.id}', 1);
+			INSERT INTO context_item
+				(id, user_id, kind, name, description, project_id, label_id, position, version, created_at, updated_at)
+			VALUES
+				('ctx_visible', '${USER}', 'prompt', 'visible', '', '${PROJECT}', '${label.id}', 0, 1, 1, 1),
+				('ctx_hidden', '${USER}', 'prompt', 'hidden', '', 'prj_hidden', '${label.id}', 1, 1, 1, 1);
+			INSERT INTO routing_rule
+				(id, user_id, project_id, label_id, targets, created_at, updated_at)
+			VALUES
+				('rul_visible', '${USER}', '${PROJECT}', '${label.id}', '[]', 1, 1),
+				('rul_hidden', '${USER}', 'prj_hidden', '${label.id}', '[]', 1, 1);
+		`);
+		const scoped: ActorContext = {
+			...human,
+			apiKeyId: 'key_scoped',
+			viaSession: false,
+			permissions: {
+				version: 1,
+				projects: { access: 'read', scope: [PROJECT] },
+				workspace: 'read',
+				control_plane: 'none'
+			},
+			runRestriction: null
+		};
+		await expect(listLabels(t.db, scoped)).resolves.toEqual([
+			expect.objectContaining({
+				id: label.id,
+				issue_count: 1,
+				context_item_count: 1,
+				routing_rule_count: 0
+			})
+		]);
 	});
 });
 
@@ -397,6 +448,68 @@ describe('deleting a label that scopes context or routing', () => {
 		expect(effects.count()).toBe(1);
 	});
 
+	it('requires delete authority for every attached context scope before changing anything', async () => {
+		await scoped();
+		t.sqlite.exec('DELETE FROM routing_rule');
+		const restricted: ActorContext = {
+			...human,
+			apiKeyId: 'key_restricted',
+			viaSession: false,
+			permissions: {
+				version: 1,
+				projects: { access: 'write', scope: [PROJECT] },
+				workspace: 'delete',
+				control_plane: 'delete'
+			},
+			runRestriction: null
+		};
+		const before = {
+			labels: t.all('SELECT id FROM label'),
+			context: t.all('SELECT id FROM context_item'),
+			rules: t.all('SELECT id FROM routing_rule'),
+			events: t.all('SELECT id FROM event')
+		};
+		await expect(
+			deleteLabel(t.db, t.env, restricted, TEST_NOOP_DISPATCH_EFFECTS, 'docs', {
+				force: true
+			})
+		).rejects.toMatchObject({
+			code: 'insufficient_permissions',
+			details: { operation: 'context.delete', domain: 'project', access: 'delete' }
+		});
+		expect(t.all('SELECT id FROM label')).toEqual(before.labels);
+		expect(t.all('SELECT id FROM context_item')).toEqual(before.context);
+		expect(t.all('SELECT id FROM routing_rule')).toEqual(before.rules);
+		expect(t.all('SELECT id FROM event')).toEqual(before.events);
+	});
+
+	it('rolls back the whole forced cascade when an attached context scope races', async () => {
+		await scoped();
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			VALUES ('prj_raced', '${USER}', 'raced', 1, 1)
+		`);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let intercepted = false;
+		t.env.DB.batch = async (statements) => {
+			if (!intercepted) {
+				intercepted = true;
+				t.sqlite.exec("UPDATE context_item SET project_id='prj_raced', version=version+1");
+			}
+			return realBatch(statements);
+		};
+
+		await expect(
+			deleteLabel(t.db, t.env, human, TEST_NOOP_DISPATCH_EFFECTS, 'docs', { force: true })
+		).rejects.toThrow();
+		expect(t.all("SELECT id FROM label WHERE name='docs'")).toHaveLength(1);
+		expect(t.all("SELECT id FROM context_item WHERE name='docs-audit'")).toHaveLength(1);
+		expect(t.all('SELECT id FROM routing_rule')).toHaveLength(1);
+		expect(t.all("SELECT id FROM event WHERE type IN ('context.deleted','label.deleted')")).toEqual(
+			[]
+		);
+	});
+
 	it('keeps deleteLabel silent when its forced deletion batch rejects', async () => {
 		await scoped();
 		const effects = recordDispatchEffects();
@@ -529,19 +642,6 @@ describe('the run-key vocabulary fence', () => {
 		});
 		expect(await names()).toEqual([]);
 	});
-
-	it('fences library writes but not reading the library or applying labels', () => {
-		// Minting, renaming, and deleting terms is taxonomy: fenced.
-		expect(isControlPlanePath('/api/v1/labels', 'POST')).toBe(true);
-		expect(isControlPlanePath('/api/v1/labels/lbl_1', 'PATCH')).toBe(true);
-		expect(isControlPlanePath('/api/v1/labels/lbl_1', 'DELETE')).toBe(true);
-		// Reading the vocabulary is classification: open. The launch prompt
-		// tells agents to run `tines labels list`, which is this GET.
-		expect(isControlPlanePath('/api/v1/labels', 'GET')).toBe(false);
-		// Applying and removing existing labels was always open.
-		expect(isControlPlanePath('/api/v1/issues/iss_1/labels', 'POST')).toBe(false);
-		expect(isControlPlanePath('/api/v1/issues/iss_1/labels/bug', 'DELETE')).toBe(false);
-	});
 });
 
 describe('reading and filtering by label', () => {
@@ -583,7 +683,7 @@ describe('reading and filtering by label', () => {
 	});
 
 	it('matches by label id too', async () => {
-		const bug = (await listLabels(t.db, USER)).find((l) => l.name === 'bug')!;
+		const bug = (await listLabelsInternal(t.db, USER)).find((l) => l.name === 'bug')!;
 		expect((await search([bug.id])).map((i) => i.id).sort()).toEqual(
 			[ids.both, ids.bugOnly].sort()
 		);
@@ -612,9 +712,9 @@ describe('losing a get-or-create race', () => {
 		]);
 
 		// One label in the library, used once, and the attach points at it.
-		expect((await listLabels(t.db, USER)).map((l) => `${l.name}:${l.issue_count}`)).toEqual([
-			'bug:1'
-		]);
+		expect((await listLabelsInternal(t.db, USER)).map((l) => `${l.name}:${l.issue_count}`)).toEqual(
+			['bug:1']
+		);
 		const { items } = await listIssues(
 			t.db,
 			USER,

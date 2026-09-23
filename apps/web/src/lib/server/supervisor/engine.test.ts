@@ -1,4 +1,5 @@
 import { TEST_NOOP_DISPATCH_EFFECTS } from '$lib/server/api/test-dispatch-effects';
+import { FULL_API_KEY_PERMISSIONS } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import type { ActorContext } from '../api/core';
 import { listIssues, resumeIssue, transitionIssue } from '../api/issues';
@@ -1387,7 +1388,9 @@ describe('resume and manual transitions', () => {
 			viaSession: false,
 			apiKeyId: keyId,
 			apiKeyName: 'run key',
-			agentRunId: runs(t)[0].id as string
+			agentRunId: runs(t)[0].id as string,
+			permissions: FULL_API_KEY_PERMISSIONS,
+			runRestriction: null
 		};
 		await transitionIssue(t.db, t.env, runKeyActor, TEST_NOOP_DISPATCH_EFFECTS, issue, {
 			action: 'Submit for review'
