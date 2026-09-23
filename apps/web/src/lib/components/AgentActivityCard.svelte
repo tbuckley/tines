@@ -147,6 +147,7 @@
 									<span class="font-medium">{target.runner_name}</span>
 									<span class="text-muted-foreground">
 										{target.tier}{target.model ? ` → ${target.model}` : ''}
+										{target.effort_verification === 'asserted' ? ' (asserted effort)' : ''}
 									</span>
 									{#if target.verdict === 'ok'}
 										<span class="text-emerald-600 dark:text-emerald-400">available</span>

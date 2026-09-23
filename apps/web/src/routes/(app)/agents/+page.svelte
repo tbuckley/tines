@@ -19,6 +19,7 @@
 		isActiveRun,
 		isStaleTierOverride,
 		MODEL_TIERS,
+		RECOGNIZED_EFFORT_VALUES,
 		RUNNER_NAME_PATTERN,
 		utilizationLabel
 	} from '@tines/shared';
@@ -661,10 +662,29 @@
 	/** Tiers apply unless the runner has a fixed configuration (custom harness). */
 	const editTiersApply = $derived(editTarget !== null && editTarget.tier_models !== null);
 
-	function effortChoices(runner: Runner | null, tier: ModelTier, modelOverride = ''): string[] {
-		if (!runner) return [];
+	type EffortChoices = {
+		choices: string[];
+		verified: boolean;
+		model: string;
+		assertable: boolean;
+	};
+
+	function effortChoices(
+		runner: Runner | null,
+		tier: ModelTier,
+		modelOverride = ''
+	): EffortChoices {
+		if (!runner) return { choices: [], verified: false, model: '', assertable: false };
 		const model = modelOverride.trim() || runner.tier_models?.[tier] || '';
-		return runner.effort_models?.[model] ?? [];
+		const listed = runner.effort_models?.[model];
+		if (listed !== undefined)
+			return { choices: listed, verified: true, model, assertable: runner.effort_assertable };
+		return {
+			choices: runner.effort_assertable ? [...RECOGNIZED_EFFORT_VALUES] : [],
+			verified: false,
+			model,
+			assertable: runner.effort_assertable
+		};
 	}
 
 	const bootstrapCommand = $derived.by(() => {
@@ -910,13 +930,16 @@
 	let ruleWarnings = $state<ShadowWarning[]>([]);
 	const wildcardEffortChoices = $derived(
 		[
-			...new Set(data.runners.flatMap((runner) => Object.values(runner.effort_models ?? {}).flat()))
+			...new Set([
+				...data.runners.flatMap((runner) => Object.values(runner.effort_models ?? {}).flat()),
+				...(data.runners.some((runner) => runner.effort_assertable) ? RECOGNIZED_EFFORT_VALUES : [])
+			])
 		].sort()
 	);
 
-	function targetEffortChoices(target: (typeof ruleTargets)[number]): string[] {
+	function targetEffortChoices(target: (typeof ruleTargets)[number]): EffortChoices {
 		const runner = data.runners.find((candidate) => candidate.id === target.runner_id);
-		if (!runner) return [];
+		if (!runner) return { choices: [], verified: false, model: '', assertable: false };
 		const tier = target.tier || runner.default_tier;
 		const override = runner.tiers?.[tier]?.model ?? '';
 		return effortChoices(runner, tier, override);
@@ -2292,21 +2315,31 @@
 											class="w-full min-w-0"
 											aria-label={`Effort for ${tier}`}
 											value={editTierEfforts[tier] ?? ''}
-											disabled={(editTierModels[tier] ?? '').trim() === '' || choices.length === 0}
+											disabled={(editTierModels[tier] ?? '').trim() === '' ||
+												choices.choices.length === 0}
 											onchange={(e) =>
 												(editTierEfforts = { ...editTierEfforts, [tier]: e.currentTarget.value })}
 										>
 											<option value="">effort —</option>
-											{#if editTierEfforts[tier] && !choices.includes(editTierEfforts[tier])}
+											{#if editTierEfforts[tier] && !choices.choices.includes(editTierEfforts[tier])}
 												<option value={editTierEfforts[tier]}
 													>{editTierEfforts[tier]} (incompatible)</option
 												>
 											{/if}
-											{#each choices as effort (effort)}
-												<option value={effort}>{effort}</option>
+											{#each choices.choices as effort (effort)}
+												<option value={effort}
+													>{effort}{choices.verified ? '' : ' (unverified)'}</option
+												>
 											{/each}
 										</Select>
 									</div>
+									{#if choices.model && !choices.verified}
+										<p class="text-muted-foreground pl-0 text-xs sm:col-span-2 sm:pl-22">
+											{choices.assertable
+												? `Tines can't confirm ${choices.model} supports effort. An unsupported value fails the run.`
+												: "Upgrade this runner's daemon to set effort on new models."}
+										</p>
+									{/if}
 								{/if}
 							</div>
 							{#if stale}
@@ -2637,14 +2670,21 @@
 									(ruleTargets[i] = { ...ruleTargets[i], effort: e.currentTarget.value })}
 							>
 								<option value="">inherit</option>
-								{#if target.effort && !choices.includes(target.effort)}
+								{#if target.effort && !choices.choices.includes(target.effort)}
 									<option value={target.effort}>{target.effort} (incompatible)</option>
 								{/if}
-								{#each choices as effort (effort)}
-									<option value={effort}>{effort}</option>
+								{#each choices.choices as effort (effort)}
+									<option value={effort}>{effort}{choices.verified ? '' : ' (unverified)'}</option>
 								{/each}
 							</Select></label
 						>
+						{#if choices.model && !choices.verified}
+							<p class="text-muted-foreground col-span-full text-xs">
+								{choices.assertable
+									? `Tines can't confirm ${choices.model} supports effort. An unsupported value fails the run.`
+									: "Upgrade this runner's daemon to set effort on new models."}
+							</p>
+						{/if}
 						<label class="space-y-1 text-xs"
 							><span class="font-medium">Tier</span>
 							<Select

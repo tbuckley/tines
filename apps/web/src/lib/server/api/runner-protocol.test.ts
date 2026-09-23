@@ -1218,6 +1218,46 @@ describe('pollRunner', () => {
 		expect(effects.count()).toBe(1);
 	});
 
+	it('marks an unlisted effort assignment as asserted', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { harness: 'codex' });
+		const issue = addIssue(t);
+		const runId = addRun(t, { issueId: issue, runnerId, model: 'gpt-unlisted' });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'high', effort_source = ?, effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(JSON.stringify({ kind: 'runner_tier', runner_id: runnerId, tier: 'balanced' }), runId);
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				owned_runs: [],
+				instance_id: 'asserted-boot',
+				effort_capabilities: {
+					version: 1,
+					daemon_version: '0.0.194',
+					harness: 'codex',
+					harness_version: '0.153.4',
+					catalog_digest: 'asserted-catalog',
+					models: [],
+					accepts_asserted_effort: true
+				}
+			},
+			NOW + 1
+		);
+		expect(
+			response.assignments.find((assignment) => assignment.run.id === runId)?.effort
+		).toMatchObject({
+			value: 'high',
+			verification: 'asserted',
+			capability_digest: 'asserted-catalog'
+		});
+	});
+
 	it('reclaims a legacy-tier claim after an effort-capable daemon upgrade', async () => {
 		const t = world();
 		const effects = recordDispatchEffects();

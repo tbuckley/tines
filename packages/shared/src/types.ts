@@ -1978,6 +1978,8 @@ export interface Runner {
 	effort_capabilities: EffortCapabilities | null;
 	/** Exact-model effort choices projected by the server; null means unknown/unsupported. */
 	effort_models: Record<string, string[]> | null;
+	/** Whether an unlisted model may use recognized, user-asserted effort values. */
+	effort_assertable: boolean;
 	/**
 	 * Local runners: the daemon is finishing its in-flight runs and will exit
 	 * for its service manager to relaunch a newer version. Nothing new is
@@ -2133,6 +2135,8 @@ export interface RunnerAssignment {
 		source: import('./effort.js').EffortSource;
 		/** Capability catalog the server checked immediately before delivery. */
 		capability_digest: string;
+		/** Present when the model was not listed in the daemon's capability catalog. */
+		verification?: 'asserted';
 	};
 	/** Supervisor preamble + stitched context + issue block, assembled at delivery. */
 	prompt: string;
@@ -2752,6 +2756,8 @@ export interface DispatchTarget {
 	model: string | null;
 	verdict: DispatchTargetVerdict;
 	detail: string;
+	/** Effort admission for this target, when the target requested effort. */
+	effort_verification?: 'verified' | 'asserted';
 }
 
 /** `GET /api/v1/issues/:id/dispatch` — "why isn't this running?". */
