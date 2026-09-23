@@ -106,3 +106,30 @@ checks Alice's named edit and the focused case passes. CI runs all three
 Playwright shards on the final branch. Review still needs to decide whether
 the proposed execution contract is ready to become the reviewed 670/712
 dependency; this receipt does not make that claim.
+
+## Automated review round 1 correction
+
+The consent GET routes now resolve stored project read scope and refuse run
+keys before returning personal issue or schedule receipts. The isolated
+native-D1 browser journey checks both routes with a zero-scope personal key,
+an unrelated-issue run key in the same project, and an authorized member key.
+
+The first on control in issue creation, transition, standalone permission and
+future-schedule permission displays the full evolving-work and irreversible
+effects warning. A later choice displays a short reminder. The acknowledgement
+is read from the person's durable row and written in the guarded choice batch;
+native-D1 failures leave both schedule/issue choice and acknowledgement unset.
+The future-only initial schedule grant is covered by a direct creation test.
+
+The member Activity loader merges the canonical owner event stream with its
+member-safe projection. Cursor and type filters are applied before the page
+limit; client continuation rows are tied to their filter. Issue links use the
+current immutable project ID. The shared issue history allowlist also runs in
+SQL before its 100-row limit and includes the named actor and safe transition
+fields. The owner issue card shows the owner-first participant permission
+roster beside the single run outcome at phone and desktop widths.
+
+The full unit run after these changes passed 345 shared, 719 CLI, and 2,254
+web tests. `pnpm check` passed with no Svelte diagnostics. The isolated
+member browser/API/native-D1 file and the full Playwright CI shards are the
+browser verification entry points for this correction.

@@ -1,9 +1,10 @@
 import { expect, test } from './fixtures';
 import type { APIRequestContext } from '@playwright/test';
-import { ALICE, BOB, BASE_URL, DANA, RUNROW } from './constants.mjs';
+import { ALICE, BOB, BASE_URL, DANA, RUNROW_FAILED } from './constants.mjs';
 import { apiClient, body, clickToOpen, gotoHydrated, signIn, signedSessionCookie } from './helpers';
 import { d1, sqlLiteral } from './d1';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli/', import.meta.url));
@@ -113,6 +114,19 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 			}
 		})
 	);
+	const runId = `arun_669_${project.id}`;
+	const runKeyId = `key_669_${project.id}`;
+	const runSecret = `e2e-run-669-${project.id}`;
+	const runKeyHash = createHash('sha256').update(runSecret).digest('hex');
+	const runState = d1<{ state_id: string }>(
+		`SELECT state_id FROM issue WHERE id=${sqlLiteral(cliIssue.id)}`
+	)[0].state_id;
+	const runTime = Date.now();
+	d1(`INSERT INTO agent_run (id,user_id,issue_id,runner_id,status,tier,log,created_at,started_at,state_id_at_start)
+		VALUES (${sqlLiteral(runId)},${sqlLiteral(ALICE.id)},${sqlLiteral(cliIssue.id)},${sqlLiteral(RUNROW_FAILED.runnerId)},'running','balanced','',${runTime},${runTime},${sqlLiteral(runState)})`);
+	d1(`INSERT INTO api_key (id,user_id,name,key_hash,key_prefix,created_at,agent_run_id,expires_at)
+		VALUES (${sqlLiteral(runKeyId)},${sqlLiteral(ALICE.id)},'same-project run key',${sqlLiteral(runKeyHash)},${sqlLiteral(runSecret.slice(0, 14))},${runTime},${sqlLiteral(runId)},${runTime + 86_400_000})`);
+	d1(`UPDATE agent_run SET api_key_id=${sqlLiteral(runKeyId)} WHERE id=${sqlLiteral(runId)}`);
 	for (const path of [
 		`/api/v1/issues/${issue.id}/my-consent`,
 		`/api/v1/schedules/${scheduleIssue.schedule.id}/my-consent`
@@ -121,12 +135,15 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 			(await request.get(path, { headers: { authorization: `Bearer ${scoped.key}` } })).status()
 		).toBe(403);
 		expect(
-			(await request.get(path, { headers: { authorization: `Bearer ${RUNROW.runKey}` } })).status()
+			(await request.get(path, { headers: { authorization: `Bearer ${runSecret}` } })).status()
 		).toBe(403);
 		expect(
 			(await request.get(path, { headers: { authorization: `Bearer ${BOB.apiKey}` } })).status()
 		).toBe(200);
 	}
+	d1(`UPDATE agent_run SET api_key_id=NULL WHERE id=${sqlLiteral(runId)}`);
+	d1(`DELETE FROM api_key WHERE id=${sqlLiteral(runKeyId)}`);
+	d1(`DELETE FROM agent_run WHERE id=${sqlLiteral(runId)}`);
 	const hiddenTime = Date.now() + 10_000;
 	const hiddenEvents = Array.from(
 		{ length: 101 },
@@ -410,7 +427,7 @@ test('owner create and transition show full first warning, then a shorter repeat
 	await expect(page.getByRole('note', { name: 'First permission warning' })).toContainText(
 		'including after member execution is released'
 	);
-	await page.getByRole('button', { name: 'Start', exact: true }).click();
+	await page.getByRole('button', { name: 'Start Working' }).click();
 	const transition = page.getByRole('dialog', { name: 'Start → Working' });
 	await expect(transition.getByRole('note', { name: 'First permission warning' })).toContainText(
 		'including after member execution is released'
