@@ -449,6 +449,7 @@ test('the app chrome stays inside both responsive breakpoint boundaries', async 
 			(await focusMenu.boundingBox())!.x + (await focusMenu.boundingBox())!.width
 		).toBeLessThanOrEqual(width);
 		await page.keyboard.press('Escape');
+		await expect(focusMenu).toBeHidden();
 
 		const accountMenu = page
 			.getByRole('menu')
@@ -458,7 +459,9 @@ test('the app chrome stays inside both responsive breakpoint boundaries', async 
 		const accountMenuBox = (await accountMenu.boundingBox())!;
 		expect(accountMenuBox.x).toBeGreaterThanOrEqual(0);
 		expect(accountMenuBox.x + accountMenuBox.width).toBeLessThanOrEqual(width);
-		await page.keyboard.press('Escape');
+		// This menu closes by toggling its trigger; Escape belongs to the focus popover.
+		await account.click();
+		await expect(accountMenu).toBeHidden();
 	}
 });
 
