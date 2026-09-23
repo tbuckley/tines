@@ -27,6 +27,23 @@
 	{#if data.issue.blocked_by_private_issue}<p class="mt-5" role="status">
 			Blocked by another issue.
 		</p>{/if}
+	{#if data.issue.links.length > 0}
+		<section class="mt-6" aria-labelledby="links-heading">
+			<h2 id="links-heading" class="font-semibold">Linked issues</h2>
+			<ul class="mt-2 space-y-2">
+				{#each data.issue.links as link (link.id)}
+					<li>
+						{link.relation} ·
+						<a
+							class="underline"
+							href={`/issues/${encodeURIComponent(link.project_id)}/${link.number}`}
+							>{link.project_name}/#{link.number} · {link.title}</a
+						>
+					</li>
+				{/each}
+			</ul>
+		</section>
+	{/if}
 	<section class="mt-8" aria-labelledby="people-heading">
 		<h2 id="people-heading" class="text-lg font-semibold">People and permission</h2>
 		<ul class="mt-3 space-y-2">

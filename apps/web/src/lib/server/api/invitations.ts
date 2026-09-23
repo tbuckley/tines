@@ -93,7 +93,9 @@ export async function createInvitation(
 		confirm_sharing?: unknown;
 		expected_sharing_revision?: unknown;
 	},
-	origin: string
+	origin: string,
+	beforeCommit?: () => Promise<void>,
+	triedSharedRetry = false
 ) {
 	noRunKey(actor);
 	const access = await resolveProjectAccess(db, actor, projectId);
@@ -212,11 +214,35 @@ export async function createInvitation(
 		${projectId}, ${JSON.stringify({ invitation_id: id })}, ${now} WHERE ${receipt}`.compile(db)
 	);
 	queries.push(sql`SELECT id FROM project_invitation WHERE id = ${id}`.compile(db));
+	await beforeCommit?.();
 	const results = await runAtomic(env, queries);
-	if (!results.at(-1)?.results?.length)
+	if (!results.at(-1)?.results?.length) {
+		if (project.shared_at === null && !triedSharedRetry) {
+			const latest = await db
+				.selectFrom('project')
+				.select(['user_id', 'archived_at', 'shared_at', 'sharing_revision'])
+				.where('id', '=', projectId)
+				.executeTakeFirst();
+			if (
+				latest?.shared_at !== null &&
+				latest?.archived_at === null &&
+				latest?.user_id === actor.userId
+			)
+				return createInvitation(
+					db,
+					env,
+					actor,
+					projectId,
+					{ ...body, expected_sharing_revision: latest.sharing_revision },
+					origin,
+					undefined,
+					true
+				);
+		}
 		throw new ApiFail(409, 'sharing_changed', 'Project sharing changed; refresh before inviting', {
 			committed: false
 		});
+	}
 	const deliveryStatus = await deliver(db, env, {
 		id,
 		generation: 1,

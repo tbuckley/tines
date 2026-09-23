@@ -102,6 +102,27 @@ function printIssueLinks(links: IssueLinks): void {
 }
 
 function printIssueDetail(issue: IssueDetail): void {
+	const shared = issue as IssueDetail & {
+		mode?: 'member';
+		project?: { name: string; owner: { name: string } };
+		workflow?: { name: string };
+		state?: { name: string; category: string };
+		artifacts?: { name: string; current_version: { version: number } }[];
+	};
+	if (shared.mode === 'member') {
+		console.log(`${shared.project?.name}/${shared.number}  ${shared.title}`);
+		console.log(
+			`state: ${shared.state?.name} (${shared.state?.category})  workflow: ${shared.workflow?.name}`
+		);
+		console.log(`owner: ${shared.project?.owner.name}  id: ${shared.id}`);
+		if (shared.description) console.log(`\n${shared.description}`);
+		if (shared.artifacts?.length) {
+			console.log('\nartifacts:');
+			table(shared.artifacts.map((a) => [a.name, `v${a.current_version.version}`]));
+		}
+		console.log('\nThis shared issue is read only in the current release.');
+		return;
+	}
 	console.log(`${issue.project_name}/#${issue.number}  ${issue.title}`);
 	// The state line carries the effective state; on a duplicate that is the
 	// canonical issue's, and the issue's own (dormant) state moves below it.
@@ -320,13 +341,13 @@ export function register(program: Command): void {
 							`${i.project_name}/${i.number}`,
 							i.title,
 							i.effective_state.name,
-							ageLabel(new Date(i.state_entered_at).toISOString()),
+							ageLabel(new Date(i.state_entered_at ?? i.created_at).toISOString()),
 							arrivedViaLabel(i.arrived_via),
 							roundSummaryLabel(i.round_summary ?? null),
 							[
-								i.open_blockers.length > 0 ? 'blocked' : '',
+								(i.open_blockers?.length ?? 0) > 0 ? 'blocked' : '',
 								i.duplicate_of ? 'dup' : '',
-								...i.labels.map((l) => `[${l.name}]`)
+								...(i.labels ?? []).map((l) => `[${l.name}]`)
 							]
 								.filter(Boolean)
 								.join(' ')
@@ -343,11 +364,11 @@ export function register(program: Command): void {
 						// (and the filters above) go by the effective state.
 						i.effective_state.name,
 						i.effective_state.category,
-						timestamp(i.last_activity_at),
+						timestamp(i.last_activity_at ?? i.updated_at),
 						[
-							i.open_blockers.length > 0 ? 'blocked' : '',
+							(i.open_blockers?.length ?? 0) > 0 ? 'blocked' : '',
 							i.duplicate_of ? 'dup' : '',
-							...i.labels.map((l) => `[${l.name}]`)
+							...(i.labels ?? []).map((l) => `[${l.name}]`)
 						]
 							.filter(Boolean)
 							.join(' ')

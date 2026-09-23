@@ -10,9 +10,16 @@
 		<label>Search <input class="rounded border p-2" name="q" value={data.filters.q} /></label>
 		<label
 			>Category <select class="rounded border p-2" name="category" value={data.filters.category}
-				><option value="">All</option><option value="backlog">Backlog</option><option value="active"
-					>Active</option
-				><option value="awaiting_human">Awaiting</option><option value="done">Done</option></select
+				><option value=""
+					>All ({data.counts.backlog +
+						data.counts.active +
+						data.counts.awaiting_human +
+						data.counts.done})</option
+				><option value="backlog">Backlog ({data.counts.backlog})</option><option value="active"
+					>Active ({data.counts.active})</option
+				><option value="awaiting_human">Awaiting ({data.counts.awaiting_human})</option><option
+					value="done">Done ({data.counts.done})</option
+				></select
 			></label
 		>
 		<button class="rounded border px-4 py-2">Filter</button>
@@ -34,4 +41,14 @@
 				</li>{/each}
 		</ul>
 	{/if}
+	<nav class="mt-6 flex gap-4" aria-label="Issue pages">
+		{#if data.pagination.previousHref}<a
+				class="rounded border px-4 py-2"
+				href={data.pagination.previousHref}>Previous page</a
+			>{/if}
+		{#if data.pagination.nextHref}<a
+				class="rounded border px-4 py-2"
+				href={data.pagination.nextHref}>Next page</a
+			>{/if}
+	</nav>
 </main>

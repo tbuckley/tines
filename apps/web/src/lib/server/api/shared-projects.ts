@@ -82,6 +82,7 @@ export async function listSharedProjects(
 			'p.archived_at',
 			'p.shared_at',
 			'p.sharing_revision',
+			'm.revision as membership_revision',
 			'owner.id as owner_id',
 			'owner.name as owner_name'
 		])
@@ -99,6 +100,14 @@ export async function listSharedProjects(
 	if (archived === 'false') query = query.where('p.archived_at', 'is', null);
 	if (archived === 'true') query = query.where('p.archived_at', 'is not', null);
 	const rows = await query.execute();
+	const current = await db
+		.selectFrom('project_member')
+		.select(['project_id', 'revision'])
+		.where('user_id', '=', actor.userId)
+		.where('revoked_at', 'is', null)
+		.execute();
+	const revisions = new Map(current.map((row) => [row.project_id, row.revision]));
+	if (rows.some((row) => revisions.get(row.id) !== row.membership_revision)) throw notFound();
 	return rows.map((row) => ({
 		id: row.id,
 		name: row.name,

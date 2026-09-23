@@ -13,22 +13,38 @@ export const GET: RequestHandler = api(async (event) => {
 	// 404 for a project the user doesn't own, before filtering by it.
 	const access = await resolveProjectAccess(db, actor, event.params.id);
 	if (access.role === 'member') {
+		const page = readPage(event);
 		const rows = await db
 			.selectFrom('scheduled_task')
-			.select('id')
+			.select(['id', 'created_at'])
 			.where('project_id', '=', event.params.id)
+			.$if(page.cursor !== null, (q) =>
+				q.where((eb) =>
+					eb.or([
+						eb('created_at', '<', page.cursor!.createdAt),
+						eb.and([eb('created_at', '=', page.cursor!.createdAt), eb('id', '<', page.cursor!.id)])
+					])
+				)
+			)
 			.orderBy('created_at desc')
-			.limit(100)
+			.orderBy('id desc')
+			.limit(page.limit + 1)
 			.execute();
 		const items = await Promise.all(
-			rows.map((row) => readSharedScheduleSummary(db, actor, row.id, async () => true))
+			rows
+				.slice(0, page.limit)
+				.map((row) => readSharedScheduleSummary(db, actor, row.id, async () => true))
 		);
 		if (
 			(await resolveProjectAccess(db, actor, event.params.id)).membershipRevision !==
 			access.membershipRevision
 		)
 			throw notFound();
-		return json({ items, next_cursor: null });
+		const last = rows[Math.min(rows.length, page.limit) - 1];
+		return json({
+			items,
+			next_cursor: rows.length > page.limit && last ? encodeCursor(last.created_at, last.id) : null
+		});
 	}
 	const page = readPage(event);
 	const { items, hasMore } = await listSchedules(

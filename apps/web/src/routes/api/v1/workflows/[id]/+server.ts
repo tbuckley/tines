@@ -2,11 +2,18 @@ import { json } from '@sveltejs/kit';
 import type { DeleteAnchorRequest, UpdateWorkflowRequest } from '@tines/shared';
 import { api, apiContext, readJson, readOptionalJson } from '$lib/server/api/core';
 import { deleteWorkflow, loadWorkflow, updateWorkflow } from '$lib/server/api/workflows';
+import { readSharedWorkflow } from '$lib/server/api/shared-workflows';
+import { ApiFail } from '$lib/server/api/core';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	return json(await loadWorkflow(db, actor.userId, event.params.id));
+	try {
+		return json(await loadWorkflow(db, actor.userId, event.params.id));
+	} catch (error) {
+		if (!(error instanceof ApiFail) || error.status !== 404) throw error;
+		return json(await readSharedWorkflow(db, actor, event.params.id));
+	}
 });
 
 export const PATCH: RequestHandler = api(async (event) => {

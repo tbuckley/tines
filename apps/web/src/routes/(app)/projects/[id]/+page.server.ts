@@ -43,12 +43,19 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 			.select('id')
 			.where('project_id', '=', params.id)
 			.execute();
+		const summaries = await Promise.all(
+			schedules.map((s) => readSharedScheduleSummary(db, actor, s.id))
+		);
+		const current = await resolveProjectAccess(db, actor, params.id).catch(() =>
+			error(404, 'Project unavailable')
+		);
+		if (current.membershipRevision !== access.membershipRevision) error(404, 'Project unavailable');
 		return {
 			mode: 'member' as const,
 			project,
 			issues: issues.items,
 			hasMore: issues.hasMore,
-			schedules: await Promise.all(schedules.map((s) => readSharedScheduleSummary(db, actor, s.id)))
+			schedules: summaries
 		};
 	}
 	let page;

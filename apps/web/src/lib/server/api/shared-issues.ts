@@ -1,6 +1,7 @@
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { getArtifactStore } from '$lib/server/artifact-store';
+import type { Artifact, ArtifactDetail, ArtifactVersion, ArtifactType } from '@tines/shared';
 import { ApiFail, notFound, type ActorContext } from './core';
 import { resolveIssueAccess, resolveProjectAccess } from './project-access';
 
@@ -8,25 +9,28 @@ const SAFE_EVENTS = new Set([
 	'issue.created',
 	'issue.updated',
 	'issue.transitioned',
-	'comment.created',
-	'comment.updated',
-	'comment.deleted',
-	'artifact.attached',
-	'artifact.updated',
-	'artifact.deleted',
+	'issue.commented',
+	'issue.comment_edited',
+	'issue.comment_deleted',
+	'issue.link_added',
+	'issue.link_removed',
+	'issue.labeled',
+	'issue.unlabeled',
+	'context.created',
+	'context.updated',
+	'context.deleted',
 	'issue.agent_hold_changed',
 	'agent_run.started',
-	'agent_run.completed',
-	'agent_run.failed',
-	'agent_run.canceled',
-	'project.member_joined',
-	'project.member_removed'
+	'agent_run.ended',
+	'issue.parked',
+	'issue.resumed'
 ]);
 
 export async function readSharedIssue(
 	db: Kysely<Database>,
 	actor: ActorContext,
-	lookup: { id: string } | { projectId: string; number: number }
+	lookup: { id: string } | { projectId: string; number: number },
+	beforeFinalCheck?: () => Promise<void>
 ) {
 	let query = db
 		.selectFrom('issue as i')
@@ -43,6 +47,7 @@ export async function readSharedIssue(
 			'i.description',
 			'i.created_at',
 			'i.updated_at',
+			'i.state_entered_at',
 			'i.decision_revision',
 			'i.consent_epoch',
 			'i.agent_hold',
@@ -103,15 +108,10 @@ export async function readSharedIssue(
 			.where('c.issue_id', '=', row.id)
 			.orderBy('c.created_at')
 			.execute(),
-		db
-			.selectFrom('context_item as a')
-			.select(['a.id', 'a.name', 'a.description', 'a.created_at', 'a.updated_at'])
-			.where('a.issue_id', '=', row.id)
-			.where('a.kind', '=', 'artifact')
-			.execute(),
+		listSharedArtifacts(db, row.id, row.state_entered_at ?? row.created_at),
 		db
 			.selectFrom('event as e')
-			.select(['e.id', 'e.type', 'e.created_at', 'e.actor_user_id'])
+			.select(['e.id', 'e.type', 'e.created_at', 'e.actor_user_id', 'e.payload'])
 			.where('e.issue_id', '=', row.id)
 			.orderBy('e.created_at desc')
 			.limit(100)
@@ -178,28 +178,52 @@ export async function readSharedIssue(
 			.executeTakeFirst()
 	]);
 	// Resolve link targets through current access. Inaccessible blockers become a generic flag.
-	const visibleLinks = [] as { id: string; kind: string; issue_id: string }[];
+	const visibleLinks = [] as {
+		id: string;
+		kind: string;
+		issue_id: string;
+		project_id: string;
+		relation: string;
+		project_name: string;
+		number: number;
+		title: string;
+		membership_revision: number | null;
+		blocks_this: boolean;
+	}[];
 	let blockedByPrivateIssue = false;
 	for (const link of links) {
 		const otherId = link.source_issue_id === row.id ? link.target_issue_id : link.source_issue_id;
 		try {
-			await resolveIssueAccess(db, actor, otherId);
-			visibleLinks.push({ id: link.id, kind: link.kind, issue_id: otherId });
+			const targetAccess = await resolveIssueAccess(db, actor, otherId);
+			const target = await db
+				.selectFrom('issue as i')
+				.innerJoin('project as p', 'p.id', 'i.project_id')
+				.select(['i.number', 'i.title', 'p.name as project_name'])
+				.where('i.id', '=', otherId)
+				.executeTakeFirstOrThrow();
+			visibleLinks.push({
+				id: link.id,
+				kind: link.kind,
+				issue_id: otherId,
+				relation:
+					link.kind === 'blocks'
+						? link.source_issue_id === row.id
+							? 'Blocks'
+							: 'Blocked by'
+						: link.source_issue_id === row.id
+							? 'Duplicate of'
+							: 'Duplicated by',
+				project_id: targetAccess.projectId,
+				project_name: target.project_name,
+				number: target.number,
+				title: target.title,
+				membership_revision: targetAccess.membershipRevision,
+				blocks_this: link.kind === 'blocks' && link.target_issue_id === row.id
+			});
 		} catch {
 			if (link.kind === 'blocks' && link.target_issue_id === row.id) blockedByPrivateIssue = true;
 		}
 	}
-	const artifacts = await Promise.all(
-		artifactRows.map(async (artifact) => {
-			const version = await db
-				.selectFrom('artifact_version')
-				.select(['version', 'filename', 'content_type', 'size_bytes', 'created_at'])
-				.where('context_item_id', '=', artifact.id)
-				.orderBy('version desc')
-				.executeTakeFirst();
-			return { ...artifact, current_version: version ?? null };
-		})
-	);
 	const allowed = transitions
 		.filter((transition) => transition.from_state_id === row.state_id)
 		.map((transition) => ({
@@ -208,6 +232,17 @@ export async function readSharedIssue(
 			to_state_id: transition.to_state_id,
 			requires: transition.requirements ? JSON.parse(transition.requirements) : []
 		}));
+	await beforeFinalCheck?.();
+	const currentLinks = [] as typeof visibleLinks;
+	for (const link of visibleLinks) {
+		try {
+			const current = await resolveIssueAccess(db, actor, link.issue_id);
+			if (current.membershipRevision === link.membership_revision) currentLinks.push(link);
+			else if (link.blocks_this) blockedByPrivateIssue = true;
+		} catch {
+			if (link.blocks_this) blockedByPrivateIssue = true;
+		}
+	}
 	if (
 		access.role === 'member' &&
 		(await resolveProjectAccess(db, actor, row.project_id)).membershipRevision !==
@@ -232,7 +267,9 @@ export async function readSharedIssue(
 		state: { id: row.state_id, name: row.state_name, category: row.state_category },
 		workflow: { id: row.workflow_id, name: row.workflow_name, states, transitions: allowed },
 		labels,
-		links: visibleLinks,
+		links: currentLinks.map(
+			({ membership_revision: _revision, blocks_this: _blocks, ...link }) => link
+		),
 		blocked_by_private_issue: blockedByPrivateIssue,
 		comments: comments.map((comment) => ({
 			id: comment.id,
@@ -241,9 +278,14 @@ export async function readSharedIssue(
 			updated_at: comment.updated_at,
 			author: { id: comment.actor_user_id, name: comment.author_name ?? 'Former participant' }
 		})),
-		artifacts,
+		artifacts: artifactRows,
 		history: eventRows
 			.filter((event) => SAFE_EVENTS.has(event.type))
+			.filter(
+				(event) =>
+					!event.type.startsWith('context.') ||
+					JSON.parse(event.payload ?? '{}').kind === 'artifact'
+			)
 			.map((event) => ({
 				id: event.id,
 				type: event.type,
@@ -292,13 +334,17 @@ export async function readSharedIssue(
 export async function listSharedIssues(
 	db: Kysely<Database>,
 	actor: ActorContext,
-	projectId: string,
+	projectId: string | null,
 	opts: {
 		limit?: number;
 		cursor?: { created_at: number; id: string };
+		direction?: 'after' | 'before';
 		q?: string;
+		brief?: boolean;
 		state?: string;
 		workflow?: string;
+		schedule?: string;
+		archived?: 'false' | 'true' | 'all';
 		category?: string;
 		hideDone?: boolean;
 		hideDuplicates?: boolean;
@@ -306,33 +352,63 @@ export async function listSharedIssues(
 		labels?: string[];
 	} = {}
 ) {
-	const access = await resolveProjectAccess(db, actor, projectId);
+	if (actor.agentRunId) throw notFound();
+	const access = projectId ? await resolveProjectAccess(db, actor, projectId) : null;
 	const limit = Math.min(Math.max(opts.limit ?? 50, 1), 100);
+	const backwards = opts.direction === 'before';
 	let query = db
 		.selectFrom('issue as i')
+		.innerJoin('project as p', 'p.id', 'i.project_id')
+		.innerJoin('user as owner', 'owner.id', 'p.user_id')
+		.innerJoin('project_member as m', (join) =>
+			join.onRef('m.project_id', '=', 'p.id').on('m.user_id', '=', actor.userId)
+		)
+		.innerJoin('workflow as w', 'w.id', 'i.workflow_id')
 		.innerJoin('workflow_state as s', 's.id', 'i.state_id')
 		.select([
 			'i.id',
 			'i.project_id',
 			'i.number',
 			'i.title',
+			'i.description',
 			'i.created_at',
 			'i.updated_at',
+			'i.state_entered_at',
+			'p.name as project_name',
+			'p.archived_at as project_archived_at',
+			'owner.id as owner_id',
+			'owner.name as owner_name',
+			'm.revision as membership_revision',
+			'i.workflow_id',
+			's.id as state_id',
 			's.name as state_name',
 			's.category as state_category'
 		])
-		.where('i.project_id', '=', projectId)
-		.orderBy('i.created_at desc')
-		.orderBy('i.id desc')
+		.where('m.revoked_at', 'is', null)
+		.where('p.shared_at', 'is not', null)
+		.orderBy('i.created_at', backwards ? 'asc' : 'desc')
+		.orderBy('i.id', backwards ? 'asc' : 'desc')
 		.limit(limit + 1);
+	if (projectId) query = query.where('i.project_id', '=', projectId);
+	else if (opts.archived === 'false' || opts.archived === undefined)
+		query = query.where('p.archived_at', 'is', null);
+	else if (opts.archived === 'true') query = query.where('p.archived_at', 'is not', null);
 	if (opts.q)
-		query = query.where(
-			'i.title',
-			'like',
-			`%${opts.q.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`
+		query = query.where((eb) =>
+			eb.or([
+				eb('i.title', 'like', `%${opts.q!.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`),
+				eb('i.description', 'like', `%${opts.q!.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`)
+			])
 		);
-	if (opts.state) query = query.where('i.state_id', '=', opts.state);
-	if (opts.workflow) query = query.where('i.workflow_id', '=', opts.workflow);
+	if (opts.state)
+		query = query.where((eb) =>
+			eb.or([eb('i.state_id', '=', opts.state!), eb('s.name', '=', opts.state!)])
+		);
+	if (opts.workflow)
+		query = query.where((eb) =>
+			eb.or([eb('i.workflow_id', '=', opts.workflow!), eb('w.name', '=', opts.workflow!)])
+		);
+	if (opts.schedule) query = query.where('i.scheduled_task_id', '=', opts.schedule);
 	if (opts.category)
 		query = query.where(
 			's.category',
@@ -381,29 +457,139 @@ export async function listSharedIssues(
 	if (opts.cursor)
 		query = query.where((eb) =>
 			eb.or([
-				eb('i.created_at', '<', opts.cursor!.created_at),
-				eb.and([eb('i.created_at', '=', opts.cursor!.created_at), eb('i.id', '<', opts.cursor!.id)])
+				eb('i.created_at', backwards ? '>' : '<', opts.cursor!.created_at),
+				eb.and([
+					eb('i.created_at', '=', opts.cursor!.created_at),
+					eb('i.id', backwards ? '>' : '<', opts.cursor!.id)
+				])
 			])
 		);
 	const rows = await query.execute();
+	const pageRows = rows.slice(0, limit);
+	if (backwards) pageRows.reverse();
 	if (
-		access.role === 'member' &&
-		(await resolveProjectAccess(db, actor, projectId)).membershipRevision !==
+		access &&
+		(await resolveProjectAccess(db, actor, projectId!)).membershipRevision !==
 			access.membershipRevision
 	)
 		throw notFound();
+	// A membership removed while the page was loading must not survive serialization.
+	const current = await db
+		.selectFrom('project_member')
+		.select(['project_id', 'revision'])
+		.where('user_id', '=', actor.userId)
+		.where('revoked_at', 'is', null)
+		.execute();
+	const active = new Map(current.map((m) => [m.project_id, m.revision]));
+	if (rows.some((row) => active.get(row.project_id) !== row.membership_revision)) throw notFound();
 	return {
-		items: rows.slice(0, limit).map((row) => ({
+		items: pageRows.map((row) => ({
 			id: row.id,
 			project_id: row.project_id,
 			number: row.number,
 			title: row.title,
+			...(opts.brief ? {} : { description: row.description }),
+			project_name: row.project_name,
+			project_archived_at: row.project_archived_at,
+			owner: { id: row.owner_id, name: row.owner_name },
+			workflow_id: row.workflow_id,
 			created_at: row.created_at,
 			updated_at: row.updated_at,
-			state: { name: row.state_name, category: row.state_category }
+			state_entered_at: row.state_entered_at ?? row.created_at,
+			last_activity_at: row.updated_at,
+			state: { id: row.state_id, name: row.state_name, category: row.state_category },
+			effective_state: { id: row.state_id, name: row.state_name, category: row.state_category }
 		})),
 		hasMore: rows.length > limit
 	};
+}
+
+/** Category counts use the same readable project and scope filters as the member issue list. */
+export async function countSharedIssuesByCategory(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	projectId: string,
+	opts: {
+		q?: string;
+		state?: string;
+		workflow?: string;
+		ready?: boolean;
+		hideDuplicates?: boolean;
+		labels?: string[];
+	} = {}
+) {
+	const access = await resolveProjectAccess(db, actor, projectId);
+	let query = db
+		.selectFrom('issue as i')
+		.innerJoin('workflow_state as s', 's.id', 'i.state_id')
+		.innerJoin('workflow as w', 'w.id', 'i.workflow_id')
+		.select(['s.category', (eb) => eb.fn.countAll<number>().as('n')])
+		.where('i.project_id', '=', projectId)
+		.groupBy('s.category');
+	if (opts.q) {
+		const term = `%${opts.q.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
+		query = query.where((eb) =>
+			eb.or([eb('i.title', 'like', term), eb('i.description', 'like', term)])
+		);
+	}
+	if (opts.state)
+		query = query.where((eb) =>
+			eb.or([eb('i.state_id', '=', opts.state!), eb('s.name', '=', opts.state!)])
+		);
+	if (opts.workflow)
+		query = query.where((eb) =>
+			eb.or([eb('i.workflow_id', '=', opts.workflow!), eb('w.name', '=', opts.workflow!)])
+		);
+	if (opts.hideDuplicates || opts.ready)
+		query = query.where((eb) =>
+			eb.not(
+				eb.exists(
+					eb
+						.selectFrom('issue_link as l')
+						.select('l.id')
+						.whereRef('l.source_issue_id', '=', 'i.id')
+						.where('l.kind', '=', 'duplicate_of')
+				)
+			)
+		);
+	if (opts.ready)
+		query = query.where((eb) =>
+			eb.and([
+				eb('s.category', '!=', 'done'),
+				eb.not(
+					eb.exists(
+						eb
+							.selectFrom('issue_link as l')
+							.innerJoin('issue as blocker', 'blocker.id', 'l.source_issue_id')
+							.innerJoin('workflow_state as bs', 'bs.id', 'blocker.state_id')
+							.select('l.id')
+							.whereRef('l.target_issue_id', '=', 'i.id')
+							.where('l.kind', '=', 'blocks')
+							.where('bs.category', '!=', 'done')
+					)
+				)
+			])
+		);
+	for (const label of opts.labels ?? [])
+		query = query.where((eb) =>
+			eb.exists(
+				eb
+					.selectFrom('issue_label as il')
+					.innerJoin('label as l', 'l.id', 'il.label_id')
+					.select('il.issue_id')
+					.whereRef('il.issue_id', '=', 'i.id')
+					.where((b) => b.or([b('l.id', '=', label), b('l.name', '=', label)]))
+			)
+		);
+	const rows = await query.execute();
+	if (
+		(await resolveProjectAccess(db, actor, projectId)).membershipRevision !==
+		access.membershipRevision
+	)
+		throw notFound();
+	const counts = { backlog: 0, active: 0, awaiting_human: 0, done: 0 };
+	for (const row of rows) counts[row.category] = Number(row.n);
+	return counts;
 }
 
 export async function readSharedArtifact(
@@ -414,41 +600,122 @@ export async function readSharedArtifact(
 	version?: number
 ) {
 	const access = await resolveIssueAccess(db, actor, issueId);
-	const artifact = await db
-		.selectFrom('context_item')
-		.select(['id', 'name', 'description'])
-		.where('issue_id', '=', issueId)
-		.where('kind', '=', 'artifact')
-		.where('name', '=', name)
-		.executeTakeFirst();
+	const issue = await db
+		.selectFrom('issue')
+		.select(['state_entered_at', 'created_at'])
+		.where('id', '=', issueId)
+		.executeTakeFirstOrThrow();
+	const artifact = (
+		await listSharedArtifacts(db, issueId, issue.state_entered_at ?? issue.created_at)
+	).find((item) => item.name === name);
 	if (!artifact) throw notFound();
-	let query = db
-		.selectFrom('artifact_version')
-		.select([
-			'id',
-			'version',
-			'filename',
-			'content_type',
-			'size_bytes',
-			'content',
-			'url',
-			'title',
-			'pr_repo_url',
-			'pr_number',
-			'created_at'
-		])
-		.where('context_item_id', '=', artifact.id);
-	if (version != null) query = query.where('version', '=', version);
-	else query = query.orderBy('version desc').limit(1);
-	const versions = await query.execute();
-	if (!versions.length) throw notFound();
+	const versions = await sharedArtifactVersions(db, artifact.id);
+	if (version != null && !versions.some((entry) => entry.version === version)) throw notFound();
 	if (
 		access.role === 'member' &&
 		(await resolveProjectAccess(db, actor, access.projectId)).membershipRevision !==
 			access.membershipRevision
 	)
 		throw notFound();
-	return { artifact, versions };
+	return { ...artifact, versions } satisfies ArtifactDetail;
+}
+
+async function sharedArtifactVersions(
+	db: Kysely<Database>,
+	contextItemId: string
+): Promise<ArtifactVersion[]> {
+	const rows = await db
+		.selectFrom('artifact_version as v')
+		.leftJoin('user as u', 'u.id', 'v.actor_user_id')
+		.select([
+			'v.id',
+			'v.version',
+			'v.filename',
+			'v.content_type',
+			'v.size_bytes',
+			'v.url',
+			'v.title',
+			'v.pr_repo_url',
+			'v.pr_number',
+			'v.reaffirmed_from',
+			'v.actor_user_id',
+			'v.created_at',
+			'u.name as actor_name'
+		])
+		.where('v.context_item_id', '=', contextItemId)
+		.orderBy('v.version')
+		.execute();
+	return Promise.all(
+		rows.map(async (row): Promise<ArtifactVersion> => {
+			const files = await db
+				.selectFrom('artifact_version_file')
+				.select(['path', 'content_type', 'size_bytes'])
+				.where('artifact_version_id', '=', row.id)
+				.orderBy('path')
+				.execute();
+			return {
+				version: row.version,
+				filename: row.filename,
+				content_type: row.content_type,
+				size_bytes: row.size_bytes,
+				file_count: files.length || null,
+				...(files.length
+					? { files: files.map((file) => ({ ...file, size_bytes: Number(file.size_bytes) })) }
+					: {}),
+				url: row.url,
+				title: row.title,
+				pr_repo_url: row.pr_repo_url,
+				pr_number: row.pr_number,
+				reaffirmed_from: row.reaffirmed_from,
+				actor: {
+					user_id: row.actor_user_id ?? '',
+					user_name: row.actor_name ?? 'Former participant',
+					api_key_id: null,
+					api_key_name: null
+				},
+				created_at: row.created_at
+			};
+		})
+	);
+}
+
+async function listSharedArtifacts(
+	db: Kysely<Database>,
+	issueId: string,
+	stateEnteredAt: number
+): Promise<Artifact[]> {
+	const rows = await db
+		.selectFrom('context_item')
+		.select(['id', 'name', 'description', 'config', 'created_at', 'updated_at'])
+		.where('issue_id', '=', issueId)
+		.where('kind', '=', 'artifact')
+		.orderBy('name')
+		.execute();
+	return Promise.all(
+		rows.map(async (row): Promise<Artifact> => {
+			const versions = await sharedArtifactVersions(db, row.id);
+			const current = versions.at(-1);
+			if (!current) throw notFound();
+			let artifactType: ArtifactType = 'file';
+			try {
+				artifactType = JSON.parse(row.config ?? '{}').artifact_type ?? 'file';
+			} catch {
+				/* bad config */
+			}
+			return {
+				id: row.id,
+				name: row.name,
+				artifact_type: artifactType,
+				description: row.description,
+				issue_id: issueId,
+				version_count: versions.length,
+				current_version: current,
+				fresh: current.created_at >= stateEnteredAt,
+				created_at: row.created_at,
+				updated_at: row.updated_at
+			};
+		})
+	);
 }
 
 export async function sharedArtifactContent(
@@ -482,6 +749,12 @@ export async function sharedArtifactContent(
 		.orderBy('v.version desc')
 		.executeTakeFirst();
 	if (!row) throw notFound();
+	if (
+		access.role === 'member' &&
+		(await resolveProjectAccess(db, actor, access.projectId)).membershipRevision !==
+			access.membershipRevision
+	)
+		throw notFound();
 	const type = JSON.parse(row.config ?? '{}').artifact_type as string;
 	if (type === 'link' || type === 'pr')
 		return new Response(
@@ -504,10 +777,17 @@ export async function sharedArtifactContent(
 			.where('artifact_version_id', '=', row.id)
 			.orderBy('path')
 			.execute();
-		if (!opts.path)
+		if (!opts.path) {
+			if (
+				access.role === 'member' &&
+				(await resolveProjectAccess(db, actor, access.projectId)).membershipRevision !==
+					access.membershipRevision
+			)
+				throw notFound();
 			throw new ApiFail(422, 'folder_path_required', 'Choose a file path', {
 				paths: files.map((file) => file.path)
 			});
+		}
 		const file = files.find((entry) => entry.path === opts.path);
 		if (!file) throw notFound();
 		bytes = await getArtifactStore(env).get(file.r2_key);

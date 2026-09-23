@@ -2,7 +2,7 @@ import { error, redirect } from '@sveltejs/kit';
 import { issuePageHref } from '$lib/issue-pagination';
 import { ApiFail } from '$lib/server/api/core';
 import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
-import { listSharedIssues } from '$lib/server/api/shared-issues';
+import { countSharedIssuesByCategory, listSharedIssues } from '$lib/server/api/shared-issues';
 import { resolveProjectAccess } from '$lib/server/api/project-access';
 import { listLabels } from '$lib/server/api/labels';
 import { loadWorkflows } from '$lib/server/api/workflows';
@@ -35,12 +35,24 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 		const access = await resolveProjectAccess(db, actor, focusId);
 		if (access.role === 'member') {
 			const params = url.searchParams;
+			let memberPage;
+			try {
+				memberPage = readIssuePage(url);
+			} catch (e) {
+				if (e instanceof ApiFail) error(e.status, e.message);
+				throw e;
+			}
 			const project = await db
 				.selectFrom('project')
 				.select('name')
 				.where('id', '=', focusId)
 				.executeTakeFirstOrThrow();
 			const rows = await listSharedIssues(db, actor, focusId, {
+				limit: memberPage.limit,
+				cursor: memberPage.cursor
+					? { created_at: memberPage.cursor.createdAt, id: memberPage.cursor.id }
+					: undefined,
+				direction: memberPage.direction,
 				q: params.get('q') ?? undefined,
 				category: params.get('category') ?? undefined,
 				state: params.get('state') ?? undefined,
@@ -50,11 +62,21 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 				ready: params.get('ready') === '1',
 				labels: params.getAll('label')
 			});
+			const counts = await countSharedIssuesByCategory(db, actor, focusId, {
+				q: params.get('q') ?? undefined,
+				state: params.get('state') ?? undefined,
+				workflow: params.get('workflow') ?? undefined,
+				hideDuplicates: params.get('duplicates') !== '1',
+				ready: params.get('ready') === '1',
+				labels: params.getAll('label')
+			});
 			return {
 				mode: 'member' as const,
 				project: { id: focusId, name: project.name },
 				issues: rows.items,
 				hasMore: rows.hasMore,
+				counts,
+				pagination: issuePagination(url, memberPage, rows.items, rows.hasMore, focusId),
 				filters: { q: params.get('q') ?? '', category: params.get('category') ?? '' }
 			};
 		}

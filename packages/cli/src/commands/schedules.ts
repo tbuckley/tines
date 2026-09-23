@@ -41,6 +41,24 @@ async function resolveSchedule(api: ApiClient, ref: string): Promise<Schedule> {
 }
 
 function printScheduleDetail(s: Schedule): void {
+	const shared = s as Schedule & {
+		project?: { name: string; owner: { name: string } };
+		recurrence?: { cron: string; enabled: boolean; timezone: string };
+		workflow?: { name: string; start_state_name: string };
+	};
+	if (shared.project) {
+		console.log(`${shared.project.name}/${shared.name}  [${shared.id}]`);
+		console.log(`owner: ${shared.project.owner.name}  workflow: ${shared.workflow?.name}`);
+		console.log(`cron: ${shared.recurrence?.cron}  timezone: ${shared.recurrence?.timezone}`);
+		console.log(
+			`status: ${shared.recurrence?.enabled ? 'enabled' : 'paused'}  start state: ${shared.workflow?.start_state_name}`
+		);
+		console.log(`\ntitle template: ${shared.title_template}`);
+		if (shared.description_template)
+			console.log(`description template:\n${shared.description_template}`);
+		console.log('\nThis shared schedule is read only in the current release.');
+		return;
+	}
 	console.log(`${scheduleRef(s)}  [${s.id}]${s.enabled ? '' : '  (paused)'}`);
 	console.log(`${recurrenceLabel(s)} (cron "${s.cron}")`);
 	console.log(
@@ -84,15 +102,35 @@ export function register(program: Command): void {
 			if (items.length === 0) return console.log('no schedules');
 			table([
 				['NAME', 'RECURRENCE', 'NEXT RUN', 'LAST RUN', 'OPEN', 'MY FUTURE', ''],
-				...items.map((s) => [
-					scheduleRef(s),
-					recurrenceLabel(s),
-					s.enabled ? timestamp(s.next_run_at) : '—',
-					s.last_run_at ? timestamp(s.last_run_at) : 'never',
-					String(s.open_instances),
-					s.my_future_permission ? (s.my_future_permission.value === 'on' ? 'on' : 'off') : '—',
-					s.enabled ? '' : '(paused)'
-				])
+				...items.map((s) => {
+					const shared = s as Schedule & {
+						project?: { name: string };
+						recurrence?: { cron: string; enabled: boolean };
+					};
+					return shared.project
+						? [
+								`${shared.project.name}/${shared.name}`,
+								shared.recurrence?.cron ?? '—',
+								'—',
+								'—',
+								'—',
+								shared.my_future_permission?.value ?? 'unset',
+								shared.recurrence?.enabled ? '' : '(paused)'
+							]
+						: [
+								scheduleRef(s),
+								recurrenceLabel(s),
+								s.enabled ? timestamp(s.next_run_at) : '—',
+								s.last_run_at ? timestamp(s.last_run_at) : 'never',
+								String(s.open_instances),
+								s.my_future_permission
+									? s.my_future_permission.value === 'on'
+										? 'on'
+										: 'off'
+									: '—',
+								s.enabled ? '' : '(paused)'
+							];
+				})
 			]);
 		});
 	});

@@ -7,7 +7,7 @@ import type {
 	Schedule
 } from '@tines/shared';
 import { expect, test } from './fixtures';
-import { ALICE, BASE_URL, RUNROW, RUNROW_FAILED } from './constants.mjs';
+import { ALICE, BOB, CAROL, BASE_URL, RUNROW, RUNROW_FAILED } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
 import {
 	apiClient,
@@ -24,6 +24,216 @@ const sessionHeaders = {
 	cookie: `better-auth.session_token=${signedSessionCookie(ALICE.sessionToken)}`,
 	origin: BASE_URL
 };
+
+test.describe('native D1 first sharing order', () => {
+	test('a competing first invite converts once and the losing invite retries in shared mode', async ({
+		request,
+		uniqueName
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const project = await body<Project>(
+			await api.post('/api/v1/projects', { name: uniqueName('conversion-race') })
+		);
+		const response = await request.post(`/api/v1/projects/${project.id}/invitations`, {
+			headers: {
+				authorization: `Bearer ${ALICE.apiKey}`,
+				'x-tines-e2e-membership-race': 'preempt-conversion',
+				'x-tines-e2e-other-email': CAROL.email
+			},
+			data: { email: BOB.email, confirm_sharing: true, expected_sharing_revision: 0 }
+		});
+		const bob = await body<{ id: string; delivery_status: string }>(response);
+		expect(bob.delivery_status).toBe('sent');
+		expect(
+			d1<{ email: string }>(
+				`SELECT email FROM project_invitation WHERE project_id=${sqlLiteral(project.id)} ORDER BY email`
+			)
+		).toEqual([{ email: BOB.email }, { email: CAROL.email }]);
+		expect(
+			d1<{ sharing_revision: number }>(
+				`SELECT sharing_revision FROM project WHERE id=${sqlLiteral(project.id)}`
+			)
+		).toEqual([{ sharing_revision: 1 }]);
+		expect(
+			d1<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM event WHERE project_id=${sqlLiteral(project.id)} AND type='project.sharing_started'`
+			)
+		).toEqual([{ n: 1 }]);
+	});
+
+	test('a failed conversion commits no invitation or sharing side effects', async ({
+		request,
+		uniqueName
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const project = await body<Project>(
+			await api.post('/api/v1/projects', { name: uniqueName('failed-conversion') })
+		);
+		const response = await request.post(`/api/v1/projects/${project.id}/invitations`, {
+			headers: {
+				authorization: `Bearer ${ALICE.apiKey}`,
+				'x-tines-e2e-membership-race': 'stale-conversion'
+			},
+			data: { email: BOB.email, confirm_sharing: true, expected_sharing_revision: 0 }
+		});
+		expect(response.status()).toBe(409);
+		expect(
+			d1<{ shared_at: number | null }>(
+				`SELECT shared_at FROM project WHERE id=${sqlLiteral(project.id)}`
+			)
+		).toEqual([{ shared_at: null }]);
+		expect(
+			d1<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM project_invitation WHERE project_id=${sqlLiteral(project.id)}`
+			)
+		).toEqual([{ n: 0 }]);
+		expect(
+			d1<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM event WHERE project_id=${sqlLiteral(project.id)} AND type='project.sharing_started'`
+			)
+		).toEqual([{ n: 0 }]);
+	});
+
+	test('creation before conversion is included in the reset; assigned work stops and admitted work drains', async ({
+		request,
+		uniqueName
+	}) => {
+		const api = apiClient(request, ALICE.apiKey);
+		const project = await body<Project>(
+			await api.post('/api/v1/projects', { name: uniqueName('create-convert') })
+		);
+		const existing = await body<IssueDetail>(
+			await api.post(`/api/v1/projects/${project.id}/issues`, {
+				title: 'Already queued'
+			})
+		);
+		const now = Date.now();
+		const assigned = `arun_convert_assigned_${now}`;
+		const running = `arun_convert_running_${now}`;
+		for (const [id, status, admitted] of [
+			[assigned, 'assigned', 'NULL'],
+			[running, 'running', String(now)]
+		]) {
+			d1(`INSERT INTO agent_run (id,user_id,issue_id,runner_id,status,tier,log,created_at,admitted_at,state_id_at_start)
+				VALUES (${sqlLiteral(id)},${sqlLiteral(ALICE.id)},${sqlLiteral(existing.id)},${sqlLiteral(RUNROW_FAILED.runnerId)},
+				${sqlLiteral(status)},'balanced','',${now},${admitted},${sqlLiteral(existing.state.id)})`);
+		}
+		const invite = await body<{ id: string }>(
+			await request.post(`/api/v1/projects/${project.id}/invitations`, {
+				headers: {
+					authorization: `Bearer ${ALICE.apiKey}`,
+					'x-tines-e2e-membership-race': 'create-before-conversion'
+				},
+				data: { email: BOB.email, confirm_sharing: true, expected_sharing_revision: 0 }
+			})
+		);
+		expect(invite.id).toBeTruthy();
+		const created = d1<{ id: string }>(
+			`SELECT id FROM issue WHERE project_id=${sqlLiteral(project.id)} AND title='Created at conversion boundary'`
+		);
+		expect(created).toHaveLength(1);
+		expect(
+			d1<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM issue_personal_choice WHERE issue_id=${sqlLiteral(created[0].id)} AND value='on'`
+			)
+		).toEqual([{ n: 0 }]);
+		expect(
+			d1<{ status: string }>(`SELECT status FROM agent_run WHERE id=${sqlLiteral(assigned)}`)
+		).toEqual([{ status: 'canceled' }]);
+		expect(
+			d1<{ status: string }>(`SELECT status FROM agent_run WHERE id=${sqlLiteral(running)}`)
+		).toEqual([{ status: 'running' }]);
+		expect(
+			d1<{ attempt_count: number }>(
+				`SELECT attempt_count FROM issue WHERE id=${sqlLiteral(existing.id)}`
+			)
+		).toEqual([{ attempt_count: 0 }]);
+		const after = await body<IssueDetail>(
+			await api.post(`/api/v1/projects/${project.id}/issues`, {
+				title: 'Created after conversion'
+			})
+		);
+		expect(
+			d1<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM issue_personal_choice WHERE issue_id=${sqlLiteral(after.id)} AND value='on'`
+			)
+		).toEqual([{ n: 0 }]);
+	});
+});
+
+test('native D1 removal after member read work begins discards its response and cancels only that member', async ({
+	request,
+	uniqueName
+}) => {
+	const owner = apiClient(request, ALICE.apiKey);
+	const project = await body<Project>(
+		await owner.post('/api/v1/projects', { name: uniqueName('removal-race') })
+	);
+	const issue = await body<IssueDetail>(
+		await owner.post(`/api/v1/projects/${project.id}/issues`, { title: 'Private after removal' })
+	);
+	const invite = await body<{ id: string }>(
+		await owner.post(`/api/v1/projects/${project.id}/invitations`, {
+			email: BOB.email,
+			confirm_sharing: true,
+			expected_sharing_revision: 0
+		})
+	);
+	const url = (
+		await body<{ url: string }>(await request.get(`/api/v1/__e2e/invitation-email/${invite.id}`))
+	).url;
+	await body(
+		await request.post('/api/v1/invitations/accept', {
+			headers: {
+				cookie: `better-auth.session_token=${signedSessionCookie(BOB.sessionToken)}`,
+				origin: BASE_URL
+			},
+			data: { token: url.split('/').at(-1) }
+		})
+	);
+	const now = Date.now();
+	const assigned = `arun_member_assigned_${now}`;
+	const running = `arun_member_running_${now}`;
+	for (const [id, status, admitted] of [
+		[assigned, 'assigned', 'NULL'],
+		[running, 'running', String(now)]
+	]) {
+		d1(`INSERT INTO agent_run (id,user_id,issue_id,runner_id,status,tier,log,created_at,admitted_at,state_id_at_start)
+			VALUES (${sqlLiteral(id)},${sqlLiteral(BOB.id)},${sqlLiteral(issue.id)},${sqlLiteral(RUNROW_FAILED.runnerId)},
+			${sqlLiteral(status)},'balanced','',${now},${admitted},${sqlLiteral(issue.state.id)})`);
+	}
+	const before = await request.get(`/api/v1/issues/${issue.id}`, {
+		headers: { authorization: `Bearer ${BOB.apiKey}` }
+	});
+	expect(before.status()).toBe(200);
+	const losingRead = await request.get(`/api/v1/issues/${issue.id}`, {
+		headers: {
+			authorization: `Bearer ${BOB.apiKey}`,
+			'x-tines-e2e-membership-race': 'remove-before-return'
+		}
+	});
+	expect(losingRead.status()).toBe(404);
+	expect(
+		(
+			await request.get(`/api/v1/issues/${issue.id}`, {
+				headers: { authorization: `Bearer ${BOB.apiKey}` }
+			})
+		).status()
+	).toBe(404);
+	expect(
+		d1<{ revision: number; revoked_at: number | null }>(
+			`SELECT revision,revoked_at FROM project_member WHERE project_id=${sqlLiteral(project.id)} AND user_id=${sqlLiteral(BOB.id)}`
+		)
+	).toMatchObject([{ revision: 2, revoked_at: expect.any(Number) }]);
+	expect(
+		d1<{ status: string }>(`SELECT status FROM agent_run WHERE id=${sqlLiteral(assigned)}`)
+	).toEqual([{ status: 'canceled' }]);
+	expect(
+		d1<{ status: string; cancel_requested_at: number | null }>(
+			`SELECT status,cancel_requested_at FROM agent_run WHERE id=${sqlLiteral(running)}`
+		)
+	).toMatchObject([{ status: 'running', cancel_requested_at: expect.any(Number) }]);
+});
 
 async function setup(request: APIRequestContext, name: string) {
 	const key = apiClient(request, ALICE.apiKey);
