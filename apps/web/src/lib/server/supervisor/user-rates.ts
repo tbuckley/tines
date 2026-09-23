@@ -1,12 +1,10 @@
 import type { AgentRunUsage, UserModelRate } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import type { Database, UserModelRateTable } from '$lib/server/db';
-import { newId } from '$lib/server/db';
 import { runAtomic } from '$lib/server/api/core';
-import { CODEX_RATES, RATE_PATTERN, priceCodexUsage, userRateToCodexRate } from './codex-pricing';
+import { CODEX_RATES, priceCodexUsage, userRateToCodexRate } from './codex-pricing';
 
 const REPRICE_LIMIT = 200;
-const REPRICE_REASONS = ['unsupported_model', 'missing_rate'] as const;
 
 export function serializeUserRate(row: UserModelRateTable): UserModelRate {
 	return {
@@ -44,16 +42,6 @@ export async function pricingCatalogFor(db: Kysely<Database>, userId: string, mo
 	const builtin = CODEX_RATES.filter((entry) => entry.model === model);
 	if (builtin.length > 0 || !user) return CODEX_RATES;
 	return [...CODEX_RATES, userRateToCodexRate(user)];
-}
-
-export function validateRate(value: unknown, field: string): string {
-	if (typeof value !== 'string' || !RATE_PATTERN.test(value)) {
-		throw new Error(`${field} must be a non-negative decimal with at most 9 fractional digits`);
-	}
-	const [whole] = value.split('.');
-	if (whole.length > 6 || Number(whole) > 1_000_000)
-		throw new Error(`${field} exceeds the maximum rate`);
-	return value;
 }
 
 export function repriceQueries(
@@ -135,5 +123,3 @@ export async function repriceUnpricedRuns(
 		.executeTakeFirstOrThrow();
 	return { repriced, still_unpriced: stillUnpriced, remaining: Number(remainingRow.count) };
 }
-
-export { REPRICE_REASONS };
