@@ -121,6 +121,21 @@ describe('scoped schedule permissions', () => {
 			status: 404,
 			code: 'not_found'
 		});
+
+		const writer = scopedActor({
+			version: 1,
+			projects: { access: 'write', scope: ['prj_1'] },
+			workspace: 'read',
+			control_plane: 'none'
+		});
+		const issueCount = t.all('SELECT id FROM issue').length;
+		await expect(
+			updateSchedule(t.db, t.env, writer, hidden.schedule!.id, { enabled: false })
+		).rejects.toMatchObject({ status: 404, code: 'not_found' });
+		await expect(
+			runScheduleNow(t.db, t.env, writer, TEST_NOOP_DISPATCH_EFFECTS, hidden.schedule!.id)
+		).rejects.toMatchObject({ status: 404, code: 'not_found' });
+		expect(t.all('SELECT id FROM issue')).toHaveLength(issueCount);
 	});
 
 	it('allows reversible edits but requires project delete for permanent removal', async () => {
