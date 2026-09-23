@@ -1691,10 +1691,8 @@ export async function finishRun(
 							}
 						};
 	} else if (usage) {
-		usage = priceCodexUsage(
-			{ run, usage, now },
-			await pricingCatalogFor(db, run.user_id, run.model ?? '')
-		);
+		// Without evidence nothing is priced, so no catalog (or user rate) is read.
+		usage = priceCodexUsage({ run, usage, now });
 	}
 	// The daemon marks the ends it knows were its own fault — a shutdown, an
 	// orphan killed after a restart — as interruptions. Honoured only on a

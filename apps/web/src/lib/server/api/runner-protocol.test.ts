@@ -1608,6 +1608,67 @@ describe('finishRun', () => {
 		expect(runById(t, runId)?.effort_application_status).toBe('accepted_unconfirmed');
 	});
 
+	it('prices a finished run on an unlisted model with the user rate', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const runId = await delivered(t, { runnerId, issueId: addIssue(t) });
+		const claimed = Date.parse('2026-09-22T03:30:00Z');
+		t.sqlite
+			.prepare('UPDATE agent_run SET model = ?, created_at = ? WHERE id = ?')
+			.run('future-model', claimed, runId);
+		t.sqlite
+			.prepare(
+				`INSERT INTO user_model_rate (id,user_id,model,version,input_rate,cache_read_rate,cache_write_rate,output_rate,created_at) VALUES (?,?,?,?,?,?,?,?,?)`
+			)
+			.run('umr_finish', USER, 'future-model', 1, '2', '0.2', null, '8', claimed - 1);
+		await appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, 'working\n', claimed + 1);
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			runId,
+			{
+				status: 'completed',
+				usage: {
+					input_tokens: 1_000,
+					cache_read_tokens: 0,
+					cache_write_tokens: 0,
+					output_tokens: 100
+				},
+				pricing_evidence: {
+					version: 1,
+					harness: 'codex',
+					model: 'future-model',
+					identity_source: 'launch_argument',
+					usage_scope: 'thread_total',
+					session_mode: 'cold',
+					normalization: 'codex-jsonl-v1',
+					raw_usage: {
+						input_tokens: 1_000,
+						cached_input_tokens: 0,
+						cache_write_input_tokens: 0,
+						output_tokens: 100
+					},
+					model_rerouted: false,
+					measurement_status: 'complete',
+					terminal_snapshots: 1,
+					daemon_version: '0.0.1'
+				}
+			},
+			claimed + 2
+		);
+		expect(run.usage?.pricing).toMatchObject({
+			status: 'calculated',
+			basis: {
+				plan: 'user_entered',
+				rate_source: 'user',
+				rate_id: 'user-rate:umr_finish',
+				cost_usd_exact: '0.0028'
+			}
+		});
+	});
+
 	it('atomically stores and emits a reproducible Codex estimate', async () => {
 		const t = world();
 		const runnerId = addRunner(t);
