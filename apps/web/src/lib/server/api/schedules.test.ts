@@ -200,13 +200,16 @@ describe('schedule start state', () => {
 		const schedule = await createSchedule(t);
 		const effects = recordDispatchEffects();
 		const realBatch = t.env.DB.batch.bind(t.env.DB);
-		t.env.DB.batch = async (statements) => {
-			const results = await realBatch(statements);
+		t.env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			const results = await realBatch<T>(statements);
 			const receipt = results.at(-1)!;
 			const row = receipt.results?.[0] as Record<string, unknown>;
 			return [
 				...results.slice(0, -1),
-				{ ...receipt, results: [{ ...row, created_event_id: 'evt_corrupt' }] }
+				{
+					...receipt,
+					results: [{ ...row, created_event_id: 'evt_corrupt' } as T]
+				}
 			];
 		};
 
