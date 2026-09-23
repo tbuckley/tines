@@ -13,6 +13,8 @@ export interface ProjectTable {
 	archived_at: number | null;
 	created_at: number;
 	updated_at: number;
+	shared_at: number | null;
+	sharing_revision: Generated<number>;
 }
 
 export interface WorkflowTable {
@@ -24,6 +26,7 @@ export interface WorkflowTable {
 	initial_state_id: string;
 	created_at: number;
 	updated_at: number;
+	decision_revision: Generated<number>;
 }
 
 export interface WorkflowStateTable {
@@ -75,6 +78,32 @@ export interface IssueTable {
 	updated_at: number;
 	/** Opaque fence changed on every project transfer, including A -> B -> A. */
 	project_assignment_token: string;
+	decision_revision: Generated<number>;
+	consent_epoch: Generated<number>;
+	agent_hold: Generated<number>;
+	hold_revision: Generated<number>;
+	last_decision_token: string | null;
+}
+
+export interface IssuePersonalChoiceTable {
+	issue_id: string;
+	user_id: string;
+	value: 'on' | 'off' | 'unset';
+	revision: number;
+	issue_epoch: number;
+	membership_revision: number;
+	source_kind: 'explicit_issue' | 'schedule' | null;
+	source_schedule_id: string | null;
+	source_grant_revision: number | null;
+	source_permission_epoch: number | null;
+	last_request_token: string | null;
+	updated_at: number;
+}
+
+export interface PersonalDisclosureTable {
+	user_id: string;
+	version: number;
+	acknowledged_at: number;
 }
 
 export interface IssueAddressTable {
@@ -389,6 +418,20 @@ export interface AgentRunTable {
 	ended_at: number | null;
 	/** Assignment fence copied from the issue by the successful claim. */
 	project_assignment_token: string;
+	claim_owner_id: string | null;
+	claim_sharing_revision: number | null;
+	claim_consent_epoch: number | null;
+	claim_consent_revision: number | null;
+	admitted_project_owner_id: string | null;
+	admitted_project_id: string | null;
+	admitted_daemon_instance_id: string | null;
+	admitted_at: number | null;
+	admission_evidence: string | null;
+	cancel_requested_at: number | null;
+	cancel_requested_by_user_id: string | null;
+	cancel_reason: string | null;
+	cancellation_token: string | null;
+	assignment_release_token: string | null;
 }
 
 export interface RoutingRuleTable {
@@ -638,6 +681,8 @@ export interface Database {
 	workflow_state: WorkflowStateTable;
 	workflow_transition: WorkflowTransitionTable;
 	issue: IssueTable;
+	issue_personal_choice: IssuePersonalChoiceTable;
+	personal_disclosure: PersonalDisclosureTable;
 	issue_address: IssueAddressTable;
 	issue_link: IssueLinkTable;
 	label: LabelTable;

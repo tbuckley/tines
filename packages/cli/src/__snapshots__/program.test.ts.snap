@@ -254,6 +254,9 @@ Commands:
   show [options] <ref>                                  Show an issue (<project>/<number>), including allowed transitions
   edit [options] <ref>                                  Edit an issue: title, description, workflow, or force-set state
   move [options] <ref> <action>                         Take a transition on an issue by its action name (e.g. "approve")
+  hold [options] <ref>                                  Hold an issue so approved agents cannot be admitted
+  release [options] <ref>                               Release an issue hold; existing permission choices stay unchanged
+  cancel-run [options] <ref> <run-id>                   Request cancellation of a run that belongs to this issue
   transfer [options] <ref>                              Move an issue to another project, keeping its ID, record and old refs (this is not the workflow "move")
   comment [options] <ref> <markdown>                    Comment on an issue — Markdown body: inline text, @file, or "-" to read stdin; escape a literal leading @ as @@
   comment-edit [options] <ref> <comment-id> <markdown>  Replace the body of your own comment — Markdown body: inline text, @file, or "-" to read stdin; escape a literal leading @ as @@
@@ -414,6 +417,17 @@ Options:
   --json           output the raw JSON response
   -h, --help       display help for command
 ",
+  "tines issues cancel-run": "Usage: tines issues cancel-run [options] <ref> <run-id>
+
+Request cancellation of a run that belongs to this issue
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
   "tines issues comment": "Usage: tines issues comment [options] <ref> <markdown>
 
 Comment on an issue — Markdown body: inline text, @file, or "-" to read stdin;
@@ -549,6 +563,17 @@ Options:
   --json                        output the raw JSON response
   -h, --help                    display help for command
 ",
+  "tines issues hold": "Usage: tines issues hold [options] <ref>
+
+Hold an issue so approved agents cannot be admitted
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
   "tines issues label": "Usage: tines issues label [options] <ref> <name...>
 
 Add labels to an issue (a label that does not exist yet is created)
@@ -607,6 +632,17 @@ Options:
   "tines issues prompt": "Usage: tines issues prompt [options] <ref>
 
 Print the launch prompt: the stitched context followed by the issue block
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines issues release": "Usage: tines issues release [options] <ref>
+
+Release an issue hold; existing permission choices stay unchanged
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run

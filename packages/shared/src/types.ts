@@ -641,6 +641,7 @@ export interface IssueDetail extends Issue {
 	since_last_run?: SinceLastRun | null;
 	/** Prompt-only metadata, emitted when launch comment selection is requested. */
 	launch_comments?: { latest_completed_run_comment_id: string | null };
+	permission_receipt?: IssueConsentReceipt;
 }
 
 // ---------------------------------------------------------------------------
@@ -763,6 +764,10 @@ export interface CreateIssueRequest {
 	blocks?: string[];
 	/** Existing canonical issue id that the new issue duplicates. */
 	duplicate_of?: string;
+	/** Browser-session-only initial personal permission in a shared project. */
+	allow_my_agents?: boolean;
+	expected_sharing_revision?: number;
+	disclosure_version?: number;
 }
 
 /** One file entry in the multipart issue-create metadata manifest. */
@@ -893,6 +898,62 @@ export interface TransitionIssueRequest {
 	/** Action name, matched case-insensitively among the allowed transitions. */
 	action?: string;
 	transition_id?: string;
+	/** Optimistic decision/permission witnesses used by shared projects. */
+	expected_state_id?: string;
+	expected_decision_revision?: number;
+	expected_consent_revision?: number;
+	expected_consent_epoch?: number;
+	expected_workflow_revision?: number;
+	allow_my_agents?: boolean;
+	disclosure_version?: number;
+}
+
+/** Session-only personal issue permission write; the subject is always the actor. */
+export interface IssueConsentRequest {
+	value: 'on' | 'off';
+	expected_revision: number;
+	issue_epoch: number;
+	decision_revision: number;
+	disclosure_version?: number;
+}
+
+export interface IssueConsentReceipt {
+	actor: 'owner' | 'key';
+	project: { id: string; sharing_revision: number };
+	issue_state: {
+		id: string;
+		category: StateCategory;
+		decision_revision: number;
+		workflow_revision: number;
+	};
+	agent_hold: { held: boolean; revision: number };
+	my_agents: {
+		value: 'on' | 'off' | 'unset';
+		source: 'explicit_issue' | 'schedule' | null;
+		revision: number;
+		epoch: number;
+	};
+	readiness: 'held' | 'unavailable' | 'eligible';
+	admitted_run: string | null;
+	committed_atomically: boolean;
+	message?: string;
+}
+
+export interface AgentHoldRequest {
+	held: boolean;
+	expected_revision: number;
+}
+
+export interface AgentHoldReceipt {
+	issue_id: string;
+	held: boolean;
+	revision: number;
+	released_assigned: number;
+	message: string;
+}
+
+export interface CancelRunRequest {
+	reason?: string;
 }
 
 export interface IssueFilters {
@@ -2129,6 +2190,8 @@ export interface RunnerPollRequest {
 	instance_id?: string;
 	/** Run ids the daemon is actually executing right now. */
 	owned_runs: string[];
+	/** Optional acknowledgements sent only after local process/workspace cleanup. */
+	cancellation_acks?: { run_id: string; token: string }[];
 	/**
 	 * The daemon's `--max-concurrent`. When present the server adopts it as
 	 * the runner's cap, so restarting the daemon with a new flag value takes
@@ -2239,6 +2302,10 @@ export interface RunnerPollResponse {
 	 * settled these (cancel, timeout, the offline sweep).
 	 */
 	cancels: string[];
+	/** Consent-mode requests stay live until an acknowledgement or timeout. */
+	cancel_requests?: { run_id: string; token: string }[];
+	/** Acknowledgements accepted on this poll; safe to forget locally. */
+	cancellation_acks?: { run_id: string; token: string }[];
 }
 
 /** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */

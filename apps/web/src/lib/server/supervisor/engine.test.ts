@@ -408,6 +408,46 @@ describe('the guarded claim', () => {
 		...over
 	});
 
+	it('requires an explicit owner choice in consent mode and stores an admission witness', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		t.sqlite
+			.prepare('UPDATE project SET shared_at = ?, sharing_revision = 1 WHERE id = ?')
+			.run(NOW, PROJECT);
+		expect(await claimRun(t.db, t.env, claimInput(t, issue, runner))).toBe(false);
+		t.sqlite
+			.prepare(
+				`INSERT INTO issue_personal_choice
+				(issue_id, user_id, value, revision, issue_epoch, source_kind, updated_at)
+				VALUES (?, ?, 'on', 1, 0, 'explicit_issue', ?)`
+			)
+			.run(issue, USER, NOW);
+		const input = claimInput(t, issue, runner);
+		expect(await claimRun(t.db, t.env, input)).toBe(true);
+		const minted = await mintRunKeyAndFlip(t.db, t.env, {
+			runId: input.runId,
+			userId: USER,
+			maxRunMinutes: 30,
+			now: NOW
+		});
+		expect(minted).not.toBeNull();
+		const admitted = t.all('SELECT * FROM agent_run WHERE id = ?', input.runId)[0]!;
+		expect(admitted).toMatchObject({
+			status: 'launching',
+			admitted_project_owner_id: USER,
+			admitted_project_id: PROJECT,
+			admitted_at: NOW
+		});
+		expect(JSON.parse(admitted.admission_evidence as string)).toMatchObject({
+			version: 1,
+			project_owner_id: USER,
+			sharing_revision: 1,
+			issue_epoch: 0,
+			choice_revision: 1
+		});
+	});
+
 	it('refuses an issue whose project was archived between the queue read and the claim', async () => {
 		const t = world();
 		const runner = addRunner(t);

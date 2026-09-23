@@ -229,6 +229,7 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	{ pattern: /^\/api\/v1\/supervisor\/settings(\/|$)/, readable: true },
 	{ pattern: /^\/api\/v1\/supervisor\/rates(\/|$)/, readable: true },
 	{ pattern: /^\/api\/v1\/issues\/[^/]+\/resume$/ },
+	{ pattern: /^\/api\/v1\/issues\/[^/]+\/(agent-hold|runs\/[^/]+\/cancel)$/ },
 	// Moving an issue between projects is an operator act: an agent may review
 	// the move (the preview is the argument it makes to its owner) but the POST
 	// is fenced, so a run cannot re-home itself into different guidance.

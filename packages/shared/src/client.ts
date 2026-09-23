@@ -3,6 +3,8 @@ import type {
 	AddIssueLinkRequest,
 	AgentRun,
 	AgentRunDetail,
+	AgentHoldRequest,
+	AgentHoldReceipt,
 	ApiErrorBody,
 	CreateLabelRequest,
 	DeleteLabelRequest,
@@ -58,6 +60,7 @@ import type {
 	StatsQuery,
 	LaunchPromptResponse,
 	IssueDetail,
+	IssueConsentReceipt,
 	IssueFilters,
 	IssueJournalResponse,
 	IssueLink,
@@ -371,6 +374,11 @@ export function createApiClient(options: ApiClientOptions) {
 		getIssue: (id: string) => get<IssueDetail>(`/api/v1/issues/${id}`),
 		getIssueByNumber: (projectId: string, number: number) =>
 			get<IssueDetail>(`/api/v1/projects/${projectId}/issues/${number}`),
+		getIssueConsent: (id: string) => get<IssueConsentReceipt>(`/api/v1/issues/${id}/my-consent`),
+		setIssueHold: (id: string, body: AgentHoldRequest) =>
+			request<AgentHoldReceipt>('PUT', `/api/v1/issues/${id}/agent-hold`, body),
+		cancelIssueRun: (issueId: string, runId: string) =>
+			request<AgentRunDetail>('POST', `/api/v1/issues/${issueId}/runs/${runId}/cancel`, {}),
 		updateIssue: (id: string, body: UpdateIssueRequest) =>
 			request<IssueDetail>('PATCH', `/api/v1/issues/${id}`, body),
 		transitionIssue: (id: string, body: TransitionIssueRequest) =>

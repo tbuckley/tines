@@ -525,6 +525,46 @@ export function register(program: Command): void {
 		);
 	});
 
+	for (const held of [true, false]) {
+		const verb = held ? 'hold' : 'release';
+		withCommon(
+			issues
+				.command(`${verb} <ref>`)
+				.description(
+					held
+						? 'Hold an issue so approved agents cannot be admitted'
+						: 'Release an issue hold; existing permission choices stay unchanged'
+				)
+		).action(async (ref: string, opts: CommonOpts) => {
+			const api = client(opts);
+			const issue = await resolveIssue(api, ref);
+			const consent = await api.getIssueConsent(issue.id);
+			const receipt = await api.setIssueHold(issue.id, {
+				held,
+				expected_revision: consent.agent_hold.revision
+			});
+			if (opts.json) return printJson(receipt);
+			console.log(`${issueRef(issue)}: ${receipt.message}`);
+			if (receipt.released_assigned > 0) {
+				console.log(`${receipt.released_assigned} assigned run(s) were released without a strike.`);
+			}
+		});
+	}
+
+	withCommon(
+		issues
+			.command('cancel-run <ref> <run-id>')
+			.description('Request cancellation of a run that belongs to this issue')
+	).action(async (ref: string, runId: string, opts: CommonOpts) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const run = await api.cancelIssueRun(issue.id, runId);
+		if (opts.json) return printJson(run);
+		console.log(
+			`${issueRef(issue)}: ${run.status === 'canceled' ? 'run canceled' : 'cancellation requested; the run keeps its slot until it stops'}`
+		);
+	});
+
 	withCommon(
 		issues
 			.command('transfer <ref>')

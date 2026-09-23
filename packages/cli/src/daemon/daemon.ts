@@ -355,6 +355,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			? `ambient PATH (${opts.cliRefresh ? 'refresh failed' : 'refresh disabled'})`
 			: `tines ${cli.version ?? 'unknown'} (daemon-managed${cli.source === 'stale' ? ', last-good copy' : ''})`;
 	log(`agent CLI: ${cliLabel(await ensureCli())}`);
+	const pendingCancellationAcks = new Map<string, string>();
 
 	const table: RunTable<ActiveRun> = new RunTable<ActiveRun>(
 		{
@@ -461,6 +462,9 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				// rmSync above did not take it.
 				void uploadRawLog(run);
 				sweepKeptWorkspaces();
+			},
+			acknowledgeCancellation: async (run) => {
+				if (run.cancellationToken) pendingCancellationAcks.set(run.runId, run.cancellationToken);
 			},
 			noteKept: (run) => run.batcher.append(`workspace kept at ${run.workspace}\n`),
 			persist: () => {
@@ -959,6 +963,16 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			const res = await client.pollRunner(creds.runner_id, {
 				instance_id: instanceId,
 				owned_runs: table.ids(),
+				...(pendingCancellationAcks.size > 0
+					? {
+							cancellation_acks: [...pendingCancellationAcks]
+								.slice(0, 100)
+								.map(([run_id, token]) => ({
+									run_id,
+									token
+								}))
+						}
+					: {}),
 				// Kept for older servers. Opted-in daemons advertise only the last
 				// accepted scheduling cap, never the higher machine ceiling.
 				max_concurrent: effectiveConcurrency,
@@ -980,6 +994,14 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				...(pendingUpdate ? { draining: true } : {})
 			});
 			failures = 0;
+			for (const ack of res.cancellation_acks ?? []) {
+				if (pendingCancellationAcks.get(ack.run_id) === ack.token) {
+					pendingCancellationAcks.delete(ack.run_id);
+				}
+			}
+			for (const request of res.cancel_requests ?? []) {
+				table.noteCancellationRequest(request.run_id, request.token);
+			}
 			for (const runId of res.cancels) killWithoutFinish(runId);
 			let declinesChanged = false;
 			for (const runId of res.released_assignments ?? []) {
