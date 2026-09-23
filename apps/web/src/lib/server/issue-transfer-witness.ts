@@ -200,7 +200,7 @@ export function transferWitnessExpressions(
 				'states', (
 					SELECT json_group_array(json(row_json)) FROM (
 						SELECT json_object('id', id, 'name', name, 'category', category,
-							'position', position, 'inherits_from_state_id', inherits_from_state_id) AS row_json
+							'position', position) AS row_json
 						FROM workflow_state WHERE workflow_id = issue.workflow_id ORDER BY id
 					)
 				),

@@ -25,6 +25,13 @@ Date: 2026-09-22
   receipt read/verify, and explicit release remain.
 - `apps/web/src/lib/server/state-retirement/service.ts`: retired A operations
   return stable HTTP 410 `state_retirement_operation_retired` before work.
+- Publication source selection and workflow duplication retain only the selected
+  workflow's owned states; they no longer close over or copy state pointers.
+- DELETE/update compatibility aliases are rejected at the service boundary
+  before any workflow mutation, and project-transfer witnesses no longer treat
+  a historical pointer as live topology.
+- Scope labels, context projections, and transfer witnesses describe exact
+  state targets; nullable `inherited_from` fields are inert compatibility data.
 
 ## Retained historical or compatibility paths
 
@@ -55,5 +62,4 @@ Date: 2026-09-22
   help snapshots; the full suite is 50 files / 702 tests.
 - Repository build and local E2E remain parent assembly obligations if the
   parent release run requires them. No production deployment, live cutover,
-  migration-barrier removal, or post-deployment proof was performed in this
-  slice.
+  migration-barrier removal, or post-deployment proof was performed here.

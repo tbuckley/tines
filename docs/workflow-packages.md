@@ -50,9 +50,9 @@ the downloaded JSON file. Tines parses local bytes first, then sends workflow fi
 instance for server validation. Choose **Preview installation**, review what will be installed, and then choose **Install workflow**. Nothing is installed until you confirm the prepared preview. Technical plan identifiers remain under **Technical details**. Legacy and whole-library files are
 directed to the existing best-effort library importer; workflow-profile files use the atomic flow.
 
-Resolve each declared destination value, edit the proposed names for the independent main and
-dependency copies, and opt into any schedules or routing rules. Main/dependency roles follow the
-file’s `main_workflow_id`, regardless of workflow array order. Schedules are unchecked by default
+Resolve each declared destination value, review the independent selected-workflow copy, and opt
+into any schedules or routing rules. The file’s `main_workflow_id` identifies that one workflow;
+there are no dependency copies or inheritance roles. Schedules are unchecked by default
 and install paused. A destination project is only required by selected project-bound automation or
 a declared text value that is actually used. Preparation shows the full resolved package, exact
 before/after substitutions, every create/reuse/skip operation, and destination runner/model support.
@@ -257,9 +257,9 @@ read an owner receipt but cannot commit an installation.
 Node SQLite fixture cannot prove. It boots the built Worker against a fresh
 Wrangler D1 database, applies the repository migrations and triggers, drives
 the public prepare/install/recovery endpoints, and audits durable rows with
-Wrangler. Each rollback/nonce checkpoint reads all ten family counts in one
+Wrangler. Each rollback/nonce checkpoint reads all ordinary object-family counts in one
 scalar-subquery SELECT, while successful installs read each physical table once
-and check exact IDs, receipt mappings, schedule state, and inheritance in
+and check exact IDs, receipt mappings, schedule state, and null pointers in
 memory. Temporary database triggers inject failures without exposing any
 test-only application endpoint or production switch.
 
@@ -272,8 +272,8 @@ E2E_PORT=8791 pnpm --filter web exec playwright test e2e/native-install.spec.ts
 The gate submits the complete 800-statement compiled batch and proves exact
 receipt-to-row mappings and one-copy counts for every object and event family.
 The 801-statement case is rejected by preparation before any write. It injects
-native failures into workflow, state, transition, context, file,
-inherited-pointer, label, schedule, routing, and event phases and verifies full
+native failures into workflow, state, transition, context, file, label,
+schedule, routing, and event phases and verifies full
 rollback and unchanged issues/project defaults. It also exercises stale
 destination guards, transaction-time expiry, old-nonce child guards, a truly
 concurrent first commit, socket-level discarded-response recovery, and
@@ -295,12 +295,13 @@ apply before compilation.
 
 Run `E2E_PORT=8799 pnpm test:e2e workflow-package-import.spec.ts workflow-package-export.spec.ts`
 against the isolated local Wrangler backend. The export journey passes Alice's browser download
-to Bob, then reads installed inheritance, ordered effective prompt parts, artifact gates, and exact
-skill files through the ordinary API. It proves zero automatic issues/schedules before explicitly
+to Bob, then reads installed exact-state context, artifact gates, and exact skill files through the
+ordinary API. It proves zero automatic issues/schedules before explicitly
 creating an inspection issue for the effective-context read.
 
-The import cases also validate a dependency-first file and check ID-based rename and prepared graph
-roles at desktop and phone widths, preserving the validated source document through preparation.
+The import cases validate pointer-free files and check ID-based rename and prepared graph roles at
+desktop and phone widths, preserving the validated source document through preparation. Historical
+pointer-bearing files remain inspection/download fixtures and are refused before preparation.
 They cover expiry (a real preparation backdated with the local test signing key),
 a late D1 skill-file failure with all allocated rows rolled back, and recovery across reload/404,
 same-plan retry, dropped committed response, and receipt lookup. Only fault injection is intercepted;
@@ -317,13 +318,12 @@ transition. The test emits a JSON attachment containing the file and plan digest
 object, project, issue, runner, run, log, artifact, and final-state identifier for the acceptance run.
 
 The export journey is also the integrated two-account/two-destination-project file exercise. It
-exports a QA-style main plus inherited dependency, two skills with exact file bytes, ordered prompts,
-a repository declaration, artifact gate, declared target workflow, label substitution, and optional daily schedule/project-tier
-configuration. The destination starts with colliding workflow names. The first independent copy omits
-automation and is inspected through ordinary workflow/context APIs from two projects. A second renamed
-copy selects the paused schedule and a supported local-runner tier for one project. The journey pins
-zero automatic issues, `run_count=0`, unchanged project defaults, exact substitutions and inherited
-order, then edits one dependency copy and proves the source and sibling copy remain unchanged.
+exports one selected workflow, two skills with exact file bytes, ordered prompts, a repository
+declaration, artifact gate, declared target workflow, label substitution, and optional daily
+schedule/project-tier configuration. The destination starts with colliding workflow names. The
+independent copy omits automation and is inspected through ordinary workflow/context APIs from two
+projects. The journey pins zero automatic issues, `run_count=0`, unchanged project defaults, exact
+substitutions, then edits the copied workflow and proves the source remains unchanged.
 
 ## Public snapshot CLI
 

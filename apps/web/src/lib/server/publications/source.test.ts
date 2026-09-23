@@ -85,6 +85,7 @@ describe('publication source witness', () => {
 			schedules: [{ id: 'schedule-publication-source', name: 'Daily review' }]
 		});
 		expect(before.raw).toContain('First version');
+		expect(before.raw).not.toContain('inherits_from_state_id');
 		expect(before.raw).not.toContain('run_count');
 		expect(before.raw).not.toContain('next_run_at');
 

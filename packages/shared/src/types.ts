@@ -1148,7 +1148,7 @@ export interface EffectiveRepo {
 	/** Always resolved (falls back to the URL's basename minus `.git`). */
 	dir: string;
 	version: number;
-	/** Set when the repo matched through an ancestor of the issue's state. */
+	/** Historical compatibility field; Release B runtime always returns null. */
 	inherited_from: InheritedFrom | null;
 }
 
@@ -1162,7 +1162,7 @@ export interface EffectiveEnv {
 	value?: string;
 	scope: ContextScope;
 	version: number;
-	/** Set when the item matched through an ancestor of the issue's state. */
+	/** Historical compatibility field; Release B runtime always returns null. */
 	inherited_from: InheritedFrom | null;
 }
 
@@ -1175,7 +1175,7 @@ export interface OverriddenContextItem {
 	overridden_by: string;
 	/** Repositories only: the losing candidate's checkout details. */
 	repo?: { url: string; branch?: string | null; dir: string };
-	/** Set when the loser matched through an ancestor of the issue's state. */
+	/** Historical compatibility field; Release B runtime always returns null. */
 	inherited_from: InheritedFrom | null;
 }
 

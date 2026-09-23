@@ -17,7 +17,7 @@ const comparable = (doc: LibraryDocument) => ({
 	context: [...doc.context].sort((a, b) => `${a.kind}${a.name}`.localeCompare(`${b.kind}${b.name}`))
 });
 
-/** One workflow's inheritance pointers, as `<state> -> <ref>`. */
+/** Historical pointer fields must remain empty in current exports. */
 const pointersOf = (doc: LibraryDocument, workflow: string) =>
 	(doc.workflows.find((w) => w.name === workflow)?.states ?? [])
 		.filter((s) => s.inherits_from)
@@ -42,11 +42,8 @@ test.describe.serial('library export / import', () => {
 			description: 'travels between deployments',
 			initial_state: 'Start',
 			states: [
-				// Two inheritance pointers: one at the standard workflow, which
-				// never travels and has to be re-found by name on the other
-				// side, and one inside this workflow.
-				{ name: 'Start', category: 'backlog', inherits_from: 'wfs_std_open' },
-				{ name: 'Middle', category: 'active', inherits_from: 'Start' },
+				{ name: 'Start', category: 'backlog' },
+				{ name: 'Middle', category: 'active' },
 				{ name: 'End', category: 'done' }
 			],
 			transitions: [
@@ -63,8 +60,7 @@ test.describe.serial('library export / import', () => {
 		const created = await body<{ id: string; states: { id: string; name: string }[] }>(wf);
 		const middle = created.states.find((s) => s.name === 'Middle')!;
 
-		// A project whose default workflow is the one travelling with it: the
-		// pointer is by name in the document and has to be re-resolved there.
+		// A project whose default workflow is the one travelling with it.
 		const project = await alice.post('/api/v1/projects', {
 			name: projectName,
 			default_workflow_id: created.id
@@ -88,10 +84,7 @@ test.describe.serial('library export / import', () => {
 		// The system workflow is seeded identically everywhere, so it never travels.
 		expect(doc.workflows.map((w) => w.name)).not.toContain('Standard');
 		expect(doc.projects.find((p) => p.name === projectName)?.default_workflow).toBe(workflowName);
-		expect(pointersOf(doc, workflowName)).toEqual([
-			`Middle -> ${workflowName}/Start`,
-			'Start -> Standard/Open'
-		]);
+		expect(pointersOf(doc, workflowName)).toEqual([]);
 		const exported = doc.context.find((c) => c.name === promptName)!;
 		expect(exported.scope.state).toEqual({ workflow: workflowName, name: 'Middle' });
 		expect(exported.body).toBe('Instructions that should travel.');
@@ -121,8 +114,8 @@ test.describe.serial('library export / import', () => {
 
 		const rebuilt = await body<LibraryDocument>(await bob.get('/api/v1/export?version=2'));
 		expect(comparable(rebuilt)).toEqual(comparable(document));
-		// Both pointers survived the trip, re-resolved against Bob's own ids.
-		expect(pointersOf(rebuilt, workflowName)).toEqual(pointersOf(document, workflowName));
+		// Current exports carry no functional state pointers.
+		expect(pointersOf(rebuilt, workflowName)).toEqual([]);
 		// Projects are compared by the one this suite creates: Bob has a library
 		// of his own, so his export is a superset rather than the same document.
 		expect(rebuilt.projects.find((p) => p.name === projectName)?.default_workflow).toBe(

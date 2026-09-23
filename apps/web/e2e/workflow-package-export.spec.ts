@@ -150,7 +150,7 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 			description: 'A browser-authored portable workflow.',
 			initial_state: 'Draft',
 			states: [
-				{ name: 'Draft', category: 'active', inherits_from: conventions.id },
+				{ name: 'Draft', category: 'active' },
 				{ name: 'Review', category: 'active' },
 				{ name: 'Done', category: 'done' }
 			],

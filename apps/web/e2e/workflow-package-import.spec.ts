@@ -10,7 +10,7 @@ import {
 	type ValidateLibraryResponse,
 	type WorkflowPackageDocument
 } from '@tines/shared';
-import { automatedPackage } from '../../../packages/shared/src/library/fixtures.js';
+import { pointerFreeAutomatedPackage } from '../../../packages/shared/src/library/fixtures.js';
 import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import {
@@ -168,7 +168,6 @@ let longCronPath: string;
 let dependencyFirstDocument: WorkflowPackageDocument;
 let candidateDocument: WorkflowPackageDocument;
 let mainName: string;
-let dependencyName: string;
 let candidateInputId: string;
 let projects: Project[];
 
@@ -176,12 +175,10 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 	const api = apiFor(BOB);
 	suffix = ` ${uniqueName('browser import')}`;
 	filingLabel = uniqueName('import-label');
-	const candidate = automatedPackage();
+	const candidate = pointerFreeAutomatedPackage();
 	(candidate as { digest?: string }).digest = undefined;
 	mainName = `Reviewer${suffix}`;
-	dependencyName = `Shared${suffix}`;
 	candidate.workflows[0].name = mainName;
-	candidate.workflows[1].name = dependencyName;
 	candidate.inputs[0].default = filingLabel;
 	candidateInputId = candidate.inputs[0].id;
 	for (const use of candidate.text_uses) {
@@ -220,7 +217,7 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 	candidateDocument = document;
 	packagePath = join(mkdtempSync(join(tmpdir(), 'tines-browser-import-')), 'package.json');
 	writeFileSync(packagePath, JSON.stringify(document));
-	// Array order is not workflow identity: validate an otherwise unchanged dependency-first file.
+	// Array order is not workflow identity: validate an otherwise unchanged pointer-free file.
 	const reordered = {
 		...document,
 		workflows: [...document.workflows].reverse(),
@@ -231,9 +228,7 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 	);
 	expect(reorderedValidation.valid).toBe(true);
 	dependencyFirstDocument = reorderedValidation.document as WorkflowPackageDocument;
-	expect(dependencyFirstDocument.workflows[0].id).not.toBe(
-		dependencyFirstDocument.main_workflow_id
-	);
+	expect(dependencyFirstDocument.workflows[0].id).toBe(dependencyFirstDocument.main_workflow_id);
 	dependencyFirstPath = join(
 		mkdtempSync(join(tmpdir(), 'tines-dependency-first-')),
 		'package.json'
@@ -250,7 +245,7 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 	expect(longCronValidation.valid).toBe(true);
 	longCronPath = join(mkdtempSync(join(tmpdir(), 'tines-long-cron-')), 'package.json');
 	writeFileSync(longCronPath, JSON.stringify(longCronValidation.document));
-	const missingWorkflow = automatedPackage();
+	const missingWorkflow = pointerFreeAutomatedPackage();
 	(missingWorkflow as { digest?: string }).digest = undefined;
 	missingWorkflow.inputs.push({
 		id: 'input:destination-workflow',
@@ -367,28 +362,18 @@ test('reviews, confirms and installs an independent project-free package through
 	await expect(
 		page.getByRole('heading', { name: `${mainName} (imported)`, exact: true })
 	).toBeVisible();
-	await expect(
-		page.getByRole('heading', { name: `${dependencyName} (imported)`, exact: true })
-	).toBeVisible();
 	const review = page.getByTestId('package-review');
 	const mainGraph = review
 		.getByRole('heading', { name: `${mainName} (imported)`, exact: true })
 		.locator('xpath=ancestor::article')
 		.getByRole('img', { name: 'Workflow graph' });
-	const dependencyGraph = review
-		.getByRole('heading', { name: `${dependencyName} (imported)`, exact: true })
-		.locator('xpath=ancestor::article')
-		.getByRole('img', { name: 'Workflow graph' });
 	await expect(mainGraph.getByText('Review', { exact: true })).toBeVisible();
 	await expect(mainGraph.getByText('Handoff', { exact: true })).toBeVisible();
-	await expect(dependencyGraph.getByText('Base', { exact: true })).toBeVisible();
-	for (const graph of [mainGraph, dependencyGraph]) {
-		const fitted = await graph.evaluate((svg) => ({
-			width: svg.getBoundingClientRect().width,
-			containerWidth: svg.parentElement!.clientWidth
-		}));
-		expect(fitted.width).toBeLessThanOrEqual(fitted.containerWidth + 1);
-	}
+	const fitted = await mainGraph.evaluate((svg) => ({
+		width: svg.getBoundingClientRect().width,
+		containerWidth: svg.parentElement!.clientWidth
+	}));
+	expect(fitted.width).toBeLessThanOrEqual(fitted.containerWidth + 1);
 	await expect(page.getByText('Variable values', { exact: true })).toBeVisible();
 	await expect(page.getByText('Original', { exact: true }).first()).toBeVisible();
 	await expect(page.getByText('Installed value', { exact: true }).first()).toBeVisible();
@@ -495,28 +480,20 @@ test('reviews, confirms and installs an independent project-free package through
 	}
 });
 
-test('identifies main and dependency by ID in dependency-first files before confirmation', async ({
+test('identifies the main workflow by ID in a reordered pointer-free file before confirmation', async ({
 	page
 }) => {
 	const main = dependencyFirstDocument.workflows.find(
 		(workflow) => workflow.id === dependencyFirstDocument.main_workflow_id
 	)!;
-	const dependency = dependencyFirstDocument.workflows.find((workflow) => workflow.id !== main.id)!;
 	for (const viewport of [DESKTOP, PHONE]) {
 		await page.setViewportSize(viewport);
 		await gotoHydrated(page, '/workflows/import');
 		await page.getByLabel('Workflow package file').setInputFiles(dependencyFirstPath);
 		const mainInput = page.getByRole('textbox', { name: `Main · ${main.name}`, exact: true });
-		const dependencyInput = page.getByRole('textbox', {
-			name: `Dependency · ${dependency.name}`,
-			exact: true
-		});
 		await expect(mainInput).toHaveAttribute('id', `name-${main.id}`);
-		await expect(dependencyInput).toHaveAttribute('id', `name-${dependency.id}`);
 		const renamedMain = `${main.name} main ${viewport.width}`;
-		const renamedDependency = `${dependency.name} dependency ${viewport.width}`;
 		await mainInput.fill(renamedMain);
-		await dependencyInput.fill(renamedDependency);
 		const preparing = page.waitForResponse('**/api/v1/library/prepare');
 		await page.getByRole('button', { name: 'Preview installation' }).click();
 		const response = await preparing;
@@ -524,21 +501,14 @@ test('identifies main and dependency by ID in dependency-first files before conf
 		// The browser must preserve the validated source bytes/digest and send names keyed by ID.
 		const request = response.request().postDataJSON();
 		expect(JSON.parse(request.document_json)).toEqual(dependencyFirstDocument);
-		expect(request.choices.workflow_names).toMatchObject({
-			[main.id]: renamedMain,
-			[dependency.id]: renamedDependency
-		});
+		expect(request.choices.workflow_names).toMatchObject({ [main.id]: renamedMain });
 		const review = page.getByTestId('package-review');
 		const mainCard = review.locator(`article[id="review-${main.id}"]`);
-		const dependencyCard = review.locator(`article[id="review-${dependency.id}"]`);
 		await expect(mainCard.getByRole('heading', { name: renamedMain, exact: true })).toBeVisible();
 		await expect(mainCard.getByText('Main workflow', { exact: true })).toBeVisible();
 		await expect(
-			dependencyCard.getByRole('heading', { name: renamedDependency, exact: true })
-		).toBeVisible();
-		await expect(
-			dependencyCard.getByText('Required inheritance dependency', { exact: true })
-		).toBeVisible();
+			mainCard.getByText('Required inheritance dependency', { exact: true })
+		).toHaveCount(0);
 		await expect(
 			page.getByRole('checkbox', { name: /I reviewed what will be installed/ })
 		).not.toBeChecked();

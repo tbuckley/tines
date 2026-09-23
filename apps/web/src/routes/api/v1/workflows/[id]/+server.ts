@@ -20,7 +20,9 @@ export const DELETE: RequestHandler = api(async (event) => {
 	const body = await readOptionalJson<DeleteAnchorRequest>(event);
 	const { deleted_context } = await deleteWorkflow(db, env, actor, event.params.id, {
 		forceDeleteContext: body.force_delete_context === true,
-		forceClearInheritance: body.force_clear_inheritance === true
+		// Preserve the raw compatibility value so the service can reject all
+		// affirmative aliases instead of silently coercing them to false.
+		forceClearInheritance: body.force_clear_inheritance
 	});
 	if (deleted_context.length > 0) {
 		return json({

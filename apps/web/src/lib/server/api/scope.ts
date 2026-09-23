@@ -56,36 +56,26 @@ export interface ResolvedScope extends ScopeIds {
  * unknown (a dangling reference) renders the id rather than vanishing — a
  * label must never understate the scope it describes.
  */
-export function scopeLabel(
-	scope: {
-		projectId?: string | null;
-		projectName?: string | null;
-		workflowStateId?: string | null;
-		stateName?: string | null;
-		workflowId?: string | null;
-		workflowName?: string | null;
-		labelId?: string | null;
-		labelName?: string | null;
-		issueId?: string | null;
-		issueProjectName?: string | null;
-		issueNumber?: number | null;
-	},
-	/**
-	 * `qualifyState` renders the state part as `state <workflow> / <state>`.
-	 * Only inherited layers set it: an issue's prompt can stitch a base state
-	 * and its own state, and two same-named states must not collide under one
-	 * `## Context: state X` heading. Everywhere else the label stays short.
-	 */
-	{ qualifyState = false }: { qualifyState?: boolean } = {}
-): string {
+export function scopeLabel(scope: {
+	projectId?: string | null;
+	projectName?: string | null;
+	workflowStateId?: string | null;
+	stateName?: string | null;
+	workflowId?: string | null;
+	workflowName?: string | null;
+	labelId?: string | null;
+	labelName?: string | null;
+	issueId?: string | null;
+	issueProjectName?: string | null;
+	issueNumber?: number | null;
+}): string {
 	const parts: string[] = [];
 	if (scope.projectName || scope.projectId) {
 		parts.push(`project ${scope.projectName || scope.projectId}`);
 	}
 	if (scope.stateName || scope.workflowStateId) {
 		const state = scope.stateName || scope.workflowStateId;
-		const workflow = qualifyState ? scope.workflowName || scope.workflowId : null;
-		parts.push(`state ${workflow ? `${workflow} / ${state}` : state}`);
+		parts.push(`state ${state}`);
 	}
 	if (scope.labelName || scope.labelId) {
 		parts.push(`label ${scope.labelName || scope.labelId}`);
@@ -99,10 +89,7 @@ export function scopeLabel(
 }
 
 /** The wire shape of a resolved scope, as every scoped resource serializes it. */
-export function toContextScope(
-	scope: ResolvedScope,
-	options?: { qualifyState?: boolean }
-): ContextScope {
+export function toContextScope(scope: ResolvedScope): ContextScope {
 	return {
 		project_id: scope.projectId,
 		project_name: scope.projectName,
@@ -118,7 +105,7 @@ export function toContextScope(
 			scope.issueId && scope.issueProjectName && scope.issueNumber !== null
 				? { project_name: scope.issueProjectName, number: scope.issueNumber }
 				: null,
-		label: scopeLabel(scope, options)
+		label: scopeLabel(scope)
 	};
 }
 

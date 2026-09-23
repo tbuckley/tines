@@ -1598,11 +1598,6 @@ function sortMatched(rows: ItemRow[]): ItemRow[] {
 	);
 }
 
-/**
- * Where a matched row came from, when it came from an ancestor of the issue's
- * state. Inherited layers render `state <workflow> / <state>` so two same-named
- * states cannot collide under one `## Context: state X` heading.
- */
 /** The exact project ∧ state journal an issue's runs may write. */
 async function journalTarget(
 	rows: ItemRow[],
@@ -1748,13 +1743,6 @@ export async function launchStateForRun(
  * `journal` at project ∧ state, where the state is the run's launch state for
  * a run key on this issue and the issue's current state for everyone else.
  *
- * The journal then follows the *root* of that state's inheritance chain: two
- * workflows whose stages inherit from one base state share one writable
- * journal, so a lesson learned in either is pruned and re-read by both. A
- * state that inherits from nothing is its own root, so this is inert for it.
- * A legacy journal left on a child keeps stitching into the prompt read-only;
- * only the root's is handed out.
- *
  * The decision lives here rather than in the CLI because the run → launch
  * state link (`api_key.agent_run_id` → `agent_run.state_id_at_start`) is only
  * knowable server-side.
@@ -1773,8 +1761,7 @@ export async function journalForIssue(
 			workflowStateId: stateId,
 			labelId: null,
 			issueId: null
-		}),
-		{}
+		})
 	);
 	const row = await contextItemQuery(db, actor.userId)
 		.where('context_item.kind', '=', 'prompt')

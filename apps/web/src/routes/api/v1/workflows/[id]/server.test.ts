@@ -150,3 +150,36 @@ describe('PATCH /api/v1/workflows/:id', () => {
 		expect(waits).toHaveLength(0);
 	});
 });
+
+describe('DELETE /api/v1/workflows/:id', () => {
+	it.each(['true', '1', 'yes'])(
+		'rejects affirmative force_clear_inheritance alias %s',
+		async (value) => {
+			const t = createTestDb();
+			seedBase(t);
+			const workflow = await createWorkflow(t.db, t.env, actor, {
+				name: `Retirement alias ${value}`,
+				initial_state: 'Open',
+				states: [{ name: 'Open', category: 'active' }],
+				transitions: []
+			});
+			const url = new URL(`http://test/api/v1/workflows/${workflow.id}`);
+			const response = await DELETE({
+				params: { id: workflow.id },
+				locals: { user: { id: USER, name: 'alice' } },
+				platform: { env: t.env, ctx: { waitUntil: () => {} } },
+				request: new Request(url, {
+					method: 'DELETE',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ force_clear_inheritance: value })
+				}),
+				url
+			} as unknown as Parameters<typeof DELETE>[0]);
+
+			expect(response.status).toBe(422);
+			expect(await response.json()).toMatchObject({
+				error: { code: 'state_inheritance_removed' }
+			});
+		}
+	);
+});

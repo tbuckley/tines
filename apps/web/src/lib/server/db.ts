@@ -32,7 +32,7 @@ export interface WorkflowStateTable {
 	name: string;
 	category: StateCategory;
 	position: number;
-	/** The state this one inherits context from (Tines/238), or null. */
+	/** Historical nullable state pointer; Release B runtime keeps it null. */
 	inherits_from_state_id: string | null;
 	created_at: number;
 }

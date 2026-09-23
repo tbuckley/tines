@@ -88,7 +88,7 @@ This is why scope is columns on the item rather than a join table per element: t
 **Coherence validation** (422 on violation):
 
 - `issue_id` and `project_id` both set → the issue must belong to that project (the UI omits the redundant combination; the API tolerates it when coherent).
-- `issue_id` and `workflow_state_id` both set → the state must belong to the issue's bound workflow. Inheritance does not relax this: an item scoped to an issue *and* to an **ancestor** of that issue's state is incoherent (the base is not in the issue's workflow) and 422s. Scope one to the base state alone, or to the issue alone.
+- `issue_id` and `workflow_state_id` both set → the state must belong to the issue's bound workflow. Scope is exact-state only; a state from another workflow is incoherent and 422s.
 - All referenced elements must belong to the authenticated user (states may also come from the system standard workflow).
 
 `project ∧ state` combinations are *not* checked against the project's default workflow — issues choose workflows per issue, so any of the user's states may pair with any project. The UI surfaces a gentle hint when the pairing can never currently match (no issue in that project uses that state's workflow), but it is not an error.
