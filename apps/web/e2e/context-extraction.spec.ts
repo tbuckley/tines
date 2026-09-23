@@ -81,13 +81,26 @@ test('four scoped extractions execute destination-first and retain sources on ev
 
 	for (const caseId of ['global', 'project', 'state', 'combined'] as const) {
 		const caseName = uniqueName(`extract-${caseId}`);
+		const rejectedInheritance = await api.post('/api/v1/workflows', {
+			name: uniqueName(`extract-${caseId}-retired-inheritance`),
+			initial_state: 'Child',
+			states: [
+				{ name: 'Root', category: 'active' },
+				{ name: 'Child', category: 'active', inherits_from: 'Root' }
+			],
+			transitions: []
+		});
+		expect(rejectedInheritance.status()).toBe(422);
+		expect(await errorBody(rejectedInheritance)).toMatchObject({
+			error: { code: 'state_inheritance_removed' }
+		});
 		const workflow = await body<WorkflowResponse>(
 			await api.post('/api/v1/workflows', {
 				name: caseName,
 				initial_state: 'Child',
 				states: [
 					{ name: 'Root', category: 'active' },
-					{ name: 'Child', category: 'active', inherits_from: 'Root' },
+					{ name: 'Child', category: 'active' },
 					{ name: 'Other', category: 'active' }
 				],
 				transitions: []
@@ -119,10 +132,10 @@ test('four scoped extractions execute destination-first and retain sources on ev
 				title: `${caseId} other-project child consumer`
 			})
 		);
-		const rootState = workflow.states.find((state) => state.name === 'Root')!;
+		const childState = workflow.states.find((state) => state.name === 'Child')!;
 		const scope = {
 			...(caseId === 'project' || caseId === 'combined' ? { project_id: project.id } : {}),
-			...(caseId === 'state' || caseId === 'combined' ? { workflow_state_id: rootState.id } : {})
+			...(caseId === 'state' || caseId === 'combined' ? { workflow_state_id: childState.id } : {})
 		};
 		const before = readFileSync(join(FIXTURES, caseId, 'before.md'), 'utf8');
 		const after = readFileSync(join(FIXTURES, caseId, 'after.md'), 'utf8');
@@ -162,22 +175,17 @@ test('four scoped extractions execute destination-first and retain sources on ev
 			);
 			expect(journal).toMatchObject({
 				anchor: 'current',
-				scope: { project_id: project.id, workflow_state_id: rootState.id },
+				scope: { project_id: project.id, workflow_state_id: childState.id },
 				item: { id: source.id, version: source.version, body: before }
 			});
 			const effectiveJournal = await body<EffectiveContext>(
 				await api.get(`/api/v1/issues/${issue.id}/context`)
 			);
 			expect(effectiveJournal.prompt.journal).toEqual({
-				state_id: rootState.id,
+				state_id: childState.id,
 				item_id: source.id,
 				version: source.version,
-				inherited_from: {
-					state_id: rootState.id,
-					state_name: 'Root',
-					workflow_id: workflow.id,
-					workflow_name: workflow.name
-				}
+				inherited_from: null
 			});
 			const journalPart = effectiveJournal.prompt.parts.find((part) => part.item_id === source.id);
 			expect(journalPart?.inherited_from).toEqual(effectiveJournal.prompt.journal.inherited_from);
@@ -188,7 +196,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 				id: source.id,
 				version: source.version,
 				body: before,
-				scope: { project_id: project.id, workflow_state_id: rootState.id }
+				scope: { project_id: project.id, workflow_state_id: childState.id }
 			});
 			record(caseId, 'journal_root_show', 'ok', {
 				item_id: source.id,
@@ -298,16 +306,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 			issue_id: null,
 			label_id: null
 		});
-		expect(winner.inherited_from).toEqual(
-			caseId === 'state' || caseId === 'combined'
-				? {
-						state_id: rootState.id,
-						state_name: 'Root',
-						workflow_id: workflow.id,
-						workflow_name: workflow.name
-					}
-				: null
-		);
+		expect(winner.inherited_from).toBeNull();
 		record(caseId, 'effective_resolution', 'ok', {
 			winner: winner.item_id,
 			scope: winner.scope,
@@ -603,7 +602,7 @@ test('four scoped extractions execute destination-first and retain sources on ev
 	});
 });
 
-test('same-name resolution follows exact scope rank and inherited-state provenance', async ({
+test('same-name resolution follows exact scope rank without state inheritance', async ({
 	apiFor,
 	uniqueName
 }) => {
@@ -614,13 +613,12 @@ test('same-name resolution follows exact scope rank and inherited-state provenan
 			initial_state: 'Child',
 			states: [
 				{ name: 'Root', category: 'active' },
-				{ name: 'Child', category: 'active', inherits_from: 'Root' },
+				{ name: 'Child', category: 'active' },
 				{ name: 'Other', category: 'active' }
 			],
 			transitions: []
 		})
 	);
-	const root = workflow.states.find((state) => state.name === 'Root')!;
 	const child = workflow.states.find((state) => state.name === 'Child')!;
 	const projectP = await body<Project>(
 		await api.post('/api/v1/projects', {
@@ -657,10 +655,10 @@ test('same-name resolution follows exact scope rank and inherited-state provenan
 		);
 	const global = await makeSkill('global');
 	const project = await makeSkill('project', { project_id: projectP.id });
-	const state = await makeSkill('state-root', { workflow_state_id: root.id });
+	const state = await makeSkill('state-child', { workflow_state_id: child.id });
 	const combined = await makeSkill('combined-root', {
 		project_id: projectP.id,
-		workflow_state_id: root.id
+		workflow_state_id: child.id
 	});
 	const winner = async (issue: IssueDetail) => {
 		const context = await body<EffectiveContext>(
@@ -671,17 +669,10 @@ test('same-name resolution follows exact scope rank and inherited-state provenan
 	expect((await winner(pOther)).item_id).toBe(project.id);
 	const qWinner = await winner(qChild);
 	expect(qWinner.item_id).toBe(state.id);
-	expect(qWinner.inherited_from?.state_id).toBe(root.id);
-	const leaf = await makeSkill('state-leaf', { workflow_state_id: child.id });
-	expect((await winner(qChild)).item_id).toBe(leaf.id);
+	expect(qWinner.inherited_from).toBeNull();
 	const pWinner = await winner(pChild);
 	expect(pWinner.item_id).toBe(combined.id);
-	expect(pWinner.inherited_from).toEqual({
-		state_id: root.id,
-		state_name: 'Root',
-		workflow_id: workflow.id,
-		workflow_name: workflow.name
-	});
-	for (const item of [leaf, combined, state, project, global])
+	expect(pWinner.inherited_from).toBeNull();
+	for (const item of [combined, state, project, global])
 		await api.delete(`/api/v1/context/${item.id}`);
 });

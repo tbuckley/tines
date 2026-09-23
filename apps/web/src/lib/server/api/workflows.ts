@@ -856,7 +856,10 @@ export async function deleteWorkflow(
 	env: Env,
 	actor: ActorContext,
 	id: string,
-	{ forceDeleteContext = false, forceClearInheritance = false } = {}
+	{
+		forceDeleteContext = false,
+		forceClearInheritance = false
+	}: { forceDeleteContext?: boolean; forceClearInheritance?: unknown } = {}
 ): Promise<{ deleted_context: DeletedContextItem[]; cleared_inheritance: never[] }> {
 	rejectForceClearInheritance(forceClearInheritance);
 	const wf = await loadWorkflow(db, actor.userId, id);

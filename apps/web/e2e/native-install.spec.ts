@@ -11,7 +11,7 @@ import {
 import {
 	automatedPackage,
 	duplicateLibrary,
-	inheritedPackage
+	pointerFreePackage
 } from '../../../packages/shared/src/library/fixtures';
 import { signPackagePlan, verifyPackagePlan } from '../src/lib/server/library/token';
 import { ALICE, BASE_URL } from './constants.mjs';
@@ -607,7 +607,7 @@ test.describe.serial('native D1 workflow install gate', () => {
 	test('accepts exact document and record limits and rejects one over', async ({ request }) => {
 		test.setTimeout(120_000);
 		const client = apiClient(request, ALICE.apiKey);
-		const documentDraft = inheritedPackage() as WorkflowPackageDocument & { digest?: string };
+		const documentDraft = pointerFreePackage() as WorkflowPackageDocument & { digest?: string };
 		delete documentDraft.digest;
 		const small = JSON.stringify(documentDraft);
 		const exactDocument = small + ' '.repeat(LIBRARY_MAX_BYTES - Buffer.byteLength(small));
@@ -645,10 +645,10 @@ test.describe.serial('native D1 workflow install gate', () => {
 	}) => {
 		test.setTimeout(120_000);
 		const client = apiClient(request, ALICE.apiKey);
-		const document = inheritedPackage();
+		const document = pointerFreePackage();
 		const source = document.context[0];
 		if (source.kind !== 'prompt') throw new Error('expected prompt fixture');
-		for (let i = 0; i < 390; i++)
+		for (let i = 0; i < 392; i++)
 			document.context.push({
 				...source,
 				id: `native-context-${runId}-${i}`,
@@ -673,7 +673,7 @@ test.describe.serial('native D1 workflow install gate', () => {
 		expect(count('library_install', [plan.plan_id])).toBe(1);
 		expect(
 			d1(`SELECT COUNT(*) AS n FROM context_item WHERE name LIKE 'native-${runId}-%'`)
-		).toEqual([{ n: 390 }]);
+		).toEqual([{ n: 392 }]);
 
 		const over = structuredClone(document);
 		const skill = over.context.find((context) => context.kind === 'skill');
@@ -698,7 +698,7 @@ test.describe.serial('native D1 workflow install gate', () => {
 
 	test('persists a maximum-size skill payload exactly', async ({ request }) => {
 		const client = apiClient(request, ALICE.apiKey);
-		const document = inheritedPackage();
+		const document = pointerFreePackage();
 		const skill = document.context.find((item) => item.kind === 'skill');
 		if (!skill || skill.kind !== 'skill') throw new Error('expected skill fixture');
 		const contentBytes = 100 * 1024 - Buffer.byteLength(skill.files[0].path);
@@ -707,7 +707,7 @@ test.describe.serial('native D1 workflow install gate', () => {
 		const marker = `native-file-${runId}`;
 		const plan = await prepare(client, documentJson, {
 			inputs: { 'input:1': { mode: 'create', name: marker, color: 'blue' } },
-			workflow_names: { 'workflow:1': `${marker} main`, 'workflow:2': `${marker} dependency` }
+			workflow_names: { 'workflow:1': `${marker} main` }
 		});
 		await body(await client.post('/api/v1/library/install', installBody(documentJson, plan)));
 		expect(
