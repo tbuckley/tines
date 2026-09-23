@@ -263,6 +263,15 @@ export const RUNNER_E2E = {
 	apiKeyName: 'runner-key',
 	sessionToken: 'e2e-session-runner'
 };
+/** Exclusive to runner-concurrency.spec.ts, whose cap journey needs no shared active runs. */
+export const RUNNER_CONCURRENCY = {
+	id: 'usr_e2e_runner_concurrency',
+	name: 'Runner Concurrency E2E',
+	email: 'runner-concurrency@e2e.test',
+	apiKey: 'tines_e2erunnerconcurrency00000000000000000000000',
+	apiKeyName: 'runner-concurrency-key',
+	sessionToken: 'e2e-session-runner-concurrency'
+};
 export const EXPLAINER_REMEDIES = {
 	id: 'usr_e2e_explainer_remedies',
 	name: 'Explainer Remedies E2E',
