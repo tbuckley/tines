@@ -20,7 +20,7 @@ it('exports duplicate workflow names and state prompts by distinct local IDs wit
 		const workflow = await createWorkflow(t.db, t.env, actor, {
 			name: 'Same',
 			initial_state: 'Ready',
-			states: [{ name: 'Ready', category: 'active', inherits_from: 'wfs_std_open' }],
+			states: [{ name: 'Ready', category: 'active' }],
 			transitions: []
 		});
 		const context = await createContextItem(t.db, t.env, actor, {

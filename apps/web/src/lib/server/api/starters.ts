@@ -33,7 +33,6 @@ import { issueInsertQueries } from './issues';
 import {
 	loadWorkflows,
 	resolveDef,
-	resolveInheritance,
 	workflowAsRequest,
 	workflowFingerprint,
 	workflowInsertQueries,
@@ -259,7 +258,6 @@ export async function starterQueries(
 		const name = sameName.length ? collisionName(wf.name, projectName) : wf.name;
 		const id = newId('wf');
 		const def = resolveDef(wf.states, wf.transitions ?? [], wf.initial_state, []);
-		const inh = await resolveInheritance(db, actor.userId, { id, name }, def.states, []);
 		const description = wf.description ?? '';
 		placements.push({
 			starterName: wf.name,
@@ -273,7 +271,6 @@ export async function starterQueries(
 					name,
 					description,
 					def,
-					inh,
 					now,
 					eventPayload: { starter: starter.id }
 				})

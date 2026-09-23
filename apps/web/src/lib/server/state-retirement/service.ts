@@ -56,6 +56,16 @@ function actorKey(actor: ActorContext): string {
 	throw new ApiFail(403, 'invalid_actor', 'An authenticated session or API key is required');
 }
 
+/** Release B keeps inspection and release, but retires new A operations. */
+function retiredOperation(operation: string): void {
+	throw new ApiFail(
+		410,
+		'state_retirement_operation_retired',
+		`State-retirement ${operation} is retired; use the existing receipt verification or release operation`,
+		{ operation, retired: true }
+	);
+}
+
 type GuardItem = StateRetirementReceiptV1['rollback_guard']['items'][number];
 type GuardFile = StateRetirementReceiptV1['rollback_guard']['files'][number];
 
@@ -337,6 +347,7 @@ export async function prepareStateRetirement(
 	request: unknown,
 	now = Date.now()
 ): Promise<StateRetirementPlanResponse> {
+	retiredOperation('prepare');
 	requireOperator(actor);
 	if (!request || typeof request !== 'object' || Array.isArray(request))
 		throw new ApiFail(422, 'invalid_field', 'Expected hold_id and optional inventory_json');
@@ -480,6 +491,7 @@ export async function applyStateRetirement(
 	request: ApplyStateRetirementRequest,
 	now = Date.now()
 ): Promise<StateRetirementReceiptV1> {
+	retiredOperation('apply');
 	requireOperator(actor);
 	if (
 		!request ||
@@ -808,6 +820,7 @@ export async function prepareStateRetirementRollback(
 	receiptId: string,
 	now = Date.now()
 ): Promise<StateRetirementRollbackPrepareResponse> {
+	retiredOperation('rollback preparation');
 	requireOperator(actor);
 	const { receipt } = await ownedReceipt(db, actor, receiptId);
 	if (receipt.kind !== 'preserve')
@@ -850,6 +863,7 @@ export async function applyStateRetirementRollback(
 	request: StateRetirementRollbackApplyRequest,
 	now = Date.now()
 ): Promise<StateRetirementReceiptV1> {
+	retiredOperation('rollback apply');
 	requireOperator(actor);
 	if (
 		!request ||
@@ -1088,6 +1102,7 @@ export async function acquireStateRetirementHold(
 	request: AcquireStateRetirementHoldRequest,
 	now = Date.now()
 ): Promise<StateRetirementHold> {
+	retiredOperation('new hold acquisition');
 	if (actor.agentRunId)
 		throw new ApiFail(403, 'run_key_forbidden', 'Run keys cannot manage state-retirement holds');
 	if (

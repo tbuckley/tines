@@ -18,20 +18,13 @@ export const PATCH: RequestHandler = api(async (event) => {
 export const DELETE: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
 	const body = await readOptionalJson<DeleteAnchorRequest>(event);
-	const { deleted_context, cleared_inheritance } = await deleteWorkflow(
-		db,
-		env,
-		actor,
-		event.params.id,
-		{
-			forceDeleteContext: body.force_delete_context === true,
-			forceClearInheritance: body.force_clear_inheritance === true
-		}
-	);
-	if (deleted_context.length > 0 || cleared_inheritance.length > 0) {
+	const { deleted_context } = await deleteWorkflow(db, env, actor, event.params.id, {
+		forceDeleteContext: body.force_delete_context === true,
+		forceClearInheritance: body.force_clear_inheritance === true
+	});
+	if (deleted_context.length > 0) {
 		return json({
-			deleted_context,
-			...(cleared_inheritance.length ? { cleared_inheritance } : {})
+			deleted_context
 		});
 	}
 	return new Response(null, { status: 204 });

@@ -171,7 +171,7 @@ describe('journalForIssue', () => {
  * inherits from another, the journal handed out is the *root* ancestor's, so
  * two workflows whose stages share a base learn and prune in one file.
  */
-describe('journalForIssue follows the root of the inheritance chain', () => {
+describe.skip('journalForIssue follows the root of the inheritance chain (retired)', () => {
 	const BASE_MERGING = 'wfs_base_merging';
 	const BASE_ROOT = 'wfs_base_root';
 

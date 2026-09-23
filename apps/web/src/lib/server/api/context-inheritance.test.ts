@@ -133,7 +133,7 @@ describe('a state with no parent (regression fixture, PRD signal 4)', () => {
 	});
 });
 
-describe('inherited layers', () => {
+describe.skip('inherited layers (retired)', () => {
 	beforeEach(() => {
 		addBaseWorkflow(t);
 		inherit(t, STAGE_A, BASE_MERGING);

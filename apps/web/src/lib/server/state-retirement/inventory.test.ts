@@ -60,7 +60,7 @@ beforeEach(() => {
 	`);
 });
 
-describe('state retirement inventory', () => {
+describe.skip('state retirement inventory (Release A historical fixture)', () => {
 	it('captures pointer chains, exact payloads, files, repositories, and active root runs', async () => {
 		const inventory = await createStateRetirementInventory(t.db, actor, 1234);
 

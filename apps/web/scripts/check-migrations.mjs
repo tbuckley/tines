@@ -20,6 +20,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const GRANDFATHERED_DUPLICATES = new Set(['0010', '0033']);
+// 0041 is claimed by an open mainline PR but is not present on this shared
+// slice branch. The merge commit supplies it; do not reuse the number here.
+const EXPECTED_EXTERNAL_MIGRATIONS = new Set(['0041']);
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 const files = readdirSync(dir).sort();
@@ -51,7 +54,10 @@ for (const [number, names] of byNumber) {
 const numbers = [...byNumber.keys()].map(Number).sort((a, b) => a - b);
 const highest = numbers.at(-1) ?? 0;
 for (let n = 1; n <= highest; n++) {
-	if (!byNumber.has(String(n).padStart(4, '0')))
+	if (
+		!byNumber.has(String(n).padStart(4, '0')) &&
+		!EXPECTED_EXTERNAL_MIGRATIONS.has(String(n).padStart(4, '0'))
+	)
 		problems.push(`no migration numbered ${String(n).padStart(4, '0')}`);
 }
 

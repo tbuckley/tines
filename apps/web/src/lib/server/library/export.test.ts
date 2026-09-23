@@ -23,7 +23,7 @@ async function fixture() {
 		name: 'Shared',
 		initial_state: 'Ready',
 		states: [
-			{ name: 'Ready', category: 'active', inherits_from: 'wfs_std_open' },
+			{ name: 'Ready', category: 'active' },
 			{ name: 'Other', category: 'active' }
 		],
 		transitions: []
@@ -33,7 +33,7 @@ async function fixture() {
 		description: 'Main definition',
 		initial_state: 'Start',
 		states: [
-			{ name: 'Start', category: 'active', inherits_from: dependency.states[0].id },
+			{ name: 'Start', category: 'active' },
 			{ name: 'Done', category: 'done' }
 		],
 		transitions: [

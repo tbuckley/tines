@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const migrationsDir = fileURLToPath(new URL('../../../../migrations/', import.meta.url));
 const migrationName = '0033_state_retirement.sql';
+const releaseBMigration = '0042_state_inheritance_retired.sql';
 
 function preReleaseADb(): DatabaseSync {
 	const db = new DatabaseSync(':memory:');
@@ -52,6 +53,10 @@ function acquireHold(db: DatabaseSync): void {
 			(hold_id, user_id, state_id, workflow_name, state_name, state_category)
 		VALUES ('hold1', 'u1', 'child', 'Craft', 'Child', 'active');
 	`);
+}
+
+function applyReleaseB(db: DatabaseSync): void {
+	db.exec(readFileSync(`${migrationsDir}/${releaseBMigration}`, 'utf8'));
 }
 
 describe('state retirement Release A migration', () => {
@@ -146,5 +151,112 @@ describe('state retirement Release A migration', () => {
 		expect(
 			db.prepare("SELECT hold_id FROM state_retirement_hold_state WHERE hold_id = 'hold2'").get()
 		).toEqual({ hold_id: 'hold2' });
+	});
+});
+
+describe('state retirement Release B barrier migration', () => {
+	it('fails atomically on a leftover pointer and does not clear it', () => {
+		const db = preReleaseADb();
+		seedPopulatedInheritance(db);
+		db.exec('BEGIN');
+		expect(() => applyReleaseB(db)).toThrow(/CHECK constraint failed|UNIQUE constraint failed/);
+		db.exec('ROLLBACK');
+		expect(
+			db.prepare("SELECT inherits_from_state_id FROM workflow_state WHERE id = 'child'").get()
+		).toEqual({
+			inherits_from_state_id: 'root'
+		});
+		expect(
+			db
+				.prepare(
+					"SELECT name FROM sqlite_master WHERE name = 'state_inheritance_retirement_barrier'"
+				)
+				.get()
+		).toBeUndefined();
+	});
+
+	it('accepts the frozen A shape after pointers are cleared and permanently rejects old-worker pointer writes', () => {
+		const db = preReleaseADb();
+		seedPopulatedInheritance(db);
+		db.exec("UPDATE workflow_state SET inherits_from_state_id = NULL WHERE id = 'child'");
+		applyReleaseB(db);
+		db.exec("UPDATE workflow_state SET inherits_from_state_id = NULL WHERE id = 'child'");
+		db.exec(`
+			INSERT INTO workflow_state
+				(id, workflow_id, name, category, position, inherits_from_state_id, created_at)
+			VALUES ('ordinary', 'wf1', 'Ordinary', 'active', 2, NULL, 3)
+		`);
+		expect(() =>
+			db.exec("UPDATE workflow_state SET inherits_from_state_id = 'root' WHERE id = 'child'")
+		).toThrow(/state_inheritance_removed/);
+		expect(() =>
+			db.exec(`
+			INSERT INTO workflow_state
+				(id, workflow_id, name, category, position, inherits_from_state_id, created_at)
+			VALUES ('reintroduced', 'wf1', 'Reintroduced', 'active', 3, 'root', 3)
+		`)
+		).toThrow(/state_inheritance_removed/);
+		expect(
+			db
+				.prepare(
+					'SELECT pointer_count, unresolved_receipt_count FROM state_inheritance_retirement_barrier'
+				)
+				.get()
+		).toEqual({
+			pointer_count: 0,
+			unresolved_receipt_count: 0
+		});
+
+		// The old worker's explicit state-id drain/claim guards remain active on
+		// the B schema even though its pointer writes can no longer succeed.
+		acquireHold(db);
+		db.exec(`
+			INSERT INTO agent_run
+				(id, user_id, issue_id, runner_id, status, tier, state_id_at_start, created_at)
+			VALUES ('blocked', 'u1', 'i1', 'r1', 'assigned', 'balanced', 'child', 4)
+		`);
+		expect(db.prepare("SELECT 1 FROM agent_run WHERE id = 'blocked'").get()).toBeUndefined();
+		db.exec(`
+			INSERT INTO agent_run
+				(id, user_id, issue_id, runner_id, status, tier, state_id_at_start, created_at)
+			VALUES ('drained', 'u1', 'i1', 'r1', 'completed', 'balanced', 'child', 4);
+			UPDATE agent_run SET status = 'running' WHERE id = 'drained';
+		`);
+		expect(db.prepare("SELECT status FROM agent_run WHERE id = 'drained'").get()).toEqual({
+			status: 'completed'
+		});
+		db.exec("UPDATE state_retirement_hold SET released_at = 5 WHERE id = 'hold1'");
+		db.exec(`
+			INSERT INTO agent_run
+				(id, user_id, issue_id, runner_id, status, tier, state_id_at_start, created_at)
+			VALUES ('after-b', 'u1', 'i1', 'r1', 'assigned', 'balanced', 'child', 5)
+		`);
+		expect(db.prepare("SELECT status FROM agent_run WHERE id = 'after-b'").get()).toEqual({
+			status: 'assigned'
+		});
+	});
+
+	it('fails closed on an unresolved recorded pointer and leaves the A tables intact', () => {
+		const db = preReleaseADb();
+		seedPopulatedInheritance(db);
+		db.exec("UPDATE workflow_state SET inherits_from_state_id = NULL WHERE id = 'child'");
+		acquireHold(db);
+		db.exec(`
+			INSERT INTO state_retirement_pointer
+				(hold_id, user_id, child_state_id, original_parent_state_id, state_witness)
+			VALUES ('hold1', 'u1', 'child', 'root', 'witness')
+		`);
+		db.exec('BEGIN');
+		expect(() => applyReleaseB(db)).toThrow(/CHECK constraint failed/);
+		db.exec('ROLLBACK');
+		expect(
+			db
+				.prepare(
+					"SELECT successful_receipt_id FROM state_retirement_pointer WHERE child_state_id = 'child'"
+				)
+				.get()
+		).toEqual({
+			successful_receipt_id: null
+		});
 	});
 });

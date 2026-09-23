@@ -32,7 +32,7 @@ beforeEach(() => {
 		INSERT INTO workflow_state
 			(id, workflow_id, name, category, position, inherits_from_state_id, created_at)
 		VALUES ('hold-root', 'hold-wf', 'Craft', 'active', 0, NULL, 1),
-		       ('hold-child', 'hold-wf', 'Build', 'active', 1, 'hold-root', 2);
+		       ('hold-child', 'hold-wf', 'Build', 'active', 1, NULL, 2);
 		INSERT INTO project (id, user_id, name, description, default_workflow_id, created_at, updated_at)
 		VALUES ('hold-project', 'hold-u1', 'Tines', '', 'hold-wf', 1, 1);
 		INSERT INTO issue
@@ -64,7 +64,21 @@ async function reviewedRequest() {
 	};
 }
 
-describe('state retirement hold', () => {
+describe('Release B retired state-retirement operations', () => {
+	it.each([
+		['hold acquisition', () => acquireStateRetirementHold(t.db, t.env, actor, {} as never)],
+		['prepare', () => prepareStateRetirement(t.db, t.env, actor, {} as never)],
+		['apply', () => applyStateRetirement(t.db, t.env, actor, {} as never)],
+		['rollback preparation', () => prepareStateRetirementRollback(t.db, t.env, actor, {} as never)],
+		['rollback apply', () => applyStateRetirementRollback(t.db, t.env, actor, {} as never)]
+	])('%s returns a stable 410', async (_name, operation) => {
+		const error = await operation().catch((caught) => caught);
+		expect(error).toBeInstanceOf(ApiFail);
+		expect(error).toMatchObject({ status: 410, code: 'state_retirement_operation_retired' });
+	});
+});
+
+describe.skip('state retirement hold (Release A historical fixture)', () => {
 	it('atomically holds the complete component and records every original pointer', async () => {
 		const { request } = await reviewedRequest();
 		const hold = await acquireStateRetirementHold(t.db, t.env, actor, request, 101);

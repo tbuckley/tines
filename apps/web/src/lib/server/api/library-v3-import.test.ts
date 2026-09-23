@@ -33,7 +33,7 @@ async function fixture() {
 	const second = await createWorkflow(t.db, t.env, actor, {
 		name: 'Same / name',
 		initial_state: 'Ready / now',
-		states: [{ name: 'Ready / now', category: 'active', inherits_from: first.states[0].id }],
+		states: [{ name: 'Ready / now', category: 'active' }],
 		transitions: []
 	});
 	for (const [wf, body] of [

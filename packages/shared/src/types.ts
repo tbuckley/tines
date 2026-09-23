@@ -215,12 +215,7 @@ export interface WorkflowState {
 	name: string;
 	category: StateCategory;
 	position: number;
-	/**
-	 * The state this one inherits context from (a `workflow_state` id), or
-	 * null. Items scoped to the base — and to the base's own ancestors —
-	 * are part of an issue's effective context, stitched before this
-	 * state's own layer.
-	 */
+	/** Historical nullable pointer; Release B runtime always returns null. */
 	inherits_from: string | null;
 }
 
@@ -264,18 +259,7 @@ export interface WorkflowStateInput {
 	 * context surfaces, not re-sent through workflow updates.
 	 */
 	prompt?: string;
-	/**
-	 * The state whose context this state inherits: one of this request's
-	 * states by id or name, or the id of a state in any workflow you can see
-	 * (your own, or the standard workflow). In a {@link LibraryDocument} the
-	 * cross-workflow form is the portable `"<workflow name>/<state name>"`
-	 * instead of an id, resolved by the importer before it reaches this
-	 * request. Chains are at most 3 states long
-	 * and may not cycle. On an EXISTING state (`id` present) the field is
-	 * merge-patch style — absent = unchanged, `null` = clear — so callers
-	 * that round-trip states without knowing about it cannot clear it. On a
-	 * new state, absent and `null` both mean "no base".
-	 */
+	/** Retained for historical package compatibility; non-null values are rejected. */
 	inherits_from?: string | null;
 }
 
@@ -319,13 +303,7 @@ export interface UpdateWorkflowRequest {
 	 * (all-or-nothing, one `context.deleted` event each).
 	 */
 	force_delete_context?: boolean;
-	/**
-	 * Removing a state other states inherit from is rejected by default;
-	 * with this flag the removal proceeds and those states' pointers are
-	 * cleared (reported in `cleared_inheritance`, one `inheritance_changed`
-	 * entry each). Separate from `force_delete_context` on purpose: sweeping
-	 * your own context is not consent to change other workflows' prompts.
-	 */
+	/** Retained as a compatibility input; affirmative values are rejected in Release B. */
 	force_clear_inheritance?: boolean;
 }
 
@@ -344,7 +322,7 @@ export interface WorkflowResponse extends Workflow {
 	warnings?: string[];
 	/** Context items swept by a forced state removal in this update. */
 	deleted_context?: DeletedContextItem[];
-	/** States whose inheritance pointer a forced removal cleared. */
+	/** Historical compatibility field; Release B never clears pointers. */
 	cleared_inheritance?: ClearedInheritance[];
 }
 
@@ -358,7 +336,7 @@ export interface DeleteAnchorRequest {
 /** DELETE response when a forced delete swept context items (else 204). */
 export interface DeleteAnchorResponse {
 	deleted_context: DeletedContextItem[];
-	/** States in other workflows whose pointer a forced delete cleared. */
+	/** Historical compatibility field; Release B never clears pointers. */
 	cleared_inheritance?: ClearedInheritance[];
 }
 
@@ -1126,10 +1104,7 @@ export interface ContextListFilters {
 	archived?: ArchivedFilter;
 }
 
-/**
- * Where an inherited effective-context part came from: the ancestor state
- * whose layer it matched through, never the issue's own state.
- */
+/** Historical provenance shape; Release B effective context always sets this to null. */
 export interface InheritedFrom {
 	state_id: string;
 	state_name: string;
@@ -1146,7 +1121,7 @@ export interface EffectivePromptPart {
 	version: number;
 	/** True for the journal item (renders under `## Journal (<scope>)`). */
 	is_journal: boolean;
-	/** Set when the part matched through an ancestor of the issue's state. */
+	/** Historical compatibility field; null for exact-state matching. */
 	inherited_from: InheritedFrom | null;
 }
 
@@ -1160,7 +1135,7 @@ export interface EffectiveSkill {
 	files: ContextFile[];
 	file_count: number;
 	version: number;
-	/** Set when the skill matched through an ancestor of the issue's state. */
+	/** Historical compatibility field; null for exact-state matching. */
 	inherited_from: InheritedFrom | null;
 }
 
@@ -1345,21 +1320,11 @@ export interface RepoDirConflict {
 	item_ids: string[];
 }
 
-/**
- * The one journal an issue's runs may write: the `journal` prompt at
- * project ∧ the *root* of the state's inheritance chain. Two workflows whose
- * stages inherit from one base state therefore learn and prune in one file
- * instead of drifting apart. A state that inherits from nothing is its own
- * root, so nothing about it changes.
- *
- * A legacy journal on a state that has since gained a parent keeps stitching
- * into the prompt — it is knowledge, and dropping it would lose it — but it is
- * read-only until a merge helper folds it into the root.
- */
+/** Exact project ∧ current-state journal selected by the issue/run anchor. */
 export interface EffectiveJournalTarget {
-	/** The state whose `project ∧ state` journal is writable. */
+	/** The exact state whose `project ∧ state` journal is writable. */
 	state_id: string;
-	/** Null when that state is the issue's own; set when it is an ancestor. */
+	/** Historical compatibility field; always null in Release B. */
 	inherited_from: InheritedFrom | null;
 	/** The journal item at that scope, or null if none exists yet. */
 	item_id: string | null;
@@ -1372,7 +1337,7 @@ export interface EffectiveContext {
 		/** The stitched prompt, `## Context: <scope>` headings included. */
 		text: string;
 		parts: EffectivePromptPart[];
-		/** Which journal this issue's runs write — the root of the state chain. */
+		/** Which exact-state journal this issue's runs write. */
 		journal: EffectiveJournalTarget;
 	};
 	skills: EffectiveSkill[];
@@ -3234,9 +3199,9 @@ export const LIBRARY_FORMAT = 'tines.library';
  *
  * - **1** — projects, workflows (states, transitions, artifact requirements)
  *   and context items, all referenced by name.
- * - **2** — a state may carry `inherits_from` (Tines/270): the state whose
- *   context it inherits, as `"<workflow name>/<state name>"`. Version 1
- *   documents read unchanged — they simply have no pointers.
+ * - **2** — historical documents may carry `inherits_from` (Tines/270) as a
+ *   qualified state reference. Inspection and download preserve this shape;
+ *   Release B mutation/import paths reject non-null pointers.
  */
 export const LIBRARY_VERSION = 2;
 
@@ -3291,16 +3256,13 @@ export interface LibraryContextEntry {
 }
 
 /**
- * The exported document. Each `workflows` entry is literally a valid
- * `CreateWorkflowRequest`, and each `context` entry is a
- * `CreateContextItemRequest` bar its scope — so import is a pass-through
- * into the existing validators rather than a second parser.
+ * Historical pointer-bearing documents remain valid for inspection/download,
+ * but Release B mutation/import requires a pointer-free document before
+ * applying it to a deployment.
  *
  * The system `Standard` workflow is never exported (it is seeded with
- * identical ids on every instance); items scoped to its states are, and
- * re-resolve by name — as does a state's `inherits_from`, which points at
- * its base as `"<workflow name>/<state name>"` (version 2 and up) so that a
- * pointer survives a move between deployments that share no ids.
+ * identical ids on every instance); items scoped to its states are retained
+ * for historical inspection and re-resolve by name.
  */
 export interface LibraryDocument {
 	format: typeof LIBRARY_FORMAT;

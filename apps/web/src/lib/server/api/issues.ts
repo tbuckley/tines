@@ -155,7 +155,6 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				'state.name as state_name',
 				'state.category as state_category',
 				'state.position as state_position',
-				'state.inherits_from_state_id as state_inherits_from',
 				'scheduled_task.name as scheduled_task_name',
 				'scheduled_task_project.id as scheduled_task_project_id',
 				'scheduled_task_project.name as scheduled_task_project_name',
@@ -166,11 +165,6 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				sql<string>`COALESCE(eff_state.name, state.name)`.as('eff_state_name'),
 				sql<StateCategory>`COALESCE(eff_state.category, state.category)`.as('eff_state_category'),
 				sql<number>`COALESCE(eff_state.position, state.position)`.as('eff_state_position'),
-				sql<
-					string | null
-				>`COALESCE(eff_state.inherits_from_state_id, state.inherits_from_state_id)`.as(
-					'eff_state_inherits_from'
-				),
 				sql<string | null>`(
 					SELECT json_object('project_name', dp.name, 'number', di.number, 'title', di.title)
 					FROM issue_link dl
@@ -275,14 +269,14 @@ export function serializeIssue(row: IssueRow): Issue {
 			name: row.state_name,
 			category: row.state_category,
 			position: row.state_position,
-			inherits_from: row.state_inherits_from
+			inherits_from: null
 		},
 		effective_state: {
 			id: row.eff_state_id,
 			name: row.eff_state_name,
 			category: row.eff_state_category,
 			position: row.eff_state_position,
-			inherits_from: row.eff_state_inherits_from
+			inherits_from: null
 		},
 		duplicate_of: row.duplicate_of_json ? (JSON.parse(row.duplicate_of_json) as IssueRef) : null,
 		open_blockers: row.open_blockers_json ? (JSON.parse(row.open_blockers_json) as IssueRef[]) : [],

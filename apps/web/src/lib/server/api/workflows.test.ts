@@ -140,98 +140,17 @@ describe('resolveDef', () => {
 		expect(failCode(() => resolveDef(states, dup, 'Open', []))).toBe('duplicate_action');
 	});
 
-	// Inheritance (Tines/238): `resolveDef` only does the syntax and the
-	// resolution against this request's own states — existence, visibility,
-	// cycles and depth are `resolveInheritance`'s DB half.
-	it('resolves inherits_from naming a state in the same request', () => {
-		const byName = resolveDef(
-			[
-				{ name: 'Base', category: 'backlog' },
-				{ name: 'Child', category: 'active', inherits_from: 'Base' }
-			],
-			[],
-			'Base',
-			[]
-		);
-		expect(byName.states[1].inheritsFrom).toBe(byName.states[0].id);
-
-		const existing = [{ id: 'wfs_b', name: 'Base', category: 'backlog' as const }];
-		const byId = resolveDef(
-			[
-				{ id: 'wfs_b', name: 'Base', category: 'backlog' },
-				{ name: 'Child', category: 'active', inherits_from: 'wfs_b' }
-			],
-			[],
-			'Base',
-			existing
-		);
-		expect(byId.states[1].inheritsFrom).toBe('wfs_b');
-	});
-
-	it('leaves a base it cannot see locally for the DB half to judge', () => {
-		const def = resolveDef(
-			[{ name: 'Child', category: 'active', inherits_from: 'wfs_elsewhere' }],
-			[],
-			'Child',
-			[]
-		);
-		expect(def.states[0].inheritsFrom).toBe('wfs_elsewhere');
-	});
-
-	it('distinguishes an absent inherits_from from an explicit null', () => {
-		const existing = [{ id: 'wfs_b', name: 'Base', category: 'backlog' as const }];
-		const def = resolveDef(
-			[
-				{ id: 'wfs_b', name: 'Base', category: 'backlog' },
-				{ name: 'Fresh', category: 'active' },
-				{ id: 'wfs_c', name: 'Cleared', category: 'active', inherits_from: null }
-			],
-			[],
-			'Base',
-			[...existing, { id: 'wfs_c', name: 'Cleared', category: 'active' as const }]
-		);
-		// Absent on an existing state means "keep what is stored"; on a new
-		// state, and on an explicit null, it means "no base".
-		expect(def.states[0].inheritsFrom).toBeUndefined();
-		expect(def.states[1].inheritsFrom).toBeNull();
-		expect(def.states[2].inheritsFrom).toBeNull();
-	});
-
-	it('rejects a state inheriting from itself, by name or by id', () => {
-		expect(
-			failCode(() =>
-				resolveDef([{ name: 'Solo', category: 'active', inherits_from: 'Solo' }], [], 'Solo', [])
-			)
-		).toBe('self_inheritance');
-		const existing = [{ id: 'wfs_s', name: 'Solo', category: 'active' as const }];
-		expect(
-			failCode(() =>
-				resolveDef(
-					[{ id: 'wfs_s', name: 'Solo', category: 'active', inherits_from: 'wfs_s' }],
-					[],
-					'Solo',
-					existing
+	it('rejects every affirmative and malformed state inheritance input', () => {
+		for (const value of ['Base', '', false, 7] as never[]) {
+			expect(
+				failCode(() =>
+					resolveDef([{ name: 'Child', category: 'active', inherits_from: value }], [], 'Child', [])
 				)
-			)
-		).toBe('self_inheritance');
-	});
-
-	it('rejects an inherits_from that is neither a string nor null', () => {
+			).toBe('state_inheritance_removed');
+		}
 		expect(
-			failCode(() =>
-				resolveDef(
-					[{ name: 'Child', category: 'active', inherits_from: 7 as never }],
-					[],
-					'Child',
-					[]
-				)
-			)
-		).toBe('invalid_field');
-		expect(
-			failCode(() =>
-				resolveDef([{ name: 'Child', category: 'active', inherits_from: '  ' }], [], 'Child', [])
-			)
-		).toBe('invalid_field');
+			resolveDef([{ name: 'Child', category: 'active', inherits_from: null }], [], 'Child', [])
+		).toMatchObject({ states: [{ name: 'Child' }] });
 	});
 
 	it('allows the same action name out of two different states', () => {
@@ -540,7 +459,7 @@ describe('workflowFingerprint', () => {
 			description: 'A longer explanation',
 			states: [
 				{ id: 'wfs_abc', name: 'Work', category: 'active', prompt: 'Do the work.' },
-				{ name: 'Done', category: 'done', inherits_from: 'Work' }
+				{ name: 'Done', category: 'done' }
 			]
 		});
 		expect(fp(base)).toBe(fp(decorated));
@@ -588,7 +507,7 @@ describe('loadWorkflows D1 parameter budget', () => {
 				initial_state: 'Second',
 				states: [
 					{ name: 'First', category: 'backlog' },
-					{ name: 'Second', category: 'active', inherits_from: 'First' },
+					{ name: 'Second', category: 'active' },
 					{ name: 'Done', category: 'done' }
 				],
 				transitions: [
@@ -620,7 +539,7 @@ describe('loadWorkflows D1 parameter budget', () => {
 			const expected = created[index];
 			expect(actual.states.map((state) => state.name)).toEqual(['First', 'Second', 'Done']);
 			expect(actual.initial_state_id).toBe(expected.initial_state_id);
-			expect(actual.states[1].inherits_from).toBe(actual.states[0].id);
+			expect(actual.states[1].inherits_from).toBeNull();
 			expect(actual.transitions).toEqual(expected.transitions);
 		}
 
