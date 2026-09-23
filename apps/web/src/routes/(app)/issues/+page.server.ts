@@ -2,6 +2,8 @@ import { error, redirect } from '@sveltejs/kit';
 import { issuePageHref } from '$lib/issue-pagination';
 import { ApiFail } from '$lib/server/api/core';
 import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
+import { listSharedIssues } from '$lib/server/api/shared-issues';
+import { resolveProjectAccess } from '$lib/server/api/project-access';
 import { listLabels } from '$lib/server/api/labels';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
@@ -22,6 +24,41 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 	// The project scope is the focus, not a URL filter (Tines/259) — one
 	// PK-indexed query ahead of the lists that read it.
 	const { focusId, lastProjectId, notice } = await resolvePageFocus(db, platform!.env, userId, url);
+	if (focusId) {
+		const actor = {
+			userId,
+			userName: locals.user!.name,
+			apiKeyId: null,
+			apiKeyName: null,
+			viaSession: true
+		};
+		const access = await resolveProjectAccess(db, actor, focusId);
+		if (access.role === 'member') {
+			const params = url.searchParams;
+			const project = await db
+				.selectFrom('project')
+				.select('name')
+				.where('id', '=', focusId)
+				.executeTakeFirstOrThrow();
+			const rows = await listSharedIssues(db, actor, focusId, {
+				q: params.get('q') ?? undefined,
+				category: params.get('category') ?? undefined,
+				state: params.get('state') ?? undefined,
+				workflow: params.get('workflow') ?? undefined,
+				hideDone: params.get('done') !== '1',
+				hideDuplicates: params.get('duplicates') !== '1',
+				ready: params.get('ready') === '1',
+				labels: params.getAll('label')
+			});
+			return {
+				mode: 'member' as const,
+				project: { id: focusId, name: project.name },
+				issues: rows.items,
+				hasMore: rows.hasMore,
+				filters: { q: params.get('q') ?? '', category: params.get('category') ?? '' }
+			};
+		}
+	}
 	let page;
 	try {
 		page = readIssuePage(url);
@@ -90,6 +127,7 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 
 	// `projects` and `focus` come from the app layout.
 	return {
+		mode: 'owner' as const,
 		issues,
 		counts,
 		workflows,

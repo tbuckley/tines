@@ -86,6 +86,9 @@ export const PROJECT_NAME_MAX = 200;
 
 export interface Project {
 	id: string;
+	/** Present in shared project projections. */
+	owner?: { id: string; name: string };
+	viewer_role?: 'owner' | 'member';
 	/** Null until the project first enters permanent consent mode. */
 	shared_at?: number | null;
 	sharing_revision?: number;

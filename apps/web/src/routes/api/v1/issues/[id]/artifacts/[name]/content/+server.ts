@@ -1,4 +1,6 @@
 import { artifactContentResponse } from '$lib/server/api/artifacts';
+import { sharedArtifactContent } from '$lib/server/api/shared-issues';
+import { resolveIssueAccess } from '$lib/server/api/project-access';
 import { api, apiContext, ApiFail } from '$lib/server/api/core';
 import type { RequestHandler } from './$types';
 
@@ -15,9 +17,13 @@ export const GET: RequestHandler = api(async (event) => {
 			});
 		}
 	}
-	return artifactContentResponse(db, env, actor.userId, event.params.id, event.params.name, {
+	const access = await resolveIssueAccess(db, actor, event.params.id);
+	const options = {
 		version,
 		inline: ['1', 'true'].includes(event.url.searchParams.get('inline') ?? ''),
 		path: event.url.searchParams.get('path') ?? undefined
-	});
+	};
+	return access.role === 'owner'
+		? artifactContentResponse(db, env, actor.userId, event.params.id, event.params.name, options)
+		: sharedArtifactContent(db, env, actor, event.params.id, event.params.name, options);
 });

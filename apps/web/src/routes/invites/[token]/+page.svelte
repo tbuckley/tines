@@ -1,0 +1,73 @@
+<script lang="ts">
+	import { goto, invalidateAll } from '$app/navigation';
+	import { authClient } from '$lib/auth-client';
+	import MarketingSignIn from '$lib/components/marketing/MarketingSignIn.svelte';
+	let { data } = $props();
+	let signIn = $state<MarketingSignIn>();
+	let pending = $state(false);
+	let error = $state<string | null>(null);
+	const returnTo = $derived(`/invites/${data.token}`);
+	async function accept() {
+		pending = true;
+		error = null;
+		try {
+			const response = await fetch('/api/v1/invitations/accept', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ token: data.token })
+			});
+			const result = await response.json();
+			if (!response.ok) throw new Error(result.error?.message ?? 'Could not accept invitation');
+			await invalidateAll();
+			await goto(result.landing_path);
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Could not accept invitation';
+		} finally {
+			pending = false;
+		}
+	}
+	async function switchAccount() {
+		await authClient.signOut();
+		await invalidateAll();
+		await goto(returnTo);
+	}
+</script>
+
+<main class="mx-auto flex min-h-screen max-w-xl items-center px-5 py-12">
+	<section class="w-full rounded-xl border p-6">
+		<h1 class="text-2xl font-semibold">Join {data.invitation.project.name}</h1>
+		<p class="mt-3">
+			{data.invitation.project.owner} invited you to the whole project. Members can read its issues and
+			schedules. Your agents remain off until you choose permission in the browser.
+		</p>
+		<p class="text-muted-foreground mt-3 text-sm">
+			Invitation expires {new Date(data.invitation.expires_at).toLocaleString()}.
+		</p>
+		{#if data.invitation.status === 'expired'}
+			<p class="mt-5" role="status">This invitation expired. Ask the owner to resend it.</p>
+		{:else if !data.invitation.signed_in}
+			<button
+				class="mt-5 rounded-md border px-4 py-3"
+				onclick={(event) => signIn?.open(event.currentTarget)}>Sign in to continue</button
+			>
+		{:else if !data.invitation.matching_account}
+			<p class="mt-5" role="status">
+				Switch to the verified account that received this invitation.
+			</p>
+			<button class="mt-3 rounded-md border px-4 py-3" onclick={switchAccount}
+				>Switch account</button
+			>
+		{:else}
+			<p class="mt-5">Signed in as {data.invitation.email}.</p>
+			<button class="mt-3 rounded-md border px-4 py-3" disabled={pending} onclick={accept}
+				>{data.invitation.status === 'accepted'
+					? 'Open project'
+					: pending
+						? 'Joining…'
+						: 'Join project'}</button
+			>
+		{/if}
+		{#if error}<p class="mt-3 text-red-600" role="alert">{error}</p>{/if}
+	</section>
+</main>
+{#if !data.invitation.signed_in}<MarketingSignIn bind:this={signIn} {returnTo} />{/if}

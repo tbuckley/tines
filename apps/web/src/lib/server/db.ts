@@ -24,6 +24,26 @@ export interface ProjectMemberTable {
 	joined_at: number;
 	revoked_at: number | null;
 	updated_at: number;
+	last_request_token: string | null;
+}
+
+export interface ProjectInvitationTable {
+	id: string;
+	project_id: string;
+	email: string;
+	token_hash: string;
+	generation: number;
+	expires_at: number;
+	landing_issue_id: string | null;
+	created_by_user_id: string;
+	created_by_api_key_id: string | null;
+	created_at: number;
+	updated_at: number;
+	accepted_by_user_id: string | null;
+	accepted_at: number | null;
+	accepted_membership_revision: number | null;
+	canceled_at: number | null;
+	delivery_status: 'pending' | 'sent' | 'failed';
 }
 
 export interface WorkflowTable {
@@ -554,6 +574,7 @@ export interface UserTable {
 	id: string;
 	name: string;
 	email: string;
+	emailVerified: number;
 }
 
 /** Per-user UI preferences (the project focus, Tines/259); created lazily. */
@@ -711,6 +732,7 @@ export interface WorkflowModerationAuditTable {
 export interface Database {
 	project: ProjectTable;
 	project_member: ProjectMemberTable;
+	project_invitation: ProjectInvitationTable;
 	workflow: WorkflowTable;
 	workflow_state: WorkflowStateTable;
 	workflow_transition: WorkflowTransitionTable;

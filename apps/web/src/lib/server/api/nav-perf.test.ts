@@ -104,6 +104,8 @@ const SEEDED_PROJECT: Project = {
  */
 const layoutData: LayoutServerData = {
 	user,
+	sharedProjects: [],
+	archivedSharedProjects: [],
 	projects: [SEEDED_PROJECT],
 	archivedProjects: [],
 	focus: null,

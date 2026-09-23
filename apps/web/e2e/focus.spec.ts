@@ -1009,7 +1009,7 @@ focusTest.describe.serial('project focus', () => {
 				const issue = page.getByRole('link', { name: new RegExp(`${world.aName} issue`) });
 				await expect(issue).toBeVisible();
 				await issue.click();
-				await expect(page).toHaveURL(`/issues/${encodeURIComponent(world.aName)}/1`);
+				await expect(page).toHaveURL(`/issues/${encodeURIComponent(world.aId)}/1`);
 				await expect(page.getByRole('button', { name: `Focus ${world.aName}` })).toHaveCount(0);
 				await expect(
 					page.locator('main').getByRole('link', { name: 'Issues', exact: true })

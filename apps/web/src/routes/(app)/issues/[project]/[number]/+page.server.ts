@@ -1,8 +1,11 @@
 import { error, redirect } from '@sveltejs/kit';
+import { ApiFail } from '$lib/server/api/core';
 import { truncate } from '$lib/format';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail, loadIssue } from '$lib/server/api/issues';
+import { readSharedIssue } from '$lib/server/api/shared-issues';
+import { resolveAccessibleProjectRef, resolveIssueAccess } from '$lib/server/api/project-access';
 import { readIssueConsent } from '$lib/server/api/personal-consent';
 import { listLabels } from '$lib/server/api/labels';
 import { listRunners } from '$lib/server/api/runners';
@@ -48,6 +51,40 @@ export const load: PageServerLoad = async ({
 	const number = Number.parseInt(params.number, 10);
 	if (!Number.isInteger(number) || number < 1)
 		error(404, `“${truncate(params.number)}” is not an issue number.`);
+	const actor = {
+		userId,
+		userName: locals.user!.name,
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	};
+	const addressProjectId = await resolveAccessibleProjectRef(db, actor, params.project).catch(
+		(e) => {
+			if (e instanceof ApiFail) error(e.status, e.message);
+			throw e;
+		}
+	);
+	const addressed = await db
+		.selectFrom('issue_address')
+		.select('issue_id')
+		.where('project_id', '=', addressProjectId)
+		.where('number', '=', number)
+		.executeTakeFirst();
+	if (!addressed) error(404, 'Issue unavailable');
+	const access = await resolveIssueAccess(db, actor, addressed.issue_id).catch((e) => {
+		if (e instanceof ApiFail) error(e.status, e.message);
+		throw e;
+	});
+	if (access.role === 'member') {
+		const issue = await readSharedIssue(db, actor, { id: addressed.issue_id }).catch((e) => {
+			if (e instanceof ApiFail) error(e.status, e.message);
+			throw e;
+		});
+		const canonicalPath = `/issues/${encodeURIComponent(issue.project.id)}/${issue.number}`;
+		if (!isDataRequest && url.pathname !== canonicalPath)
+			redirect(307, `${canonicalPath}${url.search}`);
+		return { mode: 'member' as const, issue, canonicalPath };
+	}
 
 	// Wave 1: the issue row (URLs address projects by name, joined here so the
 	// project resolve is not a round trip of its own) alongside the two lists
@@ -57,20 +94,18 @@ export const load: PageServerLoad = async ({
 	// rejection if the issue lookup throws first.
 	workflowsPromise.catch(() => {});
 
-	const issue = await loadIssue(db, userId, { projectName: params.project, number }).catch(
-		async () => {
-			// Only the 404 path pays for naming which half of the address was
-			// wrong, and only it awaits the layout: both halves, so an archived
-			// project says "no such issue" rather than "no such project".
-			const { projects, archivedProjects } = await parent();
-			error(
-				404,
-				[...projects, ...archivedProjects].some((p) => p.name === params.project)
-					? `Issue #${number} does not exist in “${truncate(params.project)}”.`
-					: `You have no project named “${truncate(params.project)}”.`
-			);
-		}
-	);
+	const issue = await loadIssue(db, userId, { id: addressed.issue_id }).catch(async () => {
+		// Only the 404 path pays for naming which half of the address was
+		// wrong, and only it awaits the layout: both halves, so an archived
+		// project says "no such issue" rather than "no such project".
+		const { projects, archivedProjects } = await parent();
+		error(
+			404,
+			[...projects, ...archivedProjects].some((p) => p.name === params.project)
+				? `Issue #${number} does not exist in “${truncate(params.project)}”.`
+				: `You have no project named “${truncate(params.project)}”.`
+		);
+	});
 	const sharing = await db
 		.selectFrom('project')
 		.select('shared_at')
@@ -79,7 +114,7 @@ export const load: PageServerLoad = async ({
 		.executeTakeFirst();
 	const permissionReceipt =
 		sharing?.shared_at == null ? null : await readIssueConsent(db, userId, issue.id);
-	const canonicalPath = `/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`;
+	const canonicalPath = `/issues/${encodeURIComponent(issue.project_id)}/${issue.number}`;
 	if (!isDataRequest && url.pathname !== canonicalPath) {
 		// A native document redirect retains the browser fragment. Client data
 		// navigations are canonicalized in +page.svelte where the hash is visible.
@@ -136,6 +171,7 @@ export const load: PageServerLoad = async ({
 	usagePromise.catch(() => {});
 
 	return {
+		mode: 'owner' as const,
 		issue: issueDetail,
 		permissionReceipt,
 		canonicalPath,

@@ -283,7 +283,9 @@ export async function resolveProject(api: ApiClient, ref: string): Promise<Proje
 	const byName = items.filter((p) => p.name === ref);
 	if (byName.length === 1) return byName[0];
 	if (byName.length > 1) {
-		die(`project name "${ref}" is ambiguous; use an id: ${byName.map((p) => p.id).join(', ')}`);
+		die(
+			`project name "${ref}" is ambiguous; use an id: ${byName.map((p) => `${p.id}${p.owner ? ` (${p.owner.name})` : ''}`).join(', ')}`
+		);
 	}
 	const have = items.map((p) => (p.archived_at ? `${p.name} (archived)` : p.name)).join(', ');
 	die(`no project named "${ref}" (have: ${have || 'none'})`);

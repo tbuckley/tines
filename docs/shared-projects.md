@@ -130,9 +130,10 @@ unlaunched permission. Renaming and pause/resume preserve it. A workflow
 initial-state change resets schedules that follow that initial state; a
 starting state's category change also resets affected schedules. Issue
 completion, transfer, and workflow replacement still clear that issue's
-permission without changing the schedule's future choice. The current owner
-is the only person with an active schedule choice until membership activation
-in a later slice; member execution remains unavailable in this release.
+permission without changing the schedule's future choice. The owner is the
+only person who can write a schedule choice in the current branch. Invitation
+can now activate membership, but member choice writes remain disabled until
+the next slice; member execution remains unavailable in this release.
 
 ## Isolated schedule verification (2026-09-23)
 
@@ -163,3 +164,42 @@ passed), `CI=1 E2E_PORT=18718 pnpm test:e2e native-collaboration.spec.ts -g
 native-collaboration.spec.ts -g 'source off releases'` (1 passed). The first
 native run preceded the real-session race refinement; the later runs prove
 the final ordering and assigned release. No production fixtures were created.
+
+## Joining and reading a project (slice 3 branch contract)
+
+An owner invites an email from People or `tines projects invite`. The first
+invitation requires explicit sharing acknowledgement and the current sharing
+revision. Its guarded batch permanently sets `shared_at`, advances the sharing
+revision, clears any stored choices and releases assigned work without a strike.
+Admitted work may finish. Existing issues and schedules require a new personal
+choice before future owner admission. A failed batch sends no invitation.
+
+Links last seven days. Only a SHA-256 hash is stored. Resend rotates the token
+and generation; cancel invalidates it. Delivery occurs after commit through the
+Email binding. A failed send keeps a visible failed-delivery invitation for
+explicit resend. Acceptance requires a browser session whose current database
+user has the verified invited email. A consumed link is idempotent for the
+same active membership revision; removal invalidates it. Removing or leaving
+increments a tombstone revision, clears issue and schedule choices, revokes
+project run keys and requests cancellation of admitted member work. Sharing
+mode remains on even after the last member leaves.
+
+The People page lists active names and membership revisions. Pending invitees
+and outsiders cannot read project content. Member project and issue pages load
+only explicit shared projections before any owner context, runner, routing,
+usage or workflow-library loader starts. Shared reads include project and issue
+identity, safe workflow/state descriptors, comments, filtered history,
+artifact versions/downloads and schedule summaries. Member HTML artifacts
+remain downloads; the site-link minting route keeps its owner-only check.
+Private context, account and run detail APIs retain their owner checks.
+Member issue/schedule mutation and execution are disabled until their assigned
+later slices. A member can leave their own project.
+
+The isolated test identity scheme is Alice as owner, Bob as recipient and
+Carol as wrong-account viewer. `project-membership.spec.ts` uses the local
+Worker/D1 stack and an E2E-only invitation email sink; the sink route does not
+return links in production builds. The first two-account run passed the phone
+join/read/revocation journey. Focused SQLite tests cover acknowledgement,
+verified email, resend, cancel, delivery failure, idempotency and reinvitation.
+Full native race and cross-surface privacy coverage remain to be completed
+before this slice can close; see Tines/715's handoff for the exact list.

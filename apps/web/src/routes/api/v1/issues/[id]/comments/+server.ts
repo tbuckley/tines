@@ -2,10 +2,18 @@ import { json } from '@sveltejs/kit';
 import type { Comment, CreateCommentRequest, ListResponse } from '@tines/shared';
 import { api, apiContext, readJson } from '$lib/server/api/core';
 import { createComment, getIssueDetail, loadComments } from '$lib/server/api/issues';
+import { resolveIssueAccess } from '$lib/server/api/project-access';
+import { readSharedIssue } from '$lib/server/api/shared-issues';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
+	const access = await resolveIssueAccess(db, actor, event.params.id);
+	if (access.role === 'member')
+		return json({
+			items: (await readSharedIssue(db, actor, { id: event.params.id })).comments,
+			next_cursor: null
+		});
 	const issue = await getIssueDetail(db, actor.userId, { id: event.params.id });
 	// Comment threads are small in phase one; return them all, oldest first.
 	const body: ListResponse<Comment> = {

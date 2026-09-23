@@ -2,11 +2,18 @@ import { json } from '@sveltejs/kit';
 import type { DeleteAnchorRequest, UpdateProjectRequest } from '@tines/shared';
 import { api, apiContext, readJson, readOptionalJson } from '$lib/server/api/core';
 import { deleteProject, getProject, updateProject } from '$lib/server/api/projects';
+import { resolveProjectAccess } from '$lib/server/api/project-access';
+import { readSharedProject } from '$lib/server/api/shared-projects';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	return json(await getProject(db, actor.userId, event.params.id));
+	const access = await resolveProjectAccess(db, actor, event.params.id);
+	return json(
+		access.role === 'owner'
+			? await getProject(db, actor.userId, event.params.id)
+			: await readSharedProject(db, actor, event.params.id)
+	);
 });
 
 export const PATCH: RequestHandler = api(async (event) => {
