@@ -78,11 +78,13 @@
 		const model = evidence?.model ?? run.model;
 		// A built-in rate cannot be overridden; saving would only return 422.
 		builtinNotice = rates.builtin.some((entry) => entry.model === model);
-		rateDialogOpen = !builtinNotice;
+		if (builtinNotice) return;
+		// The native <dialog> sits in the top layer and would cover the rate modal.
+		onclose();
+		rateDialogOpen = true;
 	}
 	async function rateSaved() {
 		await invalidateAll();
-		onclose();
 	}
 </script>
 
