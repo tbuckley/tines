@@ -325,6 +325,11 @@ describe('resolveEffort', () => {
 		version: 1,
 		models: [{ model: 'gpt-5.6', efforts: ['low', 'medium', 'ultra'] }]
 	});
+	const assertableCapabilities = JSON.stringify({
+		version: 1,
+		accepts_asserted_effort: true,
+		models: [{ model: 'gpt-5.6', efforts: ['low', 'medium', 'ultra'] }]
+	});
 
 	it('prefers routed effort and checks the exact final model', () => {
 		expect(resolveEffort(local(capabilities), tier, 'ultra')).toMatchObject({
@@ -351,6 +356,44 @@ describe('resolveEffort', () => {
 			compatible: false,
 			reason: expect.stringContaining('daemon_upgrade_required')
 		});
+	});
+
+	it('asserts recognized effort for an unlisted model only on upgraded local daemons', () => {
+		expect(
+			resolveEffort(local(assertableCapabilities), { ...tier, model: 'gpt-new' }, 'high')
+		).toMatchObject({ compatible: true, verification: 'asserted' });
+		expect(
+			resolveEffort(
+				local(JSON.stringify({ version: 1, models: [] })),
+				{ ...tier, model: 'gpt-new' },
+				'high'
+			)
+		).toMatchObject({
+			compatible: false,
+			reason: expect.stringContaining('daemon_upgrade_required')
+		});
+	});
+
+	it('keeps listed models fail-closed even when asserted effort is enabled', () => {
+		expect(resolveEffort(local(capabilities), tier, 'max')).toMatchObject({
+			compatible: false,
+			reason: expect.stringContaining('unsupported_effort')
+		});
+	});
+
+	it('asserts recognized effort for unknown managed models', () => {
+		expect(
+			resolveEffort(
+				{
+					type: 'claude_managed',
+					default_tier: 'balanced',
+					tiers: null,
+					config: '{}'
+				},
+				{ ...tier, model: 'claude-new' },
+				'high'
+			)
+		).toMatchObject({ compatible: true, verification: 'asserted' });
 	});
 });
 
