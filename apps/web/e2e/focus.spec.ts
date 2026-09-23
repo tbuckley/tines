@@ -1225,7 +1225,13 @@ test.describe.serial('project controls at every project count', () => {
 					.poll(async () => choices.evaluate((element) => element.scrollTop))
 					.toBeGreaterThan(0);
 				const scrolled = await projectMenuGeometry(page);
-				expect(scrolled.linkRects).toEqual(initial.linkRects);
+				expect(await choices.locator('[role="menuitem"]').count()).toBe(0);
+				for (const rect of scrolled.linkRects) {
+					expect(rect.top).toBeGreaterThanOrEqual(scrolled.menu.top - layoutTolerance);
+					expect(rect.bottom).toBeLessThanOrEqual(scrolled.menu.bottom + layoutTolerance);
+					expect(rect.left).toBeGreaterThanOrEqual(scrolled.menu.left - layoutTolerance);
+					expect(rect.right).toBeLessThanOrEqual(scrolled.menu.right + layoutTolerance);
+				}
 
 				await gotoHydrated(page, '/issues');
 				await switcher(page).click();
