@@ -1200,6 +1200,10 @@ test.describe.serial('project controls at every project count', () => {
 				);
 				await switcher(page).click();
 				const choices = page.getByTestId('project-focus-choices');
+				await expect(page.getByRole('menu', { name: 'Project focus' }).locator('..')).toHaveCSS(
+					'transform',
+					'none'
+				);
 				const manage = page.getByRole('menuitem', { name: 'Manage projects' });
 				await expect(page.getByRole('menuitemradio', { name: projectNames[0] })).toBeFocused();
 
@@ -1218,14 +1222,23 @@ test.describe.serial('project controls at every project count', () => {
 				expect(initial.content.right).toBeLessThanOrEqual(viewport.width - 8 + layoutTolerance);
 				expect(initial.content.bottom).toBeLessThanOrEqual(viewport.height - 8 + layoutTolerance);
 
-				await choices.evaluate((element) => {
-					element.scrollTop = element.scrollHeight;
-				});
+				const pageScrollBefore = await page.evaluate(() => window.scrollY);
+				await choices.hover();
+				await page.mouse.wheel(0, 650);
 				await expect
 					.poll(async () => choices.evaluate((element) => element.scrollTop))
 					.toBeGreaterThan(0);
+				expect(await page.evaluate(() => window.scrollY)).toBe(pageScrollBefore);
 				const scrolled = await projectMenuGeometry(page);
 				expect(await choices.locator('[role="menuitem"]').count()).toBe(0);
+				expect(scrolled.linkRects).toHaveLength(initial.linkRects.length);
+				for (const [index, initialRect] of initial.linkRects.entries()) {
+					const scrolledRect = scrolled.linkRects[index]!;
+					expect(scrolledRect.top).toBeCloseTo(initialRect.top, 1);
+					expect(scrolledRect.bottom).toBeCloseTo(initialRect.bottom, 1);
+					expect(scrolledRect.left).toBeCloseTo(initialRect.left, 1);
+					expect(scrolledRect.right).toBeCloseTo(initialRect.right, 1);
+				}
 				for (const rect of scrolled.linkRects) {
 					expect(rect.top).toBeGreaterThanOrEqual(scrolled.menu.top - layoutTolerance);
 					expect(rect.bottom).toBeLessThanOrEqual(scrolled.menu.bottom + layoutTolerance);
