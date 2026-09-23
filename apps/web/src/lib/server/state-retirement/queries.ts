@@ -1,8 +1,9 @@
 import { sql, type CompiledQuery, type Kysely, type RawBuilder } from 'kysely';
-import type {
-	StateRetirementInventoryV1,
-	StateRetirementPlanV1,
-	StateRetirementReceiptV1
+import {
+	canonicalizeLibraryValue,
+	type StateRetirementInventoryV1,
+	type StateRetirementPlanV1,
+	type StateRetirementReceiptV1
 } from '@tines/shared';
 import type { Database } from '$lib/server/db';
 import type { ActorContext } from '../api/core';
@@ -229,13 +230,14 @@ export function compileRetirementQueries(
 		);
 	}
 	for (const pointer of plan.rollback.original_pointers) {
+		const stateWitness = canonicalizeLibraryValue(pointer.state_witness);
 		queries.push(
 			sql`UPDATE workflow_state SET inherits_from_state_id=NULL WHERE id=${pointer.child_state_id} AND inherits_from_state_id=${pointer.parent_state_id} AND ${receiptGate}`.compile(
 				db
 			)
 		);
 		queries.push(
-			sql`UPDATE state_retirement_pointer SET successful_receipt_id=${receipt.id} WHERE hold_id=${token.hold_id} AND user_id=${actor.userId} AND child_state_id=${pointer.child_state_id} AND original_parent_state_id=${pointer.parent_state_id} AND ${receiptGate}`.compile(
+			sql`UPDATE state_retirement_pointer SET successful_receipt_id=${receipt.id} WHERE user_id=${actor.userId} AND child_state_id=${pointer.child_state_id} AND original_parent_state_id=${pointer.parent_state_id} AND state_witness=${stateWitness} AND successful_receipt_id IS NULL AND ${receiptGate}`.compile(
 				db
 			)
 		);

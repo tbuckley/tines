@@ -41,6 +41,10 @@ import { sha256Hex } from '$lib/server/crypto';
 import { effectiveContextForTarget, issueMatchTarget } from '$lib/server/api/context';
 
 type RetirementEnv = Parameters<typeof runAtomic>[0];
+type StateRetirementServiceEnv = Pick<
+	Env,
+	'SECRET_ENCRYPTION_KEY' | 'BETTER_AUTH_SECRET' | 'STATE_RETIREMENT_RELEASE'
+>;
 type StateRow = {
 	id: string;
 	workflow_id: string;
@@ -57,7 +61,10 @@ function actorKey(actor: ActorContext): string {
 }
 
 /** Release B keeps inspection and release, but retires new A operations. */
-function retiredOperation(operation: string, env?: Pick<Env, 'STATE_RETIREMENT_RELEASE'>): void {
+function retiredOperation(
+	operation: string,
+	env: Pick<StateRetirementServiceEnv, 'STATE_RETIREMENT_RELEASE'>
+): void {
 	if (import.meta.env.MODE === 'test' && env?.STATE_RETIREMENT_RELEASE === 'A') return;
 	throw new ApiFail(
 		410,
@@ -343,7 +350,7 @@ function planResponse(
 
 export async function prepareStateRetirement(
 	db: Kysely<Database>,
-	env: Pick<Env, 'SECRET_ENCRYPTION_KEY' | 'BETTER_AUTH_SECRET'>,
+	env: StateRetirementServiceEnv,
 	actor: ActorContext,
 	request: unknown,
 	now = Date.now()
@@ -487,7 +494,7 @@ export async function prepareStateRetirement(
 
 export async function applyStateRetirement(
 	db: Kysely<Database>,
-	env: Pick<Env, 'SECRET_ENCRYPTION_KEY' | 'BETTER_AUTH_SECRET'>,
+	env: StateRetirementServiceEnv,
 	actor: ActorContext,
 	request: ApplyStateRetirementRequest,
 	now = Date.now()
@@ -816,7 +823,7 @@ export async function releaseStateRetirementHold(
 
 export async function prepareStateRetirementRollback(
 	db: Kysely<Database>,
-	env: Pick<Env, 'SECRET_ENCRYPTION_KEY' | 'BETTER_AUTH_SECRET'>,
+	env: StateRetirementServiceEnv,
 	actor: ActorContext,
 	receiptId: string,
 	now = Date.now()
@@ -859,7 +866,7 @@ export async function prepareStateRetirementRollback(
 
 export async function applyStateRetirementRollback(
 	db: Kysely<Database>,
-	env: Pick<Env, 'SECRET_ENCRYPTION_KEY' | 'BETTER_AUTH_SECRET'>,
+	env: StateRetirementServiceEnv,
 	actor: ActorContext,
 	request: StateRetirementRollbackApplyRequest,
 	now = Date.now()

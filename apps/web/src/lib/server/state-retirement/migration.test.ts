@@ -329,6 +329,91 @@ describe('state retirement Release B barrier migration', () => {
 		).toThrow(/state_inheritance_removed/);
 	});
 
+	it('settles an abandoned edge on a later real apply before the B barrier', async () => {
+		const t = preReleaseATestDb();
+		seedPopulatedInheritance(t.sqlite);
+		const env = releaseAEnv(t);
+		const base = Date.now();
+		const initial = await createStateRetirementInventory(t.db, releaseAActor, base);
+		const abandoned = await acquireStateRetirementHold(
+			t.db,
+			env,
+			releaseAActor,
+			{
+				inventory_json: JSON.stringify(initial),
+				confirmation: { inventory_digest: initial.inventory_digest }
+			},
+			base + 1
+		);
+		await releaseStateRetirementHold(
+			t.db,
+			env,
+			releaseAActor,
+			abandoned.id,
+			{ confirmation: { hold_id: abandoned.id, release: true } },
+			base + 2
+		);
+		expect(
+			t.all('SELECT hold_id, successful_receipt_id FROM state_retirement_pointer ORDER BY hold_id')
+		).toEqual([{ hold_id: abandoned.id, successful_receipt_id: null }]);
+
+		const reholdInventory = await createStateRetirementInventory(t.db, releaseAActor, base + 3);
+		const rehold = await acquireStateRetirementHold(
+			t.db,
+			env,
+			releaseAActor,
+			{
+				inventory_json: JSON.stringify(reholdInventory),
+				confirmation: { inventory_digest: reholdInventory.inventory_digest }
+			},
+			base + 4
+		);
+		t.sqlite.exec("DELETE FROM agent_run WHERE id = 'r1'");
+		const prepared = await prepareStateRetirement(
+			t.db,
+			env,
+			releaseAActor,
+			{ hold_id: rehold.id, inventory_json: JSON.stringify(reholdInventory) },
+			base + 5
+		);
+		const receipt = await applyStateRetirement(
+			t.db,
+			env,
+			releaseAActor,
+			{
+				plan_token: prepared.plan_token!,
+				inventory_json: prepared.inventory_json,
+				confirmation: { plan_digest: prepared.plan_digest }
+			},
+			base + 6
+		);
+		const settledPointers = t.all(
+			'SELECT hold_id, successful_receipt_id FROM state_retirement_pointer'
+		);
+		expect(settledPointers).toHaveLength(2);
+		expect(settledPointers).toEqual(
+			expect.arrayContaining([
+				{ hold_id: abandoned.id, successful_receipt_id: receipt.id },
+				{ hold_id: rehold.id, successful_receipt_id: receipt.id }
+			])
+		);
+
+		await releaseStateRetirementHold(
+			t.db,
+			env,
+			releaseAActor,
+			rehold.id,
+			{ confirmation: { hold_id: rehold.id, release: true } },
+			base + 7
+		);
+		applyReleaseB(t.sqlite);
+		expect(
+			t.all(
+				'SELECT pointer_count, unresolved_receipt_count FROM state_inheritance_retirement_barrier'
+			)
+		).toEqual([{ pointer_count: 0, unresolved_receipt_count: 0 }]);
+	});
+
 	it('fails atomically on a leftover pointer and does not clear it', () => {
 		const db = preReleaseADb();
 		seedPopulatedInheritance(db);
