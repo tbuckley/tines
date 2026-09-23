@@ -91,6 +91,27 @@ export function currentMemberPredicate(projectId: string, userId: string, revisi
 		AND m.revoked_at IS NULL AND p.shared_at IS NOT NULL)`;
 }
 
+/** A write uses the revision seen at preflight, so removal/rejoin cannot reuse access. */
+export function currentProjectWriterPredicate(
+	projectId: string,
+	actor: ActorContext,
+	access: ProjectAccess,
+	issueId?: string
+) {
+	return access.role === 'owner'
+		? sql<boolean>`EXISTS (SELECT 1 FROM project WHERE id = ${projectId} AND user_id = ${actor.userId}
+			AND (archived_at IS NULL OR ${
+				issueId && actor.agentRunId
+					? sql<boolean>`EXISTS (SELECT 1 FROM agent_run WHERE id = ${actor.agentRunId}
+					AND issue_id = ${issueId} AND status IN ('assigned','launching','running'))`
+					: sql<boolean>`0`
+			}))`
+		: sql<boolean>`EXISTS (SELECT 1 FROM project_member m JOIN project p ON p.id = m.project_id
+			WHERE m.project_id = ${projectId} AND m.user_id = ${actor.userId}
+			AND m.revision = ${access.membershipRevision} AND m.revoked_at IS NULL
+			AND p.shared_at IS NOT NULL AND p.archived_at IS NULL)`;
+}
+
 /** Immutable IDs win. Legacy names resolve only within the viewer's accessible set. */
 export async function resolveAccessibleProjectRef(
 	db: Kysely<Database>,

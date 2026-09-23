@@ -86,6 +86,14 @@ API keys cannot turn personal permission on or off. Open the schedule in the bro
 choose. The first issue's permission is independent of the future schedule choice; future
 permission starts off.
 
+On a shared issue, `issues show` displays the safe member view. An accepted
+member can use `issues comment`, repair their own human or run comment with
+`comment-edit`/`comment-delete`, and use `issues move` from an awaiting-human
+state. `issues move` submits the current exact decision witness once and does
+not retry after a conflict. Keys cannot turn issue or future-schedule personal
+permission on or off; open the issue or shared project in the browser. A saved
+member choice does not enable member execution in this release.
+
 ## Workflow package files
 
 Export a workflow and its inheritance/context closure as canonical JSON, validate an edited

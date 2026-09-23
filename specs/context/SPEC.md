@@ -414,3 +414,5 @@ process environment only.
 
 CLI: `tines context create --kind env --name NAME --value <v|@file|-> [--secret] [--hint <text>]`;
 `tines context edit <id> [--value …] [--secret] [--hint …]`.
+
+> 2026-09-23 project-sharing decision: [SHARING_2026-09-23.md](../projects/SHARING_2026-09-23.md) supersedes this spec’s single-owner assumptions for shared projects. This historical spec remains unchanged otherwise.

@@ -9,6 +9,7 @@ import {
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { listRates } from '$lib/server/api/rates';
 import { getDb } from '$lib/server/db';
+import { listSharedIssues } from '$lib/server/api/shared-issues';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, platform, parent, url }) => {
@@ -28,7 +29,8 @@ export const load: PageServerLoad = async ({ locals, platform, parent, url }) =>
 		newestIssue,
 		layoutData,
 		fleetRuns,
-		rates
+		rates,
+		sharedAwaiting
 	] = await Promise.all([
 		listRunners(db, userId),
 		listRoutingRules(db, userId),
@@ -69,7 +71,19 @@ export const load: PageServerLoad = async ({ locals, platform, parent, url }) =>
 			.executeTakeFirst(),
 		parent(),
 		listRuns(db, userId, { active: true }, { cursor: null, limit: 10000 }),
-		listRates(db, userId)
+		listRates(db, userId),
+		listSharedIssues(
+			db,
+			{
+				userId,
+				userName: locals.user!.name,
+				apiKeyId: null,
+				apiKeyName: null,
+				viaSession: true
+			},
+			null,
+			{ category: 'awaiting_human', limit: 20, brief: true }
+		)
 	]);
 	// Counted before the partition, so an archived project's issues still count:
 	// the item asks whether the account has an issue at all.
@@ -120,6 +134,7 @@ export const load: PageServerLoad = async ({ locals, platform, parent, url }) =>
 		runsState,
 		fleetRuns: fleetRuns.items,
 		rates,
+		sharedAwaiting: sharedAwaiting.items,
 		contextRepoUrls: repoItems.map((r) => r.repo_url).filter((u): u is string => u !== null)
 	};
 };

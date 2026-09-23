@@ -318,6 +318,12 @@ export interface CommentTable {
 	created_at: number;
 	/** Null until the comment is edited. */
 	updated_at: number | null;
+	author_run_id: string | null;
+	author_run_name: string | null;
+	editor_user_id: string | null;
+	editor_api_key_id: string | null;
+	edited_at: number | null;
+	last_edit_token: string | null;
 }
 
 export interface EventTable {

@@ -1,14 +1,13 @@
-# Shared project personal permission and admission
+# Shared projects, decisions, and personal permission
 
-This page records the owner execution boundary being added for Tines/669. The
-membership and invitation flows are delivered by later slices. Existing
-projects remain in legacy mode until a sharing flow marks them shared; no
-production sharing entry point is exposed by this slice.
+This page describes the Tines/669 branch contract. Existing projects remain
+in legacy mode until an owner explicitly sends the first invitation. The
+branch is under review and is not a production release.
 
-## Owner permission
+## Browser permission
 
-In consent mode, only the project owner's authenticated browser session can
-create or change a personal issue permission. API keys, including run keys,
+In consent mode, an accepted member or the project owner can choose their own
+issue and future-schedule permission in an authenticated browser session. API keys, including run keys,
 cannot pass `allow_my_agents`, `personal_consent`, or equivalent consent
 fields. A Bearer header alongside a browser cookie does not gain consent
 authority. A key-authenticated create or transition that omits those fields
@@ -67,10 +66,11 @@ settles unless permission is off or the issue is held.
 
 ## Availability
 
-This is an implementation contract, not a user launch point. The branch has
-the owner execution boundary and future schedule permission. No production
-sharing entry point exists yet. Invitations, member reads and decisions are
-later slices; key consent is a separate downstream issue.
+The branch includes invitations, safe member reads, attributed comments and
+awaiting-human decisions, and personal browser controls. Only the owner's
+approved agents can be admitted. Member permission is saved for later work;
+it never grants member execution here. Key consent is a separate downstream
+issue.
 
 ## Isolated verification (2026-09-23)
 
@@ -130,10 +130,9 @@ unlaunched permission. Renaming and pause/resume preserve it. A workflow
 initial-state change resets schedules that follow that initial state; a
 starting state's category change also resets affected schedules. Issue
 completion, transfer, and workflow replacement still clear that issue's
-permission without changing the schedule's future choice. The owner is the
-only person who can write a schedule choice in the current branch. Invitation
-can now activate membership, but member choice writes remain disabled until
-the next slice; member execution remains unavailable in this release.
+permission without changing the schedule's future choice. Accepted members
+can save their own future choice in the browser. Member execution remains
+unavailable in this release.
 
 ## Isolated schedule verification (2026-09-23)
 
@@ -192,8 +191,8 @@ identity, safe workflow/state descriptors, comments, filtered history,
 artifact versions/downloads and schedule summaries. Member HTML artifacts
 remain downloads; the site-link minting route keeps its owner-only check.
 Private context, account and run detail APIs retain their owner checks.
-Member issue/schedule mutation and execution are disabled until their assigned
-later slices. A member can leave their own project.
+Member issue and schedule administration and member execution remain
+unavailable. A member can leave their own project.
 
 The isolated test identity scheme is Alice as owner, Bob as recipient and
 Carol as wrong-account viewer. `project-membership.spec.ts` uses the local
@@ -201,5 +200,36 @@ Worker/D1 stack and an E2E-only invitation email sink; the sink route does not
 return links in production builds. The first two-account run passed the phone
 join/read/revocation journey. Focused SQLite tests cover acknowledgement,
 verified email, resend, cancel, delivery failure, idempotency and reinvitation.
-Full native race and cross-surface privacy coverage remain to be completed
-before this slice can close; see Tines/715's handoff for the exact list.
+The completed slice 3 read and privacy evidence is recorded in
+`docs/project-membership-read-boundary.md`.
+
+## Attributed member decisions
+
+An accepted member can comment and edit or delete their own human comments
+and own-run comments. The owner can moderate project comments. A run key
+can repair only a comment originally made with that exact run key. The
+original author and run remain immutable; edits record the named editor.
+Comment writes recheck current membership inside the commit batch, so removal
+or leave wins over a stale prepared write. Members may take only an exact
+transition from a current `awaiting_human` state, with the current state,
+workflow, decision, and personal-choice witnesses. An archived project or
+unmet artifact gate still blocks the transition. A stale witness records no
+decision or permission change.
+
+The member issue page shows owner-first, stable member permission rows and a
+single minimal run status. It offers separate comment, decision, and own
+issue-permission controls. The shared project page exposes own future-schedule
+permission; the Agents page lists safe shared issues awaiting the member's
+decision, without loading the owner's fleet. The issue control explains that
+member execution is unavailable and leaves execution guidance undisclosed.
+All session choices retain the person's draft after a failed save. Keys can
+read safe receipts but cannot set on or off, including through create or
+transition input. A member's on choice is stored with its membership revision
+and never becomes an admission predicate in this release.
+
+Canonical project and issue events are stored once in the project owner's
+stream with the actual member as actor. The member feed reads those same IDs
+through current membership and an explicit type/payload allowlist. Historical
+events do not grant access after removal or transfer. Owner private fields,
+run logs, key metadata, and arbitrary context payloads stay out of shared
+projections.

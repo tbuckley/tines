@@ -4,6 +4,7 @@ import { getArtifactStore } from '$lib/server/artifact-store';
 import type { Artifact, ArtifactDetail, ArtifactVersion, ArtifactType } from '@tines/shared';
 import { ApiFail, notFound, type ActorContext } from './core';
 import { resolveIssueAccess, resolveProjectAccess } from './project-access';
+import { sharedEventPayload } from './shared-events';
 
 const SAFE_EVENTS = new Set([
 	'issue.created',
@@ -20,6 +21,7 @@ const SAFE_EVENTS = new Set([
 	'context.updated',
 	'context.deleted',
 	'issue.agent_hold_changed',
+	'issue.personal_permission_changed',
 	'agent_run.started',
 	'agent_run.ended',
 	'issue.parked',
@@ -49,6 +51,7 @@ export async function readSharedIssue(
 			'i.updated_at',
 			'i.state_entered_at',
 			'i.decision_revision',
+			'w.decision_revision as workflow_revision',
 			'i.consent_epoch',
 			'i.agent_hold',
 			'i.hold_revision',
@@ -97,13 +100,18 @@ export async function readSharedIssue(
 		db
 			.selectFrom('comment as c')
 			.leftJoin('user as u', 'u.id', 'c.actor_user_id')
+			.leftJoin('user as editor', 'editor.id', 'c.editor_user_id')
 			.select([
 				'c.id',
 				'c.body',
 				'c.created_at',
 				'c.updated_at',
 				'c.actor_user_id',
-				'u.name as author_name'
+				'u.name as author_name',
+				'c.author_run_id',
+				'c.author_run_name',
+				'c.editor_user_id',
+				'editor.name as editor_name'
 			])
 			.where('c.issue_id', '=', row.id)
 			.orderBy('c.created_at')
@@ -129,7 +137,7 @@ export async function readSharedIssue(
 			.execute(),
 		db
 			.selectFrom('issue_personal_choice')
-			.select(['value', 'revision', 'issue_epoch', 'source_kind'])
+			.select(['value', 'revision', 'issue_epoch', 'source_kind', 'membership_revision'])
 			.where('issue_id', '=', row.id)
 			.where('user_id', '=', actor.userId)
 			.executeTakeFirst(),
@@ -163,6 +171,7 @@ export async function readSharedIssue(
 			.where('m.project_id', '=', row.project_id)
 			.where('m.revoked_at', 'is', null)
 			.orderBy('m.joined_at')
+			.orderBy('m.user_id')
 			.execute(),
 		db
 			.selectFrom('issue_personal_choice')
@@ -259,11 +268,13 @@ export async function readSharedIssue(
 			archived_at: row.project_archived_at
 		},
 		viewer_role: access.role,
+		viewer_id: actor.userId,
 		number: row.number,
 		title: row.title,
 		description: row.description,
 		created_at: row.created_at,
 		updated_at: row.updated_at,
+		state_entered_at: row.state_entered_at ?? row.created_at,
 		state: { id: row.state_id, name: row.state_name, category: row.state_category },
 		workflow: { id: row.workflow_id, name: row.workflow_name, states, transitions: allowed },
 		labels,
@@ -276,7 +287,16 @@ export async function readSharedIssue(
 			body: comment.body,
 			created_at: comment.created_at,
 			updated_at: comment.updated_at,
-			author: { id: comment.actor_user_id, name: comment.author_name ?? 'Former participant' }
+			author: {
+				id: comment.actor_user_id,
+				name: comment.author_name ?? 'Former participant',
+				run: comment.author_run_id
+					? { id: comment.author_run_id, name: comment.author_run_name ?? 'Former runner' }
+					: null
+			},
+			editor: comment.editor_user_id
+				? { id: comment.editor_user_id, name: comment.editor_name ?? 'Former participant' }
+				: null
 		})),
 		artifacts: artifactRows,
 		history: eventRows
@@ -290,7 +310,8 @@ export async function readSharedIssue(
 				id: event.id,
 				type: event.type,
 				created_at: event.created_at,
-				actor_user_id: event.actor_user_id
+				actor_user_id: event.actor_user_id,
+				payload: sharedEventPayload(event.type, event.payload)
 			})),
 		roster: [
 			{
@@ -313,19 +334,29 @@ export async function readSharedIssue(
 			: null,
 		schedule_source: row.schedule_id ? { id: row.schedule_id, name: row.schedule_name } : null,
 		my_choice: {
-			value: choice?.issue_epoch === row.consent_epoch ? choice.value : 'unset',
+			value:
+				choice?.issue_epoch === row.consent_epoch &&
+				choice.membership_revision === (access.role === 'owner' ? 0 : access.membershipRevision)
+					? choice.value
+					: 'unset',
 			revision: choice?.revision ?? 0,
-			epoch: row.consent_epoch
+			epoch: row.consent_epoch,
+			source:
+				choice?.issue_epoch === row.consent_epoch &&
+				choice.membership_revision === (access.role === 'owner' ? 0 : access.membershipRevision)
+					? choice.source_kind
+					: null
 		},
 		agent_hold: Boolean(row.agent_hold),
 		hold_revision: row.hold_revision,
 		needs_attention: Boolean(row.needs_attention),
 		decision_revision: row.decision_revision,
+		workflow_revision: row.workflow_revision,
 		capabilities: {
 			read: true,
-			comment: false,
-			decide: false,
-			personal_permission: false,
+			comment: true,
+			decide: row.state_category === 'awaiting_human' && row.project_archived_at === null,
+			personal_permission: row.state_category !== 'done',
 			execute: false
 		}
 	};

@@ -70,7 +70,11 @@ export function eventInsert(
 ): CompiledQuery {
 	const values = {
 		id: input.id ?? newId('evt'),
-		user_id: actor.userId,
+		user_id: input.issueId
+			? sql<string>`(SELECT p.user_id FROM issue i JOIN project p ON p.id = i.project_id WHERE i.id = ${input.issueId})`
+			: input.projectId
+				? sql<string>`(SELECT user_id FROM project WHERE id = ${input.projectId})`
+				: sql<string>`${actor.userId}`,
 		type: input.type,
 		actor_user_id: actor.userId,
 		actor_api_key_id: actor.apiKeyId,

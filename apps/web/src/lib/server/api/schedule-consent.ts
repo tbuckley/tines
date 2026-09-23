@@ -89,6 +89,7 @@ export async function readSharedScheduleSummary(
 			])
 		)
 		.orderBy('u.name asc')
+		.orderBy('u.id asc')
 		.execute();
 	const roster = people.map((person) => {
 		const owner = person.id === row.owner_id;
@@ -114,6 +115,7 @@ export async function readSharedScheduleSummary(
 	}
 	return {
 		id: row.id,
+		viewer_id: actor.userId,
 		project: {
 			id: row.project_id,
 			name: row.project_name,
@@ -157,6 +159,9 @@ export async function readScheduleConsent(
 		.leftJoin('schedule_personal_choice as c', (join) =>
 			join.onRef('c.schedule_id', '=', 's.id').on('c.user_id', '=', userId)
 		)
+		.leftJoin('project_member as m', (join) =>
+			join.onRef('m.project_id', '=', 'p.id').on('m.user_id', '=', userId)
+		)
 		.select([
 			's.id',
 			's.project_id',
@@ -166,10 +171,22 @@ export async function readScheduleConsent(
 			'p.shared_at',
 			'c.value',
 			'c.revision',
-			'c.permission_epoch as choice_epoch'
+			'c.permission_epoch as choice_epoch',
+			'p.user_id as owner_id',
+			'm.revision as member_revision',
+			'c.membership_revision as choice_member_revision'
 		])
 		.where('s.id', '=', scheduleId)
-		.where('p.user_id', '=', userId)
+		.where((eb) =>
+			eb.or([
+				eb('p.user_id', '=', userId),
+				eb.and([
+					eb('p.shared_at', 'is not', null),
+					eb('m.revision', 'is not', null),
+					eb('m.revoked_at', 'is', null)
+				])
+			])
+		)
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	if (row.shared_at === null)
@@ -182,13 +199,19 @@ export async function readScheduleConsent(
 		schedule_id: row.id,
 		project_id: row.project_id,
 		my_future_permission: {
-			value: row.choice_epoch === row.permission_epoch ? (row.value ?? 'unset') : 'unset',
+			value:
+				row.choice_epoch === row.permission_epoch &&
+				row.choice_member_revision === (row.owner_id === userId ? 0 : row.member_revision)
+					? (row.value ?? 'unset')
+					: 'unset',
 			revision: row.revision ?? 0,
 			epoch: row.permission_epoch
 		},
 		readiness: row.archived_at !== null ? 'archived' : row.enabled ? 'saved' : 'paused',
 		message:
-			'Future permission is saved separately from each issue. Only the owner’s approved agents can run in this release.'
+			row.owner_id === userId
+				? 'Future permission is saved separately from each issue. Only the owner’s approved agents can run in this release.'
+				: 'Permission saved. Member execution is not available in this release; only the owner’s approved agents can run.'
 	};
 }
 
@@ -323,6 +346,15 @@ export async function writeScheduleConsent(
 		);
 	const token = newId('dcn');
 	const now = Date.now();
+	const member = await db
+		.selectFrom('scheduled_task as s')
+		.innerJoin('project as p', 'p.id', 's.project_id')
+		.leftJoin('project_member as m', (join) =>
+			join.onRef('m.project_id', '=', 'p.id').on('m.user_id', '=', actor.userId)
+		)
+		.select(['p.user_id as owner_id', 'm.revision as member_revision'])
+		.where('s.id', '=', scheduleId)
+		.executeTakeFirstOrThrow();
 	const guard = sql<boolean>`EXISTS (SELECT 1 FROM schedule_personal_choice
 		WHERE schedule_id = ${scheduleId} AND user_id = ${actor.userId}
 			AND last_request_token = ${token} AND value = 'off')`;
@@ -337,13 +369,19 @@ export async function writeScheduleConsent(
 		sql`INSERT INTO schedule_personal_choice
 			(schedule_id, user_id, value, revision, permission_epoch, membership_revision, last_request_token, updated_at)
 		SELECT s.id, ${actor.userId}, ${body.value}, ${body.expected_revision + 1},
-			s.permission_epoch, 0, ${token}, ${now}
+			s.permission_epoch, ${member.owner_id === actor.userId ? 0 : member.member_revision}, ${token}, ${now}
 		FROM scheduled_task s JOIN project p ON p.id = s.project_id
-		WHERE s.id = ${scheduleId} AND p.user_id = ${actor.userId}
+		WHERE s.id = ${scheduleId} AND ${
+			member.owner_id === actor.userId
+				? sql<boolean>`p.user_id = ${actor.userId}`
+				: sql<boolean>`EXISTS (SELECT 1 FROM project_member m WHERE m.project_id = p.id
+				AND m.user_id = ${actor.userId} AND m.revision = ${member.member_revision} AND m.revoked_at IS NULL)`
+		}
 			AND p.shared_at IS NOT NULL AND s.permission_epoch = ${body.permission_epoch}
 		ON CONFLICT(schedule_id, user_id) DO UPDATE SET
 			value = excluded.value, revision = schedule_personal_choice.revision + 1,
 			permission_epoch = excluded.permission_epoch,
+			membership_revision = excluded.membership_revision,
 			last_request_token = excluded.last_request_token, updated_at = excluded.updated_at
 		WHERE schedule_personal_choice.revision = ${body.expected_revision}`.compile(db),
 		...(body.value === 'off' ? [release, revokeKeys, clear] : []),

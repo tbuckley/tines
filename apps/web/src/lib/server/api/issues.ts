@@ -54,6 +54,8 @@ import {
 } from './artifacts';
 import { contextSummaryForIssue } from './context';
 import { actorOf, eventInsert, eventQuery, serializeEvent } from './events';
+import { resolveIssueAccess, currentProjectWriterPredicate } from './project-access';
+import { readSharedIssue } from './shared-issues';
 import { deriveRound, deriveSinceLastRun } from './handoff';
 import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels';
 import { runQuery, serializeRun } from './runs';
@@ -664,6 +666,7 @@ async function loadCommentHistory(db: Kysely<Database>, issueId: string) {
 		.leftJoin('runner as actor_runner', 'actor_runner.id', 'actor_run.runner_id')
 		.leftJoin('issue as actor_run_issue', 'actor_run_issue.id', 'actor_run.issue_id')
 		.leftJoin('project as actor_run_project', 'actor_run_project.id', 'actor_run_issue.project_id')
+		.leftJoin('user as editor_user', 'editor_user.id', 'comment.editor_user_id')
 		.selectAll('comment')
 		.select([
 			'actor_user.name as actor_user_name',
@@ -676,7 +679,8 @@ async function loadCommentHistory(db: Kysely<Database>, issueId: string) {
 			'actor_run_issue.number as actor_run_issue_number',
 			'actor_run.issue_id as actor_run_issue_id',
 			'actor_run.status as actor_run_status',
-			'actor_run.created_at as actor_run_created_at'
+			'actor_run.created_at as actor_run_created_at',
+			'editor_user.name as editor_user_name'
 		])
 		.where('comment.issue_id', '=', issueId)
 		.orderBy('comment.created_at asc')
@@ -686,9 +690,28 @@ async function loadCommentHistory(db: Kysely<Database>, issueId: string) {
 		id: row.id,
 		issue_id: row.issue_id,
 		body: row.body,
-		actor: actorOf(row),
+		actor: {
+			...actorOf(row),
+			...(row.author_run_id
+				? {
+						run: {
+							run_id: row.author_run_id,
+							runner_name: row.author_run_name ?? 'Former runner',
+							stage: null,
+							issue_ref: null
+						}
+					}
+				: {})
+		},
 		created_at: row.created_at,
-		updated_at: row.updated_at
+		updated_at: row.updated_at,
+		editor: row.editor_user_id
+			? {
+					user_id: row.editor_user_id,
+					user_name: row.editor_user_name ?? 'Former participant',
+					api_key_id: row.editor_api_key_id
+				}
+			: null
 	}));
 	let selectedRun: { id: string; createdAt: number } | null = null;
 	for (const row of rows) {
@@ -1720,6 +1743,207 @@ function unmetRequirements(
 	);
 }
 
+async function transitionMemberIssue(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	effects: DispatchEffects,
+	id: string,
+	body: TransitionIssueRequest,
+	access: Awaited<ReturnType<typeof resolveIssueAccess>>
+) {
+	if (actor.agentRunId) throw notFound();
+	const issue = await readSharedIssue(db, actor, { id });
+	if (issue.project.archived_at !== null)
+		throw new ApiFail(422, 'archived', 'Archived issues cannot be transitioned');
+	if (issue.state.category !== 'awaiting_human')
+		throw new ApiFail(
+			403,
+			'member_decision_forbidden',
+			'Members can decide only from an awaiting-human state'
+		);
+	const target = issue.workflow.transitions.find((item) => item.id === body.transition_id);
+	if (!target || body.action || !body.transition_id)
+		throw new ApiFail(
+			409,
+			'decision_refresh_required',
+			'Refresh the issue and choose an exact transition',
+			{ committed: false }
+		);
+	if (
+		body.expected_state_id !== issue.state.id ||
+		body.expected_decision_revision !== issue.decision_revision ||
+		body.expected_consent_revision !== issue.my_choice.revision ||
+		body.expected_consent_epoch !== issue.my_choice.epoch ||
+		body.expected_workflow_revision !== issue.workflow_revision
+	)
+		throw new ApiFail(
+			409,
+			'decision_refresh_required',
+			'Issue or permission changed; refresh and choose again',
+			{ committed: false }
+		);
+	if (body.allow_my_agents !== undefined && (!actor.viaSession || actor.bearerPresent))
+		throw new ApiFail(
+			403,
+			'consent_browser_required',
+			'Personal permission must be chosen in the browser'
+		);
+	const destination = issue.workflow.states.find((state) => state.id === target.to_state_id);
+	if (!destination)
+		throw new ApiFail(
+			409,
+			'decision_refresh_required',
+			'Workflow changed; refresh and choose again',
+			{ committed: false }
+		);
+	if (body.allow_my_agents !== undefined && destination.category !== 'active')
+		throw new ApiFail(
+			422,
+			'permission_state_invalid',
+			'Use the issue permission control outside an active transition'
+		);
+	const unmet = target.requires.filter((r: any) => {
+		const artifact = issue.artifacts.find((a) => a.name === r.artifact);
+		return (
+			!artifact ||
+			!artifact.fresh ||
+			(r.type && artifact.artifact_type !== r.type) ||
+			(r.content_type && !artifact.current_version.content_type?.startsWith(r.content_type))
+		);
+	});
+	if (unmet.length)
+		throw new ApiFail(
+			422,
+			'transition_requirements_unmet',
+			'Required artifact is missing or stale',
+			{ committed: false }
+		);
+	const token = newId('dcn');
+	const now = Date.now();
+	const desired =
+		destination.category === 'active'
+			? body.allow_my_agents === undefined
+				? actor.viaSession && !actor.bearerPresent && issue.my_choice.value === 'unset'
+					? 'on'
+					: null
+				: body.allow_my_agents
+					? 'on'
+					: 'off'
+			: null;
+	const choiceChanged =
+		desired !== null &&
+		(issue.my_choice.value !== desired ||
+			(body.allow_my_agents !== undefined && issue.my_choice.source !== 'explicit_issue'));
+	const reset = destination.category === 'done';
+	const guard = currentProjectWriterPredicate(access.projectId, actor, access, id);
+	const writes: CompiledQuery[] = [
+		sql`UPDATE issue SET state_id = ${destination.id}, state_entered_at = ${now}, updated_at = ${now},
+			decision_revision = decision_revision + 1, consent_epoch = consent_epoch + ${reset ? 1 : 0},
+			last_decision_token = ${token}, needs_attention = 0, attempt_count = 0
+		WHERE id = ${id} AND project_id = ${access.projectId} AND state_id = ${issue.state.id}
+			AND decision_revision = ${issue.decision_revision} AND consent_epoch = ${issue.my_choice.epoch}
+			AND ${guard}
+			AND EXISTS (SELECT 1 FROM workflow_state current_state WHERE current_state.id = issue.state_id
+				AND current_state.category = 'awaiting_human')
+			AND EXISTS (SELECT 1 FROM workflow w WHERE w.id = issue.workflow_id
+				AND w.decision_revision = ${issue.workflow_revision})
+			AND EXISTS (SELECT 1 FROM workflow_transition wt WHERE wt.id = ${target.id}
+				AND wt.workflow_id = issue.workflow_id AND wt.from_state_id = ${issue.state.id}
+				AND wt.to_state_id = ${destination.id})
+			AND COALESCE((SELECT revision FROM issue_personal_choice WHERE issue_id = issue.id AND user_id = ${actor.userId}), 0)
+				= ${issue.my_choice.revision}`.compile(db)
+	];
+	const landed = sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id} AND last_decision_token = ${token})`;
+	if (reset) {
+		writes.push(
+			...releaseAssignedIssueQueries(db, {
+				issueId: id,
+				userId: issue.project.owner.id,
+				token,
+				eventId: newId('evt'),
+				now,
+				reason: 'Issue completed before admission',
+				guard: landed
+			})
+		);
+		writes.push(
+			sql`UPDATE issue_personal_choice SET value = 'unset', revision = revision + 1,
+			issue_epoch = (SELECT consent_epoch FROM issue WHERE id = ${id}), source_kind = NULL,
+			source_schedule_id = NULL, source_grant_revision = NULL, source_permission_epoch = NULL, updated_at = ${now}
+		WHERE issue_id = ${id} AND ${landed}`.compile(db)
+		);
+	} else if (choiceChanged) {
+		writes.push(
+			sql`INSERT INTO issue_personal_choice
+			(issue_id, user_id, value, revision, issue_epoch, membership_revision, source_kind, updated_at, last_request_token)
+		SELECT ${id}, ${actor.userId}, ${desired}, ${issue.my_choice.revision + 1}, consent_epoch,
+			${access.membershipRevision}, 'explicit_issue', ${now}, ${token} FROM issue
+		WHERE id = ${id} AND last_decision_token = ${token}
+		ON CONFLICT(issue_id, user_id) DO UPDATE SET value = excluded.value,
+			revision = issue_personal_choice.revision + 1, issue_epoch = excluded.issue_epoch,
+			membership_revision = excluded.membership_revision, source_kind = 'explicit_issue',
+			source_schedule_id = NULL, source_grant_revision = NULL, source_permission_epoch = NULL,
+			updated_at = excluded.updated_at, last_request_token = excluded.last_request_token
+		WHERE issue_personal_choice.revision = ${issue.my_choice.revision}`.compile(db)
+		);
+	}
+	writes.push(
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.transitioned',
+				issueId: id,
+				payload: {
+					state_entry_version: 1,
+					transition_id: target.id,
+					action: target.name,
+					workflow_id: issue.workflow.id,
+					workflow_name: issue.workflow.name,
+					from_state_id: issue.state.id,
+					from_state_name: issue.state.name,
+					to_state_id: destination.id,
+					to_state_name: destination.name,
+					to_state_category: destination.category
+				}
+			},
+			{ predicate: landed }
+		)
+	);
+	if (choiceChanged)
+		writes.push(
+			eventInsert(
+				db,
+				actor,
+				{
+					type: 'issue.personal_permission_changed',
+					issueId: id,
+					payload: { value: desired, revision: issue.my_choice.revision + 1 }
+				},
+				{
+					predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue_personal_choice WHERE issue_id = ${id}
+			AND user_id = ${actor.userId} AND last_request_token = ${token})`
+				}
+			)
+		);
+	if (choiceChanged && desired === 'on' && body.disclosure_version)
+		writes.push(
+			sql`INSERT INTO personal_disclosure (user_id, version, acknowledged_at)
+			SELECT ${actor.userId}, ${body.disclosure_version}, ${now}
+			WHERE EXISTS (SELECT 1 FROM issue_personal_choice WHERE issue_id = ${id}
+				AND user_id = ${actor.userId} AND last_request_token = ${token})
+			ON CONFLICT(user_id, version) DO NOTHING`.compile(db)
+		);
+	const results = await runAtomic(env, writes);
+	if (!results[0]?.meta.changes)
+		throw new ApiFail(409, 'decision_refresh_required', 'Issue changed; refresh and choose again', {
+			committed: false
+		});
+	effects.signalDispatch();
+	return readSharedIssue(db, actor, { id });
+}
+
 export async function transitionIssue(
 	db: Kysely<Database>,
 	env: Env,
@@ -1727,7 +1951,7 @@ export async function transitionIssue(
 	effects: DispatchEffects,
 	id: string,
 	body: TransitionIssueRequest
-): Promise<IssueDetail> {
+): Promise<IssueDetail | Awaited<ReturnType<typeof readSharedIssue>>> {
 	assertConsentFieldsSupported(actor, body, [
 		'allow_my_agents',
 		'disclosure_version',
@@ -1743,6 +1967,9 @@ export async function transitionIssue(
 			field: 'disclosure_version'
 		});
 	}
+	const access = await resolveIssueAccess(db, actor, id);
+	if (access.role === 'member')
+		return transitionMemberIssue(db, env, actor, effects, id, body, access);
 	const current = await getIssueDetail(db, actor.userId, { id });
 	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
 	const decision = await db
@@ -2082,31 +2309,39 @@ export async function createComment(
 	issueId: string,
 	body: CreateCommentRequest
 ): Promise<Comment> {
-	const issue = await getIssueDetail(db, actor.userId, { id: issueId });
-	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
+	const access = await resolveIssueAccess(db, actor, issueId);
+	if (access.role === 'owner') {
+		const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+		await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
+	} else if (actor.agentRunId) throw notFound();
 	const text = requireString(body.body, 'body', { max: 100_000 });
 
 	const id = newId('cmt');
-	await runAtomic(env, [
-		db
-			.insertInto('comment')
-			.values({
-				id,
-				issue_id: issue.id,
-				body: text,
-				actor_user_id: actor.userId,
-				actor_api_key_id: actor.apiKeyId,
-				created_at: Date.now()
-			})
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'issue.commented',
-			issueId: issue.id,
-			projectId: issue.project_id,
-			payload: { comment_id: id }
-		})
+	const now = Date.now();
+	const guard = currentProjectWriterPredicate(access.projectId, actor, access, issueId);
+	const results = await runAtomic(env, [
+		sql`INSERT INTO comment (id, issue_id, body, actor_user_id, actor_api_key_id,
+			author_run_id, author_run_name, created_at)
+		SELECT ${id}, i.id, ${text}, ${actor.userId}, ${actor.apiKeyId},
+			${actor.agentRunId ?? null},
+			(SELECT name FROM runner WHERE id = (SELECT runner_id FROM agent_run WHERE id = ${actor.agentRunId ?? null})), ${now}
+		FROM issue i WHERE i.id = ${issueId} AND i.project_id = ${access.projectId} AND ${guard}`.compile(
+			db
+		),
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.commented',
+				issueId,
+				projectId: access.projectId,
+				payload: { comment_id: id }
+			},
+			{ predicate: sql<boolean>`EXISTS (SELECT 1 FROM comment WHERE id = ${id})` }
+		)
 	]);
-	const comments = await loadComments(db, issue.id);
+	if (!results[0]?.meta.changes) throw notFound();
+	const comments = await loadComments(db, issueId);
 	const created = comments.find((c) => c.id === id);
 	if (!created) throw new ApiFail(500, 'internal', 'Comment insert failed');
 	return created;
@@ -2120,10 +2355,23 @@ export async function createComment(
  * notes (the affordance asymmetry of specs/context/AGENT_EDITING.md).
  */
 export function assertCommentActionAllowed(
-	actor: Pick<ActorContext, 'agentRunId' | 'apiKeyId'>,
-	comment: { actor_api_key_id: string | null }
+	actor: Pick<ActorContext, 'agentRunId' | 'apiKeyId' | 'userId'>,
+	comment: {
+		actor_api_key_id: string | null;
+		actor_user_id?: string;
+		author_run_id?: string | null;
+	},
+	owner = true
 ): void {
-	if (!actor.agentRunId) return;
+	if (!actor.agentRunId) {
+		if (
+			owner ||
+			(comment.actor_user_id === actor.userId &&
+				(comment.actor_api_key_id === null || comment.author_run_id !== null))
+		)
+			return;
+		throw new ApiFail(403, 'comment_forbidden', 'You can repair your own human or run comments.');
+	}
 	// The null check guards a state the types allow but auth cannot produce: a
 	// run actor always carries its key, so a session-authored comment (key id
 	// null) must never match by two nulls.
@@ -2143,20 +2391,29 @@ async function requireComment(
 	issueId: string,
 	commentId: string
 ): Promise<{
-	issue: IssueDetail;
-	row: { id: string; body: string; actor_api_key_id: string | null };
+	access: Awaited<ReturnType<typeof resolveIssueAccess>>;
+	row: {
+		id: string;
+		body: string;
+		actor_api_key_id: string | null;
+		actor_user_id: string;
+		author_run_id: string | null;
+	};
 }> {
-	const issue = await getIssueDetail(db, actor.userId, { id: issueId });
-	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
+	const access = await resolveIssueAccess(db, actor, issueId);
+	if (access.role === 'owner') {
+		const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+		await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
+	}
 	const row = await db
 		.selectFrom('comment')
-		.select(['id', 'body', 'actor_api_key_id'])
+		.select(['id', 'body', 'actor_api_key_id', 'actor_user_id', 'author_run_id'])
 		.where('id', '=', commentId)
-		.where('issue_id', '=', issue.id)
+		.where('issue_id', '=', issueId)
 		.executeTakeFirst();
 	if (!row) throw notFound();
-	assertCommentActionAllowed(actor, row);
-	return { issue, row };
+	assertCommentActionAllowed(actor, row, access.role === 'owner');
+	return { access, row };
 }
 
 export async function updateComment(
@@ -2167,26 +2424,39 @@ export async function updateComment(
 	commentId: string,
 	body: UpdateCommentRequest
 ): Promise<Comment> {
-	const { issue } = await requireComment(db, actor, issueId, commentId);
+	const { access, row } = await requireComment(db, actor, issueId, commentId);
 	const text = requireString(body.body, 'body', { max: 100_000 });
-
-	await runAtomic(env, [
-		db
-			.updateTable('comment')
-			.set({ body: text, updated_at: Date.now() })
-			.where('id', '=', commentId)
-			.compile(),
+	const now = Date.now();
+	const token = newId('edt');
+	const guard = currentProjectWriterPredicate(access.projectId, actor, access, issueId);
+	const authorGuard = actor.agentRunId
+		? sql<boolean>`actor_api_key_id = ${actor.apiKeyId}`
+		: access.role === 'owner'
+			? sql<boolean>`1=1`
+			: sql<boolean>`actor_user_id = ${actor.userId} AND (actor_api_key_id IS NULL OR author_run_id IS NOT NULL)`;
+	const results = await runAtomic(env, [
+		sql`UPDATE comment SET body = ${text}, updated_at = ${now}, edited_at = ${now}, last_edit_token = ${token},
+			editor_user_id = ${actor.userId}, editor_api_key_id = ${actor.apiKeyId}
+		WHERE id = ${commentId} AND issue_id = ${issueId} AND ${authorGuard} AND ${guard}`.compile(db),
 		// Payload stays content-free: the audit trail records the action, not
 		// the text (events are append-only, and a mis-posted secret is exactly
 		// what an edit is for).
-		eventInsert(db, actor, {
-			type: 'issue.comment_edited',
-			issueId: issue.id,
-			projectId: issue.project_id,
-			payload: { comment_id: commentId, changed: ['body'] }
-		})
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.comment_edited',
+				issueId,
+				projectId: access.projectId,
+				payload: { comment_id: commentId, changed: ['body'] }
+			},
+			{
+				predicate: sql<boolean>`EXISTS (SELECT 1 FROM comment WHERE id = ${commentId} AND last_edit_token = ${token})`
+			}
+		)
 	]);
-	const comments = await loadComments(db, issue.id);
+	if (!results[0]?.meta.changes) throw notFound();
+	const comments = await loadComments(db, issueId);
 	const updated = comments.find((c) => c.id === commentId);
 	if (!updated) throw new ApiFail(500, 'internal', 'Comment update failed');
 	return updated;
@@ -2199,16 +2469,32 @@ export async function deleteComment(
 	issueId: string,
 	commentId: string
 ): Promise<void> {
-	const { issue, row } = await requireComment(db, actor, issueId, commentId);
-	await runAtomic(env, [
-		db.deleteFrom('comment').where('id', '=', commentId).compile(),
-		eventInsert(db, actor, {
-			type: 'issue.comment_deleted',
-			issueId: issue.id,
-			projectId: issue.project_id,
-			payload: { comment_id: commentId, body_length: row.body.length }
-		})
+	const { access, row } = await requireComment(db, actor, issueId, commentId);
+	const guard = currentProjectWriterPredicate(access.projectId, actor, access, issueId);
+	const authorGuard = actor.agentRunId
+		? sql<boolean>`actor_api_key_id = ${actor.apiKeyId}`
+		: access.role === 'owner'
+			? sql<boolean>`1=1`
+			: sql<boolean>`actor_user_id = ${actor.userId} AND (actor_api_key_id IS NULL OR author_run_id IS NOT NULL)`;
+	const marker = newId('del');
+	const results = await runAtomic(env, [
+		sql`UPDATE comment SET editor_user_id = ${marker} WHERE id = ${commentId} AND issue_id = ${issueId} AND ${authorGuard} AND ${guard}`.compile(
+			db
+		),
+		sql`DELETE FROM comment WHERE id = ${commentId} AND editor_user_id = ${marker}`.compile(db),
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.comment_deleted',
+				issueId,
+				projectId: access.projectId,
+				payload: { comment_id: commentId, body_length: row.body.length }
+			},
+			{ predicate: sql<boolean>`(SELECT changes()) > 0` }
+		)
 	]);
+	if (!results[0]?.meta.changes) throw notFound();
 }
 
 export { loadComments };

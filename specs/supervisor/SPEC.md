@@ -459,3 +459,5 @@ After the guarded transfer batch returns its request-specific assignment/event
 receipt, the service raises the request dispatch effect. The API boundary queues
 the coalesced pass; scheduling failure cannot turn an already committed move into
 a refusal, and the periodic sweep remains authoritative.
+
+> 2026-09-23 project-sharing decision: [SHARING_2026-09-23.md](../projects/SHARING_2026-09-23.md) supersedes this spec’s single-owner assumptions for shared projects. This historical spec remains unchanged otherwise.

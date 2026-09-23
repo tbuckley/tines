@@ -33,6 +33,37 @@ const EVENT_TYPES = [
 	'scheduled_task.personal_permission_changed'
 ];
 
+/** Keep only display-safe scalar fields; unknown payloads never cross accounts. */
+export function sharedEventPayload(type: string, raw: string): Record<string, unknown> {
+	let value: Record<string, unknown>;
+	try {
+		value = JSON.parse(raw) as Record<string, unknown>;
+	} catch {
+		return {};
+	}
+	const allowed =
+		type === 'issue.transitioned'
+			? ['action', 'from_state_name', 'to_state_name', 'to_state_category']
+			: type === 'issue.personal_permission_changed' ||
+				  type === 'scheduled_task.personal_permission_changed'
+				? ['value', 'revision']
+				: type === 'issue.agent_hold_changed'
+					? ['held']
+					: type === 'agent_run.started' || type === 'agent_run.ended'
+						? ['status', 'outcome']
+						: [];
+	return Object.fromEntries(
+		allowed
+			.filter(
+				(key) =>
+					typeof value[key] === 'string' ||
+					typeof value[key] === 'number' ||
+					typeof value[key] === 'boolean'
+			)
+			.map((key) => [key, value[key]])
+	);
+}
+
 export async function listSharedEvents(
 	db: Kysely<Database>,
 	actor: ActorContext,
@@ -133,7 +164,7 @@ export async function listSharedEvents(
 						}
 					: null,
 			project_name: row.project_name,
-			payload: {}
+			payload: sharedEventPayload(row.type, row.payload)
 		})),
 		hasMore: rows.length > opts.limit
 	};

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
+	import MemberSchedulePermission from './MemberSchedulePermission.svelte';
 	let { data } = $props();
 	onMount(() => {
 		void api.updatePreferences({ focused_project_id: data.project.id }).catch(() => {});
@@ -43,6 +44,7 @@
 						<p class="text-muted-foreground text-sm">
 							{schedule.recurrence.cron} · {schedule.recurrence.timezone}
 						</p>
+						<MemberSchedulePermission {schedule} />
 					</li>{/each}
 			</ul>
 		{/if}

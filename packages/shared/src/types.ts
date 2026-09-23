@@ -884,6 +884,7 @@ export interface ScheduleConsentReceipt {
 /** Allowlisted member projection; no owner library, runner or credential fields. */
 export interface SharedScheduleSummary {
 	id: string;
+	viewer_id: string;
 	project: {
 		id: string;
 		name: string;
@@ -990,7 +991,7 @@ export interface IssueConsentRequest {
 }
 
 export interface IssueConsentReceipt {
-	actor: 'owner' | 'key';
+	actor: 'owner' | 'member' | 'key';
 	project: { id: string; sharing_revision: number };
 	issue_state: {
 		id: string;
@@ -3223,6 +3224,8 @@ export interface Comment {
 	created_at: number;
 	/** Null when the comment has never been edited. */
 	updated_at: number | null;
+	/** The original author is immutable; edit attribution is separate. */
+	editor?: { user_id: string; user_name: string; api_key_id: string | null } | null;
 }
 
 export interface CreateCommentRequest {

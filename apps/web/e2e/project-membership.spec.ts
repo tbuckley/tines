@@ -282,7 +282,7 @@ test('two accounts join and read without owner-private payloads, then removal re
 			JSON.parse(cli(BOB.apiKey, 'issues', 'list', '--project', project.id, '--json')).items
 		).toEqual(expect.arrayContaining([expect.objectContaining({ id: issue.id })]));
 		expect(cli(BOB.apiKey, 'issues', 'show', `${project.id}/${issue.number}`)).toContain(
-			'This shared issue is read only'
+			'Members may comment'
 		);
 		expect(
 			cli(BOB.apiKey, 'issues', 'artifacts', 'show', `${project.id}/${issue.number}`, 'notes')

@@ -1014,3 +1014,5 @@ trusted-account content. They use a closed escaped text renderer that creates no
 resource attributes and suppresses malformed image/media/embed nodes defensively. This keeps private
 library behavior compatible while public admission and display remain text-only; see
 [`specs/library/PUBLICATIONS.md`](../library/PUBLICATIONS.md).
+
+> 2026-09-23 project-sharing decision: [SHARING_2026-09-23.md](../projects/SHARING_2026-09-23.md) supersedes this spec’s single-owner assumptions for shared projects. This historical spec remains unchanged otherwise.

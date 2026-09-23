@@ -50,6 +50,44 @@ function inherited(t: ReturnType<typeof fixture>, issueId: string) {
 }
 
 describe('future schedule permission', () => {
+	it('stores a member browser choice without enabling execution or key authority', async () => {
+		const t = fixture();
+		t.sqlite.exec(`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+			VALUES ('u2', 'member', 'member@example.test', 1, ${now}, ${now});
+			INSERT INTO project_member (project_id, user_id, revision, joined_at, updated_at)
+			VALUES ('prj_1', 'u2', 1, ${now}, ${now});`);
+		const first = await initial(t);
+		const member = { ...session, userId: 'u2', userName: 'member' };
+		const future = await writeScheduleConsent(t.db, t.env, member, first.schedule!.id, {
+			value: 'on',
+			expected_revision: 0,
+			permission_epoch: 0
+		});
+		expect(future).toMatchObject({ my_future_permission: { value: 'on', revision: 1 } });
+		await expect(
+			writeScheduleConsent(
+				t.db,
+				t.env,
+				{ ...member, viaSession: false, apiKeyId: 'key_2' },
+				first.schedule!.id,
+				{
+					value: 'off',
+					expected_revision: 1,
+					permission_epoch: 0
+				}
+			)
+		).rejects.toMatchObject({ status: 403 });
+		t.sqlite.exec(
+			`UPDATE project_member SET revoked_at = ${now + 1}, revision = 2 WHERE project_id='prj_1' AND user_id='u2'`
+		);
+		await expect(
+			writeScheduleConsent(t.db, t.env, member, first.schedule!.id, {
+				value: 'off',
+				expected_revision: 1,
+				permission_epoch: 0
+			})
+		).rejects.toMatchObject({ status: 404 });
+	});
 	it('keeps initial and future choices independent, defaulting future off', async () => {
 		const t = fixture();
 		const first = await initial(t);

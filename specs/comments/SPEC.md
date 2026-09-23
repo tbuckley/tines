@@ -66,3 +66,5 @@ and are echoed by `tines issues comment`, so an agent that mis-posts holds the
 handle it needs. The launch prompt names the repair commands but does not list
 ids for every comment: the comment you just wrote is the one you legitimately
 need to fix.
+
+> 2026-09-23 project-sharing decision: [SHARING_2026-09-23.md](../projects/SHARING_2026-09-23.md) supersedes this spec’s single-owner assumptions for shared projects. This historical spec remains unchanged otherwise.

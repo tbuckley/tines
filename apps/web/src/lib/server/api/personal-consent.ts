@@ -102,6 +102,9 @@ export async function readIssueConsent(
 		.leftJoin('issue_personal_choice as c', (join) =>
 			join.onRef('c.issue_id', '=', 'i.id').on('c.user_id', '=', userId)
 		)
+		.leftJoin('project_member as m', (join) =>
+			join.onRef('m.project_id', '=', 'p.id').on('m.user_id', '=', userId)
+		)
 		.select([
 			'i.id as issue_id',
 			'i.project_id',
@@ -120,10 +123,21 @@ export async function readIssueConsent(
 			'c.value as choice_value',
 			'c.revision as choice_revision',
 			'c.issue_epoch as choice_epoch',
-			'c.source_kind'
+			'c.source_kind',
+			'c.membership_revision as choice_membership_revision',
+			'm.revision as member_revision'
 		])
 		.where('i.id', '=', issueId)
-		.where('p.user_id', '=', userId)
+		.where((eb) =>
+			eb.or([
+				eb('p.user_id', '=', userId),
+				eb.and([
+					eb('p.shared_at', 'is not', null),
+					eb('m.revision', 'is not', null),
+					eb('m.revoked_at', 'is', null)
+				])
+			])
+		)
 		.executeTakeFirst();
 	if (!row) throw notFound();
 	if (row.shared_at === null)
@@ -141,7 +155,7 @@ export async function readIssueConsent(
 		.orderBy('created_at desc')
 		.executeTakeFirst();
 	return {
-		actor: 'owner',
+		actor: row.owner_id === userId ? 'owner' : 'member',
 		project: { id: row.project_id, sharing_revision: row.sharing_revision },
 		issue_state: {
 			id: row.state_id,
@@ -151,21 +165,34 @@ export async function readIssueConsent(
 		},
 		agent_hold: { held: Boolean(row.agent_hold), revision: row.hold_revision },
 		my_agents: {
-			value: row.choice_value ?? 'unset',
-			source: row.source_kind ?? null,
+			value:
+				row.choice_epoch === row.consent_epoch &&
+				row.choice_membership_revision === (row.owner_id === userId ? 0 : row.member_revision)
+					? (row.choice_value ?? 'unset')
+					: 'unset',
+			source: row.choice_epoch === row.consent_epoch ? (row.source_kind ?? null) : null,
 			revision: row.choice_revision ?? 0,
 			epoch: row.consent_epoch
 		},
-		readiness: row.agent_hold
-			? 'held'
-			: row.state_category === 'active' &&
-				  row.choice_value === 'on' &&
-				  row.choice_epoch === row.consent_epoch &&
-				  !row.needs_attention &&
-				  row.archived_at === null
-				? 'eligible'
-				: 'unavailable',
-		admitted_run: admitted?.id ?? null,
+		readiness:
+			row.owner_id !== userId
+				? 'unavailable'
+				: row.agent_hold
+					? 'held'
+					: row.state_category === 'active' &&
+						  row.choice_value === 'on' &&
+						  row.choice_epoch === row.consent_epoch &&
+						  !row.needs_attention &&
+						  row.archived_at === null
+						? 'eligible'
+						: 'unavailable',
+		admitted_run: row.owner_id === userId ? (admitted?.id ?? null) : null,
+		...(row.owner_id === userId
+			? {}
+			: {
+					message:
+						'Permission saved. Member execution is not available in this release; only the owner’s approved agents can run.'
+				}),
 		committed_atomically: true
 	};
 }
@@ -180,7 +207,8 @@ export async function writeIssueConsent(
 	env: Env,
 	actor: ActorContext,
 	issueId: string,
-	body: IssueConsentRequest
+	body: IssueConsentRequest,
+	beforeCommit?: () => Promise<void>
 ): Promise<IssueConsentReceipt> {
 	for (const field of ['user_id', 'subject_user_id', 'creator_user_id', 'actor_user_id']) {
 		if (field in body)
@@ -227,6 +255,9 @@ export async function writeIssueConsent(
 		.leftJoin('issue_personal_choice as c', (join) =>
 			join.onRef('c.issue_id', '=', 'i.id').on('c.user_id', '=', actor.userId)
 		)
+		.leftJoin('project_member as m', (join) =>
+			join.onRef('m.project_id', '=', 'p.id').on('m.user_id', '=', actor.userId)
+		)
 		.select([
 			'i.project_id',
 			'i.consent_epoch',
@@ -236,10 +267,21 @@ export async function writeIssueConsent(
 			's.category',
 			'p.shared_at',
 			'p.sharing_revision',
-			'c.revision as choice_revision'
+			'c.revision as choice_revision',
+			'p.user_id as owner_id',
+			'm.revision as member_revision'
 		])
 		.where('i.id', '=', issueId)
-		.where('p.user_id', '=', actor.userId)
+		.where((eb) =>
+			eb.or([
+				eb('p.user_id', '=', actor.userId),
+				eb.and([
+					eb('p.shared_at', 'is not', null),
+					eb('m.revision', 'is not', null),
+					eb('m.revoked_at', 'is', null)
+				])
+			])
+		)
 		.executeTakeFirst();
 	if (!current) throw notFound();
 	if (current.shared_at === null)
@@ -285,22 +327,31 @@ export async function writeIssueConsent(
 						AND last_request_token = ${token} AND value = 'off')`
 				})
 			: [];
+	await beforeCommit?.();
 	const results = await runAtomic(env, [
 		sql`
 			INSERT INTO issue_personal_choice
 				(issue_id, user_id, value, revision, issue_epoch, membership_revision,
 				 source_kind, updated_at, last_request_token)
 			SELECT ${issueId}, ${actor.userId}, ${body.value}, ${revision + 1},
-				i.consent_epoch, 0, 'explicit_issue', ${now}, ${token}
+				i.consent_epoch, ${current.owner_id === actor.userId ? 0 : current.member_revision}, 'explicit_issue', ${now}, ${token}
 			FROM issue AS i JOIN project AS p ON p.id = i.project_id
 			JOIN workflow_state AS s ON s.id = i.state_id
-			WHERE i.id = ${issueId} AND p.user_id = ${actor.userId} AND p.shared_at IS NOT NULL
+			WHERE i.id = ${issueId} AND p.shared_at IS NOT NULL
+				AND ${
+					current.owner_id === actor.userId
+						? sql<boolean>`p.user_id = ${actor.userId}`
+						: sql<boolean>`EXISTS (SELECT 1 FROM project_member m WHERE m.project_id = p.id
+						AND m.user_id = ${actor.userId} AND m.revision = ${current.member_revision}
+						AND m.revoked_at IS NULL)`
+				}
 				AND i.consent_epoch = ${body.issue_epoch}
 				AND i.decision_revision = ${body.decision_revision} AND s.category != 'done'
 			ON CONFLICT(issue_id, user_id) DO UPDATE SET
 				value = excluded.value,
 				revision = issue_personal_choice.revision + 1,
 				issue_epoch = excluded.issue_epoch,
+				membership_revision = excluded.membership_revision,
 				source_kind = 'explicit_issue', source_schedule_id = NULL,
 				source_grant_revision = NULL, source_permission_epoch = NULL,
 				updated_at = excluded.updated_at, last_request_token = excluded.last_request_token

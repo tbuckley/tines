@@ -1157,7 +1157,7 @@
 							</span>
 							{#if comment.updated_at}
 								<span class="shrink-0 italic" title={new Date(comment.updated_at).toLocaleString()}>
-									(edited)
+									(edited{comment.editor ? ` by ${comment.editor.user_name}` : ''})
 								</span>
 							{/if}
 							{#if !comment.pending && !archived}

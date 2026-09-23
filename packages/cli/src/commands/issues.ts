@@ -108,6 +108,15 @@ function printIssueDetail(issue: IssueDetail): void {
 		workflow?: { name: string };
 		state?: { name: string; category: string };
 		artifacts?: { name: string; current_version: { version: number } }[];
+		comments?: {
+			id: string;
+			body: string;
+			author: { name: string; run?: { name: string } | null };
+			editor?: { name: string } | null;
+		}[];
+		roster?: { user: { name: string }; role: string; value: string }[];
+		my_choice?: { value: string };
+		latest_run?: { status: string } | null;
 	};
 	if (shared.mode === 'member') {
 		console.log(`${shared.project?.name}/${shared.number}  ${shared.title}`);
@@ -120,7 +129,22 @@ function printIssueDetail(issue: IssueDetail): void {
 			console.log('\nartifacts:');
 			table(shared.artifacts.map((a) => [a.name, `v${a.current_version.version}`]));
 		}
-		console.log('\nThis shared issue is read only in the current release.');
+		if (shared.roster?.length) {
+			console.log('\npeople and permission:');
+			table(shared.roster.map((person) => [person.user.name, person.role, person.value]));
+		}
+		console.log(`your issue permission: ${shared.my_choice?.value ?? 'unset'} (browser control)`);
+		console.log(`latest run: ${shared.latest_run?.status ?? 'none'}`);
+		if (shared.comments?.length) {
+			console.log('\ncomments:');
+			for (const comment of shared.comments)
+				console.log(
+					`${comment.id} · ${comment.author.name}${comment.author.run ? ` via ${comment.author.run.name}` : ''}${comment.editor ? ` · edited by ${comment.editor.name}` : ''}\n${comment.body}`
+				);
+		}
+		console.log(
+			'\nMembers may comment and take a current awaiting-human transition. Personal permission is chosen in the browser; member execution is unavailable.'
+		);
 		return;
 	}
 	console.log(`${issue.project_name}/#${issue.number}  ${issue.title}`);
@@ -539,33 +563,68 @@ export function register(program: Command): void {
 	withCommon(
 		issues
 			.command('move <ref> <action>')
-			.description('Take a transition on an issue by its action name (e.g. "approve")')
+			.description('Take a current transition (members: awaiting-human only; no permission change)')
 	).action(async (ref: string, action: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
 		let request: Parameters<typeof api.transitionIssue>[1] = { action };
-		const project = issue.project_id ? await api.getProject(issue.project_id) : null;
-		if (project?.shared_at != null) {
-			const transition = issue.allowed_transitions.find(
+		const member = issue as IssueDetail & {
+			mode?: 'member';
+			project?: { name: string };
+			workflow_revision?: number;
+			decision_revision?: number;
+			my_choice?: { revision: number; epoch: number };
+			workflow: IssueDetail['workflow'] & { transitions?: { id: string; name: string }[] };
+		};
+		if (member.mode === 'member') {
+			const transition = member.workflow.transitions?.find(
 				(candidate) => candidate.name.toLowerCase() === action.toLowerCase()
 			);
-			if (!transition)
+			if (
+				!transition ||
+				!member.my_choice ||
+				member.workflow_revision === undefined ||
+				member.decision_revision === undefined
+			)
 				throw new Error(`No current transition named "${action}"; refresh the issue`);
-			const permission = await api.getIssueConsent(issue.id);
 			request = {
-				transition_id: transition.transition_id,
-				expected_state_id: permission.issue_state.id,
-				expected_decision_revision: permission.issue_state.decision_revision,
-				expected_workflow_revision: permission.issue_state.workflow_revision,
-				expected_consent_revision: permission.my_agents.revision,
-				expected_consent_epoch: permission.my_agents.epoch
+				transition_id: transition.id,
+				expected_state_id: issue.state.id,
+				expected_decision_revision: member.decision_revision,
+				expected_workflow_revision: member.workflow_revision,
+				expected_consent_revision: member.my_choice.revision,
+				expected_consent_epoch: member.my_choice.epoch
 			};
+		} else {
+			const project = issue.project_id ? await api.getProject(issue.project_id) : null;
+			if (project?.shared_at != null) {
+				const transition = issue.allowed_transitions.find(
+					(candidate) => candidate.name.toLowerCase() === action.toLowerCase()
+				);
+				if (!transition)
+					throw new Error(`No current transition named "${action}"; refresh the issue`);
+				const permission = await api.getIssueConsent(issue.id);
+				request = {
+					transition_id: transition.transition_id,
+					expected_state_id: permission.issue_state.id,
+					expected_decision_revision: permission.issue_state.decision_revision,
+					expected_workflow_revision: permission.issue_state.workflow_revision,
+					expected_consent_revision: permission.my_agents.revision,
+					expected_consent_epoch: permission.my_agents.epoch
+				};
+			}
 		}
 		const moved = await api.transitionIssue(issue.id, request);
 		if (opts.json) return printJson(moved);
+		const movedMember = moved as IssueDetail & { project?: { name: string } };
 		console.log(
-			`${moved.project_name}/#${moved.number}: ${issue.state.name} → ${moved.state.name} ("${action}")`
+			`${moved.project_name ?? movedMember.project?.name}/#${moved.number}: ${issue.state.name} → ${moved.state.name} ("${action}")`
 		);
+		if (member.mode === 'member')
+			console.log(
+				'Personal permission is managed in the browser. Member execution is unavailable in this release.'
+			);
+		else if (moved.permission_receipt?.message) console.log(moved.permission_receipt.message);
 	});
 
 	for (const held of [true, false]) {
@@ -733,7 +792,7 @@ export function register(program: Command): void {
 		if (opts.json) return printJson(comment);
 		// Echo the id: the comment you just posted is the one you may need to fix.
 		console.log(
-			`commented on ${issue.project_name}/#${issue.number} as ${actorLabel(comment.actor)} (id ${comment.id})`
+			`commented on ${issue.project_name ?? (issue as IssueDetail & { project?: { name: string } }).project?.name}/#${issue.number} as ${actorLabel(comment.actor)} (id ${comment.id})`
 		);
 	});
 
@@ -757,7 +816,9 @@ export function register(program: Command): void {
 			const issue = await resolveIssue(api, ref);
 			const comment = await api.updateComment(issue.id, commentId, { body });
 			if (opts.json) return printJson(comment);
-			console.log(`edited comment ${comment.id} on ${issue.project_name}/#${issue.number}`);
+			console.log(
+				`edited comment ${comment.id} on ${issue.project_name ?? (issue as IssueDetail & { project?: { name: string } }).project?.name}/#${issue.number}`
+			);
 		}
 	);
 
@@ -770,7 +831,9 @@ export function register(program: Command): void {
 		const issue = await resolveIssue(api, ref);
 		await api.deleteComment(issue.id, commentId);
 		if (opts.json) return printJson({ id: commentId, deleted: true });
-		console.log(`deleted comment ${commentId} from ${issue.project_name}/#${issue.number}`);
+		console.log(
+			`deleted comment ${commentId} from ${issue.project_name ?? (issue as IssueDetail & { project?: { name: string } }).project?.name}/#${issue.number}`
+		);
 	});
 
 	// Labels read as sentences too, and label ids never surface: every command
