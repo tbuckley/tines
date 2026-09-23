@@ -177,7 +177,10 @@ saying what the scope is.
 	 label is the focus; at zero or one it says Projects while its accessible
 	 name still reports the focus. Focus choices are separate from the real-link
 	 actions Open project (when focused), Manage projects (the remembered grid),
-	 and New project (`/projects?new=1`). Archived projects are omitted.
+	 and New project (`/projects?new=1`). Archived projects are omitted. When
+	 choices exceed the available space, only the choices scroll (up to 20rem);
+	 the action links remain in a visible, border-separated footer. The complete
+	 popover is bounded by the available dynamic viewport height.
 
 	 **Responsive chrome boundary.** The three primary destinations — Issues,
 	 Workflows, and Agents — move into the
