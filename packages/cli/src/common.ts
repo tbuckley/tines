@@ -38,6 +38,7 @@ export interface ListOpts extends CommonOpts {
 	limit?: number;
 	cursor?: string;
 	allPages?: boolean;
+	maxItems?: number;
 }
 
 /**
@@ -64,27 +65,47 @@ export function withCommon(cmd: Command): Command {
  * the page size rather than a total.
  */
 export function withList(cmd: Command): Command {
-	return withCommon(
-		cmd
-			.option(
-				'--limit <n>',
-				'maximum items to return (page size under --all-pages)',
-				parsePositiveInteger
-			)
-			.option('--cursor <cursor>', 'resume from the next_cursor of a previous page')
-			.addOption(
-				new Option(
-					'--all-pages',
-					'fetch every page, not just the first (slower on large lists)'
-				).conflicts('cursor')
-			)
-	);
+	const listCommand = cmd
+		.option(
+			'--limit <n>',
+			'maximum items to return (page size under --all-pages)',
+			parsePositiveInteger
+		)
+		.option('--cursor <cursor>', 'resume from the next_cursor of a previous page')
+		.addOption(
+			new Option(
+				'--all-pages',
+				'fetch every page, not just the first (default safety ceiling: 10000 items)'
+			).conflicts('cursor')
+		)
+		.option(
+			'--max-items <n>',
+			'safety ceiling for --all-pages (default 10000; exceeding it errors)',
+			parseMaxItems
+		)
+		.hook('preAction', (_thisCommand, actionCommand) => {
+			const opts = actionCommand.opts<ListOpts>();
+			if (opts.maxItems !== undefined && !opts.allPages) {
+				actionCommand.error('--max-items requires --all-pages');
+			}
+		});
+	return withCommon(listCommand);
 }
 
 export function parsePositiveInteger(value: string): number {
-	if (!/^[1-9]\d*$/.test(value)) throw new Error('limit must be a positive integer');
+	return parsePositiveIntegerOption(value, 'limit');
+}
+
+function parseMaxItems(value: string): number {
+	return parsePositiveIntegerOption(value, 'max-items');
+}
+
+function parsePositiveIntegerOption(value: string, optionName: string): number {
+	if (!/^[1-9]\d*$/.test(value)) throw new Error(`${optionName} must be a positive integer`);
 	const result = Number(value);
-	if (!Number.isSafeInteger(result)) throw new Error('limit must be a positive safe integer');
+	if (!Number.isSafeInteger(result)) {
+		throw new Error(`${optionName} must be a positive safe integer`);
+	}
 	return result;
 }
 
@@ -215,12 +236,20 @@ export function printList<T>(
  * parseable, and agents read run logs. Passing --cursor is deliberate paging,
  * so it is not warned about.
  */
-export async function fetchList<T extends { id: string }>(
+export async function fetchList<T>(
 	opts: ListOpts,
-	fetchPage: (page: PageParams) => Promise<ListResponse<T>>
+	fetchPage: (page: PageParams) => Promise<ListResponse<T>>,
+	identify?: (item: T) => string
 ): Promise<ListResponse<T>> {
 	if (opts.allPages) {
-		return { items: await listAll(fetchPage, { pageSize: opts.limit }), next_cursor: null };
+		return {
+			items: await listAll(fetchPage, {
+				pageSize: opts.limit,
+				maxItems: opts.maxItems,
+				identify: identify ?? ((item) => (item as { id: string }).id)
+			}),
+			next_cursor: null
+		};
 	}
 	const res = await fetchPage({ limit: opts.limit, cursor: opts.cursor });
 	if (res.next_cursor && opts.json && !opts.cursor) {

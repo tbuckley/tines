@@ -99,7 +99,8 @@ through their own endpoints, the issue page's Artifacts panel, and the launch
 prompt's issue block (below). `context_summary` gains an `artifacts` count so
 the issue read can badge them.
 
-Creation and payload mutation go through dedicated artifact endpoints only —
+Creation and payload mutation go through dedicated artifact endpoints, including
+multipart issue creation for initial file artifacts —
 `POST /api/v1/context` with `kind: "artifact"` is a 422
 (`use_artifact_endpoints`) because file payloads can't ride a JSON create, and
 one creation path is saner than two. That 422 names every write endpoint —
@@ -109,6 +110,14 @@ redirect stays complete as artifact types are added. The generic context
 endpoints still **read** artifact items (list/show, payload summarized),
 still **PATCH** name/description (rename re-keys requirement matching, which
 is the point), and still **DELETE** them.
+
+The New issue form accepts up to 10 files (25 MiB each, 50 MiB combined),
+derives editable unique artifact names from filenames, and sends one multipart
+create request. The Worker stages immutable R2 objects first, then commits the
+issue, initial file artifact rows/versions/events, labels, optional relationships, and optional schedule
+in one D1 batch before signaling dispatch. The multipart envelope is capped at
+51 MiB and its JSON metadata at 256 KiB. A failed D1 batch can leave only
+invisible R2 orphans; an active issue is never visible without its initial files.
 
 ### Versions
 
@@ -468,6 +477,11 @@ The first binary storage in the system:
   send no Origin header), so that check is replaced by an equivalent guard
   in hooks scoped to cookie-carrying requests — the only surface CSRF can
   actually ride; bearer clients cannot be forged cross-site.
+- **Create-with-files** is the third binary entry point: one ordered manifest
+  plus indexed file parts on `POST /api/v1/projects/:id/issues`. It preserves
+  the ordinary JSON representation when no files are selected. The display
+  filename in the manifest is authoritative; the binary part supplies MIME,
+  falling back to `application/octet-stream`.
 - **Testing**: server code takes a minimal `ArtifactStore` interface
   (`put/get/delete/deletePrefix`); the Worker passes an R2-backed one, the
   unit-test harness an in-memory map. e2e uses wrangler's local R2 (already
@@ -587,6 +601,7 @@ ergonomics; run keys are allowed everywhere here.
 
 | Method & path | Purpose |
 | --- | --- |
+| `POST /api/v1/projects/:id/issues` (multipart) | Create an issue with 1–10 initial `file` artifacts. A JSON `metadata` field contains the ordinary issue request plus ordered `{ part, name, filename }` entries; indexed binary parts carry the bytes. |
 | `GET /api/v1/issues/:id/artifacts` | List: each artifact with type, description, current version summary, version count, `fresh` flag. |
 | `GET /api/v1/issues/:id/artifacts/:name` | Detail: the artifact plus its full version list (metadata only, no contents). |
 | `PUT /api/v1/issues/:id/artifacts/:name` | **JSON upsert** for `text` / `link` / `pr`: creates the artifact (body declares `type`) or appends a version to it. Payload fields per type; `description` settable alongside. Type mismatch with an existing artifact → 422 `artifact_type_mismatch`. A body with no payload fields is a metadata-only update (no version). |
@@ -992,3 +1007,10 @@ From later work:
 - **2026-09-01, Tines/92 — the link payload flag is `--link`, not `--url`**: `-u, --url` is the API base URL on every CLI command without exception. `attach … --url <link>` used to suppress the base-URL flag and attach the link, so an invocation that copied the documented `--url` idiom silently produced a `link` artifact pointing at the API base URL. Renaming makes that misuse an offline arity error carrying the corrective hint; the server-generated `fix:` line and launch-prompt "Attach one:" hint teach `--link`.
 - **2026-09-06, Tines/241 — the requirement is the single source for every attach hint**: the `attachFlag`/`fixFor` logic moved out of the 422 builder into `requirementFix` in `@tines/shared`, and `fix` became a required field on `ArtifactRequirementCheck`. The three surfaces that tell someone how to attach — launch prompt, issue read, 422 — can no longer drift from each other or from the gate, and the CLI can import the same function. Rendering stays on today's *flag* forms (`--text @<slot>.md`, not a positional path): runner CLIs lag npm by days, so a hint the installed CLI cannot parse is worse than a generic one.
 - **2026-09-06, Tines/274 — the rendered hint is the positional form, and one command per code span**: the gate-typed positional `attach <ref> <slot> <source>` shipped in `tines@0.0.141` (Tines/243), so `requirementFix` now renders it for every requirement that declares a `type` — the one-line journey the PRD's "After" shows, and the end of the `--text @<slot>.txt` loop that stored `text/markdown` under a `text/plain` gate. Untyped requirements keep a flag, which is the only thing that can type them. A CLI older than `0.0.141` fails the positional form with commander's `too many arguments`, exit 1 having written nothing — it fails safe, loudly, and at a version that is days old, so there is no fallback rendering. Separately, `fix` stopped packing two commands into one string: the `stale` reaffirm moved to `fix_alternative`, additively, because a code span an agent copies has to run.
+# Public-package renderer boundary (Tines/436)
+
+Public workflow snapshots do not use the private artifact/Markdown renderer, which may support richer
+trusted-account content. They use a closed escaped text renderer that creates no publisher-controlled
+resource attributes and suppresses malformed image/media/embed nodes defensively. This keeps private
+library behavior compatible while public admission and display remain text-only; see
+[`specs/library/PUBLICATIONS.md`](../library/PUBLICATIONS.md).

@@ -1,12 +1,17 @@
 <script lang="ts">
 	import type { ContextItem, UpdateWorkflowRequest } from '@tines/shared';
-	import { activeStateIds as deriveActiveStateIds, ApiError } from '@tines/shared';
+	import {
+		activeStateIds as deriveActiveStateIds,
+		ApiError,
+		workflowStateAnchorId
+	} from '@tines/shared';
 	import IconBooks from '@tabler/icons-svelte/icons/books';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconLock from '@tabler/icons-svelte/icons/lock';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
+	import IconWorldUpload from '@tabler/icons-svelte/icons/world-upload';
 	import { slide } from 'svelte/transition';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
@@ -202,7 +207,12 @@
 		{/if}
 	</div>
 	<div class="flex gap-2">
-		<Button variant="outline" href="/workflows/{data.workflow.id}/export">
+		{#if !data.workflow.is_system}
+			<Button variant="outline" href="/workflows/{data.workflow.id}/export">
+				<IconWorldUpload size={16} /> Publish workflow
+			</Button>
+		{/if}
+		<Button variant="outline" href="/workflows/{data.workflow.id}/export?download=1">
 			<IconDownload size={16} /> Export package
 		</Button>
 		{#if data.workflow.is_system}
@@ -275,19 +285,25 @@
 {/if}
 
 <!-- per-state context: what agents carry while an issue sits in each state -->
-<div class="mt-8">
+<div class="mt-8 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2">
 	<h2 class="mb-1 flex items-center gap-1.5 text-sm font-semibold">
 		<IconBooks size={16} stroke={1.75} /> Context by state
 	</h2>
-	<p class="text-muted-foreground mb-3 text-xs">
+	<a
+		href="/context"
+		class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mb-1 rounded-sm text-xs outline-none focus-visible:ring-[3px]"
+	>
+		View all context
+	</a>
+	<p class="text-muted-foreground col-span-full mb-3 text-xs">
 		Items scoped to a state apply to any issue sitting in it. Removing a state warns about its
 		attached context.
 	</p>
-	<div class="rounded-lg border">
+	<div class="col-span-full rounded-lg border">
 		{#each data.workflow.states as state (state.id)}
 			{@const items = itemsByState.get(state.id) ?? []}
 			{@const open = selectedStateId === state.id}
-			<div class="border-b last:border-0" id={`state-${state.id}`}>
+			<div class="border-b last:border-0" id={workflowStateAnchorId(state.id)}>
 				<button
 					type="button"
 					class="hover:bg-muted/50 flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm"

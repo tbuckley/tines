@@ -45,9 +45,11 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 	}
 
 	const filters = {
+		workflow: url.searchParams.get('workflow') ?? undefined,
 		state: url.searchParams.get('state') ?? undefined,
 		category: url.searchParams.get('category') ?? undefined,
 		showDone: url.searchParams.get('done') === '1',
+		showDuplicates: url.searchParams.get('duplicates') === '1',
 		ready: url.searchParams.get('ready') === '1',
 		q: url.searchParams.get('q') ?? undefined,
 		// Repeatable: ?label=a&label=b narrows to issues carrying both.
@@ -59,7 +61,9 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 	// archived state, and a resolved focus is always live.
 	const scope = {
 		projectId: focusId ?? undefined,
+		workflow: filters.workflow,
 		state: filters.state,
+		hideDuplicates: !filters.showDuplicates,
 		ready: filters.ready,
 		q: filters.q,
 		labels: filters.labels

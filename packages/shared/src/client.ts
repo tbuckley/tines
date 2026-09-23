@@ -33,6 +33,7 @@ import type {
 	CreateContextItemRequest,
 	CreateIssueRequest,
 	CreateIssueResponse,
+	CreateIssueMultipartMetadata,
 	CreateProjectRequest,
 	CreateProjectResponse,
 	CreateRoutingRuleRequest,
@@ -95,6 +96,7 @@ import type {
 	WorkflowResponse
 } from './types.js';
 import type {
+	CohortUsageReport,
 	IssueUsageReport,
 	ResolvedUsageFilters,
 	UsageBy,
@@ -113,6 +115,13 @@ export interface TimeResponse {
 	time: string;
 	/** Milliseconds since the Unix epoch. */
 	unix: number;
+}
+
+export interface VersionResponse {
+	/** Build or release label of the running server. */
+	version: string;
+	/** Source commit baked into the running server build. */
+	commit: string;
 }
 
 export interface ApiClientOptions {
@@ -282,10 +291,12 @@ export function createApiClient(options: ApiClientOptions) {
 
 	return {
 		getTime: () => get<TimeResponse>('/api/time'),
+<<<<<<< HEAD
 		getStateRetirementInventory: () =>
 			get<StateRetirementInventoryV1>('/api/v1/state-retirement/inventory'),
 		acquireStateRetirementHold: (body: AcquireStateRetirementHoldRequest) =>
 			request<StateRetirementHold>('POST', '/api/v1/state-retirement/holds', body),
+		getVersion: () => get<VersionResponse>('/api/version'),
 
 		// Projects
 		listProjects: (params: ProjectListFilters & PageParams = {}) =>
@@ -337,6 +348,8 @@ export function createApiClient(options: ApiClientOptions) {
 				state?: string;
 				category?: StateCategory;
 				hide_done?: boolean;
+				/** Exclude duplicate issues. Defaults to true; false includes duplicates. */
+				hide_duplicates?: boolean;
 				ready?: boolean;
 				q?: string;
 				brief?: boolean;
@@ -344,6 +357,25 @@ export function createApiClient(options: ApiClientOptions) {
 		) => get<ListResponse<IssueListItem>>(`/api/v1/projects/${projectId}/issues${query(filters)}`),
 		createIssue: (projectId: string, body: CreateIssueRequest) =>
 			request<CreateIssueResponse>('POST', `/api/v1/projects/${projectId}/issues`, body),
+		createIssueWithFiles: async (
+			projectId: string,
+			issue: CreateIssueRequest,
+			files: { name: string; filename: string; file: Blob }[]
+		) => {
+			const form = new FormData();
+			const metadata: CreateIssueMultipartMetadata = {
+				issue,
+				attachments: files.map((file, index) => ({
+					part: `file-${index}`,
+					name: file.name,
+					filename: file.filename
+				}))
+			};
+			form.append('metadata', JSON.stringify(metadata));
+			files.forEach((file, index) => form.append(`file-${index}`, file.file, file.filename));
+			const res = await raw('POST', `/api/v1/projects/${projectId}/issues`, { body: form });
+			return (await res.json()) as CreateIssueResponse;
+		},
 		getIssue: (id: string) => get<IssueDetail>(`/api/v1/issues/${id}`),
 		getIssueByNumber: (projectId: string, number: number) =>
 			get<IssueDetail>(`/api/v1/projects/${projectId}/issues/${number}`),
@@ -540,12 +572,20 @@ export function createApiClient(options: ApiClientOptions) {
 		) => get<UsageReport>(`/api/v1/usage${query(filters)}`),
 		getIssueUsage: (issue: string) =>
 			get<IssueUsageReport>(`/api/v1/usage${query({ mode: 'issue', issue })}`),
+		getCohortUsage: (filters: {
+			workflow: string;
+			project?: string;
+			window?: UsageWindow;
+			from?: string;
+			to?: string;
+			done_state?: string[];
+		}) => get<CohortUsageReport>(`/api/v1/usage${query({ mode: 'cohort', ...filters })}`),
 		getUsageScope: (scope: string) =>
-			get<UsageReport | IssueUsageReport>(`/api/v1/usage${query({ scope })}`),
+			get<UsageReport | IssueUsageReport | CohortUsageReport>(`/api/v1/usage${query({ scope })}`),
 		getUsageEvidence: (filters: {
 			scope: string;
-			kind?: 'issues' | 'runs';
-			population?: 'finalized' | 'pending';
+			kind?: 'issues' | 'runs' | 'entries';
+			population?: 'all' | 'finalized' | 'pending';
 			member?: string;
 			sort?: 'cost' | 'time';
 			direction?: 'asc' | 'desc';
@@ -635,6 +675,66 @@ export function createApiClient(options: ApiClientOptions) {
 			get<import('./library/types.js').WorkflowPackageReceipt>(
 				`/api/v1/library/installs/${encodeURIComponent(planId)}`
 			),
+		validatePublication: (body: {
+			document_json: string;
+			metadata?: import('./publications.js').PublicationMetadata;
+		}) =>
+			request<import('./publications.js').ValidatePublicationResponse>(
+				'POST',
+				'/api/v1/publications/validate',
+				body
+			),
+		preparePublication: (body: import('./publications.js').PreparePublicationRequest) =>
+			request<import('./publications.js').PublicationProof>(
+				'POST',
+				'/api/v1/publications/prepare',
+				body
+			),
+		publishPublication: (
+			candidateId: string,
+			body: import('./publications.js').PublishPublicationRequest
+		) =>
+			request<import('./publications.js').PublicationOwnerResult>(
+				'POST',
+				`/api/v1/publications/${encodeURIComponent(candidateId)}/publish`,
+				body
+			),
+		getPublicationResult: (candidateId: string) =>
+			get<import('./publications.js').PublicationOwnerResult>(
+				`/api/v1/publications/${encodeURIComponent(candidateId)}/result`
+			),
+		listPublications: (workflow?: string, page?: PageParams) =>
+			get<ListResponse<import('./publications.js').PublicationOwnerItem>>(
+				`/api/v1/publications${query({ workflow, ...page })}`
+			),
+		withdrawPublication: (snapshotId: string) =>
+			request<import('./publications.js').PublicationOwnerResult>(
+				'POST',
+				`/api/v1/publications/${encodeURIComponent(snapshotId)}/withdraw`
+			),
+		restorePublication: (snapshotId: string) =>
+			request<import('./publications.js').PublicationOwnerResult>(
+				'POST',
+				`/api/v1/publications/${encodeURIComponent(snapshotId)}/restore`
+			),
+		getPublicSnapshot: (snapshotId: string) =>
+			get<import('./publications.js').PublicWorkflowSnapshot>(
+				`/api/v1/publications/public/${encodeURIComponent(snapshotId)}`
+			),
+		getPublicSnapshotStatus: (snapshotId: string) =>
+			get<import('./publications.js').PublicSnapshotStatus>(
+				`/api/v1/publications/public/${encodeURIComponent(snapshotId)}/status`
+			),
+		prepareHostedWorkflowPackage: (snapshotId: string, choices: unknown = {}) =>
+			request<import('./library/types.js').PrepareWorkflowPackageResponse>(
+				'POST',
+				`/api/v1/publications/public/${encodeURIComponent(snapshotId)}/prepare-install`,
+				{ choices }
+			),
+		downloadPublicSnapshot: (snapshotId: string) =>
+			raw('GET', `/api/v1/publications/public/${encodeURIComponent(snapshotId)}/download`),
+		downloadPublicationReuseNotice: (snapshotId: string) =>
+			raw('GET', `/api/v1/publications/public/${encodeURIComponent(snapshotId)}/reuse.txt`),
 
 		validateLibrary: (body: import('./library/types.js').ValidateLibraryRequest) =>
 			request<import('./library/types.js').ValidateLibraryResponse>(

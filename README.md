@@ -18,6 +18,10 @@ This is a pnpm workspace:
 | `tines` | `packages/cli` | The `tines` CLI, published to npm as [`tines`](https://www.npmjs.com/package/tines). Talks to the same API as the web app. |
 | `@tines/shared` | `packages/shared` | Shared API types and client, used by both the web app and the CLI. |
 
+Workflow packages and default-off immutable public snapshots are documented in
+[docs/workflow-packages.md](docs/workflow-packages.md). Public launch remains disabled until the
+separate moderation and operational-readiness review is accepted.
+
 ## Getting started
 
 ### Your first project (hosted)
@@ -81,7 +85,9 @@ can affect other projects using it; changing only the conventions does not make 
 workflow. Starter creation itself does not add routing rules or change automation settings.
 Continue with the app's current **Agents** checklist and [Running agents](#running-agents);
 the [runner daemon guide](docs/runner-daemon.md) explains how a local runner receives the
-repository and starts its harness.
+repository and starts its harness. A machine owner can opt into web-adjustable concurrency
+with `--allow-remote-concurrency --max-concurrent N`; `N` remains a local ceiling that the
+web cannot enable or raise.
 
 ### Contributor setup
 
@@ -110,37 +116,30 @@ With the dev server running, try the CLI with the seeded key (the seed prints it
 export TINES_API_KEY=tines_dev0000000000000000000000000000000000000
 pnpm cli time                             # dev mode (tsx, no build needed)
 pnpm cli projects list
-pnpm cli time -- --json
+pnpm cli time --json                      # flags go straight on; `--` breaks pnpm 10
 
 # or the built binary
 pnpm build
 node packages/cli/dist/index.js time --url http://localhost:5173
 ```
 
-The CLI reads the API base URL from `--url` (accepted by every command, without exception), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, `pnpm cli` **always** targets `http://localhost:5173` — its script pins `TINES_API_URL` rather than defaulting it, so a `TINES_API_URL` already in your environment (every agent run has one, pointing at production) is ignored and the snippet above talks to your dev server. To reach any other deployment from source, including a dev server vite moved to another port, pass `--url` (`pnpm cli time --url http://localhost:5174`) or use the installed `tines` / the built binary. `tines config` shows what is in effect and where each value came from.
+The CLI reads the API base URL from `--url` (accepted by every command that talks to the API), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The local-only `logout`, `runner restart`, `runner uninstall`, `runner workspaces`, and `runner workspaces prune` commands take no `--url`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, `pnpm cli` **always** targets `http://localhost:5173` — its script pins `TINES_API_URL` rather than defaulting it, so a `TINES_API_URL` already in your environment (every agent run has one, pointing at production) is ignored and the snippet above talks to your dev server. To reach any other deployment from source, including a dev server vite moved to another port, pass `--url` (`pnpm cli time --url http://localhost:5174`) or use the installed `tines` / the built binary. `tines config` shows what is in effect and where each value came from.
 
-Every `… list` command returns one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command; without it, `--json` output carries a `next_cursor` and warns on stderr that there is more.
+Paginated `… list` commands return one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command, up to a default 10,000-item safety ceiling; use `--max-items <n>` with `--all-pages` to choose a different positive bound. Exceeding the bound fails without printing a partial result. Without `--all-pages`, `--json` output carries a `next_cursor` and warns on stderr that there is more. Four lists are not paginated and take no such flag: `labels list`, `runners list`, `routing list`, and `issues artifacts list` return the whole collection by design.
 
-## Installing the CLI globally
-
-Normally, install from npm — `npm install -g tines` — which is always current, because every push to `main` publishes a new version (see "Publishing the CLI to npm" below). The rest of this section is for running an unmerged branch.
-
-Installing straight from the repo URL (`npm install -g github:tbuckley/tines`) does **not** work — the repo is a pnpm workspace and the CLI lives in `packages/cli` — so install from a local clone instead. The build bundles `@tines/shared` into `dist/index.js`, so the package folder is installable on its own:
+## Installing the CLI
 
 ```sh
-git clone https://github.com/tbuckley/tines.git
-cd tines
-corepack enable                           # if pnpm isn't set up yet
-pnpm install
-pnpm build
-npm install -g ./packages/cli
+npm install -g tines                      # puts the `tines` command on your PATH
+tines --help
 ```
 
-That puts `tines` on your PATH:
+Every push to `main` publishes a new version (see "Publishing the CLI to npm" below), so a fresh `npm install -g tines` — or `npm install -g tines@latest` to upgrade — tracks this repo. Node 20+ is the only prerequisite.
+
+Agents can skip the install entirely; `npx -y` needs no global install, PATH changes, or prior setup:
 
 ```sh
-tines --help
-tines time                                # https://tines.tbuckley.dev, the default
+npx -y tines time --url https://tines.tbuckley.dev
 ```
 
 Store an API key (Settings → API keys in the web app) once and every command is
@@ -159,22 +158,32 @@ export TINES_API_URL=http://localhost:5173       # the env-var alternative
 (`TINES_API_URL`, `TINES_API_KEY`), which is how agent runs are configured, and `--url` /
 `--api-key` win over both.
 
-To upgrade later: `git pull`, `pnpm install`, `pnpm build`, then re-run `npm install -g ./packages/cli`. To go back to a released build, `npm install -g tines@latest`.
+## Developing the CLI
+
+Day to day, run the CLI straight from the workspace with `pnpm cli <args>` (see "Getting started" above) — no build, no install.
+
+To put an *unreleased* build on your PATH, install from a local clone. Installing straight from the repo URL (`npm install -g github:tbuckley/tines`) does **not** work — the repo is a pnpm workspace and the CLI lives in `packages/cli` — but the build bundles `@tines/shared` into `dist/index.js`, so the package folder is installable on its own:
+
+```sh
+git clone https://github.com/tbuckley/tines.git
+cd tines
+corepack enable                           # if pnpm isn't set up yet
+pnpm install
+pnpm build
+npm install -g ./packages/cli
+```
+
+To pick up later changes: `git pull`, `pnpm install`, `pnpm build`, then re-run `npm install -g ./packages/cli`.
 
 If you're actively hacking on the CLI, run `pnpm link --global` from `packages/cli` instead of `npm install -g` (requires a one-time `pnpm setup`). The global `tines` then symlinks into your clone, so every `pnpm build` is picked up without reinstalling.
 
+Either way you are off the release train until you run `npm install -g tines@latest` again.
+
 ## Publishing the CLI to npm
 
-Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`**. The tarball ships only `dist` (see `files` in `packages/cli/package.json`), `prepublishOnly` rebuilds before every publish, and the build bundles everything — `@tines/shared` and `commander` alike — so the package has **no runtime dependencies**.
+Publishing lets anyone — including coding agents — install the CLI without cloning this repo. The package publishes as the bare name **`tines`**. The tarball's application payload is only `dist` (see `files` in `packages/cli/package.json`; npm also includes the package metadata and README), `prepublishOnly` rebuilds before every publish, and the build bundles everything — `@tines/shared` and `commander` alike — so the package has **no runtime dependencies**.
 
-Once published, anyone can install or run it:
-
-```sh
-npm install -g tines                      # installs the `tines` command globally
-npx -y tines time                         # one-shot, no install — handy for agents
-```
-
-The `npx -y` form is the most agent-friendly: it needs no global install, PATH changes, or prior setup — just Node 20+.
+Consumers install it with `npm install -g tines`, or run it with no install at all via `npx -y tines` — see "Installing the CLI" above.
 
 ### Releases are automatic
 
@@ -261,10 +270,11 @@ Things worth knowing:
   missed ones.
 - In the browser, `/projects` hides archived projects behind a "Show archived (n)" toggle, and
   an archived project's pages carry a read-only banner with an Unarchive action.
-- The browser's project switcher is a sticky, per-user focus for Issues, Context, Activity,
-  Workflows, and the Agents presentation. The Projects tab opens that project's home while
-  focused and the project page's Manage projects breadcrumb returns to the grid. Cross-project
-  issue links preserve the current focus and offer an explicit focus action instead.
+- The browser's project control is a sticky, per-user focus for Issues, Context, Activity,
+	Workflows, and the Agents presentation. It also links to the focused project, the remembered
+	projects grid, and the existing new-project flow. Primary navigation contains Issues, Workflows,
+	and Agents; Context and Activity remain complete pages linked from relevant detail surfaces.
+	Cross-project issue links preserve the current focus and offer an explicit focus action instead.
 - Focus is presentation only: API lists, CLI commands, launch prompts, runners, fleet queue,
   quotas, and automation controls remain workspace-wide unless explicitly scoped.
 
@@ -301,6 +311,12 @@ Install → key → runner → rule → observe. Automation needs no separate ar
    Local* dialog, which fills it into the command below for you.
 3. **Runner** — install the daemon as a service, naming it machine-plus-harness:
 
+   Using Codex? Set workspace-write and enable outbound network access before starting the
+   runner, then use `--harness codex`. Follow the
+   [Codex permissions setup](docs/runner-daemon.md#codex-permissions); the
+   [OpenAI configuration reference](https://developers.openai.com/codex/config-reference)
+   defines these settings.
+
    ```sh
    TINES_API_KEY=tines_… tines runner install \
      --url https://tines.tbuckley.dev \
@@ -325,7 +341,8 @@ The daemon polls for work assigned to it, materializes a per-run workspace (the 
 prompt, the issue's skills, and clones of its repos), runs the harness there, and reports
 the finish. It also keeps its own copy of the `tines` CLI current from npm and puts that on
 the harness's PATH, so agents run the CLI that matches the prompt they were given rather
-than whatever was last installed on the machine. **[docs/runner-daemon.md](docs/runner-daemon.md)**
+than whatever was last installed on the machine — a daemon left running across an upgrade
+keeps whatever behaviour it started with, so restart it after upgrading. **[docs/runner-daemon.md](docs/runner-daemon.md)**
 covers registration, the flags, token rotation, the managed CLI, failure behaviour, and
 the service `tines runner install` sets up.
 
@@ -404,6 +421,41 @@ waiting for the clock; `pnpm dev` (Vite) never runs the `scheduled()` handler. T
 also passes `--host localhost:8787`: `wrangler dev` otherwise presents every request to the
 worker under the production custom domain from `routes`, and Better Auth then ignores the
 sign-in routes.
+
+### Artifacts and transition gates
+
+An issue also carries **artifacts** — named, typed, versioned work products attached along
+the way: a `file` (bytes in R2), a `text` document, a `link`, a `pr` reference, or a
+`folder` (a multi-file tree uploaded as one immutable snapshot). Attaching to a name that
+already exists appends the next version; nothing is overwritten.
+
+```sh
+tines issues artifacts attach <ref> design-doc design.md    # positional: the gate types it
+tines issues artifacts attach <ref> screenshots ./shots
+tines issues artifacts list <ref>
+tines issues artifacts get <ref> design-doc --out .
+```
+
+Prefer that positional form — it is what a gated slot's own hint prints, and it lets the
+gate decide how to read the path (a `text` gate reads the file as the document, a `file`
+gate uploads its bytes, a `folder` gate walks the directory). Explicit `--file` / `--text` /
+`--folder` / `--link` / `--pr` flags override the gate, and are refused before any write
+when no transition could ever accept what they would create.
+
+Artifacts are what **transition requirements** gate on: a workflow transition can demand a
+*fresh* artifact of a given name (optionally type and content type) before it can be taken.
+Fresh means the version was attached at or after the issue last entered its current state,
+so bouncing an issue back to an earlier state invalidates the old attachment with no
+mutation machinery — `tines issues artifacts reaffirm <ref> <name>` blesses unchanged
+content as current without re-uploading it. A blocked `tines issues move` returns the unmet
+requirements and the attach command to fix them. Agents can satisfy their own gates (run
+keys may attach and reaffirm) but cannot route around one: the forced state-set on an issue
+is human-only.
+
+Artifacts are never stitched into a prompt or seeded into a workspace — the launch prompt
+lists them with a fetch command and the agent pulls what it needs. Caps: 25 MB per file,
+256 KB per text artifact, 50 versions per artifact, and 200 files / 50 MB per folder
+snapshot. The design is in [specs/artifacts/SPEC.md](specs/artifacts/SPEC.md).
 
 ## Google sign-in
 
@@ -502,6 +554,18 @@ unit tests again before shipping, but the e2e suite runs only here.
 `.github/workflows/deploy.yml` deploys on every push to `main` (and via manual
 dispatch): it builds, runs unit tests, applies pending D1 migrations with
 `wrangler d1 migrations apply tines --remote`, then runs `wrangler deploy`.
+The workflow bakes the checkout's full Git SHA and the same deterministic version used by the CLI
+publisher into the Worker before building. Inspect any running deployment without credentials:
+
+```sh
+curl -i https://tines.tbuckley.dev/api/version
+```
+
+The JSON body and the `X-Tines-Version` / `X-Tines-Commit` headers identify the server, not the
+installed CLI making the request. Local `pnpm dev` and ordinary builds report `dev` plus local HEAD
+(`unknown` only when Git metadata is unavailable). Packagers may explicitly provide the pair
+`TINES_BUILD_VERSION` and `TINES_BUILD_COMMIT`; production additionally requires
+`TINES_BUILD_CHANNEL=production` and a full-history checkout so the release number is reproducible.
 
 To enable it, add two GitHub Actions secrets (repo → Settings → Secrets and
 variables → Actions):
@@ -534,6 +598,10 @@ traffic; the upload gets a stable per-PR alias URL like
 URL for every push to the PR, always serving the latest upload — which the
 workflow posts (and keeps updated) as a PR comment. It uses the same two
 Actions secrets as the deploy workflow.
+
+Each preview reports `preview-pr-<number>-<sha12>` and the actual full commit that Actions built.
+That commit can be GitHub's synthetic merge checkout rather than the PR head; the preview comment
+names both values when they differ.
 
 Previews use the `preview` wrangler environment (`env.preview` in
 `apps/web/wrangler.jsonc`): a separate worker (`tines-web-preview`) bound to
@@ -629,8 +697,11 @@ The next preview run re-applies all migrations from scratch.
 From the repo root:
 
 - `pnpm dev` — run the web app dev server (with local D1 bindings emulated)
-- `pnpm build` — build all packages
+- `pnpm build` — build the web app and CLI (`@tines/shared` has no build script; both
+  consume it as TypeScript source)
 - `pnpm check` — the migration-numbering and script-name guards in `scripts/` and `apps/web/scripts/`, then typecheck all packages (svelte-check + tsc)
 - `pnpm test` — vitest unit tests (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
 - `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/` and its README for the suite's motion, hydration and geometry policies). Run by `ci.yml` on pull requests, but not by `pnpm test`.
 - `pnpm cli <command>` — run the CLI from source against the local dev server (`http://localhost:5173`, pinned; pass `--url` for anything else)
+
+  Add exact-model reasoning effort by ordered target number: `tines routing set codex:balanced claude:balanced --project Example --effort 1=low --effort 2=medium`. Re-run the same targets without `--effort` to clear routed effort; `routing clear` deletes the whole scoped rule.

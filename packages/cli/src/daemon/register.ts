@@ -24,6 +24,7 @@ export interface RegisterRunnerOptions {
 	harness: HarnessKind;
 	command?: string;
 	maxConcurrent: number;
+	allowRemoteConcurrency?: boolean;
 	/** User API key — only consulted when no token is stored for this runner. */
 	apiKey?: string;
 	log: (message: string) => void;
@@ -59,7 +60,7 @@ export async function ensureRunnerCredentials(opts: RegisterRunnerOptions): Prom
 		name: opts.name,
 		harness: opts.harness,
 		...(opts.command !== undefined ? { command: opts.command } : {}),
-		max_concurrent: opts.maxConcurrent,
+		max_concurrent: opts.allowRemoteConcurrency ? 1 : opts.maxConcurrent,
 		hostname: hostname(),
 		platform: `${platform()} ${arch()}`
 	});

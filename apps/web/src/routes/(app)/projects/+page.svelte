@@ -11,7 +11,7 @@
 	let { data } = $props();
 
 	// The URL says what the grid shows; nav-memory only remembers it for the
-	// Projects nav tab, exactly as the Issues tab does with its filters.
+	// Manage projects action, exactly as the Issues tab does with its filters.
 	$effect(() => navMemory.recordProjects(page.url.search));
 
 	const cards = $derived(

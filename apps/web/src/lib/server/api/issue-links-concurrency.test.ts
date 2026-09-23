@@ -488,7 +488,7 @@ describe('commit-time issue-link graph guard', () => {
 			target: b,
 			linkId: link.id,
 			targetProject: 'prj_2',
-			peerProjectNames: { source: 'demo' }
+			peerProjectNames: { source: 'other-project' }
 		});
 
 		const diagnosticEnv = delayedBy(t, async () => {
@@ -555,6 +555,49 @@ describe('commit-time issue-link graph guard', () => {
 		}
 		expect(edges(t)).toHaveLength(120);
 		expect(linkEvents(t)).toEqual([]);
+	});
+
+	it('bounds rejection diagnostics to the candidate graph', async () => {
+		const { t, a, b } = fixture();
+		await addIssueLink(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, b, {
+			kind: 'blocks',
+			issue_id: a
+		});
+		const insert = t.sqlite.prepare(
+			'INSERT INTO issue_link (id, source_issue_id, target_issue_id, kind, created_at) VALUES (?, ?, ?, ?, ?)'
+		);
+		for (let index = 0; index < 150; index++) {
+			const source = addIssue(t, {
+				id: `iss_unrelated_source_${index}`,
+				title: `Unrelated source ${index}`
+			});
+			const target = addIssue(t, {
+				id: `iss_unrelated_target_${index}`,
+				title: `Unrelated target ${index}`
+			});
+			insert.run(`lnk_unrelated_${index}`, source, target, 'blocks', index);
+		}
+		let diagnosticRows: unknown[] | undefined;
+		const env = { ...t.env, DB: Object.create(t.env.DB) } as Env;
+		env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			const results = await t.env.DB.batch<T>(statements);
+			const index = statements.findIndex((statement) =>
+				(statement as unknown as { sqlText: string }).sqlText.includes('rejections AS')
+			);
+			if (index >= 0) diagnosticRows = (results[index] as { results: unknown[] }).results;
+			return results;
+		};
+
+		await expect(
+			addIssueLink(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, a, {
+				kind: 'blocks',
+				issue_id: b
+			})
+		).rejects.toMatchObject({ status: 422, code: 'link_cycle' });
+
+		expect(diagnosticRows, 'the shipped rejection diagnostic SELECT').toBeDefined();
+		expect(diagnosticRows).toHaveLength(2);
+		expect(JSON.stringify(diagnosticRows).length).toBeLessThan(1_000);
 	});
 
 	for (const role of ['source', 'target'] as const) {

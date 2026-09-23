@@ -1,6 +1,7 @@
 /** Wire types for the Tines phase-one API (`/api/v1/*`). All snake_case. */
 
 import type { SchedulePreset } from './schedule.js';
+import type { EffortApplicationStatus, EffortCapabilities, EffortSource } from './effort.js';
 
 export type StateCategory = 'backlog' | 'active' | 'awaiting_human' | 'done';
 
@@ -12,12 +13,15 @@ export const STATE_CATEGORIES: readonly StateCategory[] = [
 ];
 
 /**
- * A run-key actor's provenance: resolved through the run to the runner, for
- * "via <runner> · run on <issue>" rendering.
+ * A run-key actor's structural provenance, resolved through the run to the
+ * runner and issue. Its API-key name may carry a mint-time runner/stage
+ * snapshot used for display.
  */
 export interface ActorRun {
 	run_id: string;
 	runner_name: string;
+	/** Immutable names captured when the run key was minted; null on legacy keys. */
+	stage?: { workflow_name: string; state_name: string } | null;
 	/** The issue the run is working; null if it has been deleted. */
 	issue_ref: { project_name: string; number: number } | null;
 }
@@ -29,7 +33,7 @@ export interface Actor {
 	/** NULL when the user acted directly (browser session). */
 	api_key_id: string | null;
 	api_key_name: string | null;
-	/** Set when the key is a run key: attribution goes to the runner + run. */
+	/** Set structurally for a run key; never inferred from the key name. */
 	run?: ActorRun | null;
 }
 
@@ -46,18 +50,39 @@ export function runRefLabel(run: ActorRun): string {
 
 /**
  * Canonical actor rendering everywhere actions are attributed: "alice",
- * "alice via laptop-key", or — for run keys — "alice via laptop-m4 · run on
- * demo/12".
+ * "alice via laptop-key", or — for a descriptively named run key — "alice
+ * via laptop-m4 · Engineering/Design · run on demo/12". Legacy and blank run
+ * key names fall back to the live runner name.
  */
 export function actorLabel(actor: Actor): string {
 	if (actor.run) {
-		return `${actor.user_name} via ${actor.run.runner_name} · ${runRefLabel(actor.run)}`;
+		const legacyName = `run ${actor.run.run_id}`;
+		const hasDescriptiveName =
+			Boolean(actor.api_key_name?.trim()) && actor.api_key_name !== legacyName;
+		const via = hasDescriptiveName ? actor.api_key_name! : actor.run.runner_name;
+		return `${actor.user_name} via ${via} · ${runRefLabel(actor.run)}`;
 	}
 	return actor.api_key_name ? `${actor.user_name} via ${actor.api_key_name}` : actor.user_name;
 }
 
+/**
+ * Compact actor rendering for narrow, issue-local surfaces. Structured
+ * mint-time stage metadata lets this omit only the runner without parsing the
+ * ambiguous human-readable API-key name. Legacy keys have no stage snapshot.
+ */
+export function compactActorLabel(actor: Actor): string {
+	if (!actor.run) return actorLabel(actor);
+	const stage = actor.run.stage
+		? ` · ${actor.run.stage.workflow_name}/${actor.run.stage.state_name}`
+		: '';
+	return `${actor.user_name}${stage} · ${runRefLabel(actor.run)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Projects
+
+/** Project names are measured as JavaScript string length (UTF-16 code units). */
+export const PROJECT_NAME_MAX = 200;
 
 export interface Project {
 	id: string;
@@ -614,6 +639,8 @@ export interface IssueDetail extends Issue {
 	 * in; null when nothing human happened after it, or there is no previous run.
 	 */
 	since_last_run?: SinceLastRun | null;
+	/** Prompt-only metadata, emitted when launch comment selection is requested. */
+	launch_comments?: { latest_completed_run_comment_id: string | null };
 }
 
 // ---------------------------------------------------------------------------
@@ -730,6 +757,24 @@ export interface CreateIssueRequest {
 	schedule?: CreateScheduleInput;
 	/** Label names or ids to attach on creation; unknown names are created. */
 	labels?: string[];
+	/** Existing issue ids that block the new issue. */
+	blocked_by?: string[];
+	/** Existing issue ids that the new issue blocks. */
+	blocks?: string[];
+	/** Existing canonical issue id that the new issue duplicates. */
+	duplicate_of?: string;
+}
+
+/** One file entry in the multipart issue-create metadata manifest. */
+export interface CreateIssueAttachmentManifestEntry {
+	part: string;
+	name: string;
+	filename: string;
+}
+
+export interface CreateIssueMultipartMetadata {
+	issue: CreateIssueRequest;
+	attachments: CreateIssueAttachmentManifestEntry[];
 }
 
 /** The recurrence part of a create-issue request. */
@@ -859,6 +904,8 @@ export interface IssueFilters {
 	schedule?: string;
 	/** Exclude issues whose state is categorized `done`. */
 	hide_done?: boolean;
+	/** Exclude duplicate issues. Defaults to true; false includes duplicates. */
+	hide_duplicates?: boolean;
 	/** Only issues that are not done, not duplicates, and have all blockers effectively done. */
 	ready?: boolean;
 	/** Literal title/description substring search, case-insensitive for ASCII. */
@@ -874,14 +921,23 @@ export interface IssueFilters {
 // ---------------------------------------------------------------------------
 // Context items
 
-export type ContextKind = 'prompt' | 'skill' | 'repo' | 'artifact';
+export type ContextKind = 'prompt' | 'skill' | 'repo' | 'artifact' | 'env';
 
-export const CONTEXT_KINDS: readonly ContextKind[] = ['prompt', 'skill', 'repo', 'artifact'];
+export const CONTEXT_KINDS: readonly ContextKind[] = ['prompt', 'skill', 'repo', 'artifact', 'env'];
+export const CONTEXT_NAME_MAX_LENGTH = 100;
+export const CONTEXT_DESCRIPTION_MAX_LENGTH = 1000;
 
 /** Byte caps (UTF-8), enforced at the API layer with structured 422s. */
 export const PROMPT_MAX_BYTES = 32 * 1024;
 export const SKILL_MAX_FILES = 20;
 export const SKILL_MAX_TOTAL_BYTES = 100 * 1024;
+/** Env items: the item name is the variable name; the value is byte-capped. */
+export const ENV_NAME_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
+export const ENV_VALUE_MAX_BYTES = 16 * 1024;
+export const ENV_HINT_MAX_CHARS = 200;
+/** Names the runner owns; an env item can never shadow them. */
+export const ENV_RESERVED_PREFIX = 'TINES_';
+export const ENV_RESERVED_NAMES: readonly string[] = ['PATH'];
 
 /** Skill names double as workspace directory names. */
 export const SKILL_NAME_PATTERN = /^[a-z0-9-]+$/;
@@ -969,6 +1025,15 @@ export interface ContextItem {
 	repo_dir?: string | null;
 	/** Artifact payload summary (full detail lives on the artifact endpoints). */
 	artifact_type?: ArtifactType;
+	/**
+	 * Env payload (all present iff `kind === 'env'`). `value` is emitted only
+	 * for non-secret items; a secret is write-only and shows `value_set`
+	 * plus its user-supplied `hint`.
+	 */
+	value?: string;
+	secret?: boolean;
+	value_set?: boolean;
+	hint?: string | null;
 	/** Ordering within the same exact scope tuple. */
 	position: number;
 	/** Monotonic write counter for optimistic concurrency (not history). */
@@ -994,6 +1059,10 @@ export interface CreateContextItemRequest {
 	repo_url?: string;
 	repo_branch?: string | null;
 	repo_dir?: string | null;
+	/** env: the variable's value; `secret` (default false) encrypts it at rest. */
+	value?: string;
+	secret?: boolean;
+	hint?: string | null;
 }
 
 /**
@@ -1014,6 +1083,13 @@ export interface UpdateContextItemRequest {
 	repo_url?: string;
 	repo_branch?: string | null;
 	repo_dir?: string | null;
+	/**
+	 * env: `value` replaces (write-only for secrets); `secret: true` encrypts
+	 * in place; `secret: false` on a secret item is a 422 (delete and recreate).
+	 */
+	value?: string;
+	secret?: boolean;
+	hint?: string | null;
 	/**
 	 * Compare-and-swap: reject with a 409 (carrying the current item) when
 	 * the item's version no longer matches. Omit for last-write-wins.
@@ -1077,6 +1153,8 @@ export interface EffectivePromptPart {
 export interface EffectiveSkill {
 	item_id: string;
 	name: string;
+	/** Existing context-item description used as the skill's discovery cue. */
+	description: string;
 	scope: ContextScope;
 	/** Empty when the bundle was assembled without file contents. */
 	files: ContextFile[];
@@ -1096,6 +1174,20 @@ export interface EffectiveRepo {
 	dir: string;
 	version: number;
 	/** Set when the repo matched through an ancestor of the issue's state. */
+	inherited_from: InheritedFrom | null;
+}
+
+/** One effective environment variable. Secret values never travel here. */
+export interface EffectiveEnv {
+	item_id: string;
+	name: string;
+	secret: boolean;
+	hint: string | null;
+	/** Present for non-secret items only. */
+	value?: string;
+	scope: ContextScope;
+	version: number;
+	/** Set when the item matched through an ancestor of the issue's state. */
 	inherited_from: InheritedFrom | null;
 }
 
@@ -1285,6 +1377,8 @@ export interface EffectiveContext {
 	};
 	skills: EffectiveSkill[];
 	repos: EffectiveRepo[];
+	/** Effective environment variables (names, hints, non-secret values). */
+	env: EffectiveEnv[];
 	overridden: OverriddenContextItem[];
 	conflicts: RepoDirConflict[];
 }
@@ -1296,6 +1390,8 @@ export interface ContextSummary {
 	repos: number;
 	/** Artifacts attached to the issue (issue-scoped by construction). */
 	artifacts: number;
+	/** Distinct effective env variable names. */
+	envs: number;
 }
 
 /** `GET /api/v1/issues/:id/prompt` — stitched context plus the issue block. */
@@ -1360,6 +1456,11 @@ export const ARTIFACT_TYPES: readonly ArtifactType[] = ['file', 'text', 'link', 
 
 /** Per-file upload cap. */
 export const ARTIFACT_FILE_MAX_BYTES = 25 * 1024 * 1024;
+/** Limits for files attached as part of issue creation. */
+export const ISSUE_CREATE_MAX_FILES = 10;
+export const ISSUE_CREATE_FILES_MAX_BYTES = 50 * 1024 * 1024;
+export const ISSUE_CREATE_METADATA_MAX_BYTES = 256 * 1024;
+export const ISSUE_CREATE_MULTIPART_MAX_BYTES = 51 * 1024 * 1024;
 /** Per-text-document cap (UTF-8). */
 export const ARTIFACT_TEXT_MAX_BYTES = 256 * 1024;
 /** Versions per artifact. */
@@ -1570,6 +1671,26 @@ export const RUNNER_TYPES: readonly RunnerType[] = ['claude_managed', 'gemini_ma
 
 export type RunnerStatus = 'active' | 'paused';
 
+export type RunnerConcurrencyMode = 'legacy' | 'local' | 'remote';
+export type RunnerConcurrencyUnavailableReason =
+	| 'legacy'
+	| 'opted_out'
+	| 'awaiting_policy'
+	| 'unsupported_protocol'
+	| 'invalid_protocol'
+	| 'offline';
+
+export interface RunnerConcurrencyControl {
+	status: 'applied' | 'pending' | 'unavailable';
+	reason: RunnerConcurrencyUnavailableReason | null;
+	requested_cap: number | null;
+	ceiling: number | null;
+	revision: number;
+	applied_cap: number | null;
+	applied_revision: number | null;
+	applied_at: number | null;
+}
+
 /**
  * The routing vocabulary for how hard to think. A closed set: adding a tier
  * is a code change, so routing rules can rely on it staying small.
@@ -1716,7 +1837,10 @@ export const MODEL_PREDECESSORS: Record<string, readonly string[]> = {
 	'claude-haiku-4-5': ['claude-3-5-haiku-latest'],
 	'gemini-2.5-pro': ['gemini-1.5-pro'],
 	'gemini-2.5-flash': ['gemini-2.0-flash', 'gemini-1.5-flash'],
-	'gemini-2.5-flash-lite': ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b']
+	'gemini-2.5-flash-lite': ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b'],
+	'gpt-6-astra': ['gpt-5-codex'],
+	'gpt-5.6-sol': ['gpt-5-codex'],
+	'gpt-5.6-luna': ['gpt-5-codex']
 };
 
 /** True when a tier override points at a model older than its tier's current built-in. */
@@ -1820,6 +1944,8 @@ export interface Runner {
 	status: RunnerStatus;
 	/** The runner's own concurrency cap; always enforced. */
 	max_concurrent: number;
+	/** Local runners only: durable requested cap and daemon acknowledgement state. */
+	concurrency_control: RunnerConcurrencyControl | null;
 	max_run_minutes: number;
 	/** Experimental continuation policy; disabled by default. */
 	resume_enabled: boolean;
@@ -1848,6 +1974,10 @@ export interface Runner {
 	 */
 	online: boolean;
 	last_seen_at: number | null;
+	/** Last capability assertion from this daemon boot; null means a legacy daemon. */
+	effort_capabilities: EffortCapabilities | null;
+	/** Exact-model effort choices projected by the server; null means unknown/unsupported. */
+	effort_models: Record<string, string[]> | null;
 	/**
 	 * Local runners: the daemon is finishing its in-flight runs and will exit
 	 * for its service manager to relaunch a newer version. Nothing new is
@@ -1902,6 +2032,8 @@ export interface UpdateRunnerRequest {
 	/** Managed types: replace the provider API key (ping-validated first). */
 	api_key?: string;
 	max_concurrent?: number;
+	/** Required when changing a remotely controlled local runner cap. */
+	expected_concurrency_revision?: number;
 	max_run_minutes?: number;
 	resume_enabled?: boolean;
 	resume_window_hours?: number;
@@ -1966,6 +2098,15 @@ export interface RunnerPollRequest {
 	 * effect without re-registering.
 	 */
 	max_concurrent?: number;
+	/** Locally asserted, machine-owned remote concurrency boundary. */
+	concurrency_control?: {
+		version: 1;
+		allow_remote: boolean;
+		ceiling: number;
+		applied?: { revision: number; cap: number };
+	};
+	/** Assignments refused before process launch and awaiting server release. */
+	declined_assignments?: string[];
 	/**
 	 * True while the daemon is finishing its runs before exiting for a
 	 * self-update restart: the dispatcher assigns it nothing new, while runs
@@ -1973,11 +2114,26 @@ export interface RunnerPollRequest {
 	 * the relaunched daemon's first poll reopens the runner.
 	 */
 	draining?: boolean;
+	/** V1 exact-model effort support discovered by this daemon boot. */
+	effort_capabilities?: EffortCapabilities;
+	/**
+	 * Capability: this daemon merges `RunnerAssignment.env` into the harness
+	 * environment. Absent → the server delivers no env and logs a warning.
+	 */
+	env_delivery?: 1;
 }
 
 /** One delivered assignment: everything the daemon needs to launch. */
 export interface RunnerAssignment {
 	run: AgentRun;
+	/** Enforced launch setting, omitted for provider-default and legacy-tier delivery. */
+	effort?: {
+		version: 1;
+		value: string;
+		source: import('./effort.js').EffortSource;
+		/** Capability catalog the server checked immediately before delivery. */
+		capability_digest: string;
+	};
 	/** Supervisor preamble + stitched context + issue block, assembled at delivery. */
 	prompt: string;
 	/**
@@ -1987,6 +2143,13 @@ export interface RunnerAssignment {
 	bundle: EffectiveContext;
 	/** The ephemeral run key — the harness's TINES_API_KEY. Never logged. */
 	run_key: string;
+	/**
+	 * Resolved env context items for the harness process environment. Sent
+	 * only to daemons that polled with `env_delivery: 1`; never inside
+	 * `bundle`, never written to the workspace. Secret values are masked
+	 * from the run log by the daemon.
+	 */
+	env?: RunnerAssignmentEnv[];
 	/** Minutes until the daemon must kill the harness. */
 	timeout_minutes: number;
 	/**
@@ -1997,6 +2160,12 @@ export interface RunnerAssignment {
 	 * launch prompt. Absent = launch fresh exactly as before.
 	 */
 	resume?: RunnerAssignmentResume;
+}
+
+export interface RunnerAssignmentEnv {
+	name: string;
+	value: string;
+	secret: boolean;
 }
 
 /** The continuation instructions delivered with a resumed assignment. */
@@ -2016,6 +2185,16 @@ export interface RunnerAssignmentResume {
 
 export interface RunnerPollResponse {
 	assignments: RunnerAssignment[];
+	concurrency_control?: {
+		version: 1;
+		available: boolean;
+		revision: number;
+		cap: number;
+		ceiling: number | null;
+		reason?: RunnerConcurrencyUnavailableReason;
+	};
+	/** Declines now terminal or absent and safe to forget locally. */
+	released_assignments?: string[];
 	/**
 	 * Run ids to kill WITHOUT finish-reporting: the supervisor has already
 	 * settled these (cancel, timeout, the offline sweep).
@@ -2026,6 +2205,13 @@ export interface RunnerPollResponse {
 /** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */
 export interface AppendRunLogRequest {
 	chunk: string;
+	/** Local launch milestone; accepted only for this run's resolved effort. */
+	effort_application?: {
+		status: 'accepted_unconfirmed' | 'rejected';
+		attempted_effort: string;
+		transport: 'argv';
+		reason?: string;
+	};
 	/**
 	 * Per-run, 1-based, monotonic chunk number assigned by the daemon. A
 	 * chunk whose seq the server has already applied is a retry of a send
@@ -2047,6 +2233,8 @@ export interface AppendRunLogResponse {
 export interface FinishRunRequest {
 	status: 'completed' | 'failed';
 	error?: string;
+	/** Last local launch milestone, repeated so a fast finish can recover a lost log request. */
+	effort_application?: AppendRunLogRequest['effort_application'];
 	/**
 	 * `interrupted` = the daemon died, restarted, or was shut down around the
 	 * run; the work did not fail, so the issue must not take a strike. Only
@@ -2091,6 +2279,8 @@ export interface RoutingTarget {
 	runner_id: string;
 	/** Null/absent = the runner's default tier. */
 	tier?: ModelTier | null;
+	/** Explicit routing override; absent inherits the selected runner tier. */
+	effort?: string;
 }
 
 /** A target with its runner denormalized for display. */
@@ -2100,6 +2290,7 @@ export interface RoutingRuleTarget {
 	/** Null for the `'*'` inherited-runner sentinel. */
 	runner_status: RunnerStatus | null;
 	tier: ModelTier | null;
+	effort?: string;
 }
 
 /**
@@ -2172,7 +2363,8 @@ export type CodexRequestContextV1 = {
 } & (
 	| {
 			status: 'complete';
-			harness_version: '0.153.4';
+			/** A supported Codex CLI version; see `isSupportedCodexRolloutVersion`. */
+			harness_version: string;
 			request_count: number;
 			max_request_input_tokens: number;
 			reconciled_usage: Required<CodexRawUsageV1>;
@@ -2301,6 +2493,13 @@ export interface AgentRun {
 	tier: ModelTier;
 	/** Resolved at launch; null when the harness cannot vary its model. */
 	model: string | null;
+	/** Routed request before runner-tier fallback; immutable after claim. */
+	requested_effort: string | null;
+	/** Final configured intent, not proof of provider application. */
+	resolved_effort: string | null;
+	effort_source: EffortSource | null;
+	effort_application_status: EffortApplicationStatus;
+	effort_application_evidence: Record<string, unknown> | null;
 	usage: AgentRunUsage | null;
 	/** Resolved ledger dimensions, populated only for finalized period evidence. */
 	usage_dimensions?: import('./usage.js').UsageDimensions;
@@ -2541,7 +2740,8 @@ export type DispatchTargetVerdict =
 	| 'at_capacity'
 	| 'backing_off'
 	| 'rate_limited'
-	| 'quota_exhausted';
+	| 'quota_exhausted'
+	| 'effort_incompatible';
 
 /** One rule/pin target's verdict, in preference order. */
 export interface DispatchTarget {

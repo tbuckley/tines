@@ -60,12 +60,7 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          base=$(node -p "require('./packages/cli/package.json').version")
-          if ! [[ "$base" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "packages/cli/package.json version '$base' is not plain major.minor.patch" >&2
-            exit 1
-          fi
-          version="${base%.*}.$(git rev-list --count HEAD)"
+          version=$(node scripts/release-version.mjs)
           echo "version=$version" >> "$GITHUB_OUTPUT"
           # Re-runs, and pushes that land while an earlier publish is queued,
           # must not fail the workflow on npm's "cannot publish over an

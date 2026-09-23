@@ -13,7 +13,8 @@ const LIST_COMMANDS: { argv: string[]; path: string }[] = [
 	{ argv: ['context', 'list'], path: '/api/v1/context' },
 	{ argv: ['schedules', 'list'], path: '/api/v1/schedules' },
 	{ argv: ['runs', 'list'], path: '/api/v1/runs' },
-	{ argv: ['events', 'list'], path: '/api/v1/events' }
+	{ argv: ['events', 'list'], path: '/api/v1/events' },
+	{ argv: ['workflows', 'publications'], path: '/api/v1/publications' }
 ];
 
 const TOTAL = 120;
@@ -71,7 +72,13 @@ function row(path: string, n: number): Record<string, unknown> {
 		launch_failures: 0,
 		backoff_until: null,
 		backoff_reason: null,
-		last_seen_at: null
+		last_seen_at: null,
+		candidate_id: `candidate${n}`,
+		snapshot_id: `snapshot${n}`,
+		metadata: { display_name: `Snapshot ${n}`, license: 'MIT', license_year: 2026 },
+		owner_state: 'published',
+		host_state: 'active',
+		published_at: n
 	};
 }
 
@@ -86,6 +93,30 @@ const FIXED_ROUTES: Record<string, unknown> = {
 		runner_name: 'macbook',
 		tier: 'balanced',
 		model: 'gpt-5.6-sol',
+		requested_effort: 'high',
+		resolved_effort: 'high',
+		effort_source: {
+			kind: 'routing_target',
+			runner_id: 'r1',
+			tier: 'balanced',
+			rule_id: 'rule1',
+			scope_label: 'project demo',
+			target_index: 0
+		},
+		effort_application_status: 'rejected',
+		effort_application_evidence: {
+			version: 1,
+			milestones: [
+				{
+					status: 'rejected',
+					transport: 'managed_agent_config',
+					attempted_effort: 'high',
+					observed_model: 'gpt-5.6-sol',
+					observed_effort: 'medium',
+					reason: 'provider mismatch'
+				}
+			]
+		},
 		state_id_at_start: 's0',
 		state_id_at_end: 's1',
 		created_at: 1,
@@ -207,6 +238,8 @@ let server: Server;
 let baseUrl: string;
 /** Every path the CLI requested, so the wiring pin can prove which route it paged. */
 const requested: string[] = [];
+/** Full request URLs for assertions about filters and client-only options. */
+const requestUrls: URL[] = [];
 /** Every non-GET the CLI made, so a lookup can be shown to have found rather than created. */
 const writes: string[] = [];
 
@@ -219,6 +252,7 @@ beforeAll(async () => {
 	server = createServer((req, res) => {
 		const url = new URL(req.url ?? '/', 'http://localhost');
 		requested.push(url.pathname);
+		requestUrls.push(url);
 		if (req.method !== 'GET') writes.push(`${req.method} ${url.pathname}`);
 		const fixed = FIXED_ROUTES[url.pathname];
 		// A single context item, fetched by id once a name lookup has found it.
@@ -235,12 +269,25 @@ beforeAll(async () => {
 			);
 			return;
 		}
-		const offset = Number(url.searchParams.get('cursor') ?? '0');
-		const limit = Math.min(Number(url.searchParams.get('limit') ?? PAGE), PAGE);
-		const end = Math.min(offset + limit, TOTAL);
-		const items = Array.from({ length: end - offset }, (_, i) => row(url.pathname, offset + i));
+		const largeEvents =
+			url.pathname === '/api/v1/events' && url.searchParams.get('project') === 'Large';
+		const total = largeEvents ? 10_001 : TOTAL;
+		const rawCursor = url.searchParams.get('cursor');
+		const offset = largeEvents
+			? Number(rawCursor?.replace(/^event-/, '') ?? '0')
+			: Number(rawCursor ?? '0');
+		const limit = Math.min(Number(url.searchParams.get('limit') ?? PAGE), largeEvents ? 100 : PAGE);
+		const end = Math.min(offset + limit, total);
+		const items = Array.from({ length: end - offset }, (_, i) =>
+			largeEvents ? { id: `x${offset + i}` } : row(url.pathname, offset + i)
+		);
 		res.writeHead(200, { 'content-type': 'application/json' });
-		res.end(JSON.stringify({ items, next_cursor: end < TOTAL ? String(end) : null }));
+		res.end(
+			JSON.stringify({
+				items,
+				next_cursor: end < total ? (largeEvents ? `event-${end}` : String(end)) : null
+			})
+		);
 	});
 	await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
 	baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -260,7 +307,11 @@ function cli(args: string[]): Promise<CliResult> {
 		const child = execFile(
 			NODE,
 			[CLI_BIN, ...args],
-			{ env: { ...process.env, TINES_API_URL: baseUrl, TINES_API_KEY: 'k' }, timeout: 60_000 },
+			{
+				env: { ...process.env, TINES_API_URL: baseUrl, TINES_API_KEY: 'k' },
+				timeout: 60_000,
+				maxBuffer: 5 * 1024 * 1024
+			},
 			(err, stdout, stderr) => {
 				const code = (err as { code?: number } | null)?.code ?? 0;
 				resolve({ code: typeof code === 'number' ? code : 1, stdout, stderr });
@@ -279,6 +330,12 @@ describe('list pagination', () => {
 		expect(shown.stdout).toContain('cost provenance: Estimated standard API list-price equivalent');
 		expect(shown.stdout).toContain('rate: rate-v1 v1');
 		expect(shown.stdout).toContain('exact estimated USD: 0.00394');
+		expect(shown.stdout).toContain(
+			'effort: requested high  resolved high  source routing target 1 (project demo)'
+		);
+		expect(shown.stdout).toContain(
+			'effort application: rejected  observed medium on gpt-5.6-sol  (provider mismatch)'
+		);
 
 		const json = await cli(['runs', 'show', 'priced-run', '--json']);
 		expect(JSON.parse(json.stdout).usage.pricing.basis.rates.cache_write_tokens).toBe('5');
@@ -327,6 +384,104 @@ describe('list pagination', () => {
 	it('keeps --limit meaning page size under --all-pages', async () => {
 		const res = await cli(['issues', 'list', '--all-pages', '--limit', '10', '--json']);
 		expect(JSON.parse(res.stdout).items).toHaveLength(TOTAL);
+	}, 60_000);
+
+	it('requires --all-pages for --max-items before reference resolution', async () => {
+		for (const args of [
+			['events', 'list', '--max-items', '20'],
+			['events', 'list', '--issue', 'proj0/1', '--max-items', '20']
+		]) {
+			requestUrls.length = 0;
+			const res = await cli(args);
+			expect(res.code, args.join(' ')).not.toBe(0);
+			expect(res.stderr, args.join(' ')).toContain('--max-items requires --all-pages');
+			expect(requestUrls, args.join(' ')).toEqual([]);
+		}
+	}, 60_000);
+
+	it.each([
+		['0', 'positive integer'],
+		['-1', 'positive integer'],
+		['01', 'positive integer'],
+		['1.5', 'positive integer'],
+		['1e3', 'positive integer'],
+		['9007199254740992', 'positive safe integer']
+	])('rejects invalid --max-items %s before network access', async (value, message) => {
+		requestUrls.length = 0;
+		const res = await cli(['events', 'list', '--all-pages', '--max-items', value, '--json']);
+		expect(res.code).not.toBe(0);
+		expect(res.stderr).toContain(`max-items must be a ${message}`);
+		expect(requestUrls).toEqual([]);
+	});
+
+	it('keeps the default ceiling and permits a deliberate larger project inventory', async () => {
+		const withoutOverride = await cli([
+			'events',
+			'list',
+			'--project',
+			'Large',
+			'--all-pages',
+			'--json'
+		]);
+		expect(withoutOverride.code).not.toBe(0);
+		expect(withoutOverride.stdout).toBe('');
+		expect(withoutOverride.stderr).toContain('list has more than 10000 items');
+
+		requestUrls.length = 0;
+		const withOverride = await cli([
+			'events',
+			'list',
+			'--project',
+			'Large',
+			'--all-pages',
+			'--max-items',
+			'20000',
+			'--limit',
+			'73',
+			'--json'
+		]);
+		expect(withOverride.code).toBe(0);
+		expect(withOverride.stderr).toBe('');
+		const parsed = JSON.parse(withOverride.stdout);
+		expect(parsed.items.map((item: { id: string }) => item.id)).toEqual(
+			Array.from({ length: 10_001 }, (_, i) => `x${i}`)
+		);
+		expect(parsed.next_cursor).toBeNull();
+		expect(requestUrls.length).toBeGreaterThan(1);
+		for (const url of requestUrls) {
+			expect(url.searchParams.get('project')).toBe('Large');
+			expect(Number(url.searchParams.get('limit'))).toBeLessThanOrEqual(100);
+			expect(url.searchParams.has('max-items')).toBe(false);
+		}
+	}, 60_000);
+
+	it('treats --max-items as an inclusive bound', async () => {
+		const exact = await cli([
+			'events',
+			'list',
+			'--project',
+			'Large',
+			'--all-pages',
+			'--max-items',
+			'10001',
+			'--json'
+		]);
+		expect(exact.code).toBe(0);
+		expect(JSON.parse(exact.stdout).items).toHaveLength(10_001);
+
+		const below = await cli([
+			'events',
+			'list',
+			'--project',
+			'Large',
+			'--all-pages',
+			'--max-items',
+			'10000',
+			'--json'
+		]);
+		expect(below.code).not.toBe(0);
+		expect(below.stdout).toBe('');
+		expect(below.stderr).toContain('list has more than 10000 items');
 	}, 60_000);
 
 	it('mentions --all-pages in the table-mode hint', async () => {
@@ -410,6 +565,20 @@ describe('list pagination', () => {
 				requested.filter((p) => p === path),
 				argv.join(' ')
 			).toHaveLength(3);
+		}
+	}, 120_000);
+
+	it('honours --max-items on every list command', async () => {
+		const results = await Promise.all(
+			LIST_COMMANDS.map(async ({ argv }) => {
+				const res = await cli([...argv, '--all-pages', '--max-items', '75', '--json']);
+				return [argv.join(' '), res.code, res.stdout, res.stderr] as const;
+			})
+		);
+		for (const [name, code, stdout, stderr] of results) {
+			expect(code, name).not.toBe(0);
+			expect(stdout, name).toBe('');
+			expect(stderr, name).toContain('list has more than 75 items');
 		}
 	}, 120_000);
 });

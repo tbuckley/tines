@@ -1,6 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const statsCalls = vi.hoisted(() => ({ preparations: 0 }));
+vi.mock('$lib/server/supervisor/stats', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/server/supervisor/stats')>();
+	return {
+		...actual,
+		prepareStageStats: (input: Parameters<typeof actual.prepareStageStats>[0]) => {
+			statsCalls.preparations++;
+			return actual.prepareStageStats(input);
+		}
+	};
+});
 import { createTestDb, type TestDb } from './test-db';
 import { loadSentBackDrilldown, loadStageStats, parseStatsWindow } from './supervisor';
+import { TEST_NOOP_DISPATCH_EFFECTS } from './test-dispatch-effects';
+import { updateWorkflow } from './workflows';
+import type { ActorContext } from './core';
 import {
 	addIssue,
 	addComment,
@@ -22,6 +37,18 @@ import {
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
+
+const actor: ActorContext = {
+	userId: USER,
+	userName: 'Alice',
+	apiKeyId: null,
+	apiKeyName: null,
+	viaSession: true
+};
+
+beforeEach(() => {
+	statsCalls.preparations = 0;
+});
 
 function setup(): TestDb {
 	const t = createTestDb();
@@ -51,6 +78,42 @@ describe('parseStatsWindow', () => {
 });
 
 describe('loadStageStats', () => {
+	it('reclassifies historical send-backs after the workflow order is saved', async () => {
+		const t = setup();
+		const issue = addIssue(t, { id: 'iss_reordered', state: STAGE_A, workflow: 'wf_two' });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - DAY,
+			from: STAGE_B,
+			to: STAGE_A
+		});
+
+		const before = await loadStageStats(t.db, USER, {}, NOW);
+		expect(before.states.find((state) => state.state_id === STAGE_B)?.current).toMatchObject({
+			exits: 1,
+			sent_back: { count: 1 }
+		});
+		expect((await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW)).items).toHaveLength(
+			1
+		);
+
+		await updateWorkflow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'wf_two', {
+			states: [
+				{ id: STAGE_B, name: 'Stage B', category: 'active' },
+				{ id: STAGE_A, name: 'Stage A', category: 'active' },
+				{ id: 'wfs_two_done', name: 'Done', category: 'done' }
+			]
+		});
+
+		const after = await loadStageStats(t.db, USER, {}, NOW);
+		expect(after.states.find((state) => state.state_id === STAGE_B)?.current).toMatchObject({
+			exits: 1,
+			sent_back: { count: 0 }
+		});
+		expect((await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW)).items).toEqual([]);
+	});
+
 	it('builds visits, queue wait and the agent-attributed sent back from stored rows', async () => {
 		const t = setup();
 		const issue = addIssue(t, { id: 'iss_1', state: STAGE_B, workflow: 'wf_two' });
@@ -325,9 +388,113 @@ describe('loadStageStats', () => {
 		});
 		expect(report.markers[0].effects.map((effect) => effect.state_id)).toEqual([STAGE_B]);
 	});
+
+	it('orders equal-time marker seeds by id before forward batching', async () => {
+		const t = setup();
+		for (const id of ['evt_marker_z', 'evt_marker_a'])
+			t.sqlite
+				.prepare(
+					`INSERT INTO event (id,user_id,type,actor_user_id,payload,created_at)
+					 VALUES (?,?,'settings.updated',?,?,?)`
+				)
+				.run(id, USER, USER, JSON.stringify({ changed: ['quota'] }), NOW - HOUR);
+		const report = await loadStageStats(t.db, USER, {}, NOW);
+		expect(report.markers).toHaveLength(1);
+		expect(report.markers[0].id).toBe('evt_marker_a');
+		expect(report.markers[0].event_ids).toEqual(['evt_marker_a', 'evt_marker_z']);
+	});
+
+	it('prepares once and evaluates only marker-affected states', async () => {
+		const t = setup();
+		const issue = addIssue(t, { id: 'iss_observed', state: STAGE_B, workflow: 'wf_two' });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - DAY,
+			from: STAGE_A,
+			to: STAGE_B
+		});
+		for (let index = 0; index < 20; index++)
+			t.sqlite
+				.prepare(
+					`INSERT INTO event (id,user_id,type,actor_user_id,project_id,payload,created_at)
+					 VALUES (?,?,'routing_rule.updated',?,?,?,?)`
+				)
+				.run(
+					`evt_observed_${index}`,
+					USER,
+					USER,
+					PROJECT,
+					JSON.stringify({ workflow_state_id: STAGE_B }),
+					NOW - (index + 1) * 4 * HOUR
+				);
+		const evaluated: string[] = [];
+		const report = await loadStageStats(t.db, USER, {}, NOW, {
+			evaluatedState: (stateId) => evaluated.push(stateId)
+		});
+		expect(statsCalls.preparations).toBe(1);
+		expect(report.markers).toHaveLength(20);
+		expect(evaluated).toEqual(Array(40).fill(STAGE_B));
+
+		statsCalls.preparations = 0;
+		const baseline = await loadStageStats(t.db, USER, {}, NOW, {
+			profileRepeatPreparation: true
+		});
+		expect(statsCalls.preparations).toBe(41);
+		expect(baseline).toEqual(report);
+	});
+
+	it('uses unordered type/time event reads backed by the migration index', async () => {
+		const t = setup();
+		const queries = t.spyOnQueries();
+		await loadStageStats(t.db, USER, {}, NOW);
+		const eventReads = queries().filter((query) => /from "event"/i.test(query));
+		expect(eventReads.filter((query) => /"event"\."type" in/i.test(query)).length).toBeGreaterThan(
+			0
+		);
+		for (const query of eventReads.filter((query) => /"event"\."type" in/i.test(query)))
+			expect(query).not.toMatch(/order by/i);
+		const plan = t.all(
+			`EXPLAIN QUERY PLAN SELECT id FROM event INDEXED BY event_user_type_created_idx
+			 WHERE user_id=? AND type IN ('issue.created','issue.transitioned')
+			 AND created_at>=? AND created_at<?`,
+			USER,
+			NOW - 14 * DAY,
+			NOW
+		);
+		expect(plan.map((row) => String(row.detail)).join('\n')).toContain(
+			'event_user_type_created_idx'
+		);
+	});
 });
 
 describe('loadSentBackDrilldown', () => {
+	it('chunks large issue sets and ignores comments after the newest transition', async () => {
+		const t = setup();
+		for (let index = 0; index < 101; index++) {
+			const issue = addIssue(t, {
+				id: `iss_evidence_${index}`,
+				state: STAGE_A,
+				workflow: 'wf_two'
+			});
+			addComment(t, { issueId: issue, body: `before ${index}`, at: NOW - DAY - MIN });
+			addTransitionEvent(t, {
+				issueId: issue,
+				apiKeyId: null,
+				at: NOW - DAY,
+				from: STAGE_B,
+				to: STAGE_A
+			});
+			addComment(t, { issueId: issue, body: `after ${index}`, at: NOW - HOUR });
+		}
+		const detail = await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW);
+		expect(detail.items).toHaveLength(101);
+		expect(detail.items.map((item) => item.comment?.excerpt)).toEqual(
+			expect.arrayContaining(['before 0', 'before 100'])
+		);
+		expect(detail.items.some((item) => item.comment?.excerpt.startsWith('after'))).toBe(false);
+	});
+
 	it('names the transition comment and prompt version in force', async () => {
 		const t = setup();
 		const issue = addIssue(t, { id: 'iss_1', state: STAGE_A, workflow: 'wf_two' });
@@ -405,6 +572,79 @@ describe('loadSentBackDrilldown', () => {
 			[NOW - DAY, 'ctx_new', 1],
 			[NOW - 2 * DAY, null, null],
 			[NOW - 3 * DAY, 'ctx_old', 2]
+		]);
+	});
+
+	it('falls back to scope when scope_to is JSON null', async () => {
+		const t = setup();
+		const issue = addIssue(t, { id: 'iss_null_scope', state: STAGE_A, workflow: 'wf_two' });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - DAY,
+			from: STAGE_B,
+			to: STAGE_A
+		});
+		t.sqlite
+			.prepare(
+				`INSERT INTO event (id,user_id,type,actor_user_id,payload,created_at) VALUES
+				 ('evt_null_scope_created',?,'context.created',?,?,?),
+				 ('evt_null_scope_updated',?,'context.updated',?,?,?)`
+			)
+			.run(
+				USER,
+				USER,
+				JSON.stringify({
+					context_id: 'ctx_null_scope',
+					kind: 'prompt',
+					name: 'instructions',
+					scope_to: null,
+					scope: { workflow_state_id: STAGE_B }
+				}),
+				NOW - 3 * DAY,
+				USER,
+				USER,
+				JSON.stringify({ context_id: 'ctx_null_scope', version: 2 }),
+				NOW - 2 * DAY
+			);
+
+		const detail = await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW);
+		expect(detail.items[0]).toMatchObject({
+			prompt_context_id: 'ctx_null_scope',
+			prompt_version: 2
+		});
+	});
+
+	it('does not transfer unrelated prompt lifecycle generations', async () => {
+		const t = setup();
+		const issue = addIssue(t, { id: 'iss_prompt_filter', state: STAGE_A, workflow: 'wf_two' });
+		addTransitionEvent(t, {
+			issueId: issue,
+			apiKeyId: null,
+			at: NOW - DAY,
+			from: STAGE_B,
+			to: STAGE_A
+		});
+		t.sqlite.exec(`
+			INSERT INTO event (id,user_id,type,actor_user_id,payload,created_at) VALUES
+			('evt_relevant_created','${USER}','context.created','${USER}',
+			 '{"context_id":"ctx_relevant","kind":"prompt","name":"instructions","scope":{"workflow_state_id":"${STAGE_B}"}}',${NOW - 3 * DAY}),
+			('evt_relevant_update','${USER}','context.updated','${USER}',
+			 '{"context_id":"ctx_relevant","version":2}',${NOW - 2 * DAY}),
+			('evt_unrelated_created','${USER}','context.created','${USER}',
+			 '{"context_id":"ctx_unrelated","kind":"prompt","name":"instructions","scope":{"workflow_state_id":"${STAGE_A}"}}',${NOW - 3 * DAY}),
+			('evt_unrelated_update','${USER}','context.updated','${USER}',
+			 '{"context_id":"ctx_unrelated","version":99}',${NOW - 2 * DAY});
+		`);
+		const queryResults = t.spyOnQueryResults();
+		const detail = await loadSentBackDrilldown(t.db, USER, { state: STAGE_B }, NOW);
+		expect(detail.items[0]).toMatchObject({ prompt_context_id: 'ctx_relevant', prompt_version: 2 });
+		const lifecycleRead = queryResults().find((query) =>
+			/json_extract[\s\S]* in \(select /i.test(query.sql)
+		);
+		expect(lifecycleRead?.rows.map((row) => row.id)).toEqual([
+			'evt_relevant_created',
+			'evt_relevant_update'
 		]);
 	});
 });

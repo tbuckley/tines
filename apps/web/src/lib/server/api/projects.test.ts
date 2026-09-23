@@ -25,6 +25,7 @@ import {
 	archiveProject,
 	createProject,
 	deleteProject,
+	getProject,
 	listProjects,
 	unarchiveProject,
 	updateProject
@@ -74,6 +75,43 @@ async function failure(fn: () => Promise<unknown>): Promise<ApiFail> {
 	}
 	throw new Error('expected the call to throw');
 }
+
+describe('project name boundary', () => {
+	it('accepts exactly 200 code units and rejects 201 without creating a project', async () => {
+		const accepted = 'a'.repeat(200);
+		await expect(createProject(t.db, t.env, actor, { name: accepted })).resolves.toMatchObject({
+			name: accepted
+		});
+
+		const before = (await listProjects(t.db, USER, { archived: 'all' })).map((p) => p.name);
+		const e = await failure(() => createProject(t.db, t.env, actor, { name: 'b'.repeat(201) }));
+		expect(e).toMatchObject({
+			status: 422,
+			code: 'invalid_field',
+			message: '"name" must be at most 200 characters'
+		});
+		expect((await listProjects(t.db, USER, { archived: 'all' })).map((p) => p.name)).toEqual(
+			before
+		);
+	});
+
+	it('validates raw update length before trimming and preserves the stored name', async () => {
+		const accepted = 'c'.repeat(200);
+		await expect(
+			updateProject(t.db, t.env, actor, PROJECT, { name: accepted })
+		).resolves.toMatchObject({ name: accepted });
+
+		for (const rejected of ['d'.repeat(201), `${'e'.repeat(199)}  `]) {
+			const e = await failure(() => updateProject(t.db, t.env, actor, PROJECT, { name: rejected }));
+			expect(e).toMatchObject({
+				status: 422,
+				code: 'invalid_field',
+				message: '"name" must be at most 200 characters'
+			});
+			expect((await getProject(t.db, USER, PROJECT)).name).toBe(accepted);
+		}
+	});
+});
 
 describe('archiveProject', () => {
 	it('sets archived_at, emits one event, and reports what the archive froze', async () => {

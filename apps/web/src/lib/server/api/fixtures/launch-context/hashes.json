@@ -1,0 +1,50 @@
+{
+	"comment-only.before.md": {
+		"sha256": "7cf95bf6becce7a9a6908ccb5d9fe1b88c73d137b1eb763b55dd0c8ce45c8716",
+		"bytes": 4074
+	},
+	"comment-only.after.md": {
+		"sha256": "d55c50e3c9427de1025c8f6367971b7f85eed780a6ba7b0affa562ded42cb9b6",
+		"bytes": 3279
+	},
+	"skill-only.before.md": {
+		"sha256": "39f265065a25c118b37f50bf19295f20ca9e85d37ec6ca39fdbc2dcf5839e9d7",
+		"bytes": 4382
+	},
+	"skill-only.after.md": {
+		"sha256": "b89c3ac90dc1a92fde2d8e462eeda86e261f5e1d7a153b4b60f04e8ea169ddd7",
+		"bytes": 4255
+	},
+	"combined.cold.before.md": {
+		"sha256": "3f90d33061415be672639d34695385df5cc5c3fd289f2434364268927450a9a4",
+		"bytes": 4201
+	},
+	"combined.cold.after.md": {
+		"sha256": "d55c50e3c9427de1025c8f6367971b7f85eed780a6ba7b0affa562ded42cb9b6",
+		"bytes": 3279
+	},
+	"combined.resume.before.md": {
+		"sha256": "3f90d33061415be672639d34695385df5cc5c3fd289f2434364268927450a9a4",
+		"bytes": 4201
+	},
+	"combined.resume.after.md": {
+		"sha256": "d55c50e3c9427de1025c8f6367971b7f85eed780a6ba7b0affa562ded42cb9b6",
+		"bytes": 3279
+	},
+	"input.json": {
+		"sha256": "7d1b81209e19b486905eb21218ccd88d2c374c87d1057e804a05bf071fe95626",
+		"bytes": 3596
+	},
+	"retrieval-command.txt": {
+		"sha256": "93ff50b6fe8753d3af74a4813d1c44e3c7226ab52f9760dd124f28d766ae4a78",
+		"bytes": 173
+	},
+	"retrieval.stdout.txt": {
+		"sha256": "eaab38b9495a2ba7520f2d07343382c8a536c8d9fb99e49d30e25c31777a6eb3",
+		"bytes": 58
+	},
+	"retrieval.stderr.txt": {
+		"sha256": "0351bdde8bd80b9d1120fe3da48841fd12e4c2ab63d4dc38a3c2e9adc97cc60f",
+		"bytes": 34
+	}
+}

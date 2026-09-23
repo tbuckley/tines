@@ -23,6 +23,7 @@ const issue = (number: number) => ({
 
 let server: Server;
 let baseUrl: string;
+const createBodies: Record<string, unknown>[] = [];
 
 beforeAll(async () => {
 	server = createServer((req, res) => {
@@ -32,6 +33,15 @@ beforeAll(async () => {
 			return res.end(JSON.stringify({ items: [project], next_cursor: null }));
 		const match = url.pathname.match(/^\/api\/v1\/projects\/prj_1\/issues\/(\d+)$/);
 		if (match) return res.end(JSON.stringify(issue(Number(match[1]))));
+		if (req.method === 'POST' && url.pathname === '/api/v1/projects/prj_1/issues') {
+			let raw = '';
+			req.on('data', (chunk) => (raw += chunk));
+			return req.on('end', () => {
+				createBodies.push(JSON.parse(raw) as Record<string, unknown>);
+				res.statusCode = 201;
+				res.end(JSON.stringify(issue(9)));
+			});
+		}
 		if (req.method === 'POST' && /^\/api\/v1\/issues\/iss_[12]\/links$/.test(url.pathname)) {
 			let raw = '';
 			req.on('data', (chunk) => (raw += chunk));
@@ -85,6 +95,44 @@ function cli(args: string[]): Promise<{ code: number; stdout: string; stderr: st
 }
 
 describe('issue-link CLI diagnostics', () => {
+	it('resolves repeatable create relationship refs and preserves their order', async () => {
+		createBodies.length = 0;
+		const result = await cli([
+			'issues',
+			'create',
+			'demo',
+			'--title',
+			'Linked',
+			'--blocked-by',
+			'demo/2',
+			'--blocked-by',
+			'demo/2',
+			'--blocks',
+			'demo/3',
+			'--duplicate-of',
+			'demo/4',
+			'--json'
+		]);
+		expect(result.code).toBe(0);
+		expect(createBodies).toHaveLength(1);
+		expect(createBodies[0]).toMatchObject({
+			title: 'Linked',
+			blocked_by: ['iss_2', 'iss_2'],
+			blocks: ['iss_3'],
+			duplicate_of: 'iss_4'
+		});
+	});
+
+	it('omits relationship properties when create flags are absent', async () => {
+		createBodies.length = 0;
+		const result = await cli(['issues', 'create', 'demo', '--title', 'Plain', '--json']);
+		expect(result.code).toBe(0);
+		expect(createBodies).toHaveLength(1);
+		expect(createBodies[0]).not.toHaveProperty('blocked_by');
+		expect(createBodies[0]).not.toHaveProperty('blocks');
+		expect(createBodies[0]).not.toHaveProperty('duplicate_of');
+	});
+
 	it('prints the server-provided canonical cycle path and no success line', async () => {
 		const result = await cli(['issues', 'block', 'demo/1', 'demo/2']);
 		expect(result.code).toBe(1);

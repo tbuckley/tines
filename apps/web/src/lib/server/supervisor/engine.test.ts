@@ -13,7 +13,10 @@ import {
 	loadEligibleIssues,
 	loadEndableRun,
 	loadEngineRunners,
+	mintRunKeyAndFlip,
 	noteRateLimit,
+	releaseDeclinedAssignments,
+	releaseSurplusAssigned,
 	runDispatchPass,
 	sweepSupervisor,
 	targetsForIssue,
@@ -25,6 +28,7 @@ import {
 	addLabel,
 	addRule,
 	addRun,
+	addRunKey,
 	addRunner,
 	addTransitionEvent,
 	addTwoStageWorkflow,
@@ -203,6 +207,126 @@ describe('eligibility', () => {
 		const result = await pass(t);
 		expect(result.claimed).toBe(1);
 		expect(runs(t)[0].issue_id).toBe('iss_stale');
+	});
+});
+
+describe('local concurrency release', () => {
+	it('keeps running work and releases newest surplus assigned claims', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 3 });
+		t.sqlite
+			.prepare(
+				`UPDATE runner SET daemon_instance_id = 'boot_1', concurrency_instance_id = 'boot_1',
+				 concurrency_mode = 'remote', concurrency_ceiling = 1 WHERE id = ?`
+			)
+			.run(runnerId);
+		const runningIssue = addIssue(t, { title: 'running' });
+		const oldIssue = addIssue(t, { title: 'old assignment' });
+		const newIssue = addIssue(t, { title: 'new assignment' });
+		const running = addRun(t, {
+			issueId: runningIssue,
+			runnerId,
+			status: 'running',
+			startedAt: NOW - 100,
+			createdAt: NOW - 300
+		});
+		const oldAssigned = addRun(t, {
+			issueId: oldIssue,
+			runnerId,
+			createdAt: NOW - 200
+		});
+		const newAssigned = addRun(t, {
+			issueId: newIssue,
+			runnerId,
+			createdAt: NOW - 100
+		});
+		let signals = 0;
+		const released = await releaseSurplusAssigned(
+			t.db,
+			t.env,
+			{ userId: USER, runnerId, instanceId: 'boot_1', ceiling: 1, now: NOW },
+			() => signals++
+		);
+
+		expect(released).toEqual([oldAssigned, newAssigned]);
+		expect(runById(t, running)!.status).toBe('running');
+		expect(runById(t, oldAssigned)!.status).toBe('canceled');
+		expect(runById(t, newAssigned)!.status).toBe('canceled');
+		expect(signals).toBe(2);
+	});
+
+	it('rechecks capacity in the release transaction when a running slot opens', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { maxConcurrent: 2 });
+		t.sqlite
+			.prepare(
+				`UPDATE runner SET daemon_instance_id = 'boot_1', concurrency_instance_id = 'boot_1',
+				 concurrency_mode = 'remote', concurrency_ceiling = 1 WHERE id = ?`
+			)
+			.run(runnerId);
+		const running = addRun(t, {
+			issueId: addIssue(t, { title: 'running' }),
+			runnerId,
+			status: 'running',
+			startedAt: NOW - 100,
+			createdAt: NOW - 200
+		});
+		const assigned = addRun(t, {
+			issueId: addIssue(t, { title: 'assigned' }),
+			runnerId,
+			createdAt: NOW - 100
+		});
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let injected = false;
+		t.env.DB.batch = async (statements) => {
+			if (!injected) {
+				injected = true;
+				t.sqlite
+					.prepare("UPDATE agent_run SET status = 'completed', ended_at = ? WHERE id = ?")
+					.run(NOW - 1, running);
+			}
+			return realBatch(statements);
+		};
+
+		const released = await releaseSurplusAssigned(
+			t.db,
+			t.env,
+			{ userId: USER, runnerId, instanceId: 'boot_1', ceiling: 1, now: NOW },
+			() => {}
+		);
+
+		expect(injected).toBe(true);
+		expect(released).toEqual([]);
+		expect(runById(t, assigned)!.status).toBe('assigned');
+	});
+
+	it('decline revokes only the refused run key', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const refused = addRun(t, {
+			issueId: addIssue(t, { title: 'refused' }),
+			runnerId,
+			status: 'launching'
+		});
+		const other = addRun(t, {
+			issueId: addIssue(t, { title: 'other' }),
+			runnerId,
+			status: 'launching'
+		});
+		addRunKey(t, refused);
+		addRunKey(t, other);
+
+		const released = await releaseDeclinedAssignments(
+			t.db,
+			t.env,
+			{ userId: USER, runnerId, runIds: [refused], now: NOW },
+			() => {}
+		);
+
+		expect(released).toEqual([refused]);
+		expect(keyForRun(t, refused)!.revoked_at).toBe(NOW);
+		expect(keyForRun(t, other)!.revoked_at).toBeNull();
+		expect(runById(t, other)!.status).toBe('launching');
 	});
 });
 
@@ -499,6 +623,9 @@ describe('dispatch pass against the fake adapter', () => {
 		// The run key: bound to the run, expiry = launch + timeout + 10m slack.
 		const key = keyForRun(t, run.id as string);
 		expect(key).toBeDefined();
+		expect(key!.name).toBe(`${runner} · Standard/Open`);
+		expect(key!.run_workflow_name).toBe('Standard');
+		expect(key!.run_state_name).toBe('Open');
 		expect(key!.revoked_at).toBeNull();
 		expect(key!.expires_at).toBe(NOW + 30 * 60_000 + 10 * 60_000);
 		expect(run.api_key_id).toBe(key!.id);
@@ -518,6 +645,105 @@ describe('dispatch pass against the fake adapter', () => {
 		// Supervisor events are attributed to the owning user, no API key.
 		expect(started[0].actor_api_key_id).toBeNull();
 	});
+
+	it('snapshots the starting runner/workflow/state name without a length cap', async () => {
+		const t = world();
+		addTwoStageWorkflow(t);
+		const runner = addRunner(t, { name: "O'Hare 🚀 runner " + 'r'.repeat(45) });
+		const issue = addIssue(t, { workflow: 'wf_two', state: STAGE_A });
+		const run = addRun(t, { issueId: issue, runnerId: runner, stateAtStart: STAGE_A });
+
+		const workflowName = "Éngineering's workflow " + 'w'.repeat(35);
+		const stateName = 'Développement 🚧 ' + 's'.repeat(35);
+		t.sqlite.prepare('UPDATE workflow SET name = ? WHERE id = ?').run(workflowName, 'wf_two');
+		t.sqlite.prepare('UPDATE workflow_state SET name = ? WHERE id = ?').run(stateName, STAGE_A);
+		// The live issue has moved on; naming follows the run's captured start state.
+		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(STAGE_B, issue);
+
+		const minted = await mintRunKeyAndFlip(t.db, t.env, {
+			runId: run,
+			userId: USER,
+			maxRunMinutes: 30,
+			now: NOW
+		});
+		expect(minted).not.toBeNull();
+		const expected = `${"O'Hare 🚀 runner " + 'r'.repeat(45)} · ${workflowName}/${stateName}`;
+		expect(expected.length).toBeGreaterThan(100);
+		expect(keyForRun(t, run)).toMatchObject({
+			name: expected,
+			run_workflow_name: workflowName,
+			run_state_name: stateName
+		});
+
+		// Later renames do not rewrite historical attribution.
+		t.sqlite.prepare('UPDATE runner SET name = ? WHERE id = ?').run('renamed runner', runner);
+		t.sqlite.prepare('UPDATE workflow SET name = ? WHERE id = ?').run('Renamed workflow', 'wf_two');
+		t.sqlite
+			.prepare('UPDATE workflow_state SET name = ? WHERE id = ?')
+			.run('Renamed state', STAGE_A);
+		expect(keyForRun(t, run)).toMatchObject({
+			name: expected,
+			run_workflow_name: workflowName,
+			run_state_name: stateName
+		});
+	});
+
+	it('falls back to the legacy run name when starting-state metadata is absent', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		const run = addRun(t, {
+			issueId: issue,
+			runnerId: runner,
+			stateAtStart: 'wfs_missing'
+		});
+
+		expect(
+			await mintRunKeyAndFlip(t.db, t.env, {
+				runId: run,
+				userId: USER,
+				maxRunMinutes: 30,
+				now: NOW
+			})
+		).not.toBeNull();
+		expect(keyForRun(t, run)).toMatchObject({
+			name: `run ${run}`,
+			run_workflow_name: null,
+			run_state_name: null
+		});
+	});
+
+	it.each(['runner', 'workflow', 'state'] as const)(
+		'falls back to the legacy run name when the %s name is blank',
+		async (component) => {
+			const t = world();
+			const runner = addRunner(t);
+			const issue = addIssue(t);
+			const run = addRun(t, { issueId: issue, runnerId: runner, stateAtStart: OPEN });
+
+			if (component === 'runner') {
+				t.sqlite.prepare('UPDATE runner SET name = ? WHERE id = ?').run('   ', runner);
+			} else if (component === 'workflow') {
+				t.sqlite.prepare('UPDATE workflow SET name = ? WHERE id = ?').run('   ', 'wf_standard');
+			} else {
+				t.sqlite.prepare('UPDATE workflow_state SET name = ? WHERE id = ?').run('   ', OPEN);
+			}
+
+			expect(
+				await mintRunKeyAndFlip(t.db, t.env, {
+					runId: run,
+					userId: USER,
+					maxRunMinutes: 30,
+					now: NOW
+				})
+			).not.toBeNull();
+			expect(keyForRun(t, run)).toMatchObject({
+				name: `run ${run}`,
+				run_workflow_name: null,
+				run_state_name: null
+			});
+		}
+	);
 
 	it('a poll-mode (local) adapter leaves the claim assigned for the daemon', async () => {
 		const t = world();
@@ -777,6 +1003,58 @@ describe('launch failures', () => {
 		expect(key).toBeDefined();
 		expect(key!.revoked_at).not.toBeNull();
 		expect(runById(t, 'arun_race')!.status).toBe('canceled');
+	});
+
+	it('persists the first managed effort milestone from a null CAS state', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		await claimRun(t.db, t.env, {
+			runId: 'arun_effort_launch',
+			userId: USER,
+			issueId: issue,
+			projectId: PROJECT,
+			stateId: OPEN,
+			runnerId,
+			maxConcurrent: 1,
+			tier: 'balanced',
+			model: 'claude-sonnet-5',
+			requestedEffort: 'high',
+			resolvedEffort: 'high',
+			effortSource: { kind: 'runner_tier', runner_id: runnerId, tier: 'balanced' },
+			quota: { type: 'global_cap', limit: 10 },
+			now: NOW
+		});
+		const fake = createFakeAdapter();
+		const launch = fake.launch.bind(fake);
+		fake.launch = async (input) => {
+			await input.recordEffortEvidence?.({
+				status: 'confirmed',
+				transport: 'managed_agent_config',
+				attempted_effort: 'high',
+				observed_model: 'claude-sonnet-5',
+				observed_effort: 'high'
+			});
+			return launch(input);
+		};
+		const runner = (await loadEngineRunners(t.db, USER)).get(runnerId)!;
+		expect(
+			await launchClaimedRun(t.db, t.env, fake, {
+				userId: USER,
+				runId: 'arun_effort_launch',
+				issueId: issue,
+				projectId: PROJECT,
+				runner,
+				tier: 'balanced',
+				model: 'claude-sonnet-5',
+				effort: 'high',
+				now: NOW
+			})
+		).toBe('launched');
+		expect(runById(t, 'arun_effort_launch')).toMatchObject({
+			status: 'running',
+			effort_application_status: 'confirmed'
+		});
 	});
 
 	it('consecutive failures double the backoff', async () => {

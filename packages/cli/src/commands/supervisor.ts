@@ -10,7 +10,7 @@ import {
 	withCommon,
 	type CommonOpts
 } from '../common.js';
-import { hoursLabel, quotaLabel, runnerStatusLabel } from '../format.js';
+import { hoursLabel, quotaLabel, runnerConcurrencyLabel, runnerStatusLabel } from '../format.js';
 import {
 	deltaLabel,
 	durationLabel,
@@ -78,6 +78,8 @@ export function queueHeadline(block: QueueBlock): string {
 			return `${runner} backing off`;
 		case 'rate_limited':
 			return `${runner} rate limited`;
+		case 'effort_incompatible':
+			return `${runner} cannot apply the requested effort`;
 		case 'no_rule':
 			return 'no matching routing rule';
 		case 'no_targets':
@@ -109,7 +111,7 @@ export function queueFix(block: QueueBlock): string | null {
 		case 'at_capacity':
 			// No CLI command sets a runner's server-side max_concurrent: the daemon's
 			// flag rides along on every poll, so restarting it is the CLI remedy.
-			return `raise the cap on ${runner} — restart its daemon with tines runner daemon --max-concurrent N, or edit the runner on the Agents page`;
+			return `edit ${runner} on the Agents page; if web adjustment is off, relaunch locally with tines runner daemon --allow-remote-concurrency --max-concurrent N`;
 		case 'quota_exhausted':
 			return block.binding?.kind === 'state_roster'
 				? 'raise the roster limit — tines supervisor quota roster --default <n> --state <workflow>/<state>=<n> (this replaces the whole roster, so restate every override you keep)'
@@ -131,6 +133,8 @@ export function queueFix(block: QueueBlock): string | null {
 			return 'retries automatically; check the daemon log if it keeps failing';
 		case 'rate_limited':
 			return 'resumes automatically when the usage window resets; nothing to do';
+		case 'effort_incompatible':
+			return `upgrade or reconnect ${runner}, or choose a model and effort it reports as supported`;
 		default:
 			return null;
 	}
@@ -237,7 +241,8 @@ export function register(program: Command): void {
 					`  ${r.name}`,
 					r.type,
 					runnerStatusLabel(r),
-					`${r.active_runs}/${r.max_concurrent}`
+					`${r.active_runs}/${r.max_concurrent}`,
+					runnerConcurrencyLabel(r)
 				])
 			);
 		}

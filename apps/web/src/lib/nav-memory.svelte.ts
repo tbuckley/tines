@@ -132,7 +132,7 @@ export const navMemory = {
 	get issuesHref(): string {
 		return `/issues${memory.issuesQuery}`;
 	},
-	/** Where the Projects nav tab should point. */
+	/** Where the Manage projects action should point. */
 	get projectsHref(): string {
 		return `/projects${memory.projectsQuery}`;
 	},

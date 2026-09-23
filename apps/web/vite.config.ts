@@ -2,8 +2,17 @@ import adapter from '@sveltejs/adapter-cloudflare';
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { configDefaults, defineConfig } from 'vitest/config';
+import {
+	deploymentIdentityPlugins,
+	resolveDeploymentIdentity
+} from './scripts/deployment-identity.mjs';
+
+const deploymentIdentity = resolveDeploymentIdentity();
 
 export default defineConfig({
+	define: {
+		__TINES_DEPLOYMENT__: JSON.stringify(deploymentIdentity)
+	},
 	server: {
 		// The simulated EMAIL binding writes each message under .wrangler/tmp/,
 		// and D1/R2 state lives under .wrangler/state/: neither is source, and
@@ -18,7 +27,8 @@ export default defineConfig({
 		// NAVPERF=1 to opt in.
 		exclude: [
 			...configDefaults.exclude,
-			...(process.env.NAVPERF === '1' ? [] : ['**/nav-perf.test.ts'])
+			...(process.env.NAVPERF === '1' ? [] : ['**/nav-perf.test.ts']),
+			...(process.env.STATSPERF === '1' ? [] : ['**/stats-perf.test.ts'])
 		],
 		environment: 'node',
 		// The unit-test DB is node:sqlite (src/lib/server/api/test-db.ts),
@@ -28,6 +38,7 @@ export default defineConfig({
 		execArgv: ['--disable-warning=ExperimentalWarning']
 	},
 	plugins: [
+		...deploymentIdentityPlugins(deploymentIdentity),
 		tailwindcss(),
 		sveltekit({
 			compilerOptions: {
@@ -53,7 +64,8 @@ export default defineConfig({
 			// but that only allowlists origins — a request with no Origin
 			// header at all is still rejected — so it cannot express "skip the
 			// check"; the deprecation notice stays until Kit offers a way.
-			csrf: { checkOrigin: false }
+			csrf: { checkOrigin: false },
+			csp: { mode: 'nonce', directives: { 'script-src': ['self'] } }
 		})
 	]
 });

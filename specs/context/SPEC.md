@@ -21,7 +21,7 @@ Issues tell an agent *what* to do; context tells it *how*. This spec adds **cont
 - **Agent delivery**: no workspace seeding, no automatic prompt injection, no launching. The CLI can print/export the effective context; nothing acts on it.
 - **Roles as entities**: the scope model is designed so a role dimension slots in later as one more column, but no role table, no role UI, no role filtering ships now.
 - **Sharing/reuse across users**, and no library of shareable context bundles. Items belong to one user and are generally written for one scope.
-- **Binary or large files**: skill files are small text files stored in D1. Uploads, binaries, and R2-backed bundles are future work.
+- **Binary or large files**: skill files are small text files stored in D1. The web editor can read local text files from a selected folder, but uploads, binaries, and R2-backed bundles are future work.
 - **Versioning**: items are mutable and live-referenced, like workflows. Edits emit events; no history.
 - **Inheritance beyond states**: inheritance ships on the **state** dimension only (Tines/238). Projects are still flat; when nesting lands (Tines/185) the project dimension applies the same rule stated below, unchanged. **Item-to-item inheritance** — one item extending another regardless of scope — is the reserved path for sharing between unrelated projects and is deliberately not built.
 
@@ -41,10 +41,10 @@ A typed, user-owned unit of context. Every item has:
 #### Kind payloads
 
 - **`prompt`** — a Markdown body. The atom of prompt stitching. Capped at 32 KB.
-- **`skill`** — a set of text files, each with a workspace-relative **path** and **content**. Paths are validated: relative, forward slashes, no `..` or leading `/`, no `=`, no duplicates within the skill. Caps: ≤ 20 files, ≤ 100 KB total per skill. This matches the SKILL.md-style pattern: a directory of instructions/scripts seeded into an agent's workspace at `skills/<name>/…`.
+- **`skill`** — a set of text files, each with a workspace-relative **path** and **content**. Paths are validated: relative, forward slashes, no `..` or leading `/`, no `=`, no duplicates within the skill. Caps: ≤ 20 files, ≤ 100 KiB total per skill, including the UTF-8 bytes of paths and contents. This matches the SKILL.md-style pattern: a directory of instructions/scripts seeded into an agent's workspace at `skills/<name>/…`.
 - **`repo`** — a pointer: **URL** (required), **branch** (optional), **checkout directory** (optional; defaults at read time to the URL's basename with any trailing `.git` stripped). Tines stores no repository content — the consumer checks it out.
 
-All caps are measured in bytes of UTF-8 and enforced at the API layer with structured 422s; clients (including the CLI) just relay the error.
+All caps are measured in bytes of UTF-8 and enforced at the API layer with structured 422s. The web skill editor preflights file count and total bytes so a folder import can be reduced before save; other clients, including the CLI, relay API errors.
 
 ### Scope: intersection of dimensions
 
@@ -136,7 +136,7 @@ The issue block is generated (not a context item), formatted as:
 
 ### Comments
 
-**<actor>** (<timestamp, ISO 8601>):
+**<actor>** (<timestamp, ISO 8601>, ID: <comment id>):
 <comment markdown, verbatim>
 
 *(chronological; "No comments yet." when empty. The section ends with:
@@ -151,7 +151,7 @@ Each transition carries its runnable CLI command (action name quoted, so multi-w
 
 Assembly order is context first, issue block last — the same specific-things-last logic as the layer ordering: the agent reads how to work, then what the work is, with the task nearest the end of the prompt. The issue block is purely factual; any instructions (what "being in Review" means, how to report back) belong in context items — state-scoped prompts are the natural home for stage instructions. Tines injects no directive text of its own; that is supervisor-phase territory.
 
-The launch prompt is a read-time formatting of data that already exists, so it stays perfectly in sync with the issue and emits no events. Launching agents with it is explicitly out of scope — for now the user copies it from the UI, or an agent reads it via the CLI.
+The launch prompt is a read-time formatting of data that already exists, so it stays perfectly in sync with the issue and emits no events. It retains every human or unknown-provenance comment, the final comment from the newest completed same-issue run with a comment, and the three newest other run-attributed comments. Older agent bodies become one line of IDs with an `issues show --json` + jq current-body lookup and a full `issues show` fallback; stored comments and ordinary API, CLI, and UI history remain complete. Each effective skill is described once with its scope and conventional `skills/<name>/SKILL.md` path; descriptions are discovery cues, never inlined skill bodies.
 
 ### Events
 
@@ -224,7 +224,7 @@ Context `q` is a complete literal substring match over name and description, cas
     "text": "…",                    // the stitched prompt, headings included
     "parts": [ { "item_id", "name", "scope": {…ids + label}, "body" } ]  // layer order
   },
-  "skills": [ { "item_id", "name", "scope": {…}, "files": [ { "path", "content" } ] } ],
+  "skills": [ { "item_id", "name", "description", "scope": {…}, "files": [ { "path", "content" } ] } ],
   "repos":  [ { "item_id", "name", "scope": {…}, "url", "branch"?, "dir" } ],   // dir always resolved
   "overridden": [ { "item_id", "kind", "name", "scope": {…}, "overridden_by": "<item_id>" } ],
   "conflicts": [ { "kind": "repo_dir", "dir": "…", "item_ids": [ … ] } ]
@@ -266,9 +266,11 @@ Conventions:
 
 ## Web UI
 
-### Global Context tab
+### Global Context page
 
-A nav tab, **Context** (`/context`): under All projects it lists all items; under a project focus it lists items anchored directly on that project or on one of its issues, plus the count of global and state-scoped library items that also apply. Kind, workflow, label and search filters remain; project scope comes from focus. Create defaults to the focus while the full scope picker remains available. The HTTP API's explicit `project` filter retains its narrower direct-project semantics; the project-touching rule is web presentation only. Legacy `?project=<id|name>` links set focus once and redirect, while ordinary project-page links use plain `/context` so link preloading cannot mutate focus.
+The complete **Context** page (`/context`) is reached through “View all context”
+links on issue, project, and workflow detail pages rather than primary
+navigation. Under All projects it lists all items; under a project focus it lists items anchored directly on that project or on one of its issues, plus the count of global and state-scoped library items that also apply. Kind, workflow, label and search filters remain; project scope comes from focus. Create defaults to the focus while the full scope picker remains available. The HTTP API's explicit `project` filter retains its narrower direct-project semantics; the project-touching rule is web presentation only. Legacy `?project=<id|name>` links set focus once and redirect, while ordinary contextual links use plain `/context` so link preloading cannot mutate focus.
 
 ### In-place sections
 
@@ -279,7 +281,7 @@ Which scopes appear where: each element's page lists items whose scope **include
   - **Effective context** (collapsed by default): the assembled bundle — the stitched prompt rendered with a subtle source badge per part, the skill list, the repo list, overridden items struck-through with what beat them, and a warning for checkout-dir conflicts. A caption notes the current state, since transitioning changes the set; when the issue transitions, the panel updates with the same animation language as the rest of the page (entering/leaving items slide/fade, respecting `prefers-reduced-motion`). The panel shows **context only** — the issue block is not previewed here, since the rest of the page *is* the issue.
   - A **View launch prompt** action on the panel opens the full prompt (context + issue block) in a dialog: rendered and raw views, with a copy-to-clipboard button — the manual path for launching an agent by hand until the supervisor exists.
 - **Project detail** gains a **Context** section: project-only items first, then `project ∧ state` items grouped under their state names (issue-anchored items excluded per the rule above). Inline create defaults the scope to this project, with an optional "only in state…" refinement.
-  - *Revised 2026-09 (Tines/146, Tines/260):* the `project ∧ state` items are collapsed into one accordion row per workflow (closed by default, single-select, workflows alphabetical, states in workflow position order, one `{n} states · {m} items` chip) beneath the still-expanded project-only list, and the whole section moves below Issues, Scheduled tasks and Agent routing. `View all in Context` opens plain `/context`; opening the project page already sets focus.
+	- *Revised 2026-09 (Tines/146, Tines/260, Tines/644):* the `project ∧ state` items are collapsed into one accordion row per workflow (closed by default, single-select, workflows alphabetical, states in workflow position order, one `{n} states · {m} items` chip) beneath the still-expanded project-only list, and the whole section moves below Issues, Scheduled tasks and Agent routing. `View all context` opens plain `/context`; opening the project page already sets focus.
 - **Workflow detail** shows, per state, a small context indicator (count badge on the state's row/node); selecting a state reveals its non-issue-anchored items — `state`-only and `project ∧ state` (labeled with their project). Inline create defaults to that state. This is also where state removal warns about attached context and offers the forced delete with the item list.
 
 ### Item editor
@@ -287,7 +289,7 @@ Which scopes appear where: each element's page lists items whose scope **include
 One dialog/page for all kinds — kind picker up front (locked when editing), then:
 
 - **Prompt**: name, description, Markdown editor with preview (same component as issue descriptions).
-- **Skill**: name (slug-validated), description, and a small file editor — a file list (add/rename/remove paths) with a text editor per file; validation errors (bad path, size caps) inline.
+- **Skill**: name (slug-validated), description, and a small file editor — a file list (add/rename/remove paths) with a text editor per file; validation errors (bad path, size caps) inline. “Add from folder” recursively reads a locally selected directory, requires its root `SKILL.md`, and merges text files by exact relative path. On the first successful import into a new draft, valid root front-matter name and one-line description values fill only untouched blank fields and remain editable, with their source identified beside the field. The draft shows ignored noise and live count/byte limits, and every imported row remains editable or removable before the existing save request.
 - **Repo**: name, URL, branch, checkout dir (placeholder showing the derived default).
 
 Plus the scope picker: three optional selectors (project, workflow → state, issue) rendered as removable chips, with the coherence rules enforced live (picking an issue constrains the state list to its workflow, etc.).
@@ -315,7 +317,7 @@ Done when this loop works end-to-end:
 6. All creates/edits/deletes appear in the activity feed with correct actor attribution, including via API key; an issue-scoped item's events also appear in its project's filtered feed.
 7. Deleting the *Review* state (via workflow PATCH) without `force_delete_context` is rejected with a 422 naming the attached items; retrying with the flag succeeds, reports the swept items, and emits a `context.deleted` event per item. The same posture holds for project and workflow deletion.
 8. The Context tab lists every item with accurate scope chips; `GET /api/v1/context?project=Tines` returns the project's items including `project ∧ state` and `issue ∧ project` ones, and `exact=true` narrows to project-only.
-9. `tines issues prompt tines/1` prints the stitched context followed by the issue block — title, description, current state, every comment with its actor, and the allowed transitions each with its runnable `tines issues move` command (multi-word actions quoted); the same text appears in the issue page's launch-prompt dialog and copies to the clipboard. Adding a comment or transitioning the issue changes the next read accordingly, and pasting a transition's command from the prompt performs that transition.
+9. `tines issues prompt tines/1` prints the stitched context followed by the issue block — title, description, current state, selected essential comments with IDs and actors, recovery commands for older agent comments, effective skill descriptions and paths, and allowed transitions with runnable commands; the same text appears in the launch-prompt dialog. Full issue reads still return every comment.
 
 ## Resolved questions
 
@@ -343,7 +345,72 @@ From the spec review:
 
 From later work:
 
+- **2026-09-20, Tines/642 — Agent Skills use the standard workspace directory**: this supersedes the original `skills/<name>/…` export and launch-catalog decisions above. `tines issues context --out` and local daemons write the complete effective set to generated `.agents/skills/<name>/…`; replacement owns only that subtree, validates containment and repository overlap first, and preserves stored file bytes. The shared issue prompt no longer lists skills. Automatic discovery and environment-specific supervisor recovery cues replace that catalog without changing effective-context JSON or stored metadata.
+
+- **2026-09-19, Tines/602 — folder import is a draft merge, not an upload**: the browser reads strict UTF-8 text locally and merges by exact relative path; matching rows are replaced and unrelated edits survive. A picked folder must contain root `SKILL.md`; `.git`, `node_modules`, and `.DS_Store` entries are ignored, while other dotfiles remain reviewable. Nothing reaches the API until Save, and the existing 20-file / 100 KiB path-plus-content limits remain authoritative.
+
+- **2026-09-20, Tines/636 — first folder import may seed blank metadata**: a new skill draft reads valid string `name` and `description` values from root `SKILL.md` front matter once. Each untouched blank field fills independently; typed or cleared fields, later imports, and all existing-item metadata remain unchanged. Source hints disappear when a user edits the inferred field, and form overrides never rewrite the imported file.
+
 - **2026-09-01, Tines/92 — repo clone URL is `--repo-url`, not `--url`**: `-u, --url` is the API base URL on every CLI command without exception. The repo kind originally took `--url` for the clone URL and suppressed the base-URL flag, which left `context create` unable to target a non-default deployment except via `TINES_API_URL`. Payload flags that happen to hold a URL are named for what they hold.
 
 - **2026-09-10, Tines/392 — transfer rescopes the project dimension in place**: when an issue moves to another project, every context row anchored to *both* the source project and that issue moves its project dimension with it, inside the same transaction — keeping its ID, version, position, files, timestamps and every other dimension, including rows whose state/label dimension is currently dormant. Issue-only and shared rows are untouched. Because the version is deliberately *not* bumped, `updateContextItem`'s CAS compares the originally read scope columns as well as the version, so an edit that read the pre-move scope cannot restore it; a `context_item` trigger rejects any project∧issue scope that does not match the issue's current project.
 - **2026-09-10, Tines/431 — overridden repositories remain inspectable**: ordinary effective-context output includes each losing repository candidate's URL, branch and resolved checkout directory. This is presentation metadata only; winner precedence and signed transfer changes are unchanged.
+
+## Env items (Tines/597)
+
+An `env` context item is one environment variable delivered to every run of
+the issues it matches. The item **name is the variable name**
+(`[A-Z_][A-Z0-9_]*`; `TINES_*` and `PATH` are reserved, 422 `reserved_name`),
+so the uniform dedupe-by-name rule gives per-variable override across scopes
+for free. Payload: `value` (≤ 16 KiB UTF-8, no NUL bytes), `secret` (boolean, default
+false), `hint` (≤ 200 chars, user-supplied display text, never derived from
+the value).
+
+**Storage.** Three nullable columns on `context_item` (migration
+`0039_context_env.sql`): `env_value`, `env_value_enc`, `env_hint`. Exactly one
+of the first two is set; `secret := env_value_enc IS NOT NULL`. Secrets are
+AES-256-GCM under `SECRET_ENCRYPTION_KEY` (the GitHub PAT scheme, `crypto.ts`).
+Without the key, storing a secret is a 503 `encryption_unavailable`; plaintext
+is never written. Columns rather than `config` because publication snapshots
+and the library exporters copy `config` wholesale. Key rotation / re-encrypt
+tooling is the same gap the PAT and provider keys have today.
+
+**Reads.** `serializeItem` is the single gate: an env item serializes as
+`secret`, `value_set: true`, `hint`, plus `value` only when non-secret. The
+effective context gains `env: EffectiveEnv[]` (same shape, no secret values),
+`ContextSummary.envs` counts distinct names, and the launch prompt carries a
+names-only line ("Environment variables set for this run: `GH_TOKEN`
+(secret), …"). Events list the changed field names (`value`, `secret`,
+`hint`), never a value.
+
+**Writes.** `value` replaces (write-only for secrets); `secret: true` on a
+public item encrypts in place; `secret: false` on a secret item is a 422
+`secret_irreversible` (delete and recreate); `value: null` is a 422. Run keys
+cannot create, edit or delete env items (403 `run_key_forbidden`,
+`reason: env_context`) — a compromised run must not plant variables for later
+runs. Reads stay open; they never carry secrets.
+
+**Delivery.** Local runners: the daemon polls with `env_delivery: 1`; the
+server answers with `RunnerAssignment.env` (top-level, not in `bundle`, so it
+never reaches the workspace files) and the daemon merges it into the spawn
+environment with `TINES_*` and `PATH` always winning. It masks secret values
+(`***`, all non-empty plain and JSON-escaped forms, including across stream chunks) in the rendered log and the
+raw NDJSON spool — best-effort; a harness that re-encodes its environment
+defeats a substring match. A daemon without the capability gets no env and one
+`[env] … tines CLI is too old …` line in the run log. Claude managed runners:
+one `environment_variable` vault credential per secret item (`unrestricted`
+egress in v1, header injection) beside the run-key credential, and `export`
+lines in the preamble for public values (the `TINES_API_URL` precedent — the
+SDK has no plaintext env channel). The `claude_managed` resume fingerprint
+gains an `env_digest` (names, item ids, versions — no values), serialized only
+when env items exist so older fingerprints stay byte-identical; a changed env
+set falls back to the existing cold launch, which builds a fresh vault.
+
+**Exclusions.** Env items never travel: publication snapshots, the v2/v3
+library exporters and `exportWorkflowPackage` filter the kind out, and the
+library importer rejects env entries as deployment configuration. `tines issues
+context --out` writes no env file — the daemon delivers env through the
+process environment only.
+
+CLI: `tines context create --kind env --name NAME --value <v|@file|-> [--secret] [--hint <text>]`;
+`tines context edit <id> [--value …] [--secret] [--hint …]`.

@@ -233,6 +233,7 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	// is fenced, so a run cannot re-home itself into different guidance.
 	{ pattern: /^\/api\/v1\/issues\/[^/]+\/transfer$/, readable: true },
 	{ pattern: /^\/api\/v1\/api-keys(\/|$)/ },
+	{ pattern: /^\/api\/v1\/host\/workflow-moderation(\/|$)/ },
 	// The label library is vocabulary, not classification: run keys may read it
 	// (`tines labels list` — the launch prompt points at it) and may apply and
 	// remove existing labels (/issues/:id/labels stays open to them), but
@@ -247,6 +248,9 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	// Retirement inventories expose complete guidance payloads and the write
 	// routes can drain dispatch or replace that guidance. Runs must use neither.
 	{ pattern: /^\/api\/v1\/state-retirement(\/|$)/ },
+	// Agents may validate and prepare publication proofs, but only a human or
+	// named key may publish, withdraw, restore, or install the hosted snapshot.
+	{ pattern: /^\/api\/v1\/publications\/[^/]+\/(publish|withdraw|restore)$/ },
 	// Archiving is an operator act: an agent must not freeze (or thaw) the
 	// project it is working in, least of all the one draining around it.
 	{ pattern: /^\/api\/v1\/projects\/[^/]+\/(archive|unarchive)$/ },
@@ -273,6 +277,7 @@ export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 		403,
 		'run_key_forbidden',
 		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys, ' +
+			'cannot create, edit or delete env context items, ' +
 			'cannot import a library or install a workflow package, cannot archive or unarchive projects, cannot create, rename, or delete ' +
 			'labels, cannot inspect or apply state-retirement plans, and cannot apply or remove a label a routing rule is scoped to (reading the library and ' +
 			'applying other existing labels is fine). ' +

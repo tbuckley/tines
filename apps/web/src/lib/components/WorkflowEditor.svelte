@@ -7,9 +7,14 @@
 		WorkflowResponse
 	} from '@tines/shared';
 	import { ApiError, ARTIFACT_NAME_PATTERN, ARTIFACT_TYPES, STATE_CATEGORIES } from '@tines/shared';
+	import IconArrowDown from '@tabler/icons-svelte/icons/arrow-down';
+	import IconArrowUp from '@tabler/icons-svelte/icons/arrow-up';
+	import IconChevronDown from '@tabler/icons-svelte/icons/chevron-down';
+	import IconChevronUp from '@tabler/icons-svelte/icons/chevron-up';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
-	import type { Snippet } from 'svelte';
+	import { flip } from 'svelte/animate';
+	import { tick, type Snippet } from 'svelte';
 	import { slide } from 'svelte/transition';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -42,6 +47,34 @@
 		/** Extra controls for the save row, aligned opposite the submit button. */
 		footerActions?: Snippet;
 	} = $props();
+	const previewUid = $props.id();
+	const previewHeadingId = `workflow-preview-${previewUid}`;
+	const previewRegionId = `workflow-preview-region-${previewUid}`;
+	let previewFit = $state(true);
+	let previewRegion: HTMLDivElement | undefined = $state();
+	const PREVIEW_FADE = 24;
+	const PREVIEW_EDGE = 2;
+	let previewHiddenLeft = $state(false);
+	let previewHiddenRight = $state(false);
+	const previewMask = $derived(
+		previewHiddenLeft || previewHiddenRight
+			? `linear-gradient(to right, ${previewHiddenLeft ? 'transparent' : '#000'} 0, #000 ${PREVIEW_FADE}px, #000 calc(100% - ${PREVIEW_FADE}px), ${previewHiddenRight ? 'transparent' : '#000'} 100%)`
+			: undefined
+	);
+
+	function measurePreviewOverflow() {
+		const el = previewRegion;
+		if (!el) return;
+		previewHiddenLeft = el.scrollLeft > PREVIEW_EDGE;
+		previewHiddenRight = el.scrollLeft < el.scrollWidth - el.clientWidth - PREVIEW_EDGE;
+	}
+
+	async function setPreviewFit(fit: boolean) {
+		if (fit === previewFit) return;
+		previewFit = fit;
+		await tick();
+		if (previewRegion) previewRegion.scrollLeft = 0;
+	}
 
 	let nextKey = 0;
 	const freshKey = () => `new-${nextKey++}`;
@@ -114,19 +147,73 @@
 
 	let saving = $state(false);
 	let errorMessage = $state<string | null>(null);
+	let moveAnnouncement = $state('');
+	let expandedStateKey = $state<string | null>(null);
+	const stateRowElements = new Map<string, HTMLDivElement>();
 
-	function addState() {
+	function registerStateRow(node: HTMLDivElement, key: string) {
+		stateRowElements.set(key, node);
+		return {
+			destroy() {
+				if (stateRowElements.get(key) === node) stateRowElements.delete(key);
+			}
+		};
+	}
+
+	async function addState() {
 		const key = freshKey();
 		states = [...states, { key, name: '', category: 'active' }];
+		expandedStateKey = key;
+		await tick();
+		stateRowElements
+			.get(key)
+			?.querySelector<HTMLInputElement>('input[aria-label="State name"]')
+			?.focus();
 	}
 
 	function removeState(key: string) {
 		states = states.filter((s) => s.key !== key);
 		transitions = transitions.filter((t) => t.from !== key && t.to !== key);
+		if (expandedStateKey === key) expandedStateKey = null;
 		if (initialKey === key) {
 			const fallback = states.find((s) => s.category === 'backlog' || s.category === 'active');
 			initialKey = fallback?.key ?? states[0]?.key ?? '';
 		}
+	}
+
+	async function toggleState(key: string) {
+		const opening = expandedStateKey !== key;
+		expandedStateKey = opening ? key : null;
+		await tick();
+		const rowElement = stateRowElements.get(key);
+		if (opening) {
+			rowElement?.querySelector<HTMLInputElement>('input[aria-label="State name"]')?.focus();
+		} else {
+			rowElement?.querySelector<HTMLButtonElement>('[data-state-toggle]')?.focus();
+		}
+	}
+
+	async function moveState(index: number, delta: -1 | 1) {
+		const destination = index + delta;
+		if (saving || destination < 0 || destination >= states.length) return;
+		const next = [...states];
+		const [row] = next.splice(index, 1);
+		next.splice(destination, 0, row);
+		states = next;
+		moveAnnouncement = `${stateName(row.key)} moved to position ${destination + 1} of ${states.length}.`;
+
+		await tick();
+		const direction = delta === -1 ? 'up' : 'down';
+		const opposite = delta === -1 ? 'down' : 'up';
+		const rowElement = stateRowElements.get(row.key);
+		const movedButton = rowElement?.querySelector<HTMLButtonElement>(
+			`button[data-move-direction="${direction}"]`
+		);
+		if (movedButton && !movedButton.disabled) movedButton.focus();
+		else
+			rowElement
+				?.querySelector<HTMLButtonElement>(`button[data-move-direction="${opposite}"]`)
+				?.focus();
 	}
 
 	function addTransition(fromKey: string) {
@@ -167,11 +254,32 @@
 			category: s.category
 		})),
 		transitions: transitions.map((t) => ({
+			id: t.key,
 			name: t.name.trim() || undefined,
 			from_state_id: t.from,
 			to_state_id: t.to
 		})),
 		initial_state_id: initialKey
+	});
+
+	$effect(() => {
+		// Editing the workflow can change the graph's intrinsic width without
+		// changing the scroller. Keep each fade matched to the content still
+		// hidden beyond that edge, including after switching zoom modes.
+		void preview;
+		void previewFit;
+		const el = previewRegion;
+		if (!el) return;
+		const sync = () => measurePreviewOverflow();
+		sync();
+		const frame = requestAnimationFrame(sync);
+		const observer = new ResizeObserver(sync);
+		observer.observe(el);
+		if (el.firstElementChild) observer.observe(el.firstElementChild);
+		return () => {
+			cancelAnimationFrame(frame);
+			observer.disconnect();
+		};
 	});
 
 	// Inline validation, mirroring the server rules.
@@ -263,7 +371,7 @@
 		}
 	}
 
-	const dur = () => (prefersReducedMotion() ? 0 : 180);
+	const dur = (milliseconds = 180) => (prefersReducedMotion() ? 0 : milliseconds);
 </script>
 
 <div class="grid gap-8 lg:grid-cols-2">
@@ -284,191 +392,347 @@
 		</div>
 
 		<div class="space-y-3">
-			<div class="flex items-center justify-between">
-				<h3 class="text-sm font-semibold">States</h3>
+			<div class="flex items-start justify-between gap-3">
+				<div>
+					<h3 class="flex items-baseline gap-2 text-sm font-semibold">
+						States <span class="text-muted-foreground text-xs font-normal">{states.length}</span>
+					</h3>
+					<p class="text-muted-foreground mt-1 max-w-xl text-xs">
+						Order determines which transitions count as sent back in State analysis. Saving a new
+						order also updates how past transitions are counted.
+					</p>
+				</div>
 				<Button type="button" size="sm" variant="outline" onclick={addState}>
 					<IconPlus size={14} /> Add state
 				</Button>
 			</div>
-			{#each states as row, i (row.key)}
-				<div class="space-y-2 rounded-lg border p-3" transition:slide={{ duration: dur() }}>
-					<div class="flex flex-wrap items-center gap-2">
-						<Input
-							bind:value={states[i].name}
-							placeholder="State name"
-							class="min-w-36 flex-1"
-							aria-label="State name"
-						/>
-						<Select bind:value={states[i].category} class="w-40 max-sm:w-36" aria-label="Category">
-							{#each STATE_CATEGORIES as cat (cat)}
-								<option value={cat}>{CATEGORY_LABELS[cat]}</option>
-							{/each}
-						</Select>
-						<label
-							class="text-muted-foreground flex shrink-0 items-center gap-1.5 text-xs"
-							title="Newly created issues land here"
-						>
-							<input type="radio" name="initial-state" value={row.key} bind:group={initialKey} />
-							initial
-						</label>
-						<Button
-							type="button"
-							size="icon"
-							variant="ghost"
-							class="text-muted-foreground hover:text-destructive size-8 shrink-0"
-							onclick={() => removeState(row.key)}
-							aria-label="Remove state"
-						>
-							<IconTrash size={15} />
-						</Button>
-					</div>
-					{#if !row.id}
-						<!-- creation nudge: seed the state's instructions while it's being made -->
-						{#if row.promptOpen}
-							<div class="space-y-1" transition:slide={{ duration: dur() }}>
-								<label
-									class="text-muted-foreground text-xs font-medium"
-									for="state-prompt-{row.key}"
-								>
-									Stage instructions — what “being in {row.name.trim() || 'this state'}” means for
-									an agent
-								</label>
-								<Textarea
-									id="state-prompt-{row.key}"
-									bind:value={states[i].prompt}
-									rows={3}
-									class="text-xs"
-									placeholder="Saved as a state-scoped context prompt named “instructions”…"
-								/>
-							</div>
-						{:else}
+			<div class="sr-only" role="status" aria-live="polite">{moveAnnouncement}</div>
+			<div class="divide-y overflow-hidden rounded-lg border">
+				{#each states as row, i (row.key)}
+					{@const outgoing = transitions.filter((t) => t.from === row.key)}
+					{@const requirements = outgoing.flatMap((transition) => transition.requires)}
+					<div
+						class="bg-background"
+						data-state-row={row.key}
+						data-state-name={row.name.trim() || 'unnamed'}
+						use:registerStateRow={row.key}
+						transition:slide={{ duration: dur() }}
+						animate:flip={{ duration: dur(420) }}
+					>
+						<div class="flex min-w-0 items-stretch">
 							<Button
 								type="button"
-								size="sm"
 								variant="ghost"
-								class="text-muted-foreground h-7 px-2 text-xs"
-								onclick={() => (states[i].promptOpen = true)}
+								class="hover:bg-muted/60 h-auto min-w-0 flex-1 justify-start rounded-none px-4 py-3 text-left whitespace-normal"
+								aria-label={`${expandedStateKey === row.key ? 'Collapse' : 'Edit'} ${stateName(row.key)} state`}
+								aria-expanded={expandedStateKey === row.key}
+								aria-controls={`state-editor-${previewUid}-${row.key}`}
+								data-state-toggle
+								onclick={() => toggleState(row.key)}
 							>
-								<IconPlus size={12} /> Add stage instructions
-							</Button>
-						{/if}
-					{/if}
-					{#if states.length > 1}
-						<div class="space-y-1.5">
-							{#each transitions.filter((t) => t.from === row.key) as transition (transition.key)}
-								{@const ti = transitions.findIndex((t) => t.key === transition.key)}
-								<div class="space-y-1.5" transition:slide={{ duration: dur() }}>
-									<div class="flex flex-wrap items-center gap-2">
-										<Input
-											bind:value={transitions[ti].name}
-											placeholder="Action name, e.g. approve"
-											class="h-8 min-w-28 flex-1 text-xs"
-											aria-label="Action name"
-										/>
-										<span class="text-muted-foreground text-xs">→</span>
-										<Select
-											bind:value={transitions[ti].to}
-											class="h-8 w-36 text-xs"
-											aria-label="Target state"
+								<span class="min-w-0 flex-1 space-y-1">
+									<span class="flex flex-wrap items-center gap-1.5">
+										<span class="text-foreground font-semibold"
+											>{row.name.trim() || 'Unnamed state'}</span
 										>
-											{#each states.filter((s) => s.key !== row.key) as target (target.key)}
-												<option value={target.key}>{target.name.trim() || 'unnamed'}</option>
-											{/each}
-										</Select>
-										<Button
-											type="button"
-											size="icon"
-											variant="ghost"
-											class="text-muted-foreground hover:text-destructive size-7 shrink-0"
-											onclick={() => removeTransition(transition.key)}
-											aria-label={`Remove action from ${stateName(row.key)}`}
-										>
-											<IconTrash size={13} />
-										</Button>
-									</div>
-									<!-- artifact requirements: the action only passes with a fresh
-									     artifact in the named slot (attached since the issue last
-									     entered this state) -->
-									<div class="ml-4 space-y-1.5">
-										{#each transition.requires as requirement (requirement.key)}
-											{@const ri = transitions[ti].requires.findIndex(
-												(r) => r.key === requirement.key
-											)}
-											<div
-												class="flex flex-wrap items-center gap-2"
-												transition:slide={{ duration: dur() }}
+										{#if initialKey === row.key}
+											<span
+												class="bg-muted text-muted-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium"
 											>
-												<span class="text-muted-foreground shrink-0 text-xs">requires artifact</span
+												Initial
+											</span>
+										{/if}
+										<span class="text-muted-foreground ml-auto text-xs font-normal">
+											{CATEGORY_LABELS[row.category]}
+										</span>
+									</span>
+									<span class="text-muted-foreground block truncate text-xs font-normal">
+										{outgoing.length > 0
+											? outgoing
+													.map(
+														(transition) =>
+															`${transition.name.trim() || 'Unnamed action'} → ${stateName(transition.to)}`
+													)
+													.join(' · ')
+											: 'No outgoing actions'}
+									</span>
+									{#if requirements.length > 0}
+										<span class="text-muted-foreground block truncate text-xs font-normal">
+											{requirements[0].artifact.trim() || 'Unnamed artifact'} · {requirements.length}
+											required {requirements.length === 1 ? 'artifact' : 'artifacts'}
+										</span>
+									{/if}
+									{#if !row.id}
+										<span class="text-muted-foreground block truncate text-xs font-normal">
+											{row.prompt?.trim().split('\n')[0] || 'No stage instructions'}
+										</span>
+									{/if}
+								</span>
+								{#if expandedStateKey === row.key}
+									<IconChevronUp class="text-muted-foreground" size={16} />
+								{:else}
+									<IconChevronDown class="text-muted-foreground" size={16} />
+								{/if}
+							</Button>
+							<div class="flex shrink-0 items-center gap-0.5 border-l px-1.5">
+								<Button
+									type="button"
+									size="icon"
+									variant="ghost"
+									class="text-muted-foreground size-8"
+									disabled={saving || i === 0}
+									aria-label={`Move ${stateName(row.key)} up`}
+									title={`Move ${stateName(row.key)} up`}
+									data-move-direction="up"
+									onclick={() => moveState(i, -1)}
+								>
+									<IconArrowUp size={14} />
+								</Button>
+								<Button
+									type="button"
+									size="icon"
+									variant="ghost"
+									class="text-muted-foreground size-8"
+									disabled={saving || i === states.length - 1}
+									aria-label={`Move ${stateName(row.key)} down`}
+									title={`Move ${stateName(row.key)} down`}
+									data-move-direction="down"
+									onclick={() => moveState(i, 1)}
+								>
+									<IconArrowDown size={14} />
+								</Button>
+							</div>
+						</div>
+
+						{#if expandedStateKey === row.key}
+							<div
+								id={`state-editor-${previewUid}-${row.key}`}
+								class="bg-muted/20 overflow-hidden border-t"
+								role="region"
+								aria-label={`Edit ${stateName(row.key)} state`}
+								in:slide={{ duration: dur(360) }}
+								out:slide={{ duration: dur(240) }}
+							>
+								<div class="space-y-5 p-4">
+									<section class="space-y-3" aria-label="State details">
+										<div class="grid gap-3 sm:grid-cols-[minmax(0,3fr)_minmax(9rem,2fr)]">
+											<div class="space-y-1.5">
+												<label class="text-xs font-medium" for="state-name-{row.key}"
+													>State name</label
 												>
 												<Input
-													bind:value={transitions[ti].requires[ri].artifact}
-													placeholder="design-doc"
-													class="h-7 w-32 font-mono text-xs"
-													aria-label="Required artifact name"
+													id="state-name-{row.key}"
+													bind:value={states[i].name}
+													placeholder="State name"
+													aria-label="State name"
 												/>
-												<Select
-													bind:value={transitions[ti].requires[ri].type}
-													class="h-7 w-24 text-xs"
-													aria-label="Required artifact type"
+											</div>
+											<div class="space-y-1.5">
+												<label class="text-xs font-medium" for="state-category-{row.key}"
+													>Category</label
 												>
-													<option value="">any type</option>
-													{#each ARTIFACT_TYPES as artifactType (artifactType)}
-														<option value={artifactType}>{artifactType}</option>
+												<Select
+													id="state-category-{row.key}"
+													bind:value={states[i].category}
+													aria-label="Category"
+												>
+													{#each STATE_CATEGORIES as cat (cat)}
+														<option value={cat}>{CATEGORY_LABELS[cat]}</option>
 													{/each}
 												</Select>
-												{#if transitions[ti].requires[ri].type === 'file' || transitions[ti].requires[ri].type === 'text'}
-													<Input
-														bind:value={transitions[ti].requires[ri].contentType}
-														placeholder="content type, e.g. image/"
-														class="h-7 w-36 text-xs"
-														aria-label="Required content type prefix"
-													/>
+											</div>
+										</div>
+										<label
+											class="flex w-fit items-center gap-2 text-sm"
+											title="Newly created issues land here"
+										>
+											<input
+												type="radio"
+												name="initial-state"
+												value={row.key}
+												bind:group={initialKey}
+											/>
+											Make initial state
+										</label>
+									</section>
+
+									{#if !row.id}
+										<section class="space-y-2 border-t pt-4" aria-label="Stage instructions">
+											<div class="flex flex-wrap items-center justify-between gap-2">
+												<h4 class="text-sm font-semibold">Stage instructions</h4>
+												{#if !row.promptOpen}
+													<Button
+														type="button"
+														size="sm"
+														variant="ghost"
+														onclick={() => (states[i].promptOpen = true)}
+													>
+														<IconPlus size={12} /> Add stage instructions
+													</Button>
 												{/if}
-												<Input
-													bind:value={transitions[ti].requires[ri].description}
-													placeholder="what this artifact should contain"
-													class="h-7 min-w-28 flex-1 text-xs"
-													aria-label="Requirement description"
-												/>
-												<Button
-													type="button"
-													size="icon"
-													variant="ghost"
-													class="text-muted-foreground hover:text-destructive size-7 shrink-0"
-													onclick={() => removeRequirement(transition.key, requirement.key)}
-													aria-label="Remove requirement"
+											</div>
+											{#if row.promptOpen}
+												<div class="space-y-1.5" transition:slide={{ duration: dur() }}>
+													<label class="text-muted-foreground text-xs" for="state-prompt-{row.key}">
+														What should an agent do while this issue is in {row.name.trim() ||
+															'this state'}?
+													</label>
+													<Textarea
+														id="state-prompt-{row.key}"
+														bind:value={states[i].prompt}
+														rows={3}
+														placeholder="Saved as a state-scoped context prompt named “instructions”…"
+													/>
+												</div>
+											{/if}
+										</section>
+									{/if}
+
+									<section class="space-y-3 border-t pt-4" aria-label="Actions">
+										<div class="flex flex-wrap items-center justify-between gap-2">
+											<h4 class="text-sm font-semibold">
+												Actions <span class="text-muted-foreground font-normal"
+													>{outgoing.length}</span
 												>
-													<IconTrash size={13} />
-												</Button>
+											</h4>
+											<Button
+												type="button"
+												size="sm"
+												variant="ghost"
+												disabled={states.length < 2}
+												onclick={() => addTransition(row.key)}
+											>
+												<IconPlus size={12} /> Add action
+											</Button>
+										</div>
+										{#if outgoing.length === 0}
+											<p class="text-muted-foreground text-xs">
+												No outgoing actions. {row.category === 'done'
+													? 'Done states usually end the workflow.'
+													: 'Issues here will be stuck until you add one.'}
+											</p>
+										{/if}
+										{#each outgoing as transition (transition.key)}
+											{@const ti = transitions.findIndex((t) => t.key === transition.key)}
+											<div
+												class="bg-background space-y-3 rounded-md border p-3"
+												transition:slide={{ duration: dur(280) }}
+											>
+												<div
+													class="grid gap-2 sm:grid-cols-[minmax(0,3fr)_auto_minmax(9rem,2fr)_auto] sm:items-center"
+												>
+													<Input
+														bind:value={transitions[ti].name}
+														placeholder="Action name, e.g. approve"
+														aria-label="Action name"
+													/>
+													<span class="text-muted-foreground hidden text-xs sm:inline">→</span>
+													<Select bind:value={transitions[ti].to} aria-label="Target state">
+														{#each states.filter((s) => s.key !== row.key) as target (target.key)}
+															<option value={target.key}>{target.name.trim() || 'unnamed'}</option>
+														{/each}
+													</Select>
+													<Button
+														type="button"
+														size="icon"
+														variant="ghost"
+														class="text-muted-foreground hover:text-destructive size-8 justify-self-end"
+														onclick={() => removeTransition(transition.key)}
+														aria-label={`Remove action from ${stateName(row.key)}`}
+													>
+														<IconTrash size={13} />
+													</Button>
+												</div>
+												<div class="space-y-2 border-t pt-3">
+													{#each transition.requires as requirement (requirement.key)}
+														{@const ri = transitions[ti].requires.findIndex(
+															(r) => r.key === requirement.key
+														)}
+														<div
+															class="grid gap-2 sm:grid-cols-2"
+															transition:slide={{ duration: dur(280) }}
+														>
+															<Input
+																bind:value={transitions[ti].requires[ri].artifact}
+																placeholder="Artifact name, e.g. design-doc"
+																class="font-mono text-xs"
+																aria-label="Required artifact name"
+															/>
+															<Select
+																bind:value={transitions[ti].requires[ri].type}
+																aria-label="Required artifact type"
+															>
+																<option value="">any type</option>
+																{#each ARTIFACT_TYPES as artifactType (artifactType)}
+																	<option value={artifactType}>{artifactType}</option>
+																{/each}
+															</Select>
+															{#if transitions[ti].requires[ri].type === 'file' || transitions[ti].requires[ri].type === 'text'}
+																<Input
+																	bind:value={transitions[ti].requires[ri].contentType}
+																	placeholder="Content type, e.g. image/"
+																	aria-label="Required content type prefix"
+																/>
+															{/if}
+															<div class="flex min-w-0 gap-1">
+																<Input
+																	bind:value={transitions[ti].requires[ri].description}
+																	placeholder="What this artifact should contain"
+																	class="min-w-0 flex-1"
+																	aria-label="Requirement description"
+																/>
+																<Button
+																	type="button"
+																	size="icon"
+																	variant="ghost"
+																	class="text-muted-foreground hover:text-destructive size-9"
+																	onclick={() => removeRequirement(transition.key, requirement.key)}
+																	aria-label="Remove requirement"
+																>
+																	<IconTrash size={13} />
+																</Button>
+															</div>
+														</div>
+													{/each}
+													<Button
+														type="button"
+														size="sm"
+														variant="ghost"
+														class="text-muted-foreground"
+														onclick={() => addRequirement(transition.key)}
+														title="Gate this action on a fresh artifact (attached since the issue entered this state)"
+													>
+														<IconPlus size={11} /> Require artifact
+													</Button>
+												</div>
 											</div>
 										{/each}
+									</section>
+
+									<div class="flex flex-wrap items-center justify-between gap-2 border-t pt-4">
 										<Button
 											type="button"
-											size="sm"
 											variant="ghost"
-											class="text-muted-foreground h-6 px-2 text-xs"
-											onclick={() => addRequirement(transition.key)}
-											title="Gate this action on a fresh artifact (attached since the issue entered this state)"
+											class="text-destructive hover:text-destructive"
+											onclick={() => removeState(row.key)}
+											aria-label="Remove state"
 										>
-											<IconPlus size={11} /> Require artifact
+											<IconTrash size={15} /> Remove state
+										</Button>
+										<Button type="button" variant="outline" onclick={() => toggleState(row.key)}>
+											Collapse {stateName(row.key)}
+											<IconChevronUp size={14} />
 										</Button>
 									</div>
 								</div>
-							{/each}
-							<Button
-								type="button"
-								size="sm"
-								variant="ghost"
-								class="text-muted-foreground h-7 px-2 text-xs"
-								disabled={states.every((s) => s.key === row.key)}
-								onclick={() => addTransition(row.key)}
-							>
-								<IconPlus size={12} /> Add action
-							</Button>
-						</div>
-					{/if}
-				</div>
-			{/each}
+							</div>
+						{/if}
+					</div>
+				{/each}
+				{#if states.length === 0}
+					<p class="text-muted-foreground px-4 py-6 text-center text-sm">No states yet.</p>
+				{/if}
+			</div>
 		</div>
 
 		{#if problems.length > 0}
@@ -508,10 +772,52 @@
 	<!-- graph view: how a workflow is read; re-renders live as the form changes -->
 	<div class="min-w-0">
 		<div class="bg-muted/30 sticky top-20 rounded-lg border p-4">
-			<h3 class="text-muted-foreground mb-3 text-xs font-medium tracking-wide uppercase">
-				Live preview
-			</h3>
-			<WorkflowGraph workflow={preview} />
+			<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+				<h3
+					id={previewHeadingId}
+					class="text-muted-foreground text-xs font-medium tracking-wide uppercase"
+				>
+					Live preview
+				</h3>
+				<div class="flex gap-1" role="group" aria-label="Preview zoom">
+					<Button
+						type="button"
+						size="sm"
+						variant={previewFit ? 'secondary' : 'outline'}
+						aria-pressed={previewFit}
+						aria-controls={previewRegionId}
+						title="Fit graph to preview"
+						onclick={() => setPreviewFit(true)}
+					>
+						Fit
+					</Button>
+					<Button
+						type="button"
+						size="sm"
+						variant={!previewFit ? 'secondary' : 'outline'}
+						aria-pressed={!previewFit}
+						aria-controls={previewRegionId}
+						title="Show graph at actual size"
+						onclick={() => setPreviewFit(false)}
+					>
+						1×
+					</Button>
+				</div>
+			</div>
+			<!-- svelte-ignore a11y_no_noninteractive_tabindex (native keyboard scrolling requires focus) -->
+			<div
+				bind:this={previewRegion}
+				id={previewRegionId}
+				onscroll={measurePreviewOverflow}
+				style:mask-image={previewMask}
+				style:-webkit-mask-image={previewMask}
+				class="focus-visible:outline-ring max-w-full overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-2"
+				role="region"
+				tabindex="0"
+				aria-labelledby={previewHeadingId}
+			>
+				<WorkflowGraph workflow={preview} fit={previewFit} />
+			</div>
 		</div>
 	</div>
 </div>

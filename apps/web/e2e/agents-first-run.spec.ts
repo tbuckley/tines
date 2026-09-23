@@ -5,16 +5,17 @@
  * Runs as a dedicated seeded account with no projects, runners or rules, so
  * the spec is independent of file ordering and every other browser fixture.
  */
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import type { ListResponse, Project, RoutingRuleWithWarnings } from '@tines/shared';
 import { AGENTS_FIRST_RUN as USER } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, signIn } from './helpers';
 
 test.describe.serial('the first-run path on an empty account', () => {
 	test('the Issues tab sends a projectless account to New project', async ({
 		context,
 		page,
-		request
+		request,
+		uniqueName
 	}) => {
 		const api = apiClient(request, USER.apiKey);
 		const { items } = await body<ListResponse<Project>>(await api.get('/api/v1/projects'));
@@ -53,14 +54,21 @@ test.describe.serial('the first-run path on an empty account', () => {
 	test('the Agents tab permits a scoped tier-only rule before any runner exists', async ({
 		context,
 		page,
-		request
+		request,
+		uniqueName
 	}) => {
 		const api = apiClient(request, USER.apiKey);
 		const project = await body<Project>(
-			await api.post('/api/v1/projects', { name: `runnerless-routing-${runId}` })
+			await api.post('/api/v1/projects', { name: uniqueName('runnerless-routing') })
 		);
 		await signIn(context, USER.sessionToken);
 		await gotoHydrated(page, '/agents');
+		const issueDialog = page.getByRole('dialog', { name: 'New issue' });
+		await page.getByRole('button', { name: 'Create an issue' }).click();
+		await expect(
+			issueDialog.getByRole('button', { name: 'Add files or drag files here' })
+		).toBeVisible();
+		await issueDialog.getByRole('button', { name: 'Cancel' }).click();
 
 		// The routing empty state knows there is no runner to route to yet.
 		const addRunner = page.getByRole('button', { name: 'Add runner' }).last();
@@ -93,10 +101,11 @@ test.describe.serial('the first-run path on an empty account', () => {
 	test('a fresh project page points at routing and at its first repo', async ({
 		context,
 		page,
-		request
+		request,
+		uniqueName
 	}) => {
 		const api = apiClient(request, USER.apiKey);
-		const projectName = `first-run-${runId}`;
+		const projectName = uniqueName('first-run');
 		const project = await body<Project>(await api.post('/api/v1/projects', { name: projectName }));
 		const projectId = project.id;
 

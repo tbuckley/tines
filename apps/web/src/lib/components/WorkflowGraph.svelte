@@ -1,211 +1,46 @@
 <script lang="ts">
-	import type { StateCategory } from '@tines/shared';
 	import { categoryVar, prefersReducedMotion } from '$lib/format';
-
-	interface GraphState {
-		id: string;
-		name: string;
-		category: StateCategory;
-	}
-	interface GraphTransition {
-		/** Action name, rendered as an edge label (elided when compact). */
-		name?: string;
-		from_state_id: string;
-		to_state_id: string;
-	}
-	interface GraphWorkflow {
-		states: GraphState[];
-		transitions: GraphTransition[];
-		initial_state_id: string;
-	}
+	import { layoutWorkflowGraph, type GraphWorkflow } from '$lib/workflow-graph-layout';
 
 	let {
 		workflow,
 		currentStateId = null,
-		compact = false
+		compact = false,
+		fit = true,
+		intrinsicScale = 1
 	}: {
 		workflow: GraphWorkflow;
 		/** Highlighted state; changes animate along the traversed edge. */
 		currentStateId?: string | null;
 		compact?: boolean;
+		/** Fit to the container. Disable to fix a full graph at intrinsic size; the caller must contain overflow. */
+		fit?: boolean;
+		/** Scale intrinsic full-mode dimensions without changing graph geometry. */
+		intrinsicScale?: number;
 	} = $props();
 
-	// Unique per instance so several graphs on a page don't share markers.
-	const uid = Math.random().toString(36).slice(2, 8);
-
-	// --- auto-layout: simple layered (left→right) placement ------------------
-
-	interface Node extends GraphState {
-		x: number;
-		y: number;
-		w: number;
-		h: number;
-		cx: number;
-		cy: number;
-		isInitial: boolean;
-		isDeadEnd: boolean;
-	}
-	interface Edge {
-		key: string;
-		from: string;
-		to: string;
-		d: string;
-		backward: boolean;
-		label: string | null;
-		lx: number;
-		ly: number;
-	}
-
-	const layout = $derived.by(() => {
-		const M = compact ? 8 : 12; // outer margin
-		const START_PAD = compact ? 18 : 24; // room for the initial-state marker
-		const { states, transitions, initial_state_id } = workflow;
-		if (states.length === 0) {
-			return { nodes: [] as Node[], edges: [] as Edge[], width: 0, height: 0 };
-		}
-		const H = compact ? 26 : 34;
-		const charW = compact ? 6.3 : 7.3;
-		const font = compact ? 10.5 : 12.5;
-		// Full mode renders action names on the edges: the column gap must
-		// fit the longest label so it doesn't run into neighboring nodes.
-		const maxLabel = compact ? 0 : Math.max(0, ...transitions.map((t) => t.name?.length ?? 0));
-		const gapX = compact ? 34 : Math.max(60, maxLabel * 5.2 + 20);
-		const gapY = compact ? 14 : 22;
-
-		const out = new Map<string, string[]>();
-		for (const t of transitions) {
-			out.set(t.from_state_id, [...(out.get(t.from_state_id) ?? []), t.to_state_id]);
-		}
-
-		// Rank = BFS depth from the initial state; unreachable states trail.
-		const rank = new Map<string, number>();
-		if (states.some((s) => s.id === initial_state_id)) {
-			rank.set(initial_state_id, 0);
-			const queue = [initial_state_id];
-			while (queue.length) {
-				const cur = queue.shift()!;
-				for (const next of out.get(cur) ?? []) {
-					if (!rank.has(next) && states.some((s) => s.id === next)) {
-						rank.set(next, rank.get(cur)! + 1);
-						queue.push(next);
-					}
-				}
-			}
-		}
-		const maxReached = Math.max(0, ...rank.values());
-		for (const s of states) if (!rank.has(s.id)) rank.set(s.id, maxReached + 1);
-
-		// Group into columns preserving state order.
-		const columns = new Map<number, GraphState[]>();
-		for (const s of states) {
-			const r = rank.get(s.id)!;
-			columns.set(r, [...(columns.get(r) ?? []), s]);
-		}
-		const ranks = [...columns.keys()].sort((a, b) => a - b);
-
-		const widthOf = (s: GraphState) =>
-			Math.max(compact ? 54 : 72, s.name.length * charW + (compact ? 30 : 40));
-		const colWidths = ranks.map((r) => Math.max(...columns.get(r)!.map(widthOf)));
-		const colHeights = ranks.map((r) => {
-			const n = columns.get(r)!.length;
-			return n * H + (n - 1) * gapY;
-		});
-		const maxColHeight = Math.max(...colHeights);
-
-		const nodes: Node[] = [];
-		let x = M + START_PAD;
-		ranks.forEach((r, i) => {
-			const col = columns.get(r)!;
-			let y = M + (maxColHeight - colHeights[i]) / 2;
-			for (const s of col) {
-				const w = widthOf(s);
-				nodes.push({
-					...s,
-					x: x + (colWidths[i] - w) / 2,
-					y,
-					w,
-					h: H,
-					cx: x + colWidths[i] / 2,
-					cy: y + H / 2,
-					isInitial: s.id === initial_state_id,
-					isDeadEnd: s.category !== 'done' && !(out.get(s.id)?.length ?? 0)
-				});
-				y += H + gapY;
-			}
-			x += colWidths[i] + gapX;
-		});
-		const nodeById = new Map(nodes.map((n) => [n.id, n]));
-
-		const edges: Edge[] = [];
-		let backIndex = 0;
-		const bottom = M + maxColHeight;
-		for (const t of transitions) {
-			const a = nodeById.get(t.from_state_id);
-			const b = nodeById.get(t.to_state_id);
-			if (!a || !b) continue;
-			const key = `${t.from_state_id}→${t.name}`;
-			const label = !compact && t.name ? t.name : null;
-			if (rank.get(a.id)! < rank.get(b.id)!) {
-				// Forward: right edge of source to left edge of target.
-				const x1 = a.x + a.w;
-				const y1 = a.cy;
-				const x2 = b.x;
-				const y2 = b.cy;
-				const bend = Math.max(18, (x2 - x1) * 0.45);
-				edges.push({
-					key,
-					from: a.id,
-					to: b.id,
-					d: `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`,
-					backward: false,
-					label,
-					// Curve midpoint (cubic at t=0.5), nudged above the line.
-					lx: (x1 + x2) / 2,
-					ly: (y1 + y2) / 2 - 6
-				});
-			} else {
-				// Backward / same-rank: route beneath the graph.
-				const depth = bottom + (compact ? 14 : 20) + backIndex * (compact ? 12 : 16);
-				backIndex += 1;
-				const x1 = a.cx;
-				const y1 = a.y + a.h;
-				const x2 = b.cx;
-				const y2 = b.y + b.h;
-				edges.push({
-					key,
-					from: a.id,
-					to: b.id,
-					d: `M ${x1} ${y1} C ${x1} ${depth}, ${x2} ${depth}, ${x2} ${y2 + 4}`,
-					backward: true,
-					label,
-					lx: (x1 + x2) / 2,
-					ly: (y1 + 6 * depth + y2 + 4) / 8 - 5
-				});
-			}
-		}
-
-		const width = x - gapX + M;
-		const height =
-			bottom +
-			(backIndex > 0 ? (compact ? 16 : 24) + (backIndex - 1) * (compact ? 12 : 16) : 0) +
-			M;
-		return { nodes, edges, width, height, font };
-	});
+	// Stable across SSR and hydration; distinct when several graphs share a page.
+	const uid = $props.id();
+	const layout = $derived(layoutWorkflowGraph(workflow, { compact }));
 
 	// --- transition animation -------------------------------------------------
 
 	// The state shown as current; lags behind `currentStateId` while the
 	// travel dot is en route along the traversed edge.
 	let displayedStateId = $state<string | null>(null);
-	let travel = $state<{ d: string; key: number; toId: string } | null>(null);
+	let travel = $state<{ d: string; key: number; edgeKey: string; toId: string } | null>(null);
 	let travelSeq = 0;
 	let prevId: string | null = null;
+	let travelTimer: ReturnType<typeof setTimeout> | null = null;
 
 	$effect(() => {
 		const next = currentStateId;
 		const prev = prevId;
 		prevId = next;
 		if (next === prev) return;
+		if (travelTimer) clearTimeout(travelTimer);
+		travelTimer = null;
+		travelSeq += 1;
 		const edge =
 			prev && next ? layout.edges.find((e) => e.from === prev && e.to === next) : undefined;
 		if (!edge || prefersReducedMotion()) {
@@ -214,13 +49,19 @@
 			return;
 		}
 		displayedStateId = prev;
-		const seq = ++travelSeq;
-		travel = { d: edge.d, key: seq, toId: next! };
-		setTimeout(() => {
+		const seq = travelSeq;
+		travel = { d: edge.d, key: seq, edgeKey: edge.key, toId: next! };
+		travelTimer = setTimeout(() => {
 			if (seq !== travelSeq) return;
 			travel = null;
 			displayedStateId = next;
+			travelTimer = null;
 		}, 480);
+	});
+
+	$effect(() => () => {
+		travelSeq += 1;
+		if (travelTimer) clearTimeout(travelTimer);
 	});
 
 	const highlightId = $derived(displayedStateId ?? currentStateId);
@@ -230,7 +71,8 @@
 	<svg
 		viewBox="0 0 {layout.width} {layout.height}"
 		class="h-auto w-full"
-		style="max-width: {layout.width * (compact ? 1 : 1.15)}px"
+		style:max-width={`${!fit && !compact ? layout.width * intrinsicScale : layout.width * (compact ? 1 : 1.15)}px`}
+		style:min-width={!fit && !compact ? `${layout.width * intrinsicScale}px` : undefined}
 		role="img"
 		aria-label="Workflow graph"
 	>
@@ -261,21 +103,26 @@
 
 		<!-- edges -->
 		{#each layout.edges as edge (edge.key)}
-			{@const active = travel !== null && travel.toId === edge.to && highlightId === edge.from}
+			{@const active = travel?.edgeKey === edge.key && highlightId === edge.from}
 			<path
 				d={edge.d}
+				data-graph-transition={edge.key}
 				fill="none"
 				class={active ? '' : 'stroke-muted-foreground/45'}
 				style={active ? 'stroke: var(--cat-active)' : ''}
 				stroke-width={active ? 2 : 1.25}
 				stroke-dasharray={edge.backward ? '4 3' : undefined}
+				stroke-linecap="round"
+				stroke-linejoin="round"
 				marker-end="url(#{active ? `arrow-active-${uid}` : `arrow-${uid}`})"
 			/>
 			{#if edge.label}
 				<text
 					x={edge.lx}
 					y={edge.ly}
+					data-graph-transition-label={edge.key}
 					text-anchor="middle"
+					dominant-baseline="central"
 					font-size="9.5"
 					class="fill-muted-foreground"
 					style="paint-order: stroke; stroke: var(--background); stroke-width: 3px; stroke-linejoin: round"
@@ -323,6 +170,7 @@
 				<rect
 					x={node.x}
 					y={node.y}
+					data-graph-state={node.id}
 					width={node.w}
 					height={node.h}
 					rx={compact ? 7 : 9}
@@ -341,6 +189,7 @@
 				<text
 					x={node.x + (compact ? 19 : 24)}
 					y={node.cy}
+					data-graph-state-label={node.id}
 					dominant-baseline="central"
 					font-size={layout.font}
 					font-weight={isCurrent ? 600 : 500}
@@ -368,6 +217,8 @@
 			{/key}
 		{/if}
 	</svg>
-{:else}
+{:else if layout.status === 'empty'}
 	<p class="text-muted-foreground text-sm">No states yet.</p>
+{:else}
+	<p class="text-muted-foreground text-sm">Unable to display workflow graph.</p>
 {/if}

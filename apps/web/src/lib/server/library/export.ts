@@ -18,8 +18,14 @@ export async function exportWorkflowPackage(
 	db: Kysely<Database>,
 	userId: string,
 	workflowId: string,
-	options: ExportWorkflowPackageOptions = {}
+	options: ExportWorkflowPackageOptions = {},
+	internal: { exportedAt?: number } = {}
 ): Promise<WorkflowPackageDocument> {
+	if (
+		internal.exportedAt !== undefined &&
+		(!Number.isSafeInteger(internal.exportedAt) || internal.exportedAt < 0)
+	)
+		throw new Error('Internal exportedAt must be a non-negative safe integer');
 	if (
 		!options ||
 		typeof options !== 'object' ||
@@ -92,7 +98,7 @@ export async function exportWorkflowPackage(
 			.where('context_item.label_id', 'is', null)
 			.where('context_item.issue_id', 'is', null)
 			.where('context_item.workflow_state_id', 'is not', null)
-			.where('context_item.kind', '!=', 'artifact')
+			.where('context_item.kind', 'not in', ['artifact', 'env'])
 			.orderBy('context_item.position')
 			.orderBy('context_item.created_at')
 			.orderBy('context_item.id')
@@ -222,7 +228,7 @@ export async function exportWorkflowPackage(
 		format: 'tines.library',
 		version: 3,
 		profile: 'workflow',
-		exported_at: Date.now(),
+		exported_at: internal.exportedAt ?? Date.now(),
 		digest: '',
 		main_workflow_id: 'workflow:1',
 		workflows: workflows.map((w) => ({

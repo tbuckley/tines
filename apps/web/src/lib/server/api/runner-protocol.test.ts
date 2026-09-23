@@ -8,6 +8,7 @@ import {
 	addComment,
 	addIssue,
 	addRun,
+	addRunKey,
 	addRunner,
 	addTransitionEvent,
 	eventsOfType,
@@ -22,7 +23,7 @@ import {
 	setSettings,
 	USER
 } from '../supervisor/test-fixtures';
-import { sha256Hex } from '../crypto';
+import { encryptSecret, sha256Hex } from '../crypto';
 import { ApiFail, type ActorContext } from './core';
 import {
 	appendLogTail,
@@ -30,6 +31,7 @@ import {
 	authenticateRunnerToken,
 	finishRun,
 	pollRunner,
+	validateEffortCapabilities,
 	type RunnerRow
 } from './runner-protocol';
 import { registerRunner, rotateRunnerToken, updateRunner } from './runners';
@@ -50,6 +52,38 @@ function world(): TestDb {
 	setSettings(t);
 	return t;
 }
+
+describe('effort capability validation', () => {
+	const report = {
+		version: 1 as const,
+		daemon_version: '0.0.194',
+		harness: 'codex' as const,
+		harness_version: '0.153.4',
+		catalog_digest: 'sha256:test',
+		models: [{ model: 'gpt-5.6', efforts: ['low', 'ultra'] }]
+	};
+
+	it('accepts bounded exact-model reports only from identified daemon boots', () => {
+		expect(validateEffortCapabilities(report, 'boot_1')).toEqual(report);
+		expect(() => validateEffortCapabilities(report)).toThrowError(ApiFail);
+		expect(() =>
+			validateEffortCapabilities(
+				{ ...report, models: [{ model: 'gpt-5.6', efforts: ['High'] }] },
+				'boot_1'
+			)
+		).toThrowError(ApiFail);
+	});
+
+	it('retains unsupported protocol versions distinctly from absent legacy reports', () => {
+		expect(validateEffortCapabilities(undefined, 'boot_1')).toBeNull();
+		expect(
+			validateEffortCapabilities({ version: 2, reason: 'upgrade required' }, 'boot_1')
+		).toEqual({
+			version: 2,
+			reason: 'upgrade required'
+		});
+	});
+});
 
 async function runnerRow(t: TestDb, id: string): Promise<RunnerRow> {
 	const row = await t.db.selectFrom('runner').selectAll().where('id', '=', id).executeTakeFirst();
@@ -82,7 +116,7 @@ describe('registerRunner', () => {
 			platform: 'darwin'
 		});
 		expect(runner.type).toBe('local');
-		expect(runner.online).toBe(true); // registration counts as a heartbeat
+		expect(runner.online).toBe(false); // policy must be confirmed by the first poll
 		expect(runner_token).toMatch(/^tines_rt_/);
 		const row = runnerById(t, runner.id);
 		expect(row.runner_token_hash).toBe(await sha256Hex(runner_token));
@@ -154,7 +188,7 @@ describe('registerRunner', () => {
 			max_concurrent: 3,
 			hostname: 'mbp.local'
 		});
-		expect(second.runner.max_concurrent).toBe(3); // sent: updated
+		expect(second.runner.max_concurrent).toBe(2); // registration cannot overwrite durable intent
 		expect(second.runner.max_run_minutes).toBe(90); // not sent: kept
 		expect(second.runner.default_tier).toBe('smartest'); // not sent: kept
 		expect(second.runner.config.hostname).toBe('mbp.local');
@@ -496,7 +530,8 @@ describe('pollRunner', () => {
 		expect(runnerById(t, id).max_concurrent).toBe(3);
 		const updates = eventsOfType(t, 'runner.updated');
 		expect(updates).toHaveLength(1);
-		expect(updates[0].payload.changed).toEqual(['max_concurrent']);
+		expect(updates[0].payload.changed).toEqual(['max_concurrent', 'concurrency_control']);
+		expect(updates[0].payload.source).toBe('daemon');
 
 		// Same value: no event, no new capacity.
 		const same = await pollRunner(
@@ -532,6 +567,196 @@ describe('pollRunner', () => {
 		expect(runnerById(t, id).max_concurrent).toBe(2);
 	});
 
+	it('bounds revisioned web requests for sessions and ordinary owner keys', async () => {
+		const t = world();
+		const id = addRunner(t, { maxConcurrent: 1 });
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 1
+		);
+		const initialRevision = Number(runnerById(t, id).concurrency_revision);
+
+		const sessionWrite = await updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			max_concurrent: 2,
+			expected_concurrency_revision: initialRevision
+		});
+		expect(sessionWrite).toMatchObject({ max_concurrent: 2 });
+		expect(sessionWrite.concurrency_control).toMatchObject({
+			status: 'pending',
+			revision: initialRevision + 1
+		});
+
+		t.sqlite
+			.prepare(
+				`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+				 VALUES ('key_owner', ?, 'owner automation', 'hash-owner', 'tines_owner', ?)`
+			)
+			.run(USER, NOW);
+		const keyActor: ActorContext = {
+			...actor,
+			apiKeyId: 'key_owner',
+			apiKeyName: 'owner automation',
+			viaSession: false
+		};
+		const keyWrite = await updateRunner(t.db, t.env, keyActor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+			max_concurrent: 3,
+			expected_concurrency_revision: initialRevision + 1
+		});
+		expect(keyWrite).toMatchObject({ max_concurrent: 3 });
+		expect(keyWrite.concurrency_control).toMatchObject({
+			status: 'pending',
+			revision: initialRevision + 2
+		});
+		const updates = eventsOfType(t, 'runner.updated');
+		expect(
+			updates.find((event) => JSON.stringify(event.payload).includes('"requested_cap":3'))
+				?.actor_api_key_id
+		).toBe('key_owner');
+		await expect(
+			updateRunner(t.db, t.env, { ...actor, userId: 'usr_other' }, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				max_concurrent: 1,
+				expected_concurrency_revision: initialRevision + 2
+			})
+		).rejects.toMatchObject({ code: 'not_found' });
+	});
+
+	it('rejects missing and stale revisions, ceiling bypass, opt-out, and mixed patches atomically', async () => {
+		const t = world();
+		const id = addRunner(t, { name: 'bounded', maxConcurrent: 1 });
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 1
+		);
+		const currentRevision = Number(runnerById(t, id).concurrency_revision);
+
+		for (const request of [
+			{ max_concurrent: 2 },
+			{ max_concurrent: 2, expected_concurrency_revision: 9 }
+		]) {
+			await expect(
+				updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, request)
+			).rejects.toMatchObject({ code: 'concurrency_conflict' });
+		}
+		await expect(
+			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				name: 'must-not-commit',
+				max_concurrent: 4,
+				expected_concurrency_revision: currentRevision
+			})
+		).rejects.toMatchObject({ code: 'invalid_field', details: { ceiling: 3 } });
+		expect(runnerById(t, id)).toMatchObject({ name: 'bounded', max_concurrent: 1 });
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1); // daemon policy report only
+
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: false, ceiling: 3 }
+			},
+			NOW + 2
+		);
+		await expect(
+			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, id, {
+				max_concurrent: 2,
+				expected_concurrency_revision: Number(runnerById(t, id).concurrency_revision)
+			})
+		).rejects.toMatchObject({ code: 'concurrency_unavailable' });
+	});
+
+	it('retries poll reconciliation without overwriting a concurrent web cap request', async () => {
+		const t = world();
+		const id = addRunner(t, { name: 'concurrent-cap', maxConcurrent: 1 });
+		t.sqlite
+			.prepare('UPDATE runner SET runner_token_hash = ? WHERE id = ?')
+			.run(await sha256Hex('tines_rt_concurrent-cap'), id);
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, id),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 1
+		);
+		const stale = await runnerRow(t, id);
+		const winningRevision = stale.concurrency_revision + 1;
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let injected = false;
+		let batchCount = 0;
+		t.env.DB.batch = async (statements) => {
+			batchCount += 1;
+			if (batchCount === 2) {
+				injected = true;
+				// This is the storage result of an owner PATCH that commits after
+				// the poll read but before its guarded reconciliation batch.
+				t.sqlite
+					.prepare(
+						`UPDATE runner
+						 SET max_concurrent = 3,
+						     concurrency_requested = 3,
+						     concurrency_revision = ?,
+						     updated_at = ?
+						 WHERE id = ?`
+					)
+					.run(winningRevision, NOW + 2, id);
+			}
+			return realBatch(statements);
+		};
+
+		const result = await pollRunner(
+			t.db,
+			t.env,
+			stale,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_remote',
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: true, ceiling: 3 }
+			},
+			NOW + 3
+		);
+
+		expect(injected).toBe(true);
+		expect(result.response.concurrency_control).toMatchObject({
+			available: true,
+			cap: 3,
+			revision: winningRevision
+		});
+		expect(runnerById(t, id)).toMatchObject({
+			max_concurrent: 3,
+			concurrency_requested: 3,
+			concurrency_revision: winningRevision
+		});
+	});
+
 	it('draining is stated per poll: set while true, cleared when absent, and leaving it frees capacity', async () => {
 		const t = world();
 		const id = addRunner(t);
@@ -545,8 +770,9 @@ describe('pollRunner', () => {
 		);
 		expect(entering.capRaised).toBe(false);
 		expect(runnerById(t, id).draining).toBe(1);
-		// No runner.updated event: draining is the daemon's transient state, not an edit.
-		expect(eventsOfType(t, 'runner.updated')).toHaveLength(0);
+		// Draining itself is transient, but the first legacy poll records the
+		// daemon-owned concurrency policy transition once.
+		expect(eventsOfType(t, 'runner.updated')).toHaveLength(1);
 
 		// Still draining: nothing new to dispatch for.
 		const still = await pollRunner(
@@ -636,6 +862,20 @@ describe('pollRunner', () => {
 		const t = world();
 		const runnerId = addRunner(t, { name: 'laptop-m4' });
 		const issue = addIssue(t);
+		t.sqlite
+			.prepare(
+				`INSERT INTO context_item
+					(id, user_id, kind, name, description, position, version, created_at, updated_at)
+				 VALUES ('ctx_skill', ?, 'skill', 'review-checklist', 'Check before review.', 0, 1, 0, 0)`
+			)
+			.run(USER);
+		t.sqlite
+			.prepare(
+				`INSERT INTO context_item_file
+					(id, context_item_id, path, content, created_at, updated_at)
+				 VALUES ('ctx_skill_file', 'ctx_skill', 'SKILL.md', 'SECRET SKILL BODY', 0, 0)`
+			)
+			.run();
 		const runId = addRun(t, { issueId: issue, runnerId });
 
 		const { response } = await pollRunner(
@@ -656,11 +896,17 @@ describe('pollRunner', () => {
 		expect(a.prompt).toContain(`This is run ${runId} on runner "laptop-m4" for issue demo/`);
 		expect(a.prompt).toContain('TINES_API_KEY');
 		expect(a.prompt).toContain('## Issue: demo/');
+		expect(a.prompt).toContain('1 skill is attached at `.agents/skills`');
+		expect(a.prompt).not.toContain('review-checklist');
+		expect(a.prompt).not.toContain('Check before review.');
+		expect(a.prompt).not.toContain('SECRET SKILL BODY');
+		expect(a.bundle.skills.map((skill) => skill.name)).toEqual(['review-checklist']);
 		expect(a.bundle.repos).toEqual([]);
 		// The run key is live, bound to the run, and hashed at rest.
 		expect(a.run_key).toMatch(/^tines_/);
 		const key = keyForRun(t, runId);
 		expect(key?.key_hash).toBe(await sha256Hex(a.run_key));
+		expect(key?.name).toBe('laptop-m4 · Standard/Open');
 		expect(key?.revoked_at).toBeNull();
 		expect(runById(t, runId)?.status).toBe('launching');
 
@@ -674,6 +920,188 @@ describe('pollRunner', () => {
 			NOW + 2
 		);
 		expect(second.response.assignments).toEqual([]);
+	});
+
+	it('resolves renamed runner and launch-stage names when a claimed run is delivered', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { name: 'laptop-before' });
+		const issue = addIssue(t);
+		const runId = addRun(t, { issueId: issue, runnerId });
+
+		t.sqlite.prepare('UPDATE runner SET name = ? WHERE id = ?').run('laptop-after', runnerId);
+		t.sqlite
+			.prepare('UPDATE workflow SET name = ? WHERE id = ?')
+			.run('Standard renamed', 'wf_standard');
+		t.sqlite.prepare('UPDATE workflow_state SET name = ? WHERE id = ?').run('Open renamed', OPEN);
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [] },
+			NOW + 1
+		);
+		expect(response.assignments.map((assignment) => assignment.run.id)).toEqual([runId]);
+		expect(keyForRun(t, runId)?.name).toBe('laptop-after · Standard renamed/Open renamed');
+	});
+
+	it('delivers env items only to daemons that advertise env_delivery, never inside the bundle', async () => {
+		const t = world();
+		t.env.SECRET_ENCRYPTION_KEY = 'unit-test-key';
+		const runnerId = addRunner(t, { name: 'laptop-m4' });
+		const issue = addIssue(t);
+		const insert = t.sqlite.prepare(
+			`INSERT INTO context_item
+				(id, user_id, kind, name, description, env_value, env_value_enc, env_hint, position, version, created_at, updated_at)
+			 VALUES (?, ?, 'env', ?, '', ?, ?, ?, 0, 1, 0, 0)`
+		);
+		insert.run('ctx_env_pub', USER, 'NPM_REGISTRY', 'https://r.example', null, null);
+		insert.run(
+			'ctx_env_sec',
+			USER,
+			'GH_TOKEN',
+			null,
+			await encryptSecret('github_pat_plaintext', 'unit-test-key'),
+			'github_pat_…text'
+		);
+
+		// Old daemon: no capability, no env, warning line even without a decryption key.
+		delete t.env.SECRET_ENCRYPTION_KEY;
+		addRun(t, { id: 'run_old', issueId: issue, runnerId });
+		const old = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [] },
+			NOW + 1
+		);
+		expect(old.response.assignments).toHaveLength(1);
+		expect(old.response.assignments[0].env).toBeUndefined();
+		expect(JSON.stringify(old.response)).not.toContain('github_pat_plaintext');
+		// The run log says why, without a value or hint — and the run is still
+		// `launching`: nothing has started, so the stall guard must keep watching.
+		const oldRun = runById(t, 'run_old');
+		expect(oldRun?.log).toContain(
+			"[env] 2 environment variable(s) are configured for this issue but this runner's tines CLI is too old"
+		);
+		expect(oldRun?.log).not.toContain('github_pat');
+		expect(oldRun?.status).toBe('launching');
+		expect(oldRun?.started_at).toBeNull();
+
+		// New daemon: env rides beside the bundle; secrets never enter prompt or bundle.
+		t.env.SECRET_ENCRYPTION_KEY = 'unit-test-key';
+		addRun(t, { id: 'run_new', issueId: issue, runnerId });
+		const fresh = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [], env_delivery: 1 },
+			NOW + 2
+		);
+		expect(fresh.response.assignments).toHaveLength(1);
+		const a = fresh.response.assignments[0];
+		const byName = (x: { name: string }, y: { name: string }) => x.name.localeCompare(y.name);
+		expect([...(a.env ?? [])].sort(byName)).toEqual([
+			{ name: 'GH_TOKEN', value: 'github_pat_plaintext', secret: true },
+			{ name: 'NPM_REGISTRY', value: 'https://r.example', secret: false }
+		]);
+		expect(JSON.stringify(a.bundle)).not.toContain('github_pat_plaintext');
+		expect(a.prompt).not.toContain('github_pat_plaintext');
+		expect(a.prompt).toMatch(/Environment variables set for this run: .*`GH_TOKEN` \(secret\)/);
+		expect(a.prompt).toMatch(/Environment variables set for this run: .*`NPM_REGISTRY`/);
+		expect([...a.bundle.env].sort(byName).map((e) => [e.name, e.secret, e.value ?? null])).toEqual([
+			['GH_TOKEN', true, null],
+			['NPM_REGISTRY', false, 'https://r.example']
+		]);
+	});
+
+	it.each(['missing', 'rotated'] as const)(
+		'settles an env decryption failure with a safe error and revoked key (%s key)',
+		async (keyState) => {
+			const t = world();
+			if (keyState === 'rotated') t.env.SECRET_ENCRYPTION_KEY = 'new-key';
+			const runnerId = addRunner(t);
+			const issueId = addIssue(t);
+			const runId = addRun(t, { issueId, runnerId });
+			const ciphertext = await encryptSecret('private-value', 'original-key');
+			t.sqlite
+				.prepare(
+					`INSERT INTO context_item
+			(id, user_id, kind, name, description, env_value_enc, position, version, created_at, updated_at)
+			VALUES ('ctx_broken_env', ?, 'env', 'GH_TOKEN', '', ?, 0, 1, 0, 0)`
+				)
+				.run(USER, ciphertext);
+			const result = await pollRunner(
+				t.db,
+				t.env,
+				await runnerRow(t, runnerId),
+				TEST_NOOP_DISPATCH_EFFECTS,
+				{ owned_runs: [], env_delivery: 1 },
+				NOW + 1
+			);
+			expect(result.response.assignments).toEqual([]);
+			const run = runById(t, runId);
+			expect(run).toMatchObject({ status: 'failed', started_at: null, ended_at: NOW + 1 });
+			expect(run?.error).toContain('Cannot decrypt secret env item "GH_TOKEN" (ctx_broken_env)');
+			expect(keyForRun(t, runId)?.revoked_at).toBe(NOW + 1);
+			expect(runnerById(t, runnerId).backoff_until).toBeGreaterThan(NOW + 1);
+			const observable = JSON.stringify([run, result, eventsOfType(t, 'runner.errored')]);
+			expect(observable).not.toContain('private-value');
+			expect(observable).not.toContain(ciphertext);
+		}
+	);
+
+	it('selects essential comments in the locally delivered cold prompt', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		const completed = addRun(t, {
+			id: 'arun_completed',
+			issueId: issue,
+			runnerId,
+			status: 'completed',
+			createdAt: NOW - 100
+		});
+		const noisy = addRun(t, {
+			id: 'arun_noisy',
+			issueId: issue,
+			runnerId,
+			status: 'failed',
+			createdAt: NOW
+		});
+		addComment(t, {
+			issueId: issue,
+			id: 'cmt_handoff',
+			body: 'protected handoff',
+			apiKeyId: addRunKey(t, completed),
+			at: NOW - 90
+		});
+		const noisyKey = addRunKey(t, noisy);
+		for (let i = 0; i < 4; i++)
+			addComment(t, {
+				issueId: issue,
+				id: `cmt_noise_${i}`,
+				body: i === 0 ? 'OMITTED LOCAL SENTINEL' : `noise ${i}`,
+				apiKeyId: noisyKey,
+				at: NOW + i
+			});
+		addRun(t, { issueId: issue, runnerId });
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ owned_runs: [] },
+			NOW + 10
+		);
+		const prompt = response.assignments[0].prompt;
+		expect(prompt).toContain('protected handoff');
+		expect(prompt).toContain('Older agent comments: cmt_noise_0.');
+		expect(prompt).not.toContain('OMITTED LOCAL SENTINEL');
 	});
 
 	it('opens the delivered issue block with the human steer that started the round', async () => {
@@ -761,6 +1189,71 @@ describe('pollRunner', () => {
 		expect(issueById(t, issue).attempt_count).toBe(0);
 		// No run key was ever minted for it.
 		expect(keyForRun(t, runId)).toBeUndefined();
+	});
+
+	it('cancels and redispatches when an enforced claim reaches a downgraded daemon', async () => {
+		const t = world();
+		const effects = recordDispatchEffects();
+		const runnerId = addRunner(t, { harness: 'codex' });
+		const issue = addIssue(t);
+		const runId = addRun(t, { issueId: issue, runnerId, model: 'gpt-5.6' });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'low', effort_source = ?, effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(JSON.stringify({ kind: 'runner_tier', runner_id: runnerId, tier: 'balanced' }), runId);
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			effects,
+			{ owned_runs: [], instance_id: 'legacy-boot' },
+			NOW + 1
+		);
+		expect(response.assignments).toEqual([]);
+		expect(runById(t, runId)?.status).toBe('canceled');
+		expect(runById(t, runId)?.error).toContain('not supported');
+		expect(keyForRun(t, runId)).toBeUndefined();
+		expect(effects.count()).toBe(1);
+	});
+
+	it('reclaims a legacy-tier claim after an effort-capable daemon upgrade', async () => {
+		const t = world();
+		const effects = recordDispatchEffects();
+		const runnerId = addRunner(t, { harness: 'codex' });
+		const issue = addIssue(t);
+		const runId = addRun(t, { issueId: issue, runnerId, model: 'gpt-5.6' });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'low', effort_source = ?, effort_application_status = 'legacy_not_applied' WHERE id = ?`
+			)
+			.run(JSON.stringify({ kind: 'runner_tier', runner_id: runnerId, tier: 'balanced' }), runId);
+
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			effects,
+			{
+				owned_runs: [],
+				instance_id: 'upgraded-boot',
+				effort_capabilities: {
+					version: 1,
+					daemon_version: '0.0.194',
+					harness: 'codex',
+					harness_version: '0.153.4',
+					catalog_digest: 'catalog-a',
+					models: [{ model: 'gpt-5.6', efforts: ['low'] }]
+				}
+			},
+			NOW + 1
+		);
+		expect(response.assignments).toEqual([]);
+		expect(runById(t, runId)?.status).toBe('canceled');
+		expect(runById(t, runId)?.error).toContain('changed after claim');
+		expect(keyForRun(t, runId)).toBeUndefined();
+		expect(effects.count()).toBe(1);
 	});
 
 	it('cancels the assignment when automation was disarmed or the issue parked', async () => {
@@ -1032,6 +1525,47 @@ describe('finishRun', () => {
 		expect(issueById(t, issue).attempt_count).toBe(1);
 		const ended = eventsOfType(t, 'agent_run.ended');
 		expect(ended[ended.length - 1].payload.outcome).toBe('stalled');
+	});
+
+	it('recovers the last effort milestone in the terminal CAS and freezes it', async () => {
+		const t = world();
+		const runnerId = addRunner(t);
+		const issue = addIssue(t);
+		const runId = await delivered(t, { runnerId, issueId: issue });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(runId);
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			runId,
+			{
+				status: 'completed',
+				effort_application: {
+					status: 'accepted_unconfirmed',
+					transport: 'argv',
+					attempted_effort: 'high'
+				}
+			},
+			NOW + 30
+		);
+		expect(run.effort_application_status).toBe('accepted_unconfirmed');
+		expect(run.effort_application_evidence).toMatchObject({
+			milestones: [expect.objectContaining({ attempted_effort: 'high' })]
+		});
+		await expect(
+			appendRunLog(t.db, t.env, await runnerRow(t, runnerId), runId, '', NOW + 40, undefined, {
+				status: 'rejected',
+				transport: 'argv',
+				attempted_effort: 'high',
+				reason: 'late request'
+			})
+		).rejects.toMatchObject({ code: 'run_already_ended' });
+		expect(runById(t, runId)?.effort_application_status).toBe('accepted_unconfirmed');
 	});
 
 	it('atomically stores and emits a reproducible Codex estimate', async () => {
@@ -1982,12 +2516,23 @@ describe('resume (retention and delivery)', () => {
 		const t = world();
 		const runnerId = resumeRunner(t);
 		const issue = addIssue(t);
+		t.sqlite
+			.prepare(
+				`INSERT INTO context_item
+					(id, user_id, kind, name, description, position, version, created_at, updated_at)
+				 VALUES ('ctx_resume_skill', ?, 'skill', 'stale-skill', 'Stale skill metadata.', 0, 1, 0, 0)`
+			)
+			.run(USER);
 		const first = await deliver(t, runnerId, issue);
 		const coldPrompt = first.assignment.prompt;
+		expect(first.assignment.bundle.skills.map(({ name }) => name)).toEqual(['stale-skill']);
 		await finishAdvanced(t, runnerId, issue, first.runId);
 		// The send-back itself: a human moves the issue back into an active
 		// state, which is what makes it dispatchable again.
 		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(OPEN, issue);
+		t.sqlite
+			.prepare('UPDATE context_item SET name = ?, description = ? WHERE id = ?')
+			.run('current-skill', 'Current skill metadata.', 'ctx_resume_skill');
 
 		const second = await deliver(t, runnerId, issue, NOW + 40);
 		expect(second.assignment.resume).toEqual({
@@ -1999,6 +2544,15 @@ describe('resume (retention and delivery)', () => {
 		// The continuation, not the cold launch prompt.
 		expect(second.assignment.prompt).toContain('# Supervisor run (resumed)');
 		expect(second.assignment.prompt).toContain(`It continues run ${first.runId}`);
+		expect(second.assignment.prompt).toContain(
+			'The current effective set of 1 skill replaces the prior attachment set'
+		);
+		expect(second.assignment.prompt).not.toContain('No skills are currently attached');
+		expect(second.assignment.prompt).not.toContain('stale-skill');
+		expect(second.assignment.prompt).not.toContain('Stale skill metadata.');
+		expect(
+			second.assignment.bundle.skills.map(({ name, description }) => ({ name, description }))
+		).toEqual([{ name: 'current-skill', description: 'Current skill metadata.' }]);
 		expect(coldPrompt).toContain('# Supervisor run\n');
 		expect(second.assignment.prompt.length).toBeLessThan(coldPrompt.length);
 
@@ -2011,6 +2565,56 @@ describe('resume (retention and delivery)', () => {
 		// The resource is claimed, so a GC sweep cannot take it underneath.
 		expect(resources(t)[0]!.state).toBe('claimed');
 		expect(resources(t)[0]!.claim_run_id).toBe(second.runId);
+	});
+
+	it('retains an enforced local effort fingerprint and resumes only the matching effort', async () => {
+		const t = world();
+		const runnerId = resumeRunner(t);
+		const issue = addIssue(t);
+		const first = await deliver(t, runnerId, issue);
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET model = 'claude-sonnet-5', resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(first.runId);
+		await finishAdvanced(t, runnerId, issue, first.runId, {
+			effort_application: {
+				status: 'accepted_unconfirmed',
+				transport: 'argv',
+				attempted_effort: 'high'
+			}
+		});
+		expect(resources(t)[0]!.resume_fingerprint).toContain('"version":2');
+		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(OPEN, issue);
+		const secondRunId = addRun(t, { issueId: issue, runnerId, model: 'claude-sonnet-5' });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(secondRunId);
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				owned_runs: [],
+				instance_id: 'effort-resume-boot',
+				effort_capabilities: {
+					version: 1,
+					daemon_version: 'test',
+					harness: 'claude_code',
+					harness_version: '2.1.258',
+					catalog_digest: 'effort-resume',
+					models: [{ model: 'claude-sonnet-5', efforts: ['high'] }]
+				}
+			},
+			NOW + 40
+		);
+		expect(response.assignments.find((item) => item.run.id === secondRunId)?.resume).toMatchObject({
+			previous_run_id: first.runId,
+			provider_session_id: 'sess-abc'
+		});
 	});
 
 	it('launches fresh outside the window, recording why', async () => {

@@ -3,6 +3,7 @@ import { encodeCursor } from '$lib/server/api/core';
 
 const mocks = vi.hoisted(() => ({
 	listIssues: vi.fn(),
+	countIssuesByCategory: vi.fn(),
 	resolveFocus: vi.fn(),
 	setFocus: vi.fn(),
 	getProject: vi.fn()
@@ -11,12 +12,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('$lib/server/db', () => ({ getDb: () => ({}) }));
 vi.mock('$lib/server/api/issues', () => ({
 	listIssues: mocks.listIssues,
-	countIssuesByCategory: vi.fn(async () => ({
-		backlog: 0,
-		active: 0,
-		awaiting_human: 0,
-		done: 0
-	}))
+	countIssuesByCategory: mocks.countIssuesByCategory
 }));
 vi.mock('$lib/server/api/preferences', () => ({
 	resolveFocus: mocks.resolveFocus,
@@ -62,6 +58,12 @@ describe('issue-list page loaders', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mocks.listIssues.mockResolvedValue({ items: [], hasMore: false });
+		mocks.countIssuesByCategory.mockResolvedValue({
+			backlog: 0,
+			active: 0,
+			awaiting_human: 0,
+			done: 0
+		});
 		mocks.resolveFocus.mockResolvedValue({ focusId: null, lastProjectId: null });
 		mocks.getProject.mockResolvedValue({ id: 'prj_test', name: 'Test project' });
 	});
@@ -73,9 +75,11 @@ describe('issue-list page loaders', () => {
 		await expect(
 			callLoad(
 				loadIssues,
-				event(`https://example.test/issues?q=needle&after=${cursor}&page_scope=prj_old`)
+				event(
+					`https://example.test/issues?q=needle&duplicates=1&after=${cursor}&page_scope=prj_old`
+				)
 			)
-		).rejects.toMatchObject({ status: 303, location: '/issues?q=needle' });
+		).rejects.toMatchObject({ status: 303, location: '/issues?q=needle&duplicates=1' });
 		expect(mocks.listIssues).not.toHaveBeenCalled();
 	});
 
@@ -112,5 +116,128 @@ describe('issue-list page loaders', () => {
 				limit: 100
 			})
 		);
+	});
+
+	it.each([
+		['all issues', loadIssues, 'https://example.test/issues', {}, undefined],
+		[
+			'project issues',
+			loadProject,
+			'https://example.test/projects/prj_test',
+			{ id: 'prj_test' },
+			'prj_test'
+		]
+	] as const)(
+		'passes workflow and state through the %s rows and category counts',
+		async (_name, load, baseUrl, params, projectId) => {
+			const result = (await callLoad(
+				load,
+				event(
+					`${baseUrl}?workflow=wf_eng&state=s_review&q=needle&ready=1&label=lab_a&label=lab_b`,
+					params
+				)
+			)) as { filters: Record<string, unknown> };
+			const scope = {
+				...(projectId ? { projectId } : {}),
+				workflow: 'wf_eng',
+				state: 's_review',
+				hideDuplicates: true,
+				ready: true,
+				q: 'needle',
+				labels: ['lab_a', 'lab_b']
+			};
+
+			expect(result.filters).toMatchObject({ workflow: 'wf_eng', state: 's_review' });
+			expect(mocks.countIssuesByCategory).toHaveBeenCalledWith({}, 'usr_test', scope);
+			expect(mocks.listIssues).toHaveBeenCalledWith(
+				{},
+				'usr_test',
+				{ ...scope, category: undefined, hideDone: false, brief: true },
+				expect.objectContaining({ limit: 100 })
+			);
+		}
+	);
+
+	it.each([
+		['all issues', loadIssues, 'https://example.test/issues', {}, undefined],
+		[
+			'project issues',
+			loadProject,
+			'https://example.test/projects/prj_test',
+			{ id: 'prj_test' },
+			'prj_test'
+		]
+	] as const)(
+		'parses duplicate visibility consistently for %s',
+		async (_name, load, baseUrl, params, projectId) => {
+			for (const [query, showDuplicates] of [
+				['', false],
+				['?duplicates=1', true],
+				['?duplicates=0', false],
+				['?duplicates=true', false]
+			] as const) {
+				vi.clearAllMocks();
+				mocks.listIssues.mockResolvedValue({ items: [], hasMore: false });
+				mocks.countIssuesByCategory.mockResolvedValue({
+					backlog: 0,
+					active: 0,
+					awaiting_human: 0,
+					done: 0
+				});
+				mocks.resolveFocus.mockResolvedValue({ focusId: null, lastProjectId: null });
+				mocks.getProject.mockResolvedValue({ id: 'prj_test', name: 'Test project' });
+				const result = (await callLoad(load, event(`${baseUrl}${query}`, params))) as {
+					filters: { showDuplicates: boolean };
+				};
+				const scope = {
+					...(projectId ? { projectId } : {}),
+					workflow: undefined,
+					state: undefined,
+					hideDuplicates: !showDuplicates,
+					ready: false,
+					q: undefined,
+					labels: []
+				};
+				expect(result.filters.showDuplicates).toBe(showDuplicates);
+				expect(mocks.countIssuesByCategory).toHaveBeenCalledWith({}, 'usr_test', scope);
+				expect(mocks.listIssues).toHaveBeenCalledWith(
+					{},
+					'usr_test',
+					{ ...scope, category: undefined, hideDone: true, brief: true },
+					expect.objectContaining({ limit: 100 })
+				);
+			}
+		}
+	);
+
+	it.each([
+		['workflow only', '?workflow=wf_eng', true],
+		['explicit state', '?workflow=wf_eng&state=s_review', false],
+		['category', '?workflow=wf_eng&category=done', false],
+		['show done', '?workflow=wf_eng&done=1', false]
+	])('keeps established hide-done behavior for %s', async (_name, query, hideDone) => {
+		await callLoad(loadIssues, event(`https://example.test/issues${query}`));
+		expect(mocks.listIssues).toHaveBeenCalledWith(
+			{},
+			'usr_test',
+			expect.objectContaining({ workflow: 'wf_eng', hideDone }),
+			expect.anything()
+		);
+	});
+
+	it('preserves workflow and state while clearing a stale bounded focus page', async () => {
+		mocks.resolveFocus.mockResolvedValue({ focusId: 'prj_new', lastProjectId: null });
+		const cursor = encodeCursor(42, 'iss_boundary');
+		await expect(
+			callLoad(
+				loadIssues,
+				event(
+					`https://example.test/issues?workflow=wf_eng&state=s_review&after=${cursor}&page_scope=prj_old`
+				)
+			)
+		).rejects.toMatchObject({
+			status: 303,
+			location: '/issues?workflow=wf_eng&state=s_review'
+		});
 	});
 });

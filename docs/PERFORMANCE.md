@@ -2,6 +2,12 @@
 
 Two measurements, one modelled and one real.
 
+## Weekly stats: `pnpm --filter web perf:stats`
+
+The opt-in weekly-stats probe constructs 524 issues, 28 active states, 1,525 runs and 40 marker-style windows. Its CPU companion runs a frozen pre-refactor arithmetic oracle against complete reports and generated marker windows, then reports the old repeated-preparation shape versus the shared prepared-index shape. It is excluded from the normal unit suite and has no wall-clock gate because local CPU timings vary.
+
+The command builds three fresh isolated Worker/D1 stacks over the same fixture: the pre-change repeated-preparation marker loop, shared preparation with 1,000 irrelevant events, then shared preparation with 10,000 irrelevant events. It collects ten sequential samples for the unfiltered, project-filtered and `compare=none` API, authenticated `/agents`, and lazy evidence. It prints loader phases, query/transfer counts, native `rows_read`, response bytes, stable full-output hashes and the unforced plan for the actual parameterized shipping event query. It fails if baseline/current figures differ or evidence changes between volumes. Set `STATS_PROFILE_PORT` or `STATS_PROFILE_SAMPLES` when needed. `pnpm --filter web perf:stats:cpu` retains the preparation diagnostic and full differential oracle.
+
 ## Modelled: `pnpm --filter web perf:nav`
 
 `apps/web/src/lib/server/api/nav-perf.test.ts` runs the real route `load`
@@ -54,16 +60,16 @@ gained work since, so compare against the current table below, not this one:
 | `/projects` | 4 | 4.5 | 2.3 |
 | `/activity` | 2 | 2.2 | 1.2 |
 
-## Current, 2026-09-10 (Tines/416)
+## Current, 2026-09-15 (Tines/563)
 
-One local run of `pnpm --filter web perf:nav` on the tree that repaired the
-probe. Query counts are the stable comparison; waves are derived from
+Two local runs of `pnpm --filter web perf:nav` on the current tree. Query
+counts are the stable comparison; waves are derived from
 wall-clock and move by a tenth or two between machines:
 
 | Page | Queries | Waves |
 |---|---|---|
-| `/issues/[project]/[number]` | 11 blocking, 25 total | 3.4 to first paint, 6.8 to fully settled |
-| `/agents` | 17 | 2.3 |
+| `/issues/[project]/[number]` | 11 blocking, 28 total | 3.4–3.5 to first paint, 7.6–7.7 to fully settled |
+| `/agents` | 18 | 2.3 |
 | `/issues` | 7 | 3.4 |
 | `/context` | 7 | 3.4 |
 | `/projects` | 3 | 2.2 |
@@ -90,8 +96,8 @@ anything it streams is not. The issue page is the worked example:
   while a replacement is in flight, instead of `{#await}` collapsing the
   panel back to a skeleton on every resync.
 
-Result (`pnpm --filter web perf:nav`, 2026-09-10): 11 statements and ~3.4 waves
-to first paint, 25 statements and ~6.8 waves to fully settled — from 26
+Result (`pnpm --filter web perf:nav`, 2026-09-15): 11 statements and ~3.4–3.5 waves
+to first paint, 28 statements and ~7.6–7.7 waves to fully settled — from 26
 statements and 29.1 waves before Tines/32.
 
 Two rules follow, and the probe asserts the first:

@@ -91,6 +91,7 @@ describe('listApiKeys', () => {
 		expect(runKey?.run).toEqual({
 			run_id: live,
 			runner_name: 'laptop-m4',
+			stage: null,
 			issue_ref: { project_name: 'demo', number: issueNumber }
 		});
 		// A user key stays byte-identical to what the page rendered before.
@@ -158,7 +159,7 @@ describe('actorRunOf', () => {
 				run_project_name: null,
 				run_issue_number: null
 			})
-		).toEqual({ run_id: 'arun_1', runner_name: 'laptop-m4', issue_ref: null });
+		).toEqual({ run_id: 'arun_1', runner_name: 'laptop-m4', stage: null, issue_ref: null });
 	});
 
 	it('names an unresolvable runner rather than rendering null', () => {
@@ -172,6 +173,7 @@ describe('actorRunOf', () => {
 		).toEqual({
 			run_id: 'arun_1',
 			runner_name: 'unknown runner',
+			stage: null,
 			issue_ref: { project_name: 'demo', number: 3 }
 		});
 	});

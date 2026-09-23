@@ -2,10 +2,12 @@
 	/** The list filters a page parses from its URL, as the bar reads them. */
 	export interface IssueFilterState {
 		category?: string;
+		workflow?: string;
 		state?: string;
 		/** Label ids or names, as they appear in the URL. */
 		labels: string[];
 		showDone: boolean;
+		showDuplicates: boolean;
 		ready: boolean;
 		q?: string;
 	}
@@ -28,6 +30,7 @@
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { CATEGORY_LABELS, categoryVar } from '$lib/format';
 	import { clearIssuePagination } from '$lib/issue-pagination';
+	import { issueWorkflowFilterPresentation } from '$lib/issue-workflow-filter';
 
 	let {
 		filters,
@@ -216,16 +219,29 @@
 		setLabels(
 			selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id]
 		);
-	// Distinct state names across the library, for the state filter.
-	const stateNames = $derived([...new Set(workflows.flatMap((w) => w.states.map((s) => s.name)))]);
+	const workflowFilter = $derived(
+		issueWorkflowFilterPresentation(workflows, filters.workflow, filters.state)
+	);
+	const setWorkflow = (value: string) =>
+		navigate((p) => {
+			if (value) p.set('workflow', value);
+			else p.delete('workflow');
+			p.delete('state');
+		});
 	const menuCount = $derived(
-		selectedLabels.length + (filters.state ? 1 : 0) + (filters.ready ? 1 : 0)
+		selectedLabels.length +
+			(filters.workflow ? 1 : 0) +
+			(filters.state ? 1 : 0) +
+			(filters.ready ? 1 : 0) +
+			(filters.showDuplicates ? 1 : 0)
 	);
 	const clearMenu = () =>
 		navigate((p) => {
 			p.delete('label');
+			p.delete('workflow');
 			p.delete('state');
 			p.delete('ready');
+			p.delete('duplicates');
 		});
 
 	// --- Search --------------------------------------------------------------
@@ -312,7 +328,7 @@
 				sideOffset={6}
 				align="start"
 				collisionPadding={8}
-				class="bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 ring-foreground/10 z-50 w-72 rounded-lg p-1 shadow-md ring-1 outline-none"
+				class="bg-popover text-popover-foreground data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 ring-foreground/10 z-50 max-h-[calc(100vh-16px)] w-72 max-w-[calc(100vw-16px)] overflow-y-auto rounded-lg p-1 shadow-md ring-1 outline-none"
 			>
 				<p
 					class="text-muted-foreground px-2 pt-1.5 pb-1 text-[11px] font-medium tracking-wider uppercase"
@@ -350,20 +366,57 @@
 				<p
 					class="text-muted-foreground mt-1 border-t px-2 pt-2 pb-1 text-[11px] font-medium tracking-wider uppercase"
 				>
+					Workflow
+				</p>
+				<div class="px-1 pb-1">
+					<Select
+						class="h-8 text-sm"
+						value={workflowFilter.workflowSelectValue}
+						onchange={(e) => setWorkflow(e.currentTarget.value)}
+						aria-label="Filter by workflow"
+					>
+						<option value="">Any workflow</option>
+						{#if workflowFilter.workflowSynthetic}
+							<option value={workflowFilter.workflowSynthetic.id} disabled>
+								{workflowFilter.workflowSynthetic.label}
+							</option>
+						{/if}
+						{#each workflowFilter.workflowOptions as workflow (workflow.id)}
+							<option value={workflow.id}>{workflow.label}</option>
+						{/each}
+					</Select>
+				</div>
+				<p
+					class="text-muted-foreground mt-1 border-t px-2 pt-2 pb-1 text-[11px] font-medium tracking-wider uppercase"
+				>
 					State
 				</p>
 				<div class="px-1 pb-1">
 					<Select
 						class="h-8 text-sm"
-						value={filters.state ?? ''}
+						value={workflowFilter.stateSelectValue}
 						onchange={(e) => set('state', e.currentTarget.value)}
 						aria-label="Filter by state"
+						aria-describedby={!workflowFilter.selectedWorkflow
+							? 'issue-filter-state-help'
+							: undefined}
+						disabled={!workflowFilter.selectedWorkflow}
 					>
 						<option value="">Any state</option>
-						{#each stateNames as name (name)}
-							<option value={name}>{name}</option>
+						{#if workflowFilter.stateSynthetic}
+							<option value={workflowFilter.stateSynthetic.id} disabled>
+								{workflowFilter.stateSynthetic.label}
+							</option>
+						{/if}
+						{#each workflowFilter.stateOptions as state (state.id)}
+							<option value={state.id}>{state.name}</option>
 						{/each}
 					</Select>
+					{#if !workflowFilter.selectedWorkflow}
+						<p id="issue-filter-state-help" class="text-muted-foreground px-1 pt-1 text-xs">
+							{workflowFilter.stateHelp}
+						</p>
+					{/if}
 				</div>
 				<div class="mt-1 border-t px-2 pt-2 pb-1.5">
 					<!-- Ready implies not-done: with it on, the Done tab counts 0. -->
@@ -376,6 +429,17 @@
 					<p class="text-muted-foreground mt-0.5 pl-6 text-xs">
 						Unblocked, not done, not a duplicate.
 					</p>
+					<CheckboxField
+						label="Show duplicates"
+						class="mt-2 text-sm"
+						checked={filters.showDuplicates}
+						onCheckedChange={(checked) => set('duplicates', checked ? '1' : '')}
+					/>
+					{#if filters.ready && filters.showDuplicates}
+						<p class="text-muted-foreground mt-0.5 pl-6 text-xs">
+							Ready only still excludes duplicates.
+						</p>
+					{/if}
 				</div>
 				{#if menuCount > 0}
 					<div class="mt-1 border-t pt-1">
@@ -407,16 +471,32 @@
 					<IconX size={13} stroke={2} class="text-muted-foreground" />
 				</button>
 			{/each}
+			{#if filters.workflow}
+				<button
+					type="button"
+					class="bg-background hover:bg-accent flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-full border pr-1.5 pl-2.5 text-xs"
+					aria-label="Remove filter workflow: {workflowFilter.workflowChipLabel}"
+					onclick={() => setWorkflow('')}
+				>
+					<span class="text-muted-foreground shrink-0">workflow</span>
+					<span class="min-w-0 truncate font-medium" title={workflowFilter.workflowChipLabel}
+						>{workflowFilter.workflowChipLabel}</span
+					>
+					<IconX size={13} stroke={2} class="text-muted-foreground shrink-0" />
+				</button>
+			{/if}
 			{#if filters.state}
 				<button
 					type="button"
-					class="bg-background hover:bg-accent flex h-7 items-center gap-1.5 rounded-full border pr-1.5 pl-2.5 text-xs"
-					aria-label="Remove filter state: {filters.state}"
+					class="bg-background hover:bg-accent flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-full border pr-1.5 pl-2.5 text-xs"
+					aria-label="Remove filter state: {workflowFilter.stateChipLabel}"
 					onclick={() => set('state', '')}
 				>
-					<span class="text-muted-foreground">state</span>
-					<span class="max-w-40 truncate font-medium">{filters.state}</span>
-					<IconX size={13} stroke={2} class="text-muted-foreground" />
+					<span class="text-muted-foreground shrink-0">state</span>
+					<span class="min-w-0 truncate font-medium" title={workflowFilter.stateChipLabel}
+						>{workflowFilter.stateChipLabel}</span
+					>
+					<IconX size={13} stroke={2} class="text-muted-foreground shrink-0" />
 				</button>
 			{/if}
 			{#if filters.ready}
@@ -427,6 +507,17 @@
 					onclick={() => set('ready', '')}
 				>
 					<span class="font-medium">ready</span>
+					<IconX size={13} stroke={2} class="text-muted-foreground" />
+				</button>
+			{/if}
+			{#if filters.showDuplicates}
+				<button
+					type="button"
+					class="bg-background hover:bg-accent flex h-7 items-center gap-1.5 rounded-full border pr-1.5 pl-2.5 text-xs"
+					aria-label="Hide duplicates"
+					onclick={() => set('duplicates', '')}
+				>
+					<span class="font-medium">Show duplicates</span>
 					<IconX size={13} stroke={2} class="text-muted-foreground" />
 				</button>
 			{/if}

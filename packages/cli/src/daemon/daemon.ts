@@ -38,15 +38,20 @@ import { CodexStreamRenderer } from './codex-stream.js';
 import { collectCodexRequestContext, resolveCodexHome } from './codex-rollout.js';
 import type { RunStreamRenderer } from './stream-summary.js';
 import { RateLimitDetector } from './rate-limit';
+import { assignmentEffortRejection, EffortCapabilityRefresher } from './effort-capabilities.js';
 import { agentCliPrefix, installAgentCli } from './cli-refresh.js';
+import { assertNoSkillRepoOverlap, materializeSkills } from '../skills.js';
 import { ensureRunnerCredentials, nextStepsMessage } from './register.js';
 import {
 	clearRunnerCredentials,
+	daemonDeclinesPath,
 	daemonStatePath,
+	loadDaemonDeclines,
 	loadDaemonState,
 	processStartTimeMs,
 	pruneKeptWorkspaces,
 	saveDaemonState,
+	saveDaemonDeclines,
 	workspacesDir,
 	writeKeptMarker,
 	type DaemonStateEntry,
@@ -57,6 +62,8 @@ import {
 	AMBIENT_CLI,
 	buildHarnessInvocation,
 	buildSpawnEnv,
+	SecretRedactor,
+	redactSecrets,
 	CliRefresher,
 	exitLineForRun,
 	formatLaunchBanner,
@@ -79,6 +86,8 @@ export interface DaemonOptions {
 	harness: HarnessKind;
 	command?: string;
 	maxConcurrent: number;
+	/** Machine-local consent for web requests; maxConcurrent remains the hard ceiling. */
+	allowRemoteConcurrency: boolean;
 	pollIntervalMs: number;
 	configDir: string;
 	/** Keep the agent-facing `tines` current from npm (--no-cli-refresh turns it off). */
@@ -127,6 +136,7 @@ interface ActiveRun extends ManagedRun {
 	keepForResume: boolean;
 	/** Immutable facts used to qualify Codex's requested-model estimate. */
 	pricingModel?: string | null;
+	effortEvidence?: NonNullable<import('@tines/shared').FinishRunRequest['effort_application']>;
 	pricingSessionMode?: 'cold' | 'resumed';
 	codexHome?: string;
 }
@@ -272,6 +282,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		harness: opts.harness,
 		...(opts.command !== undefined ? { command: opts.command } : {}),
 		maxConcurrent: opts.maxConcurrent,
+		allowRemoteConcurrency: opts.allowRemoteConcurrency,
 		...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
 		log
 	});
@@ -285,7 +296,12 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 	const client = createApiClient({ baseUrl, apiKey: creds.token });
 	const statePath = daemonStatePath(opts.configDir, creds.runner_id);
+	const declinesPath = daemonDeclinesPath(opts.configDir, creds.runner_id);
 	let shuttingDown = false;
+	let effectiveConcurrency = opts.allowRemoteConcurrency ? 1 : opts.maxConcurrent;
+	let appliedConcurrency: { revision: number; cap: number } | undefined;
+	const declinedAssignments = new Set(loadDaemonDeclines(declinesPath));
+	let warnedUnsupportedConcurrency = false;
 
 	// -- the agent-facing CLI -------------------------------------------------
 	// The launch prompt is always current (it deploys on every merge); the
@@ -393,9 +409,10 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					status
 				};
 				run.batcher.append(`[usage] ${JSON.stringify(accounting)}\n`);
-				await run.batcher.flush();
+				await run.batcher.finish();
 				const ended = await client.finishRun(run.runId, {
 					status,
+					...(run.effortEvidence ? { effort_application: run.effortEvidence } : {}),
 					...(error ? { error } : {}),
 					...judgment,
 					usage: accounting.usage,
@@ -530,9 +547,14 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		// No process yet (still materializing): the launch path's settled
 		// checks clean up.
 	};
+	const effortRefresher = new EffortCapabilityRefresher(opts.harness, DAEMON_VERSION);
+	let effortCapabilities = await effortRefresher.get();
 
 	// -- launching one assignment ---------------------------------------------
 	const launch = async (assignment: RunnerAssignment) => {
+		// Env items live in this closure only: never the workspace files, the
+		// banner, or daemon-state.json. Secret values also drive log masking.
+		const secretEnvValues = (assignment.env ?? []).filter((e) => e.secret).map((e) => e.value);
 		const runId = assignment.run.id;
 		if (table.has(runId)) return;
 		// A resumed run reuses its predecessor's workspace — the repositories,
@@ -563,11 +585,34 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			keepForResume: false,
 			batcher: new LogBatcher(
 				(chunk, seq) => client.appendRunLog(runId, { chunk, seq }).then(() => {}),
-				{ onError: (err) => log(`log append for run ${runId} failed: ${message(err)}`) }
+				{
+					onError: (err) => log(`log append for run ${runId} failed: ${message(err)}`),
+					...(secretEnvValues.length > 0 ? { redact: secretEnvValues } : {})
+				}
 			)
 		};
-		run.flush = () => run.batcher.flush();
+		run.flush = () => run.batcher.finish();
 		table.track(run);
+		// Enforced effort never trusts the catalog advertised by an earlier probe.
+		// Reprobe the same PATH/environment used below and require the assignment's
+		// digest to still match before any workspace or child process is started.
+		if (assignment.effort) effortCapabilities = await effortRefresher.get(true);
+		const effortRejection = assignmentEffortRejection(assignment, effortCapabilities, opts.harness);
+		if (effortRejection && assignment.effort) {
+			run.effortEvidence = {
+				status: 'rejected',
+				attempted_effort: assignment.effort.value,
+				transport: 'argv',
+				reason: effortRejection
+			};
+			await client
+				.appendRunLog(runId, {
+					chunk: '',
+					effort_application: run.effortEvidence
+				})
+				.catch(() => undefined);
+			return table.finishAndCleanup(run, 'failed', effortRejection);
+		}
 		log(
 			resume
 				? `run ${runId} assigned (issue ${issueLabel ?? assignment.run.issue_id}); resuming run ${resume.previous_run_id} in ${workspace}`
@@ -575,24 +620,45 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 		);
 
 		try {
+			const currentRepoDirs = assignment.bundle.repos.map((repo) => repo.dir);
+			let retainedRepoDirs: string[] = [];
+			if (resume) {
+				const retainedPath = join(workspace, 'repos.json');
+				let retained: unknown;
+				try {
+					retained = JSON.parse(readFileSync(retainedPath, 'utf8'));
+				} catch (error) {
+					throw new Error(
+						`cannot safely refresh skills: retained ${retainedPath} is unreadable or invalid JSON (${message(error)})`
+					);
+				}
+				if (
+					!Array.isArray(retained) ||
+					retained.some(
+						(repo) =>
+							!repo ||
+							typeof repo !== 'object' ||
+							typeof (repo as { dir?: unknown }).dir !== 'string'
+					)
+				) {
+					throw new Error(
+						`cannot safely refresh skills: retained ${retainedPath} must be an array of repositories with string dir fields`
+					);
+				}
+				retainedRepoDirs = retained.map((repo) => (repo as { dir: string }).dir);
+			}
+			assertNoSkillRepoOverlap([...currentRepoDirs, ...retainedRepoDirs]);
 			// The workspace: exactly the `issues context --out` layout. A resumed
-			// run inherits its predecessor's, so only prompt.md is rewritten —
-			// wiping and re-cloning is the cost this whole path exists to skip.
+			// run inherits its predecessor's repositories and edits, while the
+			// generated skill subtree is replaced with the current effective set.
 			if (!resume) {
 				rmSync(workspace, { recursive: true, force: true });
 				mkdirSync(workspace, { recursive: true });
 			} else {
 				rmSync(join(workspace, 'kept.json'), { force: true });
 			}
+			materializeSkills(workspace, assignment.bundle.skills);
 			writeFileSync(join(workspace, 'prompt.md'), `${assignment.prompt}\n`);
-			if (!resume)
-				for (const skill of assignment.bundle.skills) {
-					for (const file of skill.files) {
-						const target = join(workspace, 'skills', skill.name, file.path);
-						mkdirSync(dirname(target), { recursive: true });
-						writeFileSync(target, file.content);
-					}
-				}
 			if (!resume)
 				writeFileSync(
 					join(workspace, 'repos.json'),
@@ -638,6 +704,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				promptFile: join(workspace, 'prompt.md'),
 				prompt: assignment.prompt,
 				model: assignment.run.model,
+				effort: assignment.effort?.value ?? null,
 				...(resume ? { resumeSessionId: resume.provider_session_id } : {})
 			};
 			const invocation = buildHarnessInvocation(
@@ -663,8 +730,16 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			const spawnEnv = buildSpawnEnv(process.env, {
 				binDir: cli.binDir,
 				apiKey: assignment.run_key,
-				apiUrl: baseUrl
+				apiUrl: baseUrl,
+				...(assignment.env ? { extra: assignment.env } : {})
 			});
+			if (assignment.env?.length) {
+				run.batcher.append(
+					`[env] ${assignment.env.length} environment variable(s) set: ${assignment.env
+						.map((e) => `${e.name}${e.secret ? ' (secret)' : ''}`)
+						.join(', ')}\n`
+				);
+			}
 			if (opts.harness === 'codex') run.codexHome = resolveCodexHome(spawnEnv, workspace);
 			const child = spawn(invocation.file, invocation.args, {
 				cwd: workspace,
@@ -672,6 +747,21 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				stdio: ['ignore', 'pipe', 'pipe'],
 				detached: true
 			});
+			if (assignment.effort) {
+				child.once('spawn', () => {
+					run.effortEvidence = {
+						status: 'accepted_unconfirmed',
+						attempted_effort: assignment.effort!.value,
+						transport: 'argv'
+					};
+					void client
+						.appendRunLog(runId, {
+							chunk: '',
+							effort_application: run.effortEvidence
+						})
+						.catch((err) => log(`run ${runId}: effort evidence rejected: ${message(err)}`));
+				});
+			}
 			run.child = child;
 			run.spawnedAt = Date.now();
 			table.persist();
@@ -697,14 +787,22 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				run.rawSpool = createWriteStream(spoolPath);
 				run.rawUpload = (body) => client.putRunLogRaw(runId, body);
 				const decoder = new StringDecoder('utf8');
+				const rawRedactor = new SecretRedactor(secretEnvValues);
 				run.drain = () => {
 					const trailing = decoder.end();
-					if (trailing) renderer.write(trailing);
+					if (trailing) {
+						run.rawSpool?.write(rawRedactor.write(trailing));
+						renderer.write(trailing);
+					}
+					run.rawSpool?.write(rawRedactor.end());
 					renderer.finish();
 				};
 				child.stdout?.on('data', (data: Buffer) => {
-					run.rawSpool?.write(data);
-					renderer.write(decoder.write(data));
+					// The raw spool is uploaded verbatim, so it is masked too
+					// (text, not the Buffer — the decoder owns partial code points).
+					const text = decoder.write(data);
+					run.rawSpool?.write(rawRedactor.write(text));
+					renderer.write(text);
 				});
 			} else if (opts.harness === 'codex') {
 				const renderer = new CodexStreamRenderer((line) => run.batcher.append(line));
@@ -717,13 +815,29 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				};
 				child.stdout?.on('data', (data: Buffer) => renderer.write(decoder.write(data)));
 			} else {
-				child.stdout?.on('data', (data: Buffer) => run.batcher.append(data.toString('utf8')));
+				const decoder = new StringDecoder('utf8');
+				const redactor = new SecretRedactor(secretEnvValues);
+				child.stdout?.on('data', (data: Buffer) =>
+					run.batcher.append(redactor.write(decoder.write(data)))
+				);
+				run.drain = () => {
+					run.batcher.append(redactor.write(decoder.end()) + redactor.end());
+				};
 			}
+			// Each pipe owns its decoder/redactor: stderr may interrupt stdout in
+			// the middle of a secret, so their pending prefixes cannot be shared.
+			const stderrDecoder = new StringDecoder('utf8');
+			const stderrRedactor = new SecretRedactor(secretEnvValues);
+			const drainStdout = run.drain;
+			run.drain = () => {
+				drainStdout?.();
+				run.batcher.append(stderrRedactor.write(stderrDecoder.end()) + stderrRedactor.end());
+			};
 			// stderr is never stream-json — it is the harness's own diagnostics,
 			// and it goes to the log verbatim for every harness.
 			child.stderr?.on('data', (data: Buffer) => {
-				const text = data.toString('utf8');
-				run.batcher.append(text);
+				const text = stderrDecoder.write(data);
+				run.batcher.append(stderrRedactor.write(text));
 				// Usage exhaustion at process start and some provider/transport
 				// failures only appear here; stdout is empty in those cases.
 				run.limiter?.noteStderr(text);
@@ -736,7 +850,23 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				if (child.pid) setTimeout(() => killTree(child.pid!, 'SIGKILL'), 5000).unref?.();
 			}, assignment.timeout_minutes * 60_000);
 			child.on('error', (err) => {
-				void table.finishAndCleanup(run, 'failed', `failed to launch harness: ${message(err)}`);
+				const reason = redactSecrets(`failed to launch harness: ${message(err)}`, secretEnvValues);
+				if (assignment.effort)
+					run.effortEvidence = {
+						status: 'rejected',
+						attempted_effort: assignment.effort.value,
+						transport: 'argv',
+						reason
+					};
+				const evidence = assignment.effort
+					? client
+							.appendRunLog(runId, {
+								chunk: '',
+								effort_application: run.effortEvidence
+							})
+							.catch(() => undefined)
+					: Promise.resolve();
+				void evidence.then(() => table.finishAndCleanup(run, 'failed', reason));
 			});
 			child.on('close', (code, signal) => {
 				// The harness's last words first — a stream renderer holding a
@@ -770,18 +900,16 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					const limited = signal ? null : (run.limiter?.signal() ?? null);
 					const providerError = signal ? null : (run.limiter?.providerError() ?? null);
 					if (limited) {
-						log(
-							`run ${runId}: harness rate limited (${limited.detail}); reporting without a strike`
-						);
-						void table.finishAndCleanup(run, 'failed', `rate limited: ${limited.detail}`, {
+						const detail = redactSecrets(limited.detail, secretEnvValues);
+						log(`run ${runId}: harness rate limited (${detail}); reporting without a strike`);
+						void table.finishAndCleanup(run, 'failed', `rate limited: ${detail}`, {
 							judgment: 'rate_limited',
 							...(limited.resumeAt !== null ? { resume_at: limited.resumeAt } : {})
 						});
 					} else if (providerError) {
-						log(
-							`run ${runId}: transient provider error (${providerError.detail}); reporting without a strike`
-						);
-						void table.finishAndCleanup(run, 'failed', `provider error: ${providerError.detail}`, {
+						const detail = redactSecrets(providerError.detail, secretEnvValues);
+						log(`run ${runId}: transient provider error (${detail}); reporting without a strike`);
+						void table.finishAndCleanup(run, 'failed', `provider error: ${detail}`, {
 							judgment: 'interrupted'
 						});
 					} else {
@@ -794,7 +922,11 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				}
 			});
 		} catch (err) {
-			void table.finishAndCleanup(run, 'failed', `workspace setup failed: ${message(err)}`);
+			void table.finishAndCleanup(
+				run,
+				'failed',
+				redactSecrets(`workspace setup failed: ${message(err)}`, secretEnvValues)
+			);
 		}
 	};
 
@@ -818,18 +950,30 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 
 	// -- the poll loop ---------------------------------------------------------
 	log(
-		`polling ${baseUrl} every ${Math.round(opts.pollIntervalMs / 1000)}s (harness ${opts.harness}, max ${opts.maxConcurrent} concurrent) — Ctrl-C to stop`
+		`polling ${baseUrl} every ${Math.round(opts.pollIntervalMs / 1000)}s (harness ${opts.harness}, ${opts.allowRemoteConcurrency ? `web-adjustable with local ceiling ${opts.maxConcurrent}` : `local cap ${opts.maxConcurrent}`}) — Ctrl-C to stop`
 	);
 	let failures = 0;
 	while (!shuttingDown) {
 		try {
-			// `max_concurrent` rides along so the server cap tracks the flag —
-			// a restart with a new --max-concurrent takes effect without
-			// re-registering.
+			effortCapabilities = await effortRefresher.get();
 			const res = await client.pollRunner(creds.runner_id, {
 				instance_id: instanceId,
 				owned_runs: table.ids(),
-				max_concurrent: opts.maxConcurrent,
+				// Kept for older servers. Opted-in daemons advertise only the last
+				// accepted scheduling cap, never the higher machine ceiling.
+				max_concurrent: effectiveConcurrency,
+				concurrency_control: {
+					version: 1,
+					allow_remote: opts.allowRemoteConcurrency,
+					ceiling: opts.maxConcurrent,
+					...(appliedConcurrency ? { applied: appliedConcurrency } : {})
+				},
+				...(declinedAssignments.size > 0
+					? { declined_assignments: [...declinedAssignments].slice(0, 100) }
+					: {}),
+				...(effortCapabilities ? { effort_capabilities: effortCapabilities } : {}),
+				// Capability: this daemon merges assignment.env into the harness environment.
+				env_delivery: 1,
 				// Stated on every poll while pending; absent otherwise, which
 				// the server reads as "not draining" — so a daemon that died
 				// mid-drain cannot pin its runner shut past its relaunch.
@@ -837,15 +981,38 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 			});
 			failures = 0;
 			for (const runId of res.cancels) killWithoutFinish(runId);
+			let declinesChanged = false;
+			for (const runId of res.released_assignments ?? []) {
+				if (declinedAssignments.delete(runId)) declinesChanged = true;
+			}
+			if (declinesChanged) saveDaemonDeclines(declinesPath, declinedAssignments);
+			if (res.concurrency_control) {
+				const control = res.concurrency_control;
+				if (
+					opts.allowRemoteConcurrency &&
+					control.available &&
+					Number.isSafeInteger(control.revision) &&
+					Number.isInteger(control.cap) &&
+					control.cap >= 1 &&
+					control.cap <= opts.maxConcurrent
+				) {
+					effectiveConcurrency = control.cap;
+					appliedConcurrency = { revision: control.revision, cap: control.cap };
+				}
+			} else if (opts.allowRemoteConcurrency && !warnedUnsupportedConcurrency) {
+				warnedUnsupportedConcurrency = true;
+				log(
+					'web concurrency adjustment unavailable: upgrade the server; retaining conservative cap'
+				);
+			}
 			for (const assignment of res.assignments) {
-				// The server's guarded flip is the authority on capacity: a
-				// delivered run already holds its claim and key, so dropping it
-				// here would strand it as a mislabeled launch failure. Launch
-				// anyway and flag the divergence.
-				if (table.size >= opts.maxConcurrent) {
+				if (declinedAssignments.size > 0 || table.size >= opts.maxConcurrent) {
 					log(
-						`warning: supervisor delivered ${assignment.run.id} beyond --max-concurrent ${opts.maxConcurrent}; launching anyway (the server cap governs)`
+						`run ${assignment.run.id}: refusing launch beyond local ceiling ${opts.maxConcurrent}; requesting safe release`
 					);
+					declinedAssignments.add(assignment.run.id);
+					saveDaemonDeclines(declinesPath, declinedAssignments);
+					continue;
 				}
 				void launch(assignment);
 			}

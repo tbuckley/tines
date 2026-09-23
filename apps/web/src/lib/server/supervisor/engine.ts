@@ -28,6 +28,7 @@ import {
 	launchBackoffMs,
 	rateLimitHoldUntil,
 	resolveRoute,
+	resolveEffort,
 	resolveTier,
 	targetVerdict,
 	type ActiveCounts,
@@ -40,6 +41,7 @@ import {
 } from './resume';
 import { loadSealableRun, sealRunLog, spillEvicted, sweepRunLogs } from './run-log';
 import { effectiveAutomationEnabled } from './settings';
+import { mergeEffortEvidence, type EffortMilestone } from './effort-evidence';
 
 const ACTIVE = [...ACTIVE_RUN_STATUSES];
 
@@ -323,6 +325,8 @@ export function targetsForIssue(
 			ambiguous: [],
 			runnerRule: null,
 			tierOverride: null,
+			effortOverride: null,
+			effortRule: null,
 			failure: null,
 			pinned: true
 		};
@@ -363,6 +367,10 @@ export async function claimRun(
 		maxConcurrent: number;
 		tier: ModelTier;
 		model: string | null;
+		requestedEffort?: string | null;
+		resolvedEffort?: string | null;
+		effortSource?: import('@tines/shared').EffortSource;
+		effortDeliveryMode?: import('./logic').EffortDeliveryMode;
 		quota: QuotaPolicy;
 		now: number;
 		/** Token captured by candidate selection; omitted only by pre-transfer tests/callers. */
@@ -384,9 +392,12 @@ export async function claimRun(
 
 	const claim = sql`
 		INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, model,
+			requested_effort, resolved_effort, effort_source, effort_application_status,
 			state_id_at_start, log, log_bytes_dropped, created_at, project_assignment_token)
 		SELECT ${input.runId}, ${input.userId}, issue.id, ${input.runnerId}, 'assigned',
-			${input.tier}, ${input.model}, issue.state_id, '', 0, ${input.now}, ${assignmentToken}
+			${input.tier}, ${input.model}, ${input.requestedEffort ?? null}, ${input.resolvedEffort ?? null},
+			${input.effortSource ? JSON.stringify(input.effortSource) : null}, ${input.effortDeliveryMode === 'legacy_tier' ? 'legacy_not_applied' : input.resolvedEffort ? 'pending' : 'not_requested'},
+			issue.state_id, '', 0, ${input.now}, ${assignmentToken}
 		FROM issue
 		JOIN project ON project.id = issue.project_id
 		JOIN workflow_state st ON st.id = issue.state_id
@@ -442,17 +453,55 @@ type LaunchOutcome = 'launched' | 'launch_failed' | 'lost';
 export async function mintRunKeyAndFlip(
 	db: Kysely<Database>,
 	env: Env,
-	input: { runId: string; userId: string; maxRunMinutes: number; now: number }
+	input: {
+		runId: string;
+		userId: string;
+		maxRunMinutes: number;
+		now: number;
+		localAdmission?: { runnerId: string; instanceId: string; ceiling: number };
+	}
 ): Promise<{ keyId: string; secret: string } | null> {
 	const secret = `tines_${randomString(40)}`;
 	const keyId = newId('key');
+	const legacyName = `run ${input.runId}`;
 	const [, flip] = await runBatch(env, [
 		db
 			.insertInto('api_key')
 			.values({
 				id: keyId,
 				user_id: input.userId,
-				name: `run ${input.runId}`,
+				name: sql<string>`COALESCE(
+					(SELECT NULLIF(trim(r.name), '') || ' · ' ||
+						NULLIF(trim(w.name), '') || '/' || NULLIF(trim(s.name), '')
+					 FROM agent_run AS ar
+					 JOIN runner AS r ON r.id = ar.runner_id
+					 JOIN workflow_state AS s ON s.id = ar.state_id_at_start
+					 JOIN workflow AS w ON w.id = s.workflow_id
+					 WHERE ar.id = ${input.runId} AND ar.user_id = ${input.userId}),
+					${legacyName}
+				)`,
+				run_workflow_name: sql<string | null>`(
+					SELECT NULLIF(trim(w.name), '')
+					FROM agent_run AS ar
+					JOIN runner AS r ON r.id = ar.runner_id
+					JOIN workflow_state AS s ON s.id = ar.state_id_at_start
+					JOIN workflow AS w ON w.id = s.workflow_id
+					WHERE ar.id = ${input.runId} AND ar.user_id = ${input.userId}
+						AND NULLIF(trim(r.name), '') IS NOT NULL
+						AND NULLIF(trim(w.name), '') IS NOT NULL
+						AND NULLIF(trim(s.name), '') IS NOT NULL
+				)`,
+				run_state_name: sql<string | null>`(
+					SELECT NULLIF(trim(s.name), '')
+					FROM agent_run AS ar
+					JOIN runner AS r ON r.id = ar.runner_id
+					JOIN workflow_state AS s ON s.id = ar.state_id_at_start
+					JOIN workflow AS w ON w.id = s.workflow_id
+					WHERE ar.id = ${input.runId} AND ar.user_id = ${input.userId}
+						AND NULLIF(trim(r.name), '') IS NOT NULL
+						AND NULLIF(trim(w.name), '') IS NOT NULL
+						AND NULLIF(trim(s.name), '') IS NOT NULL
+				)`,
 				key_hash: await sha256Hex(secret),
 				key_prefix: secret.slice(0, 14),
 				agent_run_id: input.runId,
@@ -467,6 +516,20 @@ export async function mintRunKeyAndFlip(
 			.set({ status: 'launching', api_key_id: keyId })
 			.where('id', '=', input.runId)
 			.where('status', '=', 'assigned')
+			.$if(input.localAdmission !== undefined, (query) => {
+				const admission = input.localAdmission!;
+				return query.where(sql<boolean>`EXISTS (
+					SELECT 1 FROM runner
+					WHERE id = ${admission.runnerId} AND user_id = ${input.userId}
+						AND daemon_instance_id = ${admission.instanceId}
+						AND concurrency_instance_id = ${admission.instanceId}
+						AND concurrency_ceiling = ${admission.ceiling}
+						AND (
+							SELECT COUNT(*) FROM agent_run
+							WHERE runner_id = ${admission.runnerId} AND status IN ('launching', 'running')
+						) < ${admission.ceiling}
+				)`);
+			})
 			.compile()
 	]);
 	if ((flip?.meta.changes ?? 0) === 0) {
@@ -479,6 +542,160 @@ export async function mintRunKeyAndFlip(
 		return null;
 	}
 	return { keyId, secret };
+}
+
+/**
+ * Atomically settles assignments a daemon refused before launch. The status
+ * guard and key revocation share one receipt, so a first log that wins the
+ * race preserves the running process and its credential.
+ */
+export async function releaseDeclinedAssignments(
+	db: Kysely<Database>,
+	env: Env,
+	input: { userId: string; runnerId: string; runIds: string[]; now: number },
+	onReleased: () => void
+): Promise<string[]> {
+	const released: string[] = [];
+	for (const runId of input.runIds) {
+		const run = await db
+			.selectFrom('agent_run')
+			.select(['id', 'issue_id', 'status', 'started_at'])
+			.where('id', '=', runId)
+			.where('user_id', '=', input.userId)
+			.where('runner_id', '=', input.runnerId)
+			.executeTakeFirst();
+		if (!run || !ACTIVE.includes(run.status as (typeof ACTIVE)[number])) {
+			released.push(runId);
+			continue;
+		}
+		if (run.status !== 'launching' || run.started_at !== null) continue;
+		const receipt = newId('evt');
+		const guard = sql<boolean>`EXISTS (
+			SELECT 1 FROM agent_run
+			WHERE id = ${runId} AND user_id = ${input.userId} AND runner_id = ${input.runnerId}
+				AND status = 'launching' AND started_at IS NULL
+		)`;
+		const [eventResult, updateResult] = await runBatch(env, [
+			sql`
+				INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+				SELECT ${receipt}, ${input.userId}, 'agent_run.ended', ${input.userId}, NULL,
+					${run.issue_id}, (SELECT project_id FROM issue WHERE id = ${run.issue_id}),
+					${JSON.stringify({ run_id: runId, status: 'canceled', error: 'launch refused by local concurrency ceiling' })},
+					${input.now}
+				WHERE ${guard}`.compile(db),
+			db
+				.updateTable('agent_run')
+				.set({
+					status: 'canceled',
+					ended_at: input.now,
+					error: 'launch refused by local concurrency ceiling',
+					outcome: null
+				})
+				.where('id', '=', runId)
+				.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${receipt})`)
+				.compile(),
+			db
+				.updateTable('api_key')
+				.set({ revoked_at: input.now })
+				.where('agent_run_id', '=', runId)
+				.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${receipt})`)
+				.compile()
+		]);
+		if ((eventResult?.meta.changes ?? 0) === 1 && (updateResult?.meta.changes ?? 0) === 1) {
+			released.push(runId);
+			onReleased();
+		}
+	}
+	return released;
+}
+
+/**
+ * Keep the oldest assignments that still fit under the daemon's current
+ * machine ceiling and free the newest surplus claims. Launching/running work
+ * is never killed. The runner-policy predicate prevents a stale lower-policy
+ * poll from releasing work after a newer local report raised the ceiling.
+ */
+export async function releaseSurplusAssigned(
+	db: Kysely<Database>,
+	env: Env,
+	input: { userId: string; runnerId: string; instanceId: string; ceiling: number; now: number },
+	onReleased: () => void
+): Promise<string[]> {
+	const active = await db
+		.selectFrom('agent_run')
+		.select(['id', 'issue_id', 'status'])
+		.where('user_id', '=', input.userId)
+		.where('runner_id', '=', input.runnerId)
+		.where('status', 'in', ['assigned', 'launching', 'running'])
+		.orderBy('created_at asc')
+		.orderBy('id asc')
+		.execute();
+	const occupied = active.filter(
+		(run) => run.status === 'launching' || run.status === 'running'
+	).length;
+	const keepAssigned = Math.max(0, input.ceiling - occupied);
+	const surplus = active.filter((run) => run.status === 'assigned').slice(keepAssigned);
+	const released: string[] = [];
+	for (const run of surplus) {
+		const receipt = newId('evt');
+		const guard = sql<boolean>`EXISTS (
+			SELECT 1 FROM agent_run
+			WHERE id = ${run.id} AND user_id = ${input.userId} AND runner_id = ${input.runnerId}
+				AND status = 'assigned'
+				AND (
+					SELECT COUNT(*) FROM agent_run AS active
+					WHERE active.user_id = ${input.userId}
+						AND active.runner_id = ${input.runnerId}
+						AND (
+							active.status IN ('launching', 'running')
+							OR (
+								active.status = 'assigned'
+								AND (
+									active.created_at < agent_run.created_at
+									OR (active.created_at = agent_run.created_at AND active.id < agent_run.id)
+								)
+							)
+						)
+				) >= ${input.ceiling}
+		) AND EXISTS (
+			SELECT 1 FROM runner
+			WHERE id = ${input.runnerId} AND user_id = ${input.userId}
+				AND daemon_instance_id = ${input.instanceId}
+				AND concurrency_instance_id = ${input.instanceId}
+				AND concurrency_ceiling = ${input.ceiling}
+		)`;
+		const [eventResult, updateResult] = await runBatch(env, [
+			sql`
+				INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
+				SELECT ${receipt}, ${input.userId}, 'agent_run.ended', ${input.userId}, NULL,
+					${run.issue_id}, (SELECT project_id FROM issue WHERE id = ${run.issue_id}),
+					${JSON.stringify({ run_id: run.id, status: 'canceled', error: 'released after local concurrency ceiling change' })},
+					${input.now}
+				WHERE ${guard}`.compile(db),
+			db
+				.updateTable('agent_run')
+				.set({
+					status: 'canceled',
+					ended_at: input.now,
+					error: 'released after local concurrency ceiling change',
+					outcome: null
+				})
+				.where('id', '=', run.id)
+				.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${receipt})`)
+				.compile(),
+			db
+				.updateTable('api_key')
+				.set({ revoked_at: input.now })
+				.where('agent_run_id', '=', run.id)
+				.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${receipt})`)
+				.compile()
+		]);
+		if ((eventResult?.meta.changes ?? 0) === 1 && (updateResult?.meta.changes ?? 0) === 1) {
+			released.push(run.id);
+			onReleased();
+		}
+	}
+	return released;
 }
 
 /**
@@ -499,6 +716,7 @@ export async function launchClaimedRun(
 		runner: EngineRunner;
 		tier: ModelTier;
 		model: string | null;
+		effort?: string | null;
 		now: number;
 	}
 ): Promise<LaunchOutcome> {
@@ -525,6 +743,48 @@ export async function launchClaimedRun(
 			},
 			tier: ctx.tier,
 			model: ctx.model,
+			effort: ctx.effort,
+			recordEffortEvidence: ctx.effort
+				? async (evidence) => {
+						for (let attempt = 0; attempt < 3; attempt++) {
+							const current = await db
+								.selectFrom('agent_run')
+								.select(['status', 'effort_application_status', 'effort_application_evidence'])
+								.where('id', '=', ctx.runId)
+								.executeTakeFirst();
+							if (!current || !(ACTIVE_RUN_STATUSES as readonly string[]).includes(current.status))
+								return;
+							const merged = mergeEffortEvidence(
+								(current.effort_application_status ??
+									'unknown') as import('@tines/shared').EffortApplicationStatus,
+								current.effort_application_evidence,
+								evidence as EffortMilestone,
+								Date.now()
+							);
+							let update = db
+								.updateTable('agent_run')
+								.set({
+									effort_application_status: merged.status,
+									effort_application_evidence: merged.evidence
+								})
+								.where('id', '=', ctx.runId)
+								.where('status', 'in', [...ACTIVE_RUN_STATUSES]);
+							update = current.effort_application_status
+								? update.where('effort_application_status', '=', current.effort_application_status)
+								: update.where('effort_application_status', 'is', null);
+							update = current.effort_application_evidence
+								? update.where(
+										'effort_application_evidence',
+										'=',
+										current.effort_application_evidence
+									)
+								: update.where('effort_application_evidence', 'is', null);
+							const result = await update.executeTakeFirst();
+							if (Number(result.numUpdatedRows) === 1) return;
+						}
+						throw new Error('effort evidence changed repeatedly during managed launch');
+					}
+				: undefined,
 			runKey: secret
 		});
 		const startedAt = ctx.now;
@@ -593,10 +853,16 @@ export async function launchClaimedRun(
  * stalled-launch reconciliation: error recorded on the run, key revoked,
  * runner backed off (2× per consecutive failure, max 1 h) and flagged.
  */
-async function failLaunch(
+export async function failLaunch(
 	db: Kysely<Database>,
 	env: Env,
-	input: { userId: string; runId: string; runner: EngineRunner; error: string; now: number }
+	input: {
+		userId: string;
+		runId: string;
+		runner: Pick<EngineRunner, 'id' | 'name' | 'launch_failures'>;
+		error: string;
+		now: number;
+	}
 ): Promise<void> {
 	const failures = input.runner.launch_failures + 1;
 	await runBatch(env, [
@@ -837,7 +1103,8 @@ export async function runDispatchPass(
 	for (const issue of candidates) {
 		// With the global cap saturated nothing more can dispatch this pass.
 		if (settings.quota.type === 'global_cap' && counts.total >= settings.quota.limit) break;
-		const { targets } = targetsForIssue(issue, rules);
+		const route = targetsForIssue(issue, rules);
+		const { targets } = route;
 		for (const target of orderTargetsByResumeAffinity(targets, affinity.get(issue.id))) {
 			const runner = runners.get(target.runner_id);
 			if (!runner) continue; // stale target (runner removed mid-pass)
@@ -847,6 +1114,22 @@ export async function runDispatchPass(
 			if (verdict !== 'ok') continue;
 
 			const resolved = resolveTier(runner, target.tier ?? null);
+			const requestedEffort = target.effort ?? null;
+			const effort = resolveEffort(runner, resolved, requestedEffort);
+			if (!effort.compatible) continue;
+			const resolvedEffort = effort.resolved;
+			const effortSource: import('@tines/shared').EffortSource = requestedEffort
+				? {
+						kind: 'routing_target',
+						runner_id: runner.id,
+						tier: resolved.tier,
+						rule_id: route.effortRule?.id ?? route.runnerRule?.id ?? route.rule?.id ?? '',
+						scope_label: `rule ${route.effortRule?.id ?? route.runnerRule?.id ?? route.rule?.id ?? 'unknown'}`,
+						target_index: targets.findIndex((candidate) => candidate === target)
+					}
+				: resolvedEffort
+					? { kind: 'runner_tier', runner_id: runner.id, tier: resolved.tier }
+					: { kind: 'none', runner_id: runner.id, tier: resolved.tier };
 			const runId = newId('arun');
 			const claimed = await claimRun(db, env, {
 				runId,
@@ -858,6 +1141,10 @@ export async function runDispatchPass(
 				maxConcurrent: runner.max_concurrent,
 				tier: resolved.tier,
 				model: resolved.model,
+				requestedEffort,
+				resolvedEffort,
+				effortSource,
+				effortDeliveryMode: effort.deliveryMode,
 				quota: settings.quota,
 				now,
 				projectAssignmentToken: issue.project_assignment_token
@@ -881,6 +1168,7 @@ export async function runDispatchPass(
 				runner,
 				tier: resolved.tier,
 				model: resolved.model,
+				effort: effort.deliveryMode === 'enforce' ? resolvedEffort : null,
 				now
 			});
 			if (launched === 'launched') {
@@ -983,6 +1271,8 @@ export async function endRun(
 			turn_count?: number;
 			conversation_turn_count?: number;
 			workspace_path?: string;
+			effort_application_status?: import('@tines/shared').EffortApplicationStatus;
+			effort_application_evidence?: string;
 		};
 	}
 ): Promise<EndRunOutcome> {
@@ -1031,6 +1321,8 @@ export async function endRun(
 				${input.finalReport?.turn_count !== undefined ? sql`turn_count = ${input.finalReport.turn_count},` : sql``}
 				${input.finalReport?.conversation_turn_count !== undefined ? sql`conversation_turn_count = ${input.finalReport.conversation_turn_count},` : sql``}
 				${input.finalReport?.workspace_path !== undefined ? sql`workspace_path = ${input.finalReport.workspace_path},` : sql``}
+				${input.finalReport?.effort_application_status !== undefined ? sql`effort_application_status = ${input.finalReport.effort_application_status},` : sql``}
+				${input.finalReport?.effort_application_evidence !== undefined ? sql`effort_application_evidence = ${input.finalReport.effort_application_evidence},` : sql``}
 				state_id_at_end = (SELECT state_id FROM issue WHERE id = ${run.issue_id})
 			WHERE id = ${run.id} AND status IN (${sql.join(ACTIVE)})`.compile(db)
 	]);
@@ -1422,7 +1714,13 @@ export async function pollManagedRuns(
 						const ended = await db
 							.selectFrom('agent_run')
 							.leftJoin('workflow_state as st', 'st.id', 'agent_run.state_id_at_end')
-							.select(['agent_run.outcome', 'agent_run.issue_id', 'agent_run.model', 'st.category'])
+							.select([
+								'agent_run.outcome',
+								'agent_run.issue_id',
+								'agent_run.model',
+								'agent_run.resolved_effort',
+								'st.category'
+							])
 							.where('agent_run.id', '=', run.id)
 							.executeTakeFirst();
 						await adapter
@@ -1437,6 +1735,7 @@ export async function pollManagedRuns(
 									user_id: row.user_id,
 									issue_id: ended?.issue_id ?? run.issue_id,
 									model: ended?.model ?? null,
+									effort: ended?.resolved_effort ?? null,
 									outcome: ended?.outcome ?? outcome.outcome,
 									ended_in_awaiting_state: ended?.category === 'awaiting_human',
 									now

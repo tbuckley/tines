@@ -4,18 +4,51 @@ import {
 	addIssue,
 	addRun,
 	addRunner,
+	CLOSED,
 	NOW,
+	PROJECT,
 	seedBase,
 	USER
 } from '$lib/server/supervisor/test-fixtures';
 import {
 	seedMixed,
 	verifyMixed,
+	verifyMixedCohort,
 	user as mixedUser
 } from '../../../../../test-fixtures/usage-mixed.mjs';
 import { GET } from './+server';
 import { GET as RUNS_GET } from '../runs/+server';
 import { GET as EVIDENCE_GET } from './evidence/+server';
+
+function completionEntry(
+	t: ReturnType<typeof createTestDb>,
+	id: string,
+	issueId: string,
+	createdAt: number
+) {
+	t.sqlite
+		.prepare(
+			`INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at)
+			 VALUES (?,?,?,?,?,?,?,?)`
+		)
+		.run(
+			id,
+			USER,
+			'issue.transitioned',
+			USER,
+			issueId,
+			PROJECT,
+			JSON.stringify({
+				state_entry_version: 1,
+				workflow_id: 'wf_standard',
+				workflow_name: 'Engineering',
+				to_state_id: CLOSED,
+				to_state_name: 'Closed',
+				to_state_category: 'done'
+			}),
+			createdAt
+		);
+}
 
 async function get(t: ReturnType<typeof createTestDb>, query: string) {
 	t.env.BETTER_AUTH_SECRET = 'usage-route-test-secret';
@@ -64,6 +97,252 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		expect(bad.body).toMatchObject({
 			error: { code: 'invalid_field', details: { field: 'window' } }
 		});
+	});
+
+	it('serves and freezes an explicit completion cohort scope', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const issue = addIssue(t, { id: 'iss_cohort_route', state: CLOSED });
+		completionEntry(t, 'evt_cohort_route', issue, NOW - 20);
+		const query = `?mode=cohort&workflow=wf_standard&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`;
+		const initial = await get(t, query);
+		expect(initial.response.status).toBe(200);
+		expect(initial.body).toMatchObject({
+			mode: 'cohort',
+			selection_basis: 'all_current_done',
+			selected_states: [{ id: CLOSED, name: 'Closed', category: 'done' }],
+			counters: { distinct_issue_count: 1, zero_run_issue_count: 1 }
+		});
+		expect(initial.body.scope).toEqual(expect.any(String));
+
+		t.sqlite.prepare(`UPDATE workflow_state SET category='active' WHERE id=?`).run(CLOSED);
+		const replay = await get(t, `?scope=${encodeURIComponent(String(initial.body.scope))}`);
+		expect(replay.response.status).toBe(200);
+		expect(replay.body).toMatchObject({
+			mode: 'cohort',
+			selection_basis: 'all_current_done',
+			selected_states: [{ id: CLOSED, name: 'Closed', category: 'done' }],
+			counters: { distinct_issue_count: 1 }
+		});
+		expect(replay.body.scope).toBe(initial.body.scope);
+	});
+
+	it('pages cohort members including no-run issues and cutoff-redacted attempts', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const runner = addRunner(t);
+		const finalized = addIssue(t, { id: 'iss_cohort_finalized', state: CLOSED });
+		const noRun = addIssue(t, { id: 'iss_cohort_no_run', state: CLOSED });
+		completionEntry(t, 'evt_cohort_finalized', finalized, NOW - 30);
+		completionEntry(t, 'evt_cohort_no_run', noRun, NOW - 20);
+		const nonmember = addIssue(t, { id: 'iss_cohort_nonmember' });
+		t.sqlite.exec(`
+			INSERT INTO user (id,name,email,emailVerified,createdAt,updatedAt)
+			VALUES ('u_foreign_cohort','bob','cohort-foreign@example.com',1,${NOW},${NOW});
+			INSERT INTO project (id,user_id,name,created_at,updated_at)
+			VALUES ('prj_foreign_cohort','u_foreign_cohort','private',${NOW},${NOW});
+		`);
+		const foreignIdentity = addIssue(t, {
+			id: 'iss_foreign_cohort_identity',
+			project: 'prj_foreign_cohort'
+		});
+		completionEntry(t, 'evt_owned_foreign_identity', foreignIdentity, NOW - 15);
+		t.sqlite
+			.prepare(
+				`INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at)
+				 VALUES (?,?,?,?,?,?,?,?)`
+			)
+			.run(
+				'evt_cohort_nonmember',
+				USER,
+				'issue.transitioned',
+				USER,
+				nonmember,
+				PROJECT,
+				JSON.stringify({
+					state_entry_version: 1,
+					workflow_id: 'wf_standard',
+					workflow_name: 'Engineering',
+					to_state_id: 'st_open',
+					to_state_name: 'Open',
+					to_state_category: 'active'
+				}),
+				NOW - 10
+			);
+		addRun(t, {
+			id: 'arun_cohort_finalized',
+			issueId: finalized,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW - 50,
+			endedAt: NOW - 10,
+			usage: JSON.stringify({ cost_usd: 2, cost_source: 'provider' })
+		});
+		addRun(t, {
+			id: 'arun_cohort_pending',
+			issueId: finalized,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW - 5,
+			endedAt: NOW + 10,
+			usage: JSON.stringify({ cost_usd: 99, cost_source: 'provider' })
+		});
+		addRun(t, {
+			id: 'arun_cohort_exact_cutoff',
+			issueId: finalized,
+			runnerId: runner,
+			status: 'completed',
+			createdAt: NOW - 4,
+			endedAt: NOW,
+			usage: JSON.stringify({ cost_usd: 77, cost_source: 'provider' })
+		});
+		const report = await get(
+			t,
+			`?mode=cohort&workflow=wf_standard&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`
+		);
+		const evidence = async (query: string) => {
+			const url = new URL(
+				`http://test/api/v1/usage/evidence?scope=${encodeURIComponent(String(report.body.scope))}&${query}`
+			);
+			const response = await EVIDENCE_GET({
+				locals: { user: { id: USER, name: 'alice' } },
+				platform: { env: t.env, ctx: { waitUntil: () => {} } },
+				request: new Request(url),
+				url
+			} as unknown as Parameters<typeof EVIDENCE_GET>[0]);
+			expect(response.status).toBe(200);
+			return response.json() as Promise<Record<string, unknown>>;
+		};
+		const issues = await evidence('kind=issues');
+		expect(issues).toMatchObject({
+			total_count: 2,
+			attempt_count: 3,
+			pending_count: 2,
+			from: NOW - 100,
+			to: NOW,
+			observed_through: expect.any(Number),
+			counters: { distinct_issue_count: 2, attempt_count: 3, pending_count: 2 },
+			history: { qualifying_fact_count: 3 }
+		});
+		expect((issues.items as { issue_id: string }[]).map((item) => item.issue_id).sort()).toEqual([
+			finalized,
+			noRun
+		]);
+		const pending = await evidence(`kind=runs&population=pending&member=${finalized}`);
+		expect(pending).toMatchObject({
+			total_count: 2,
+			attempt_count: 3,
+			pending_count: 2,
+			matching_total: { cost_usd_exact: '2' },
+			parent_matching_total: { cost_usd_exact: '2' },
+			counters: { distinct_issue_count: 1, attempt_count: 3, pending_count: 2 },
+			parent_counters: { distinct_issue_count: 2, attempt_count: 3, pending_count: 2 }
+		});
+		expect((pending.items as { id: string }[]).map((item) => item.id).sort()).toEqual([
+			'arun_cohort_exact_cutoff',
+			'arun_cohort_pending'
+		]);
+		for (const item of pending.items as Record<string, unknown>[]) {
+			expect(item).not.toHaveProperty('usage');
+			expect(item).not.toHaveProperty('ended_at');
+			expect(item).not.toHaveProperty('outcome');
+		}
+		const empty = await evidence(`kind=runs&member=${noRun}`);
+		expect(empty).toMatchObject({ total_count: 0, items: [] });
+		const entries = await evidence('kind=entries&limit=1');
+		expect(entries).toMatchObject({
+			total_count: 2,
+			population: 'all',
+			sort: 'time',
+			items: [{ event_id: 'evt_cohort_no_run', qualifies: 1, chosen: 1 }]
+		});
+		expect(entries.next_cursor).toEqual(expect.any(String));
+		const nextEntries = await evidence(
+			`kind=entries&limit=1&cursor=${encodeURIComponent(String(entries.next_cursor))}`
+		);
+		expect(nextEntries).toMatchObject({
+			total_count: 2,
+			items: [{ event_id: 'evt_cohort_finalized', qualifies: 1, chosen: 1 }]
+		});
+		expect(JSON.stringify([entries, nextEntries])).not.toContain('evt_cohort_nonmember');
+		expect(JSON.stringify([entries, nextEntries])).not.toContain('evt_owned_foreign_identity');
+		const previousEntries = await evidence(
+			`kind=entries&limit=1&cursor=${encodeURIComponent(String(nextEntries.previous_cursor))}`
+		);
+		expect(previousEntries).toMatchObject({
+			total_count: 2,
+			items: [{ event_id: 'evt_cohort_no_run', qualifies: 1, chosen: 1 }]
+		});
+		expect(JSON.stringify(previousEntries)).not.toContain('evt_owned_foreign_identity');
+	});
+
+	it('walks more than one hundred equal-key no-run members and entries exactly once', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const expectedIssues: string[] = [];
+		const expectedEntries: string[] = [];
+		for (let index = 0; index < 105; index++) {
+			const suffix = String(index).padStart(3, '0');
+			const issue = addIssue(t, { id: `iss_cohort_many_${suffix}`, state: CLOSED });
+			const event = `evt_cohort_many_${suffix}`;
+			completionEntry(t, event, issue, NOW - 20);
+			expectedIssues.push(issue);
+			expectedEntries.push(event);
+		}
+		const report = await get(
+			t,
+			`?mode=cohort&workflow=wf_standard&from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`
+		);
+		expect(report.body).toMatchObject({
+			counters: { distinct_issue_count: 105, zero_run_issue_count: 105, attempt_count: 0 }
+		});
+
+		const walk = async (kind: 'issues' | 'entries') => {
+			const found: string[] = [];
+			let cursor: string | null = null;
+			do {
+				const url = new URL('http://test/api/v1/usage/evidence');
+				url.searchParams.set('scope', String(report.body.scope));
+				url.searchParams.set('kind', kind);
+				url.searchParams.set('limit', '100');
+				if (cursor) url.searchParams.set('cursor', cursor);
+				const response = await EVIDENCE_GET({
+					locals: { user: { id: USER, name: 'alice' } },
+					platform: { env: t.env, ctx: { waitUntil: () => {} } },
+					request: new Request(url),
+					url
+				} as unknown as Parameters<typeof EVIDENCE_GET>[0]);
+				expect(response.status).toBe(200);
+				const page = (await response.json()) as {
+					items: { issue_id?: string; event_id?: string }[];
+					next_cursor: string | null;
+					total_count: number;
+				};
+				expect(page.total_count).toBe(105);
+				found.push(...page.items.map((item) => item.event_id ?? item.issue_id!));
+				cursor = page.next_cursor;
+			} while (cursor);
+			return found;
+		};
+
+		expect(await walk('issues')).toEqual(expectedIssues);
+		expect(await walk('entries')).toEqual(expectedEntries);
+	});
+
+	it('rejects contradictory and unprovable cohort selections', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const bounds = `from=${new Date(NOW - 100).toISOString()}&to=${new Date(NOW).toISOString()}`;
+		const contradictory = await get(t, `?mode=cohort&workflow=wf_standard&state=st_open&${bounds}`);
+		expect(contradictory.response.status).toBe(422);
+		expect(contradictory.body).toMatchObject({
+			error: { code: 'invalid_field', details: { field: 'state' } }
+		});
+		const unknownState = await get(
+			t,
+			`?mode=cohort&workflow=wf_standard&done_state=st_missing&${bounds}`
+		);
+		expect(unknownState.response.status).toBe(404);
 	});
 
 	it('reports whole-lifetime attempt and pending counts on finalized evidence', async () => {
@@ -455,7 +734,7 @@ describe('GET /api/v1/usage validation and authorization', () => {
 		const t = createTestDb();
 		t.env.BETTER_AUTH_SECRET = 'usage-route-test-secret';
 		seedMixed(t.sqlite);
-		await verifyMixed(async (path: string, query: Record<string, string>) => {
+		const request = async (path: string, query: Record<string, string>) => {
 			const url = new URL(`http://test/api/v1${path}?${new URLSearchParams(query)}`);
 			const event = {
 				locals: { user: { id: mixedUser, name: 'mixed' } },
@@ -471,6 +750,8 @@ describe('GET /api/v1/usage validation and authorization', () => {
 						: await RUNS_GET(event as unknown as Parameters<typeof RUNS_GET>[0]);
 			expect(response.status).toBe(200);
 			return response.json();
-		});
+		};
+		await verifyMixed(request);
+		await verifyMixedCohort(request);
 	}, 15_000);
 });

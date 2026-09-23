@@ -158,7 +158,23 @@ Notes:
 
 ## API
 
+Issue creation accepts the existing JSON request and an equivalent multipart
+representation for a new issue with initial file artifacts. Either form may include
+initial issue relationships. Creation publishes the issue, relationships, and artifact metadata atomically after file bytes are staged,
+then signals dispatch; clients without files continue to send JSON unchanged.
+
 JSON over HTTP under `/api/v1/*`, served by the SvelteKit app; shared request/response types live in `@tines/shared`. Auth: Better Auth session cookie or bearer API key. All resources are scoped to the authenticated user; cross-user access is a 404.
+
+### Decision update — 2026-09-19 deployment identity (Tines/598)
+
+`GET /api/version` is a public utility endpoint reporting the running server build's `version`
+and full source `commit`; it is distinct from an installed caller's CLI version. Every response at
+the exact `/api` root or below carries the same values in `X-Tines-Version` and
+`X-Tines-Commit`, including auth failures, unknown paths, method errors and bodyless responses.
+Production uses the CLI release formula for the same checkout, previews name the PR and actual
+built commit, and local builds report `dev` plus local HEAD (or `unknown` without Git metadata).
+The endpoint and headers are non-secret build metadata and are the only unauthenticated exception
+recorded here; resource APIs keep their existing authentication rules.
 
 | Method & path | Purpose |
 | --- | --- |
@@ -167,7 +183,7 @@ JSON over HTTP under `/api/v1/*`, served by the SvelteKit app; shared request/re
 | `GET/POST /api/v1/workflows` | List library (incl. standard) / create |
 | `GET/PATCH/DELETE /api/v1/workflows/:id` | Read (with states + transitions) / update per editing rules / delete when unreferenced |
 | `GET /api/v1/issues` | Global list across projects; filters include `project`, `state`, `category`, `workflow`, and `q` |
-| `GET/POST /api/v1/projects/:id/issues` | List (including state/category/`q` filters) / create |
+| `GET/POST /api/v1/projects/:id/issues` | List (including workflow/state/category/`q` filters) / create |
 | `GET/PATCH /api/v1/issues/:id` | Read (incl. workflow, state, comments) / update title & description |
 | `POST /api/v1/issues/:id/transition` | `{ action }` (transition name) or `{ transition_id }`; 422 with the allowed transitions (named) when invalid |
 | `GET/POST /api/v1/issues/:id/transfer` | Preview / commit a signed project transfer; run keys may preview but cannot commit |
@@ -178,6 +194,8 @@ JSON over HTTP under `/api/v1/*`, served by the SvelteKit app; shared request/re
 All list endpoints use the same cursor-pagination convention (`?cursor=…&limit=…`, response carries `next_cursor`), newest first for issues and events.
 
 Issue `q` is a complete literal substring match over title and description, case-insensitive for ASCII. Characters such as `%` and `_` have no wildcard meaning, and ordinary queries longer than 48 characters are supported. Both issue-list routes share the same predicate.
+
+Issue lists exclude duplicates by default. Both list routes accept `hide_duplicates=false` (or `0`) to include them; direct issue reads are unchanged. The web issue lists expose this as a URL-backed **Show duplicates** filter and apply the same visibility predicate to rows, category counts, and pagination.
 
 Validation failures (workflow editing rules, illegal transitions) return structured errors naming what was violated and, where applicable, what *is* allowed — agents should be able to recover from a 422 without human help.
 
@@ -190,18 +208,28 @@ Markdown (descriptions, comments) is stored raw and sanitized at render time in 
 ```
 tines projects list | create <name>
 tines workflows list | show <id-or-name>
-tines issues list [--project <name>] [--state <name>] [--category <cat>] [--all]
-                                          # hides done issues unless --all
+tines issues list [--project <name>] [--state <name>] [--category <cat>] [--all] [--show-duplicates]
+                                          # hides done and duplicate issues by default
 tines issues create <project> --title <t> [--description <md>] [--workflow <id-or-name>]
 tines issues show <project>/<number>
 tines issues move <project>/<number> <action>       # transition name, e.g. "approve"
 tines issues transfer <project>/<number> --project <destination>
 	[--dry-run] [--inspect <n>] [--yes]               # project transfer, not workflow move
 tines issues comment <project>/<number> <markdown>
-tines events list [--issue <ref>] [--project <name>] [--type <types>] [--since <time>] [--until <time>] [--state <workflow/state>] [--limit n]
+tines events list [--issue <ref>] [--project <name>] [--type <types>] [--since <time>] [--until <time>] [--state <workflow/state>] [--limit n] [--all-pages [--max-items n]]
 ```
 
 All commands support `--json` for agent consumption. `issues show --json` includes the allowed next transitions — action name plus target state — so an agent always knows its legal moves and what each one means.
+
+List commands return one page by default. `--all-pages` follows cursors and retains the
+complete result in memory with a 10,000-item safety ceiling; `--max-items n` deliberately
+replaces that finite ceiling and is valid only with `--all-pages`. Exceeding either ceiling
+fails rather than returning a partial result. `--limit` controls each request's page size,
+not the aggregate. For example, a larger project event inventory is:
+
+```
+tines events list --project Tines --all-pages --max-items 20000 --json
+```
 
 ## Web UI
 
@@ -209,9 +237,14 @@ SvelteKit + shadcn-svelte, behind sign-in.
 
 ### Structure
 
+> Superseded by Tines/644: the persistent primary navigation is Issues,
+> Workflows, and Agents. Projects is managed from the header project control;
+> Context and Activity remain complete pages reached from relevant detail
+> surfaces. Existing routes remain valid.
+
 A persistent top nav with four tabs — **Issues, Workflows, Projects, Activity** — each a list view with a corresponding detail page. Settings (API keys, account) live under the avatar menu, not in the tabs.
 
-- **Issues** (`/issues`): the default landing tab — a global list across all projects, hiding `done` issues by default. Filter by project, state, and category; rows show number, title, project, state (color-coded by category), and last activity. → detail at `/issues/:project/:number`.
+- **Issues** (`/issues`): the default landing tab — a global list across all projects, hiding `done` issues by default. Filter by project focus, workflow, optional state within that workflow, and category; rows show number, title, project, state (color-coded by category), and last activity. Workflow/state selections use stable IDs, while old name-based URLs remain valid. → detail at `/issues/:project/:number`.
 - **Workflows** (`/workflows`): the library, standard workflow marked read-only. → detail at `/workflows/:id`.
 - **Projects** (`/projects`): list + create. → detail at `/projects/:id`: the project's issues (same list component as the Issues tab, pre-filtered), a new-issue form, and project settings (name, description, default workflow).
 - **Activity** (`/activity`): the global event feed, newest first, filterable by project and type — the "log of work" made visible. Each event links to its issue/project.
@@ -221,8 +254,8 @@ A persistent top nav with four tabs — **Issues, Workflows, Projects, Activity*
 
 - **Issue detail**: title, rendered Markdown description (editable), state with allowed-transition buttons — labeled by action name, with the target state as secondary text — plus a compact graph of the issue's workflow with the current state highlighted, comment thread, and this issue's slice of the activity log — with actors shown throughout.
 - **Workflow detail/editor**: two views of the same FSM, side by side:
-  - A **graph view** — the primary way a workflow is *read*. States are nodes (color-coded by category; initial and dead-end states visually distinguished), transitions are directed edges labeled with their action names (labels elided in compact previews), laid out automatically client-side (no stored positions, no manual arranging). Shown wherever a workflow appears: the detail page, the editor, and as a compact preview when picking a workflow at issue creation.
-  - A **form-based editor** — the way a workflow is *written*: add/rename/remove states, set each state's category, pick the initial state, per-state pickers for allowed target states. The graph re-renders live as the form changes, so the user sees the machine they're building. Editing-rule violations surface inline.
+  - A **graph view** — the primary way a workflow is *read*. States are nodes (color-coded by category; initial and dead-end states visually distinguished), transitions are directed edges labeled with their action names (labels elided in compact previews), laid out automatically client-side (no stored positions, no manual arranging). Shown wherever a workflow appears: the detail page, the editor, and as a compact preview when picking a workflow at issue creation. The editor defaults to fitting the whole graph to its preview width and offers an exact 1× view with horizontal scrolling inside its named preview region; other surfaces retain fitted rendering.
+  - A **form-based editor** — the way a workflow is *written*: compact state rows summarize category, initial status, outgoing actions, and requirements; one row expands inline at a time to add/rename/remove states, set categories, choose the initial state, and edit actions and requirements. Accessible move buttons remain available on every summary row and reorder complete states while stable references keep the initial and transition selections attached; expansion and reordering use reduced-motion-aware movement, and the new order is persisted only when the workflow is saved. The graph re-renders live as the form changes, so the user sees the machine they're building. Editing-rule violations surface inline.
 
 ### Look and feel
 
@@ -254,5 +287,6 @@ Formerly open, now decided:
 - **Standard workflow initial state**: named **Open** — implies "ready to be taken on / being worked" without a separate backlog state.
 - **`workflow.updated` payload**: a **summary diff** — a compact record of what changed (rename, states added/removed by name, transition count deltas, initial-state change), computed at update time. Workflows stay mutable (live-referenced, no versioning), so the event payload is the change record.
 - **Issue description edits**: event only (`issue.updated`), no revision history in phase one.
-- **Graph rendering**: the workflow graph view is a hand-rolled Svelte SVG component with a simple layered auto-layout computed client-side — no graph library dependency. Sufficient for phase-one FSM sizes and gives full control over category color-coding and the transition animation.
+- **Graph rendering (superseded 2026-09-20)**: the original hand-rolled layered geometry was replaced by Dagre behind a pure synchronous adapter after action labels overlapped nodes and one another. Tines retains its Svelte/SVG renderer, category styling, transition animation, form-only editing, and unstored automatic positions. Complete state/action text boxes are reserved before layout; compact previews still elide action labels. All fitted surfaces keep their behavior, while the public snapshot graph retains its intrinsic 1.3× horizontal-scroller exception.
+- **Compact edge geometry (2026-09-20)**: compact Dagre edges reserve a 1×1 hidden geometry box with rank length 1 to avoid degenerate routes. Action labels remain elided in compact previews; full diagrams retain their real label geometry.
 - **Named transitions**: every transition has a required action name ("approve", "send back"), unique per source state, so agents act on their current state instead of aiming at target states. The transition API takes the action (or transition id); `issue.transitioned` events record it.

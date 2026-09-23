@@ -15,22 +15,28 @@ import type {
 	AgentRun,
 	AgentRunDetail,
 	Comment,
+	ContextItem,
 	IssueDetail,
 	ListResponse,
 	Project,
 	Runner,
-	TinesEvent
+	RunnerTokenResponse,
+	TinesEvent,
+	WorkflowResponse
 } from '@tines/shared';
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
-import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import type { APIRequestContext, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import { BASE_URL, RUNNER_E2E } from './constants.mjs';
+import { apiClient, body, fireSweep, gotoHydrated, signIn } from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
 const CLI_ENTRY = join(CLI_DIR, 'src', 'index.ts');
 
-const RUNNER_NAME = `e2e-runner-${runId}`;
-const PROJECT_NAME = `runner-${runId}`;
+let RUNNER_NAME: string;
+let PROJECT_NAME: string;
+let WORKFLOW_NAME: string;
+let ACTIVE_STATE_NAME: string;
 
 // Shared across the serial suite.
 let e2eDir: string;
@@ -43,7 +49,7 @@ let daemonExited = false;
 let projectId: string;
 let runnerId: string;
 
-const setMode = (mode: 'work' | 'noop' | 'sleep' | 'flood') =>
+const setMode = (mode: 'work' | 'noop' | 'sleep' | 'flood' | 'env') =>
 	writeFileSync(join(e2eDir, 'mode'), mode);
 
 const sideFile = (name: string) => join(e2eDir, name);
@@ -63,18 +69,13 @@ async function waitFor<T>(
 	}
 }
 
-const fireSweep = async (request: APIRequestContext) => {
-	const res = await request.get('/__scheduled?cron=*+*+*+*+*');
-	expect(res.ok()).toBe(true);
-};
-
 async function issueRuns(request: APIRequestContext, issueId: string): Promise<AgentRun[]> {
-	const api = apiClient(request, ALICE.apiKey);
+	const api = apiClient(request, RUNNER_E2E.apiKey);
 	return (await body<ListResponse<AgentRun>>(await api.get(`/api/v1/runs?issue=${issueId}`))).items;
 }
 
 async function createIssue(request: APIRequestContext, title: string): Promise<IssueDetail> {
-	const api = apiClient(request, ALICE.apiKey);
+	const api = apiClient(request, RUNNER_E2E.apiKey);
 	const res = await api.post(`/api/v1/projects/${projectId}/issues`, { title });
 	expect(res.status()).toBe(201);
 	return body<IssueDetail>(res);
@@ -99,8 +100,12 @@ async function openAddRunner(page: Page) {
 }
 
 test.describe.serial('local runner end to end', () => {
-	test.beforeAll(async ({ request }) => {
-		const api = apiClient(request, ALICE.apiKey);
+	test.beforeAll(async ({ request, uniqueName }) => {
+		RUNNER_NAME = `${uniqueName('e2e-runner')}-${'r'.repeat(100)}`.slice(0, 100);
+		PROJECT_NAME = uniqueName('runner');
+		WORKFLOW_NAME = `${uniqueName('attribution-workflow')}-${'w'.repeat(200)}`.slice(0, 200);
+		ACTIVE_STATE_NAME = `Open-${'s'.repeat(100)}`.slice(0, 100);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		e2eDir = mkdtempSync(join(tmpdir(), 'tines-runner-e2e-'));
 		configDir = join(e2eDir, 'config');
 		mkdirSync(configDir, { recursive: true });
@@ -128,7 +133,7 @@ case "$MODE" in
 	work)
 		cp prompt.md "$E2E_DIR/last-prompt.md"
 		cp repos.json "$E2E_DIR/last-repos.json"
-		find skills -type f > "$E2E_DIR/last-skills.txt"
+		find .agents/skills -type f > "$E2E_DIR/last-skills.txt"
 		cat srcrepo/hello.txt > "$E2E_DIR/clone-proof.txt"
 		printf '%s' "$TINES_API_KEY" > "$E2E_DIR/last-key"
 		REF=$(sed -n 's/^This is run .* for issue \\([^;]*\\);.*/\\1/p' prompt.md | head -n 1)
@@ -139,6 +144,20 @@ case "$MODE" in
 	sleep)
 		echo $$ > "$E2E_DIR/sleep-pid"
 		sleep 300
+		;;
+	env)
+		# Env items reach the harness as ordinary variables; the daemon masks
+		# the secret's value in the log it ships.
+		cp prompt.md "$E2E_DIR/last-prompt.md"
+		echo "env plain=$E2E_ENV_PLAIN secret=$E2E_ENV_SECRET"
+		# Force the secret across distinct pipe reads and the log flush timer.
+		printf 'split secret='
+		printf '%s' "$E2E_ENV_SECRET" | cut -c 1-8 | tr -d '\\n'
+		sleep 3
+		printf '%s' "$E2E_ENV_SECRET" | cut -c 9-
+
+		REF=$(sed -n 's/^This is run .* for issue \\([^;]*\\);.*/\\1/p' prompt.md | head -n 1)
+		${TSX} ${CLI_ENTRY} issues move "$REF" "Submit for review"
 		;;
 	flood)
 		# ~600 KB, well past the 256 KB tail cap, with the first and last
@@ -158,12 +177,33 @@ esac
 			{ mode: 0o755 }
 		);
 
+		// Use every component's server-valid maximum length so the real run also
+		// exercises the comment header's worst-case attribution geometry.
+		const workflowResponse = await api.post('/api/v1/workflows', {
+			name: WORKFLOW_NAME,
+			initial_state: ACTIVE_STATE_NAME,
+			states: [
+				{ name: ACTIVE_STATE_NAME, category: 'active' },
+				{ name: 'Human Review', category: 'awaiting_human' }
+			],
+			transitions: [
+				{
+					name: 'Submit for review',
+					from: ACTIVE_STATE_NAME,
+					to: 'Human Review'
+				}
+			]
+		});
+		expect(workflowResponse.status()).toBe(201);
+		const workflow = await body<WorkflowResponse>(workflowResponse);
+
 		// Project + context the workspace should materialize.
 		projectId = (
 			await body<Project>(
 				await api.post('/api/v1/projects', {
 					name: PROJECT_NAME,
-					initial_prompt: 'E2E conventions: be excellent to each other.'
+					initial_prompt: 'E2E conventions: be excellent to each other.',
+					default_workflow_id: workflow.id
 				})
 			)
 		).id;
@@ -205,7 +245,7 @@ esac
 				cwd: CLI_DIR,
 				env: {
 					...process.env,
-					TINES_API_KEY: ALICE.apiKey,
+					TINES_API_KEY: RUNNER_E2E.apiKey,
 					TINES_CONFIG_DIR: configDir,
 					E2E_DIR: e2eDir
 				},
@@ -222,13 +262,13 @@ esac
 			daemon.kill('SIGKILL');
 		}
 		// Leave automation off for the specs that follow.
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		await api.put('/api/v1/supervisor/settings', { enabled: false });
 		rmSync(e2eDir, { recursive: true, force: true });
 	});
 
 	test('the daemon registers and the runner shows up online', async ({ request }) => {
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		const runner = await waitFor(
 			async () => {
 				const { items } = await body<ListResponse<Runner>>(await api.get('/api/v1/runners'));
@@ -266,10 +306,12 @@ esac
 	});
 
 	test('an issue moved into an active state is worked within a poll: workspace, attribution, key lifecycle', async ({
-		request
+		request,
+		context,
+		page
 	}) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		setMode('work');
 		const issue = await createIssue(request, 'Work me');
 
@@ -289,7 +331,9 @@ esac
 		expect(prompt).toContain('E2E conventions: be excellent');
 		expect(prompt).toContain('## Issue: ');
 		expect(prompt).toContain('Submit for review');
-		expect(readSideFile('last-skills.txt')).toContain('skills/e2e-skill/notes.md');
+		expect(readSideFile('last-skills.txt')).toContain('.agents/skills/e2e-skill/notes.md');
+		expect(prompt).toContain('1 skill is attached at `.agents/skills`');
+		expect(prompt).toContain(`tines issues context ${issue.project_name}/${issue.number} --json`);
 		expect(readSideFile('last-repos.json')).toContain(`file://${srcRepoDir}`);
 		expect(readSideFile('clone-proof.txt')).toBe('cloned payload\n');
 
@@ -300,6 +344,74 @@ esac
 		expect(comment).toBeDefined();
 		expect(comment!.actor.run?.run_id).toBe(run.id);
 		expect(comment!.actor.run?.runner_name).toBe(RUNNER_NAME);
+		expect(comment!.actor.run?.stage).toEqual({
+			workflow_name: WORKFLOW_NAME,
+			state_name: ACTIVE_STATE_NAME
+		});
+		const runKeyName = `${RUNNER_NAME} · ${WORKFLOW_NAME}/${ACTIVE_STATE_NAME}`;
+		expect(comment!.actor.api_key_name).toBe(runKeyName);
+
+		const transitions = await body<ListResponse<TinesEvent>>(
+			await api.get(`/api/v1/events?issue=${issue.id}&type=issue.transitioned`)
+		);
+		const handoff = transitions.items.find((event) => event.payload.action === 'Submit for review');
+		expect(handoff?.actor.api_key_name).toBe(runKeyName);
+		expect(handoff?.actor.run?.run_id).toBe(run.id);
+
+		await signIn(context, RUNNER_E2E.sessionToken);
+		await gotoHydrated(page, `/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`);
+		const commentCard = page.locator('article', { hasText: 'Harness progress comment' });
+		const attribution = `${RUNNER_E2E.name} via ${runKeyName} · run on ${issue.project_name}/${issue.number}`;
+		const compactAttribution = `${RUNNER_E2E.name} · ${WORKFLOW_NAME}/${ACTIVE_STATE_NAME} · run on ${issue.project_name}/${issue.number}`;
+		const header = commentCard.locator('header');
+		const actor = header.getByTestId('comment-actor');
+		const fullActor = actor.getByTestId('comment-actor-full');
+		const compactActor = actor.getByTestId('comment-actor-compact');
+		const edit = header.getByRole('button', { name: 'Edit comment' });
+		const remove = header.getByRole('button', { name: 'Delete comment' });
+		for (const viewport of [
+			{ width: 1440, height: 900 },
+			{ width: 390, height: 844 }
+		]) {
+			await page.setViewportSize(viewport);
+			if (viewport.width < 640) {
+				await expect(fullActor).toBeHidden();
+				await expect(compactActor).toBeVisible();
+				await expect(compactActor).toHaveText(compactAttribution);
+				await expect(compactActor).not.toContainText(RUNNER_NAME);
+				await expect(compactActor).toContainText(`${WORKFLOW_NAME}/${ACTIVE_STATE_NAME}`);
+			} else {
+				await expect(fullActor).toBeVisible();
+				await expect(fullActor).toHaveText(attribution);
+				await expect(compactActor).toBeHidden();
+			}
+			await expect(edit).toBeInViewport();
+			await expect(remove).toBeInViewport();
+
+			const geometry = await page.evaluate(
+				([card, commentHeader, actorLabel]) => {
+					const cardRect = card.getBoundingClientRect();
+					const headerRect = commentHeader.getBoundingClientRect();
+					const actorRect = actorLabel.getBoundingClientRect();
+					return {
+						overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+						card: { left: cardRect.left, right: cardRect.right },
+						header: { left: headerRect.left, right: headerRect.right },
+						actor: { left: actorRect.left, right: actorRect.right }
+					};
+				},
+				[
+					await commentCard.elementHandle(),
+					await header.elementHandle(),
+					await actor.elementHandle()
+				]
+			);
+			expect(geometry.overflow).toBeLessThanOrEqual(1);
+			expect(geometry.header.left).toBeGreaterThanOrEqual(geometry.card.left - 1);
+			expect(geometry.header.right).toBeLessThanOrEqual(geometry.card.right + 1);
+			expect(geometry.actor.left).toBeGreaterThanOrEqual(geometry.card.left - 1);
+			expect(geometry.actor.right).toBeLessThanOrEqual(geometry.card.right + 1);
+		}
 
 		// The run advanced the issue (its own key transitioned it)…
 		const ended = await body<ListResponse<TinesEvent>>(
@@ -316,7 +428,7 @@ esac
 	});
 
 	test('the log tail captured the harness output', async ({ request }) => {
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		const { items } = await body<ListResponse<AgentRun>>(
 			await api.get(`/api/v1/runs?runner=${runnerId}`)
 		);
@@ -332,7 +444,7 @@ esac
 		context,
 		page
 	}) => {
-		await signIn(context, ALICE.sessionToken);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		await gotoHydrated(page, '/agents');
 
 		// The daemon-registered runner card, online, with the rotate action.
@@ -353,10 +465,44 @@ esac
 		// bootstrap (the Claude managed path creates the runner server-side).
 		const dialog = await openAddRunner(page);
 		const name = dialog.getByLabel('Name');
+		const codexPermissions = dialog.getByRole('region', {
+			name: 'Configure Codex before starting the runner'
+		});
 
 		// The helper teaches the machine-plus-harness convention before
 		// anything is typed.
 		await expect(dialog).toContainText('macbook-claude');
+		await expect(codexPermissions).toBeHidden();
+
+		await dialog.getByLabel('Harness').selectOption('codex');
+		await expect(codexPermissions).toBeVisible();
+		await expect(codexPermissions).toContainText('~/.codex/config.toml');
+		await expect(codexPermissions.locator('pre code')).toHaveText(
+			'sandbox_mode = "workspace-write"\n\n[sandbox_workspace_write]\nnetwork_access = true'
+		);
+		for (const [name, href] of [
+			[
+				'Codex setup guide',
+				'https://github.com/tbuckley/tines/blob/main/docs/runner-daemon.md#codex-permissions'
+			],
+			['OpenAI configuration reference', 'https://developers.openai.com/codex/config-reference']
+		] as const) {
+			const link = codexPermissions.getByRole('link', { name });
+			await expect(link).toHaveAttribute('href', href);
+			await expect(link).toHaveAttribute('target', '_blank');
+			await expect(link).toHaveAttribute('rel', 'noreferrer');
+		}
+
+		await dialog.getByLabel('Harness').selectOption('custom');
+		await expect(codexPermissions).toBeHidden();
+		await dialog.getByLabel('Harness').selectOption('claude-code');
+		await expect(codexPermissions).toBeHidden();
+		await dialog.getByLabel('Harness').selectOption('codex');
+		await expect(codexPermissions).toBeVisible();
+		await dialog.getByRole('button', { name: 'Claude (managed)' }).click();
+		await expect(codexPermissions).toBeHidden();
+		await dialog.getByRole('button', { name: 'Local' }).click();
+		await expect(codexPermissions).toBeVisible();
 
 		// A name that is not a CLI address fails inline, before any submit.
 		await name.fill("Tom's Mac");
@@ -377,14 +523,17 @@ esac
 		await expect(dialog).toContainText('--name laptop-e2e');
 		await expect(dialog).toContainText('registers');
 		await expect(dialog).toContainText('launchd/systemd');
-		await dialog.getByRole('button', { name: 'Done' }).click();
+		// An online named runner also renders an inline Done action; close with
+		// the dialog footer so the strict locator remains deterministic.
+		await dialog.getByRole('button', { name: 'Done' }).last().click();
 	});
 
 	test('the dialog creates a real key on demand, copies the whole block, and leaves nothing behind otherwise', async ({
 		context,
-		page
+		page,
+		uniqueName
 	}) => {
-		await signIn(context, ALICE.sessionToken);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		// `/api/v1/api-keys` is session-only, so the check rides the browser
 		// context's cookie rather than an API key.
 		const keyNames = async () =>
@@ -400,16 +549,17 @@ esac
 
 		// Abandoning the dialog without clicking Create key leaves no key.
 		let dialog = await openAddRunner(page);
-		await dialog.getByLabel('Name').fill(`abandoned-${runId}`);
+		await dialog.getByLabel('Name').fill(uniqueName('abandoned'));
 		await dialog.getByRole('button', { name: 'Done' }).click();
 		// Settled before reopening: openAddRunner would otherwise see the
 		// closing dialog and take it for the new one.
 		await expect(dialog).toBeHidden();
 		expect((await keyNames()).length).toBe(before.length);
 
-		const keyRunner = `key-e2e-${runId}`;
+		const keyRunner = uniqueName('key-e2e');
 		dialog = await openAddRunner(page);
 		await dialog.getByLabel('Name').fill(keyRunner);
+		await dialog.getByLabel('Harness').selectOption('codex');
 		await dialog.getByRole('button', { name: 'Create key' }).click();
 
 		// The command now carries a real secret, and the key is on the
@@ -424,7 +574,11 @@ esac
 		expect(clip).toContain('npm install -g tines');
 		expect(clip).toContain('tines runner install');
 		expect(clip).toContain(`--name ${keyRunner}`);
+		expect(clip).toContain('--harness codex');
 		expect(clip).toMatch(/TINES_API_KEY=tines_[A-Za-z0-9._-]+/);
+		expect(clip).not.toContain('sandbox_mode');
+		expect(clip).not.toContain('[sandbox_workspace_write]');
+		expect(clip).not.toContain('network_access');
 
 		await dialog.getByRole('button', { name: 'Done' }).click();
 		await context.request.delete(`/api/v1/api-keys/${created!.id}`);
@@ -433,26 +587,37 @@ esac
 	test('a registration while the dialog is open ticks it live, and one click routes everything there', async ({
 		context,
 		page,
-		request
+		request,
+		uniqueName
 	}) => {
-		const api = apiClient(request, ALICE.apiKey);
-		await signIn(context, ALICE.sessionToken);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		await gotoHydrated(page, '/agents');
 
-		const liveName = `e2e-live-${runId}`;
+		const liveName = uniqueName('e2e-live');
 		const dialog = await openAddRunner(page);
 		await dialog.getByLabel('Name').fill(liveName);
 		await expect(dialog).toContainText('Waiting for');
 
 		// A real registration from outside the browser: the page is polling,
 		// so the dialog flips without a reload.
-		const registered = await body<{ runner: Runner }>(
+		const registered = await body<RunnerTokenResponse>(
 			await api.post('/api/v1/runners/register', {
 				name: liveName,
 				harness: 'custom',
 				command: 'true'
 			})
 		);
+		const policy = await request.post(`/api/v1/runners/${registered.runner.id}/poll`, {
+			headers: { authorization: `Bearer ${registered.runner_token}` },
+			data: {
+				instance_id: `dialog_${registered.runner.id}`,
+				owned_runs: [],
+				max_concurrent: 1,
+				concurrency_control: { version: 1, allow_remote: false, ceiling: 1 }
+			}
+		});
+		expect(policy.ok()).toBe(true);
 		await expect(dialog).toContainText(`${liveName} is online`, { timeout: 15_000 });
 
 		await dialog.getByRole('button', { name: `Route everything to ${liveName}` }).click();
@@ -474,7 +639,7 @@ esac
 		request
 	}) => {
 		test.setTimeout(120_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		setMode('flood');
 		const issue = await createIssue(request, 'Flood the log');
 
@@ -516,9 +681,13 @@ esac
 	 * check, and the raw-stream upload/read pair. Both are driven with the
 	 * daemon's own runner token against a live run.
 	 */
-	test('a retried log chunk lands once, and the raw stream round-trips', async ({ request }) => {
+	test('a retried log chunk lands once, and the raw stream round-trips', async ({
+		request,
+		context,
+		page
+	}) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		rmSync(sideFile('sleep-pid'), { force: true });
 		setMode('sleep');
 		const issue = await createIssue(request, 'Probe the log protocol');
@@ -526,6 +695,38 @@ esac
 			async () => (await issueRuns(request, issue.id)).find((r) => r.status === 'running'),
 			{ label: 'the run to start' }
 		);
+
+		await signIn(context, RUNNER_E2E.sessionToken);
+		await gotoHydrated(page, '/agents');
+		const activeRow = page
+			.locator('li:not([inert])')
+			.filter({ hasText: `${PROJECT_NAME}/#${issue.number}` })
+			.filter({ hasText: 'running' });
+		await expect(activeRow).toHaveCount(1);
+		const duration = activeRow.getByTestId('run-duration');
+		const firstDuration = await duration.textContent();
+		await expect.poll(() => duration.textContent(), { timeout: 4000 }).not.toBe(firstDuration);
+		const liveDot = activeRow.getByTestId('run-live-dot');
+		await expect(liveDot).toHaveCount(1);
+		await expect(liveDot).toHaveClass(/\banimate-pulse\b/);
+		expect(await liveDot.evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
+
+		await page.route(`**/api/v1/runs/${running.id}`, async (route) => {
+			const response = await route.fetch();
+			const detail = (await response.json()) as AgentRunDetail;
+			await route.fulfill({ response, json: { ...detail, log: '' } });
+		});
+		await activeRow.getByRole('button', { name: 'Logs' }).click();
+		const waiting = activeRow.getByTestId('run-log-waiting');
+		await expect(waiting).toHaveText('waiting for the harness…');
+		await expect(waiting.locator('[aria-hidden="true"]')).toHaveClass(/\banimate-pulse\b/);
+		expect(
+			await waiting
+				.locator('[aria-hidden="true"]')
+				.evaluate((el) => getComputedStyle(el).animationName)
+		).toBe('none');
+		await activeRow.getByRole('button', { name: 'Hide logs' }).click();
+		await page.getByLabel('Show ended runs').check();
 
 		const creds = JSON.parse(readFileSync(join(configDir, 'runners.json'), 'utf8')) as Record<
 			string,
@@ -573,6 +774,10 @@ esac
 		const noLength = await request.put(`/api/v1/runs/${running.id}/log/raw`, { headers: auth });
 		expect(noLength.status()).toBe(411);
 
+		// The sleeping process already captured its mode. Reset before cancel so
+		// an immediate successor for the same issue finishes instead of occupying
+		// the daemon and starving the next serial test.
+		setMode('work');
 		const canceled = await api.post(`/api/v1/runs/${running.id}/cancel`);
 		expect(canceled.ok()).toBe(true);
 		await waitFor(
@@ -581,12 +786,21 @@ esac
 				'canceled',
 			{ label: 'the probe run to cancel' }
 		);
-		setMode('work');
+		// Cancellation is deliberately outside the UI: only the active-run
+		// account-event watcher can settle this already-loaded Agents row. Key
+		// it by run id because cancellation can immediately dispatch a successor
+		// for the same issue, whose issue ref must not satisfy this assertion.
+		const originalRow = page.locator(`li[data-run-id="${running.id}"]:not([inert])`);
+		await expect(originalRow).toContainText('canceled', { timeout: 15_000 });
+		const frozenDuration = await originalRow.getByTestId('run-duration').textContent();
+		await expect
+			.poll(() => originalRow.getByTestId('run-duration').textContent(), { timeout: 1500 })
+			.toBe(frozenDuration);
 	});
 
 	test('a do-nothing harness strikes the issue three times and parks it', async ({ request }) => {
 		test.setTimeout(90_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		setMode('noop');
 		const issue = await createIssue(request, 'Nothing happens');
 
@@ -631,7 +845,7 @@ esac
 		page
 	}) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		rmSync(sideFile('sleep-pid'), { force: true });
 		setMode('sleep');
 		const issue = await createIssue(request, 'Cancel me');
@@ -653,7 +867,7 @@ esac
 
 		// The UI cancel dialog: strike note (this run hasn't moved the issue)
 		// plus an optional comment posted BEFORE the cancellation.
-		await signIn(context, ALICE.sessionToken);
+		await signIn(context, RUNNER_E2E.sessionToken);
 		await gotoHydrated(page, '/agents');
 		// Run rows show the issue ref (project/#number), not the title.
 		const row = page
@@ -670,6 +884,11 @@ esac
 			await expect(dialog).toContainText('counts as a strike', { timeout: 2000 });
 		}).toPass({ timeout: 15_000 });
 		await dialog.getByLabel(/Comment/).fill('Canceled from the dialog — try smaller steps');
+		// The sleeping process already captured its mode. Reset before the
+		// cancel lands: the supervisor re-dispatches this still-active issue
+		// within a couple of seconds, and a successor that reads `sleep` would
+		// hold the daemon's only slot for five minutes and starve the next test.
+		setMode('work');
 		await dialog.getByRole('button', { name: 'Cancel run' }).click();
 		await expect(dialog).toBeHidden();
 
@@ -700,12 +919,66 @@ esac
 		await waitFor(async () => !existsSync(join(configDir, 'workspaces', running.id)), {
 			label: 'the workspace to be removed'
 		});
+	});
+
+	test('env items reach the harness environment; the secret is masked in the shipped log', async ({
+		request
+	}) => {
+		test.setTimeout(60_000);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
+		const secret = `e2e-env-secret-${Date.now().toString(36)}`;
+		const plain = await body<ContextItem>(
+			await api.post('/api/v1/context', {
+				kind: 'env',
+				name: 'E2E_ENV_PLAIN',
+				project_id: projectId,
+				value: 'plain-payload'
+			})
+		);
+		const sec = await body<ContextItem>(
+			await api.post('/api/v1/context', {
+				kind: 'env',
+				name: 'E2E_ENV_SECRET',
+				project_id: projectId,
+				value: secret,
+				secret: true
+			})
+		);
+		// The canceled issue's successor run (work mode) must have come and gone
+		// before the mode flips, or it would be the one reading `env`.
+		await waitFor(
+			async () => {
+				const runs = await body<ListResponse<AgentRun>>(
+					await api.get(`/api/v1/runs?runner=${runnerId}`)
+				);
+				return runs.items.every((r) => !['assigned', 'launching', 'running'].includes(r.status));
+			},
+			{ label: 'the daemon to be idle' }
+		);
+		setMode('env');
+		const issue = await createIssue(request, 'Env me');
+		const run = await waitFor(
+			async () => (await issueRuns(request, issue.id)).find((r) => r.status === 'completed'),
+			{ timeout: 45_000, label: 'the env-mode run to complete' }
+		);
+		const detail = await body<AgentRunDetail>(await api.get(`/api/v1/runs/${run.id}`));
+		expect(detail.log).toContain('env plain=plain-payload secret=***');
+		expect(detail.log).toContain('split secret=***');
+		expect(detail.log).not.toContain(secret);
+		// The prompt names the variables; neither value is in the workspace.
+		const prompt = readSideFile('last-prompt.md');
+		expect(prompt).toContain('`E2E_ENV_SECRET` (secret)');
+		expect(prompt).toContain('`E2E_ENV_PLAIN`');
+		expect(prompt).not.toContain(secret);
+		expect(prompt).not.toContain('plain-payload');
+		await api.delete(`/api/v1/context/${plain.id}`);
+		await api.delete(`/api/v1/context/${sec.id}`);
 		setMode('work');
 	});
 
 	test('rotating the token 401s the daemon, which exits with guidance', async ({ request }) => {
 		test.setTimeout(60_000);
-		const api = apiClient(request, ALICE.apiKey);
+		const api = apiClient(request, RUNNER_E2E.apiKey);
 		const res = await api.post(`/api/v1/runners/${runnerId}/rotate-token`);
 		expect(res.ok()).toBe(true);
 		const rotated = await body<{ runner: Runner; runner_token: string }>(res);
@@ -731,7 +1004,7 @@ esac
 	test('runner tokens and run keys stay in their lanes', async ({ request }) => {
 		// A user API key is not a runner token.
 		const poll = await request.post(`/api/v1/runners/${runnerId}/poll`, {
-			headers: { authorization: `Bearer ${ALICE.apiKey}` },
+			headers: { authorization: `Bearer ${RUNNER_E2E.apiKey}` },
 			data: { owned_runs: [] }
 		});
 		expect(poll.status()).toBe(401);

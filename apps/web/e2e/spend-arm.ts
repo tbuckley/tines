@@ -19,7 +19,7 @@ const ROLLOVER_MARGIN_MS = 3 * 60 * 1000;
 export async function armLedgerDays(): Promise<number> {
 	const untilMidnight = 86_400_000 - (Date.now() % 86_400_000);
 	if (untilMidnight < ROLLOVER_MARGIN_MS) {
-		test.setTimeout(untilMidnight + 90_000);
+		test.setTimeout(Math.max(test.info().timeout, untilMidnight + 90_000));
 		await new Promise((resolve) => setTimeout(resolve, untilMidnight + 1_000));
 	}
 	const anchor = Date.now();

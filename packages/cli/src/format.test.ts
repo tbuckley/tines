@@ -143,14 +143,16 @@ describe('commentLines', () => {
 		const actor = {
 			...comment.actor,
 			api_key_id: 'key_1',
-			api_key_name: 'run key',
+			api_key_name: 'macbook · Engineering/Implementation',
 			run: {
 				run_id: 'arun_1',
 				runner_name: 'macbook',
 				issue_ref: { project_name: 'Tines', number: 11 }
 			}
 		};
-		expect(commentLines({ ...comment, actor })[1]).toContain('alice via macbook · run on Tines/11');
+		expect(commentLines({ ...comment, actor })[1]).toContain(
+			'alice via macbook · Engineering/Implementation · run on Tines/11'
+		);
 	});
 });
 
@@ -253,13 +255,19 @@ describe('ruleTargetsLabel', () => {
 
 	it.each([
 		[[], '(no targets)'],
-		[[target('mac')], 'mac'],
-		[[target('mac', 'opus')], 'mac:opus'],
-		[[target('mac', null, 'paused')], 'mac (paused)'],
-		[[target('mac', 'opus', 'paused')], 'mac:opus (paused)'],
-		[[target('mac', 'opus'), target('linux')], 'mac:opus → linux']
+		[[target('mac')], '1. mac'],
+		[[target('mac', 'opus')], '1. mac:opus'],
+		[[target('mac', null, 'paused')], '1. mac (paused)'],
+		[[target('mac', 'opus', 'paused')], '1. mac:opus (paused)'],
+		[[target('mac', 'opus'), target('linux')], '1. mac:opus → 2. linux']
 	])('renders %#', (targets, expected) => {
 		expect(ruleTargetsLabel({ targets } as never)).toBe(expected);
+	});
+
+	it('renders routed effort without confusing it with the tier', () => {
+		expect(
+			ruleTargetsLabel({ targets: [{ ...target('mac', 'balanced'), effort: 'xhigh' }] } as never)
+		).toBe('1. mac:balanced effort=xhigh');
 	});
 });
 

@@ -2,7 +2,10 @@ import { json } from '@sveltejs/kit';
 import type { CreateIssueRequest, IssueListItem, ListResponse } from '@tines/shared';
 import { api, apiContext, encodeCursor, readJson, readPage } from '$lib/server/api/core';
 import { createIssue, listIssues } from '$lib/server/api/issues';
+import { readIssueCreateMultipart } from '$lib/server/api/issue-create-files';
+import { addIssueLink } from '$lib/server/api/issue-links';
 import { getProject } from '$lib/server/api/projects';
+import { assertWritable } from '$lib/server/api/archive';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
@@ -16,10 +19,12 @@ export const GET: RequestHandler = api(async (event) => {
 		actor.userId,
 		{
 			projectId: event.params.id,
+			workflow: params.get('workflow') ?? undefined,
 			state: params.get('state') ?? undefined,
 			category: params.get('category') ?? undefined,
 			schedule: params.get('schedule') ?? undefined,
 			hideDone: ['1', 'true'].includes(params.get('hide_done') ?? ''),
+			hideDuplicates: !['false', '0'].includes(params.get('hide_duplicates') ?? ''),
 			ready: ['1', 'true'].includes(params.get('ready') ?? ''),
 			q: params.get('q') ?? undefined,
 			labels: params.getAll('label'),
@@ -38,6 +43,42 @@ export const GET: RequestHandler = api(async (event) => {
 
 export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
+	if (
+		(event.request.headers.get('content-type') ?? '')
+			.toLowerCase()
+			.startsWith('multipart/form-data')
+	) {
+		// Reject foreign/archived projects before consuming a potentially large body.
+		const project = await getProject(db, actor.userId, event.params.id);
+		await assertWritable(db, actor, project);
+		const parsed = await readIssueCreateMultipart(event.request);
+		const race =
+			import.meta.env.VITE_TINES_E2E === '1'
+				? event.request.headers.get('x-tines-e2e-linked-create-close')
+				: null;
+		const [raceIssueId, raceOtherId, ...raceExtra] = race?.split(':') ?? [];
+		if (race && (!raceIssueId || !raceOtherId || raceExtra.length > 0)) {
+			throw new Error('Malformed linked-create E2E race header');
+		}
+		const issue = await createIssue(
+			db,
+			env,
+			actor,
+			effects,
+			event.params.id,
+			parsed.issue,
+			parsed.files,
+			raceIssueId && raceOtherId
+				? async () => {
+						await addIssueLink(db, env, actor, effects, raceIssueId, {
+							kind: 'blocks',
+							issue_id: raceOtherId
+						});
+					}
+				: undefined
+		);
+		return json(issue, { status: 201 });
+	}
 	const body = await readJson<CreateIssueRequest>(event);
 	const issue = await createIssue(db, env, actor, effects, event.params.id, body);
 	return json(issue, { status: 201 });

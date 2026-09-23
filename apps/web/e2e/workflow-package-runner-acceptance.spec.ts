@@ -23,9 +23,10 @@ import {
 	type WorkflowPackageReceipt,
 	type WorkflowResponse
 } from '@tines/shared';
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import type { APIRequestContext } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, signIn } from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
@@ -53,13 +54,14 @@ async function issueRuns(request: APIRequestContext, issueId: string) {
 test('installs as Alice and activates the installed Run state through a real daemon', async ({
 	context,
 	page,
-	request
+	request,
+	uniqueName
 }, testInfo) => {
 	test.setTimeout(180_000);
-	const marker = `Tines/445 isolated destination ${runId}`;
-	const workflowName = `Package runner source ${runId}`;
-	const installedName = `Package runner installed ${runId}`;
-	const runnerName = `package-acceptance-runner-${runId}`;
+	const marker = uniqueName('Tines/445 isolated destination', { maxLength: 100 });
+	const workflowName = uniqueName('Package runner source', { maxLength: 100 });
+	const installedName = uniqueName('Package runner installed', { maxLength: 100 });
+	const runnerName = uniqueName('package-acceptance-runner');
 	const api = apiClient(request, ALICE.apiKey);
 	let daemon: ChildProcess | null = null;
 	let daemonOutput = '';
@@ -117,7 +119,7 @@ test('installs as Alice and activates the installed Run state through a real dae
 			})
 		);
 		const destination = await body<Project>(
-			await api.post('/api/v1/projects', { name: `Package runner destination ${runId}` })
+			await api.post('/api/v1/projects', { name: uniqueName('Package runner destination') })
 		);
 		const defaultBefore = destination.default_workflow_id;
 
@@ -162,22 +164,22 @@ test('installs as Alice and activates the installed Run state through a real dae
 				response.request().method() === 'POST' &&
 				response.ok()
 		);
-		await page.getByRole('button', { name: 'Prepare installation' }).click();
+		await page.getByRole('button', { name: 'Preview installation' }).click();
 		const plan = (await (await prepareResponse).json()) as PrepareWorkflowPackageResponse;
 		expect(plan.actor_key).toBe(`session:${ALICE.id}`);
 		expect(plan.document_digest).toBe(document.digest);
 		for (const checkbox of await page.getByRole('checkbox', { name: /I reviewed/ }).all())
 			await checkbox.check();
-		await page.getByRole('checkbox', { name: /I confirm exact plan/ }).check();
+		await page.getByRole('checkbox', { name: /I reviewed what will be installed/ }).check();
 		const installResponse = page.waitForResponse(
 			(response) =>
 				response.url().endsWith('/api/v1/library/install') &&
 				response.request().method() === 'POST' &&
 				response.ok()
 		);
-		await page.getByRole('button', { name: 'Install package' }).click();
+		await page.getByRole('button', { name: 'Install workflow' }).click();
 		const receipt = (await (await installResponse).json()) as WorkflowPackageReceipt;
-		await expect(page.locator('[data-package-receipt]')).toBeFocused();
+		await expect(page.getByRole('heading', { name: 'Installed', exact: true })).toBeFocused();
 		expect(receipt.document_digest).toBe(document.digest);
 		expect(receipt.plan_digest).toBe(plan.plan_digest);
 		const installedWorkflowId = receipt.objects.find(
@@ -261,7 +263,7 @@ echo "isolated acceptance harness complete marker=$DESTINATION_MARKER"
 
 		const issue = await body<CreateIssueResponse>(
 			await api.post(`/api/v1/projects/${destination.id}/issues`, {
-				title: `Bounded installed-package activation ${runId}`,
+				title: uniqueName('Bounded installed-package activation', { maxLength: 100 }),
 				description: 'One benign local runner activation after browser installation.',
 				workflow_id: installed.id,
 				state: installedRun.id

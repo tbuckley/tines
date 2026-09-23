@@ -47,7 +47,9 @@ import {
 	listArtifacts,
 	loadIssueVersions,
 	requirementSpecLabel,
-	versionQuery
+	versionQuery,
+	initialFileArtifactQueries,
+	type InitialIssueFile
 } from './artifacts';
 import { contextSummaryForIssue } from './context';
 import { actorOf, eventInsert, eventQuery, serializeEvent } from './events';
@@ -56,6 +58,15 @@ import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels
 import { runQuery, serializeRun } from './runs';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule, scheduleInsertQueries } from './schedules';
+import { insertValues, type QueryGuard } from './query-guard';
+import {
+	assertCreateIssueLinksCommitted,
+	createIssueLinkAdmissionGuard,
+	createIssueLinkQueries,
+	prepareCreateIssueLinkPlan,
+	preflightCreateIssueLinkPlan,
+	recheckCreateIssueLinkPlan
+} from './issue-links';
 import { substringMatch } from './search';
 import { loadWorkflow, loadWorkflows } from './workflows';
 import { nextIssueNumber } from '../issue-address';
@@ -317,6 +328,8 @@ export interface IssueListFilters {
 	/** Schedule id: only issues created by that scheduled task. */
 	schedule?: string;
 	hideDone?: boolean;
+	/** Hide issues with an outgoing duplicate link. Defaults to true. */
+	hideDuplicates?: boolean;
 	/** Only not-done, non-duplicate issues whose blockers are all effectively done. */
 	ready?: boolean;
 	/** Restrict to one project id (the nested per-project route). */
@@ -381,14 +394,18 @@ function applyScopeFilters(q: IssueQuery, userId: string, filters: IssueListFilt
 		);
 	}
 	if (filters.schedule) q = q.where('issue.scheduled_task_id', '=', filters.schedule);
+	// Ordinary issue lists omit duplicates by default. Ready uses the same
+	// predicate even when callers explicitly include duplicates.
+	if (filters.hideDuplicates !== false || filters.ready) {
+		q = q.where(
+			sql<boolean>`NOT EXISTS (SELECT 1 FROM issue_link dl WHERE dl.source_issue_id = issue.id AND dl.kind = 'duplicate_of')`
+		);
+	}
 	if (filters.ready) {
-		// Ready = effectively not done, not itself a duplicate, and no blocker
-		// still effectively open. Readiness is the default; links only take it away.
+		// Ready = effectively not done and no blocker still effectively open.
+		// Duplicate exclusion is shared with the ordinary-list default above.
 		q = q
 			.where(sql<boolean>`COALESCE(eff_state.category, state.category) != 'done'`)
-			.where(
-				sql<boolean>`NOT EXISTS (SELECT 1 FROM issue_link dl WHERE dl.source_issue_id = issue.id AND dl.kind = 'duplicate_of')`
-			)
 			.where(sql<boolean>`NOT EXISTS (SELECT 1 ${openBlockerFrom})`);
 	}
 	// One EXISTS per label, so repeated labels narrow rather than widen. An
@@ -615,7 +632,7 @@ export function resolveStateRef(
 	return state;
 }
 
-async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comment[]> {
+async function loadCommentHistory(db: Kysely<Database>, issueId: string) {
 	const rows = await db
 		.selectFrom('comment')
 		.innerJoin('user as actor_user', 'actor_user.id', 'comment.actor_user_id')
@@ -631,14 +648,19 @@ async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comm
 			'api_key.name as actor_api_key_name',
 			'actor_run.id as actor_run_id',
 			'actor_runner.name as actor_runner_name',
+			'api_key.run_workflow_name as actor_run_workflow_name',
+			'api_key.run_state_name as actor_run_state_name',
 			'actor_run_project.name as actor_run_project_name',
-			'actor_run_issue.number as actor_run_issue_number'
+			'actor_run_issue.number as actor_run_issue_number',
+			'actor_run.issue_id as actor_run_issue_id',
+			'actor_run.status as actor_run_status',
+			'actor_run.created_at as actor_run_created_at'
 		])
 		.where('comment.issue_id', '=', issueId)
 		.orderBy('comment.created_at asc')
 		.orderBy('comment.id asc')
 		.execute();
-	return rows.map((row) => ({
+	const comments = rows.map((row) => ({
 		id: row.id,
 		issue_id: row.issue_id,
 		body: row.body,
@@ -646,6 +668,30 @@ async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comm
 		created_at: row.created_at,
 		updated_at: row.updated_at
 	}));
+	let selectedRun: { id: string; createdAt: number } | null = null;
+	for (const row of rows) {
+		if (
+			row.actor_run_id === null ||
+			row.actor_run_issue_id !== issueId ||
+			row.actor_run_status !== 'completed' ||
+			row.actor_run_created_at === null
+		)
+			continue;
+		if (
+			selectedRun === null ||
+			row.actor_run_created_at > selectedRun.createdAt ||
+			(row.actor_run_created_at === selectedRun.createdAt && row.actor_run_id > selectedRun.id)
+		)
+			selectedRun = { id: row.actor_run_id, createdAt: row.actor_run_created_at };
+	}
+	const latestCompletedRunCommentId = selectedRun
+		? ([...rows].reverse().find((row) => row.actor_run_id === selectedRun!.id)?.id ?? null)
+		: null;
+	return { comments, latestCompletedRunCommentId };
+}
+
+async function loadComments(db: Kysely<Database>, issueId: string): Promise<Comment[]> {
+	return (await loadCommentHistory(db, issueId)).comments;
 }
 
 /**
@@ -753,6 +799,8 @@ export async function loadIssue(
 }
 
 export interface IssueDetailOptions {
+	/** Include metadata used only by launch-prompt comment selection. */
+	launchComments?: boolean;
 	/**
 	 * Every workflow the user can see, when the caller already has (or is
 	 * already fetching) them — saves the two-statement `loadWorkflow`. A promise
@@ -794,10 +842,10 @@ export async function getIssueDetail(
 	// otherwise only if some outgoing transition declares requirements — which
 	// we cannot know until the workflow lands. Fetching them in this wave when
 	// asked keeps the requirement pre-flight off the critical path entirely.
-	const [workflows, comments, links, contextSummary, preloadedArtifacts, handoff] =
+	const [workflows, commentHistory, links, contextSummary, preloadedArtifacts, handoff] =
 		await Promise.all([
 			opts.workflows ?? loadWorkflows(db, userId, issue.workflow_id),
-			loadComments(db, issue.id),
+			loadCommentHistory(db, issue.id),
 			loadIssueLinks(db, userId, issue.id),
 			contextSummaryForIssue(db, userId, {
 				projectId: issue.project_id,
@@ -807,6 +855,7 @@ export async function getIssueDetail(
 			opts.artifacts ? listArtifacts(db, userId, issue.id) : null,
 			opts.round ? loadHandoffRows(db, userId, issue.id) : null
 		]);
+	const comments = commentHistory.comments;
 
 	const workflow = workflows.find((w) => w.id === issue.workflow_id);
 	if (!workflow) throw notFound();
@@ -834,6 +883,13 @@ export async function getIssueDetail(
 		links,
 		context_summary: contextSummary,
 		...(preloadedArtifacts ? { artifacts: preloadedArtifacts } : {}),
+		...(opts.launchComments
+			? {
+					launch_comments: {
+						latest_completed_run_comment_id: commentHistory.latestCompletedRunCommentId
+					}
+				}
+			: {}),
 		...(handoff
 			? {
 					round: deriveRound({ issue, workflow, comments, ...handoff }),
@@ -892,17 +948,20 @@ export function issueInsertQueries(
 		stateCategory: StateCategory;
 		now: number;
 		scheduledTask?: { id: string; name: string };
+		guard?: QueryGuard;
+		eventGuard?: QueryGuard;
 	}
 ): CompiledQuery[] {
 	const { id, projectId, workflowId, stateId, now, scheduledTask } = opts;
 	return [
 		// The permanent ledger prevents reuse after the highest issue moves away.
-		db
-			.insertInto('issue')
-			.values({
+		insertValues(
+			db,
+			'issue',
+			{
 				id,
 				project_id: projectId,
-				number: nextIssueNumber(projectId),
+				number: nextIssueNumber(projectId) as unknown as number,
 				title: opts.title,
 				description: opts.description,
 				workflow_id: workflowId,
@@ -916,25 +975,31 @@ export function issueInsertQueries(
 				created_at: now,
 				updated_at: now,
 				project_assignment_token: ''
-			})
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'issue.created',
-			issueId: id,
-			projectId,
-			payload: {
-				state_entry_version: 1,
-				title: opts.title,
-				workflow_id: workflowId,
-				workflow_name: opts.workflowName,
-				state_id: stateId,
-				state_name: opts.stateName,
-				state_category: opts.stateCategory,
-				...(scheduledTask
-					? { scheduled_task_id: scheduledTask.id, scheduled_task_name: scheduledTask.name }
-					: {})
-			}
-		})
+			},
+			opts.guard
+		),
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.created',
+				issueId: id,
+				projectId,
+				payload: {
+					state_entry_version: 1,
+					title: opts.title,
+					workflow_id: workflowId,
+					workflow_name: opts.workflowName,
+					state_id: stateId,
+					state_name: opts.stateName,
+					state_category: opts.stateCategory,
+					...(scheduledTask
+						? { scheduled_task_id: scheduledTask.id, scheduled_task_name: scheduledTask.name }
+						: {})
+				}
+			},
+			opts.eventGuard ?? opts.guard
+		)
 	];
 }
 
@@ -944,7 +1009,9 @@ export async function createIssue(
 	actor: ActorContext,
 	effects: DispatchEffects,
 	projectId: string,
-	body: CreateIssueRequest
+	body: CreateIssueRequest,
+	initialFiles: InitialIssueFile[] = [],
+	beforeCommit?: () => Promise<void>
 ): Promise<CreateIssueResponse> {
 	const project = await db
 		.selectFrom('project')
@@ -988,6 +1055,14 @@ export async function createIssue(
 	const vars = schedule ? templateVars(schedule.name, 1, schedule.timezone, now) : null;
 	const issueTitle = vars ? renderTemplate(title, vars) : title;
 	const issueDescription = vars ? renderTemplate(description, vars) : description;
+	const linkPlan = await prepareCreateIssueLinkPlan(
+		db,
+		actor,
+		{ id, projectId, title: issueTitle },
+		body,
+		now
+	);
+	if (linkPlan) await preflightCreateIssueLinkPlan(db, actor, linkPlan);
 
 	// A non-initial starting state pins the schedule too: future instances
 	// start where the first issue does. NULL keeps following the workflow's
@@ -995,6 +1070,10 @@ export async function createIssue(
 	const scheduleStateId = initialState.id === workflow.initial_state_id ? null : initialState.id;
 
 	const queries: CompiledQuery[] = [];
+	const admissionGuard = linkPlan ? createIssueLinkAdmissionGuard(actor, linkPlan) : undefined;
+	const freshIssueGuard: QueryGuard | undefined = linkPlan
+		? { predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id})` }
+		: undefined;
 	const scheduleQueries = schedule
 		? scheduleInsertQueries(db, actor, {
 				schedule,
@@ -1005,7 +1084,9 @@ export async function createIssue(
 				titleTemplate: title,
 				descriptionTemplate: description,
 				now,
-				mode: 'initial-issue'
+				mode: 'initial-issue',
+				guard: admissionGuard,
+				eventGuard: freshIssueGuard
 			})
 		: null;
 	if (scheduleQueries) queries.push(scheduleQueries[0]);
@@ -1021,17 +1102,59 @@ export async function createIssue(
 			stateName: initialState.name,
 			stateCategory: initialState.category,
 			now,
+			guard: admissionGuard,
+			eventGuard: freshIssueGuard,
 			...(schedule ? { scheduledTask: { id: schedule.id, name: schedule.name } } : {})
 		})
 	);
 	if (scheduleQueries) queries.push(scheduleQueries[1]);
 	if (resolvedLabels) {
 		queries.push(
-			...labelInserts(db, actor, resolvedLabels.toCreate),
-			...issueLabelInserts(db, actor, { id, project_id: projectId }, resolvedLabels.labels, now)
+			...labelInserts(db, actor, resolvedLabels.toCreate, freshIssueGuard),
+			...issueLabelInserts(
+				db,
+				actor,
+				{ id, project_id: projectId },
+				resolvedLabels.labels,
+				now,
+				freshIssueGuard
+			)
 		);
 	}
-	await runAtomic(env, queries);
+	if (initialFiles.length > 0) {
+		queries.push(
+			...(await initialFileArtifactQueries(
+				db,
+				env,
+				actor,
+				{ id, projectId },
+				initialFiles,
+				now,
+				freshIssueGuard
+			))
+		);
+		const currentProject = await db
+			.selectFrom('project')
+			.selectAll()
+			.where('id', '=', projectId)
+			.where('user_id', '=', actor.userId)
+			.executeTakeFirst();
+		if (!currentProject) throw notFound();
+		await assertWritable(db, actor, currentProject);
+		if (linkPlan) await recheckCreateIssueLinkPlan(db, actor, linkPlan);
+	}
+	let linkBatch: ReturnType<typeof createIssueLinkQueries> | null = null;
+	let linkBatchOffset = 0;
+	if (linkPlan && freshIssueGuard) {
+		linkBatch = createIssueLinkQueries(db, actor, linkPlan, freshIssueGuard);
+		linkBatchOffset = queries.length;
+		queries.push(...linkBatch.queries);
+	}
+	if (beforeCommit) await beforeCommit();
+	const results = await runAtomic(env, queries);
+	if (linkPlan && linkBatch) {
+		assertCreateIssueLinksCommitted(linkPlan, results, linkBatch, linkBatchOffset);
+	}
 	effects.signalDispatch();
 
 	const issue = await getIssueDetail(db, actor.userId, { id });

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { StageStatsReport, ChangeMarker } from '@tines/shared';
 	import { durationLabel, shareLabel } from '@tines/shared';
-	import { workflowHref } from '$lib/stage-stats-view';
+	import { page } from '$app/state';
+	import { stageControlsHref, workflowHref } from '$lib/stage-stats-view';
 	let {
 		report,
 		markers,
@@ -55,15 +56,15 @@
 				{#if marker.kind === 'automation' || marker.kind === 'quota'}<a
 						onclick={onnavigate}
 						class="inline-flex min-h-11 items-center underline"
-						href="#quota-policy">Open supervisor controls</a
+						href={stageControlsHref(page.url, 'quota-policy')}>Open supervisor controls</a
 					>{:else if marker.kind === 'runner_cap'}<a
 						onclick={onnavigate}
 						class="inline-flex min-h-11 items-center underline"
-						href="#runners">View runner caps</a
+						href={stageControlsHref(page.url, 'runners')}>View runner caps</a
 					>{:else if marker.kind === 'rule'}<a
 						onclick={onnavigate}
 						class="inline-flex min-h-11 items-center underline"
-						href="#routing">View routing rules</a
+						href={stageControlsHref(page.url, 'routing')}>View routing rules</a
 					>{/if}
 			</div>
 			{#each marker.effects.filter((e) => !stateId || e.state_id === stateId) as effect (effect.state_id)}

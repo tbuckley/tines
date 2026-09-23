@@ -1,5 +1,5 @@
 import { request as httpRequest } from 'node:http';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { unstable_dev, type Unstable_DevWorker } from 'wrangler';
 import {
 	LIBRARY_MAX_BYTES,
@@ -15,10 +15,57 @@ import {
 } from '../../../packages/shared/src/library/fixtures';
 import { signPackagePlan, verifyPackagePlan } from '../src/lib/server/library/token';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { d1, sqlLiteral as literal } from './d1';
+import { d1 as runD1, sqlLiteral as literal } from './d1';
 import { apiClient, body, errorBody, runId } from './helpers';
 
 const SIGNING_KEY = 'e2e-only-secret-encryption-key';
+const INSTALL_TABLES = [
+	'library_install',
+	'workflow',
+	'workflow_state',
+	'workflow_transition',
+	'context_item',
+	'context_item_file',
+	'label',
+	'scheduled_task',
+	'routing_rule',
+	'event'
+] as const;
+type InstallTable = (typeof INSTALL_TABLES)[number];
+type InstallCounts = Record<InstallTable, number>;
+type IdRow = { id: string };
+type ReceiptRow = IdRow & { document_digest: string; plan_digest: string; receipt_json: string };
+type StateRow = IdRow & { inherits_from_state_id: string | null };
+type ScheduleRow = IdRow & {
+	enabled: number;
+	last_run_at: number | null;
+	run_count: number;
+	project_id: string;
+};
+type InstallRows = {
+	library_install: ReceiptRow[];
+	workflow: IdRow[];
+	workflow_state: StateRow[];
+	workflow_transition: IdRow[];
+	context_item: IdRow[];
+	context_item_file: IdRow[];
+	label: IdRow[];
+	scheduled_task: ScheduleRow[];
+	routing_rule: IdRow[];
+	event: IdRow[];
+};
+
+let d1ProbeCalls = 0;
+let d1ProbeMs = 0;
+function d1<T extends Record<string, unknown>>(sql: string): T[] {
+	const startedAt = performance.now();
+	try {
+		return runD1<T>(sql);
+	} finally {
+		d1ProbeCalls += 1;
+		d1ProbeMs += performance.now() - startedAt;
+	}
+}
 
 const ids = (values: string[]) => values.map(literal).join(',');
 
@@ -96,73 +143,169 @@ function allocated(plan: PrepareWorkflowPackageResponse) {
 	};
 }
 
+function expectedInstallIds(plan: PrepareWorkflowPackageResponse): Record<InstallTable, string[]> {
+	const rows = allocated(plan);
+	return {
+		library_install: [plan.plan_id],
+		workflow: rows.workflows,
+		workflow_state: rows.states,
+		workflow_transition: rows.transitions,
+		context_item: rows.context,
+		context_item_file: rows.files,
+		label: rows.labels,
+		scheduled_task: rows.schedules,
+		routing_rule: rows.routing,
+		event: rows.events
+	};
+}
+
+function countWhere(rowIds: readonly string[]) {
+	return rowIds.length ? `id IN (${ids([...rowIds])})` : '0';
+}
+
+function buildInstallCountSql(expected: Record<InstallTable, readonly string[]>) {
+	return `SELECT ${INSTALL_TABLES.map(
+		(table) => `(SELECT COUNT(*) FROM ${table} WHERE ${countWhere(expected[table])}) AS ${table}`
+	).join(', ')}`;
+}
+
+function parseInstallCounts(rows: Record<string, unknown>[]): InstallCounts {
+	expect(rows, 'install audit count query returned exactly one row').toHaveLength(1);
+	const row = rows[0] ?? {};
+	expect(Object.keys(row).sort(), 'install audit count families').toEqual(
+		[...INSTALL_TABLES].sort()
+	);
+	for (const table of INSTALL_TABLES) {
+		const value = row[table];
+		expect(
+			typeof value === 'number' && Number.isInteger(value) && value >= 0,
+			`${table} install audit count must be a nonnegative integer; received ${String(value)}`
+		).toBe(true);
+	}
+	return row as InstallCounts;
+}
+
+function readInstallCounts(plan: PrepareWorkflowPackageResponse) {
+	return parseInstallCounts(d1(buildInstallCountSql(expectedInstallIds(plan))));
+}
+
+function expectInstallCounts(snapshot: InstallCounts, expected: InstallCounts) {
+	expect(Object.keys(snapshot).sort(), 'install audit count families').toEqual(
+		[...INSTALL_TABLES].sort()
+	);
+	for (const table of INSTALL_TABLES) expect(snapshot[table], table).toBe(expected[table]);
+}
+
+const zeroInstallCounts = (): InstallCounts =>
+	Object.fromEntries(INSTALL_TABLES.map((table) => [table, 0])) as InstallCounts;
+
+function readRows<T extends IdRow>(
+	table: InstallTable,
+	columns: string,
+	rowIds: readonly string[]
+) {
+	if (!rowIds.length) return [];
+	return d1<T>(`SELECT ${columns} FROM ${table} WHERE ${countWhere(rowIds)} ORDER BY id`);
+}
+
+function readInstallRows(plan: PrepareWorkflowPackageResponse): InstallRows {
+	const expected = expectedInstallIds(plan);
+	return {
+		library_install: readRows<ReceiptRow>(
+			'library_install',
+			'id,document_digest,plan_digest,receipt_json',
+			expected.library_install
+		),
+		workflow: readRows('workflow', 'id', expected.workflow),
+		workflow_state: readRows<StateRow>(
+			'workflow_state',
+			'id,inherits_from_state_id',
+			expected.workflow_state
+		),
+		workflow_transition: readRows('workflow_transition', 'id', expected.workflow_transition),
+		context_item: readRows('context_item', 'id', expected.context_item),
+		context_item_file: readRows('context_item_file', 'id', expected.context_item_file),
+		label: readRows('label', 'id', expected.label),
+		scheduled_task: readRows<ScheduleRow>(
+			'scheduled_task',
+			'id,enabled,last_run_at,run_count,project_id',
+			expected.scheduled_task
+		),
+		routing_rule: readRows('routing_rule', 'id', expected.routing_rule),
+		event: readRows('event', 'id', expected.event)
+	};
+}
+
 function count(table: string, rowIds: string[]) {
 	if (!rowIds.length) return 0;
 	return d1(`SELECT COUNT(*) AS n FROM ${table} WHERE id IN (${ids(rowIds)})`)[0].n;
 }
 
 function expectNoInstallRows(plan: PrepareWorkflowPackageResponse) {
-	const a = allocated(plan);
-	expect(count('library_install', [plan.plan_id])).toBe(0);
-	for (const [table, rowIds] of Object.entries({
-		workflow: a.workflows,
-		workflow_state: a.states,
-		workflow_transition: a.transitions,
-		context_item: a.context,
-		context_item_file: a.files,
-		label: a.labels,
-		scheduled_task: a.schedules,
-		routing_rule: a.routing,
-		event: a.events
-	}))
-		expect(count(table, rowIds), table).toBe(0);
+	expectInstallCounts(readInstallCounts(plan), zeroInstallCounts());
 }
 
-function auditReceipt(
+const RECEIPT_TABLE = {
+	workflow: 'workflow',
+	state: 'workflow_state',
+	transition: 'workflow_transition',
+	prompt: 'context_item',
+	skill: 'context_item',
+	repo: 'context_item',
+	file: 'context_item_file',
+	label: 'label',
+	schedule: 'scheduled_task',
+	routing: 'routing_rule'
+} as const;
+type ReceiptTable = (typeof RECEIPT_TABLE)[keyof typeof RECEIPT_TABLE];
+const RECEIPT_TABLES = INSTALL_TABLES.filter(
+	(table): table is ReceiptTable => table !== 'library_install' && table !== 'event'
+);
+
+function sorted(values: readonly string[]) {
+	return [...values].sort();
+}
+
+function expectReceiptRows(
+	snapshot: InstallRows,
 	receipt: WorkflowPackageReceipt,
 	plan: PrepareWorkflowPackageResponse,
 	projectId: string
 ) {
 	const a = allocated(plan);
-	const stored = d1(
-		`SELECT document_digest,plan_digest,receipt_json FROM library_install WHERE id=${literal(plan.plan_id)}`
-	);
-	expect(stored).toEqual([
+	const expected = expectedInstallIds(plan);
+	for (const table of INSTALL_TABLES) {
+		expect(snapshot[table], `${table} row count`).toHaveLength(expected[table].length);
+		expect(sorted(snapshot[table].map((row) => row.id)), `${table} ids`).toEqual(
+			sorted(expected[table])
+		);
+	}
+	expect(snapshot.library_install).toEqual([
 		{
+			id: plan.plan_id,
 			document_digest: plan.document_digest,
 			plan_digest: plan.plan_digest,
 			receipt_json: JSON.stringify(receipt)
 		}
 	]);
-	for (const [table, rowIds] of Object.entries({
-		workflow: a.workflows,
-		workflow_state: a.states,
-		workflow_transition: a.transitions,
-		context_item: a.context,
-		context_item_file: a.files,
-		label: a.labels,
-		scheduled_task: a.schedules,
-		routing_rule: a.routing,
-		event: a.events
-	}))
-		expect(count(table, rowIds), table).toBe(rowIds.length);
+	const receiptIds = Object.fromEntries(
+		RECEIPT_TABLES.map((table) => [table, []])
+	) as unknown as Record<ReceiptTable, string[]>;
 	for (const object of receipt.objects) {
-		const table = {
-			workflow: 'workflow',
-			state: 'workflow_state',
-			transition: 'workflow_transition',
-			prompt: 'context_item',
-			skill: 'context_item',
-			file: 'context_item_file',
-			repo: 'context_item',
-			label: 'label',
-			schedule: 'scheduled_task',
-			routing: 'routing_rule'
-		}[object.kind];
-		expect(table, object.kind).toBeTruthy();
-		expect(d1(`SELECT id FROM ${table} WHERE id=${literal(object.id)}`)).toEqual([
-			{ id: object.id }
-		]);
+		const table = RECEIPT_TABLE[object.kind as keyof typeof RECEIPT_TABLE];
+		if (!table) throw new Error(`unknown receipt object kind: ${object.kind}`);
+		receiptIds[table].push(object.id);
+		const allocation =
+			object.kind === 'label'
+				? plan.allocation.labels[object.local_id]
+				: plan.allocation.records[object.local_id];
+		expect(allocation?.id, `${object.kind} ${object.local_id} allocation`).toBe(object.id);
+	}
+	for (const table of RECEIPT_TABLES) {
+		expect(sorted(receiptIds[table]), `${table} receipt ids`).toEqual(sorted(expected[table]));
+		expect(sorted(receiptIds[table]), `${table} stored receipt ids`).toEqual(
+			sorted(snapshot[table].map((row) => row.id))
+		);
 	}
 	const schedule = receipt.objects.find((object) => object.kind === 'schedule')!;
 	const routing = receipt.objects.find((object) => object.kind === 'routing')!;
@@ -172,14 +315,20 @@ function auditReceipt(
 		href: `/projects/${projectId}?schedule=${a.schedules[0]}`
 	});
 	expect(routing).toMatchObject({ id: a.routing[0], name: 'balanced', href: '/agents#routing' });
-	expect(
-		d1(
-			`SELECT enabled,last_run_at,run_count,project_id FROM scheduled_task WHERE id=${literal(a.schedules[0])}`
-		)
-	).toEqual([{ enabled: 0, last_run_at: null, run_count: 0, project_id: projectId }]);
-	expect(
-		d1(`SELECT inherits_from_state_id FROM workflow_state WHERE id=${literal(a.states[0])}`)
-	).toEqual([{ inherits_from_state_id: a.states[2] }]);
+	expect(snapshot.scheduled_task).toEqual([
+		{ id: a.schedules[0], enabled: 0, last_run_at: null, run_count: 0, project_id: projectId }
+	]);
+	expect(snapshot.workflow_state.find((row) => row.id === a.states[0])).toMatchObject({
+		inherits_from_state_id: a.states[2]
+	});
+}
+
+function auditReceipt(
+	receipt: WorkflowPackageReceipt,
+	plan: PrepareWorkflowPackageResponse,
+	projectId: string
+) {
+	expectReceiptRows(readInstallRows(plan), receipt, plan, projectId);
 }
 
 function dropHttpResponse(path: string, payload: unknown): Promise<void> {
@@ -210,6 +359,194 @@ function dropHttpResponse(path: string, payload: unknown): Promise<void> {
 		});
 	});
 }
+
+function syntheticReceiptAudit() {
+	const recordIds = {
+		'workflow:1': 'wf_1',
+		'workflow:2': 'wf_2',
+		'state:1': 'wfs_1',
+		'state:2': 'wfs_2',
+		'state:3': 'wfs_3',
+		'transition:1': 'wft_1',
+		'context:1': 'ctx_1',
+		'context:2': 'ctx_2',
+		'context:3': 'ctx_3',
+		'file:1': 'cif_1',
+		'schedule:1': 'sch_1',
+		'routing:1': 'rte_1'
+	};
+	const events = [
+		'evt_wf1',
+		'evt_wf2',
+		'evt_ctx1',
+		'evt_ctx2',
+		'evt_ctx3',
+		'evt_label',
+		'evt_schedule',
+		'evt_routing'
+	];
+	const eventByLocalId: Record<string, string> = {
+		'workflow:1': 'evt_wf1',
+		'workflow:2': 'evt_wf2',
+		'context:1': 'evt_ctx1',
+		'context:2': 'evt_ctx2',
+		'context:3': 'evt_ctx3',
+		'schedule:1': 'evt_schedule',
+		'routing:1': 'evt_routing'
+	};
+	const records = Object.fromEntries(
+		Object.entries(recordIds).map(([localId, id]) => [
+			localId,
+			{ id, event_id: eventByLocalId[localId] ?? null }
+		])
+	);
+	const plan = {
+		plan_id: 'ins_1',
+		document_digest: 'sha256:document',
+		plan_digest: 'sha256:plan',
+		allocation: {
+			records,
+			labels: { 'input:1': { id: 'lbl_1', event_id: 'evt_label' } }
+		},
+		resolved: { schedules: [{ definition: { name: 'Synthetic schedule' } }] }
+	} as unknown as PrepareWorkflowPackageResponse;
+	const kinds: Array<[string, string, string]> = [
+		['workflow', 'workflow:1', 'wf_1'],
+		['workflow', 'workflow:2', 'wf_2'],
+		['state', 'state:1', 'wfs_1'],
+		['state', 'state:2', 'wfs_2'],
+		['state', 'state:3', 'wfs_3'],
+		['transition', 'transition:1', 'wft_1'],
+		['prompt', 'context:1', 'ctx_1'],
+		['skill', 'context:2', 'ctx_2'],
+		['repo', 'context:3', 'ctx_3'],
+		['file', 'file:1', 'cif_1'],
+		['label', 'input:1', 'lbl_1'],
+		['schedule', 'schedule:1', 'sch_1'],
+		['routing', 'routing:1', 'rte_1']
+	];
+	const receipt: WorkflowPackageReceipt = {
+		id: plan.plan_id,
+		document_digest: plan.document_digest,
+		plan_digest: plan.plan_digest,
+		committed_at: 1,
+		objects: kinds.map(([kind, local_id, id]) => ({
+			kind,
+			local_id,
+			id,
+			name: kind === 'schedule' ? 'Synthetic schedule' : kind === 'routing' ? 'balanced' : id,
+			href:
+				kind === 'schedule'
+					? '/projects/prj_1?schedule=sch_1'
+					: kind === 'routing'
+						? '/agents#routing'
+						: `/${id}`
+		})),
+		reused_inputs: []
+	};
+	const idRows = (values: string[]) => values.map((id) => ({ id }));
+	const rows: InstallRows = {
+		library_install: [
+			{
+				id: plan.plan_id,
+				document_digest: plan.document_digest,
+				plan_digest: plan.plan_digest,
+				receipt_json: JSON.stringify(receipt)
+			}
+		],
+		workflow: idRows(['wf_1', 'wf_2']),
+		workflow_state: [
+			{ id: 'wfs_1', inherits_from_state_id: 'wfs_3' },
+			{ id: 'wfs_2', inherits_from_state_id: null },
+			{ id: 'wfs_3', inherits_from_state_id: null }
+		],
+		workflow_transition: idRows(['wft_1']),
+		context_item: idRows(['ctx_1', 'ctx_2', 'ctx_3']),
+		context_item_file: idRows(['cif_1']),
+		label: idRows(['lbl_1']),
+		scheduled_task: [
+			{ id: 'sch_1', enabled: 0, last_run_at: null, run_count: 0, project_id: 'prj_1' }
+		],
+		routing_rule: idRows(['rte_1']),
+		event: idRows(events)
+	};
+	return { plan, receipt, rows };
+}
+
+test.describe('native install audit helpers', () => {
+	test('validates complete count snapshots and SQL construction', () => {
+		const zero = zeroInstallCounts();
+		expectInstallCounts(parseInstallCounts([zero]), zero);
+		const nonce = { ...zero, library_install: 1 };
+		expectInstallCounts(parseInstallCounts([nonce]), nonce);
+		for (const table of INSTALL_TABLES) {
+			const residual = { ...zero, [table]: 1 };
+			expect(() => expectInstallCounts(residual, zero)).toThrow(new RegExp(table));
+		}
+		expect(() => parseInstallCounts([])).toThrow(/exactly one row/);
+		expect(() => parseInstallCounts([zero, zero])).toThrow(/exactly one row/);
+		const missing = { ...zero } as Record<string, unknown>;
+		delete missing.event;
+		expect(() => parseInstallCounts([missing])).toThrow(/count families/);
+		for (const invalid of [null, '0', -1, 1.5])
+			expect(() => parseInstallCounts([{ ...zero, label: invalid }])).toThrow(
+				/label.*nonnegative integer/
+			);
+		const expected = Object.fromEntries(
+			INSTALL_TABLES.map((table) => [table, []])
+		) as unknown as Record<InstallTable, string[]>;
+		expected.library_install = ["ins'quoted"];
+		const sql = buildInstallCountSql(expected);
+		expect(sql).toContain("id IN ('ins''quoted')");
+		expect(sql.match(/WHERE 0/g)).toHaveLength(9);
+	});
+
+	test('rejects corrupted receipt, mapping, pointer, schedule, and stored receipt data', () => {
+		const passing = syntheticReceiptAudit();
+		expectReceiptRows(passing.rows, passing.receipt, passing.plan, 'prj_1');
+		const rejects = (
+			mutate: (fixture: ReturnType<typeof syntheticReceiptAudit>) => void,
+			message: RegExp
+		) => {
+			const fixture = structuredClone(syntheticReceiptAudit());
+			mutate(fixture);
+			expect(() => expectReceiptRows(fixture.rows, fixture.receipt, fixture.plan, 'prj_1')).toThrow(
+				message
+			);
+		};
+		rejects((fixture) => fixture.rows.label.pop(), /label row count/);
+		rejects((fixture) => (fixture.rows.label[0].id = 'lbl_wrong'), /label ids/);
+		rejects((fixture) => fixture.rows.workflow.push({ id: 'wf_1' }), /workflow row count/);
+		rejects((fixture) => (fixture.rows.workflow_state[0].inherits_from_state_id = null), /wfs_3/);
+		rejects((fixture) => (fixture.rows.scheduled_task[0].enabled = 1), /enabled/);
+		rejects(
+			(fixture) => (fixture.rows.library_install[0].document_digest = 'wrong'),
+			/sha256:document/
+		);
+		rejects((fixture) => (fixture.rows.library_install[0].plan_digest = 'wrong'), /sha256:plan/);
+		rejects((fixture) => (fixture.rows.library_install[0].receipt_json = '{}'), /receipt_json/);
+		rejects((fixture) => {
+			fixture.receipt.objects = fixture.receipt.objects.filter((object) => object.kind !== 'file');
+			fixture.rows.library_install[0].receipt_json = JSON.stringify(fixture.receipt);
+		}, /context_item_file receipt ids/);
+		rejects((fixture) => {
+			fixture.receipt.objects[0].id = 'wfs_1';
+			fixture.rows.library_install[0].receipt_json = JSON.stringify(fixture.receipt);
+		}, /workflow workflow:1 allocation/);
+		rejects((fixture) => {
+			fixture.receipt.objects[1].id = 'wf_1';
+			fixture.rows.library_install[0].receipt_json = JSON.stringify(fixture.receipt);
+		}, /workflow workflow:2 allocation/);
+		rejects((fixture) => {
+			fixture.receipt.objects[0].kind = 'state';
+			fixture.rows.library_install[0].receipt_json = JSON.stringify(fixture.receipt);
+		}, /workflow receipt ids/);
+		rejects((fixture) => {
+			fixture.receipt.objects[0].local_id = 'workflow:2';
+			fixture.rows.library_install[0].receipt_json = JSON.stringify(fixture.receipt);
+		}, /workflow workflow:2 allocation/);
+	});
+});
 
 test.describe.serial('native D1 workflow install gate', () => {
 	let probe: Unstable_DevWorker;
@@ -384,6 +721,9 @@ test.describe.serial('native D1 workflow install gate', () => {
 		request
 	}) => {
 		test.setTimeout(300_000);
+		d1ProbeCalls = 0;
+		d1ProbeMs = 0;
+		const probeStartedAt = performance.now();
 		const client = apiClient(request, ALICE.apiKey);
 		const failures = [
 			['workflow', 'INSERT'],
@@ -420,6 +760,12 @@ test.describe.serial('native D1 workflow install gate', () => {
 				d1(`SELECT default_workflow_id FROM project WHERE id=${literal(fixture.projectId)}`)
 			).toEqual(beforeDefault);
 			expect(d1('SELECT COUNT(*) AS n FROM issue')[0].n).toBe(beforeIssues);
+		}
+		if (process.env.NATIVE_INSTALL_D1_PROBE === '1') {
+			expect(d1ProbeCalls, 'rollback D1 process count').toBe(80);
+			console.log(
+				`D1_ROLLBACK_PROBE phases=${failures.length} calls=${d1ProbeCalls} exec_ms=${d1ProbeMs.toFixed(1)} body_ms=${(performance.now() - probeStartedAt).toFixed(1)}`
+			);
 		}
 	});
 
@@ -483,20 +829,25 @@ test.describe.serial('native D1 workflow install gate', () => {
 		} finally {
 			d1('DROP TRIGGER IF EXISTS native_install_old_nonce');
 		}
-		expect(count('library_install', [nonceFixture.plan.plan_id])).toBe(1);
-		const rows = allocated(nonceFixture.plan);
-		for (const [table, rowIds] of Object.entries({
-			workflow: rows.workflows,
-			workflow_state: rows.states,
-			workflow_transition: rows.transitions,
-			context_item: rows.context,
-			context_item_file: rows.files,
-			label: rows.labels,
-			scheduled_task: rows.schedules,
-			routing_rule: rows.routing,
-			event: rows.events
-		}))
-			expect(count(table, rowIds), table).toBe(0);
+		const nonceCounts = zeroInstallCounts();
+		nonceCounts.library_install = 1;
+		expectInstallCounts(readInstallCounts(nonceFixture.plan), nonceCounts);
+	});
+
+	test('detects a residual allocated row with the batched native audit', async ({ request }) => {
+		const client = apiClient(request, ALICE.apiKey);
+		const fixture = await automatedFixture(client, `residual-${runId}`);
+		const labelId = allocated(fixture.plan).labels[0];
+		d1(`INSERT INTO label(id,user_id,name,color,description,created_at,updated_at)
+			VALUES(${literal(labelId)},${literal(ALICE.id)},${literal(`residual-${runId}`)},'blue','',1,1)`);
+		try {
+			const residual = readInstallCounts(fixture.plan);
+			expect(residual.label).toBe(1);
+			expect(() => expectInstallCounts(residual, zeroInstallCounts())).toThrow(/label/);
+		} finally {
+			d1(`DELETE FROM label WHERE id=${literal(labelId)}`);
+		}
+		expectNoInstallRows(fixture.plan);
 	});
 
 	test('makes true initial concurrent retries one-copy and recovers a dropped response', async ({

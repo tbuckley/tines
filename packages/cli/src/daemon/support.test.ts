@@ -5,6 +5,8 @@ import {
 	AMBIENT_CLI,
 	buildHarnessInvocation,
 	buildSpawnEnv,
+	redactSecrets,
+	SecretRedactor,
 	CliRefresher,
 	isNewerVersion,
 	pathWithin,
@@ -38,20 +40,52 @@ describe('shellQuote', () => {
 });
 
 describe('expandCommandTemplate', () => {
-	it('substitutes all three placeholders, quoted', () => {
-		expect(expandCommandTemplate('agent {prompt_file} -w {workspace} -m {model}', input)).toBe(
-			`agent '/tmp/ws/run 1/prompt.md' -w '/tmp/ws/run 1' -m 'claude-sonnet-5'`
-		);
+	it('substitutes all four placeholders, quoted', () => {
+		expect(
+			expandCommandTemplate('agent {prompt_file} -w {workspace} -m {model} -e {effort}', {
+				...input,
+				effort: 'high'
+			})
+		).toBe(`agent '/tmp/ws/run 1/prompt.md' -w '/tmp/ws/run 1' -m 'claude-sonnet-5' -e 'high'`);
 	});
 
 	it('an absent model substitutes an empty shell word', () => {
 		expect(expandCommandTemplate('agent {model}', { ...input, model: null })).toBe("agent ''");
 	});
 
+	it.each([
+		['omitted', input],
+		['null', { ...input, effort: null }],
+		['undefined', { ...input, effort: undefined }],
+		['empty', { ...input, effort: '' }]
+	])('an %s effort substitutes an empty shell word', (_label, value) => {
+		expect(expandCommandTemplate('agent {effort}', value)).toBe("agent ''");
+	});
+
+	it('shell-quotes an effort containing spaces, quotes, and metacharacters', () => {
+		expect(
+			expandCommandTemplate('agent {effort}', { ...input, effort: "high speed's $&; $(boom)" })
+		).toBe(`agent 'high speed'\\''s $&; $(boom)'`);
+	});
+
 	it('repeated placeholders all expand', () => {
-		expect(expandCommandTemplate('cat {prompt_file} {prompt_file}', input)).toBe(
-			`cat '/tmp/ws/run 1/prompt.md' '/tmp/ws/run 1/prompt.md'`
+		expect(expandCommandTemplate('agent {effort} {effort}', { ...input, effort: 'xhigh' })).toBe(
+			`agent 'xhigh' 'xhigh'`
 		);
+	});
+
+	it('leaves old templates and placeholder-like input data unchanged', () => {
+		const oldInput = {
+			...input,
+			workspace: '/tmp/{effort}',
+			promptFile: '/tmp/{effort}/prompt.md',
+			model: 'model-{effort}',
+			effort: 'high'
+		};
+		expect(expandCommandTemplate('agent {prompt_file} -w {workspace} -m {model}', oldInput)).toBe(
+			`agent '/tmp/{effort}/prompt.md' -w '/tmp/{effort}' -m 'model-{effort}'`
+		);
+		expect(expandCommandTemplate('agent --fixed', oldInput)).toBe('agent --fixed');
 	});
 });
 
@@ -102,10 +136,28 @@ describe('buildHarnessInvocation', () => {
 		});
 	});
 
+	it('routes effort through supported harness argv and preserves no-effort argv', () => {
+		const claude = buildHarnessInvocation(
+			{ harness: 'claude_code' },
+			{ ...input, effort: 'xhigh' }
+		);
+		expect(claude.args[1]).toContain("--effort 'xhigh'");
+		const codex = buildHarnessInvocation({ harness: 'codex' }, { ...input, effort: 'ultra' });
+		expect(codex.args).toContain('-c');
+		expect(codex.args).toContain('model_reasoning_effort="ultra"');
+		expect(buildHarnessInvocation({ harness: 'codex' }, input).args).not.toContain('-c');
+	});
+
 	it('custom: sh -c with the expanded template; refuses without one', () => {
 		expect(
-			buildHarnessInvocation({ harness: 'custom', command: 'run {prompt_file}' }, input)
-		).toEqual({ file: 'sh', args: ['-c', `run '/tmp/ws/run 1/prompt.md'`] });
+			buildHarnessInvocation(
+				{ harness: 'custom', command: 'run {prompt_file} --model {model} --effort {effort}' },
+				{ ...input, effort: 'high' }
+			)
+		).toEqual({
+			file: 'sh',
+			args: ['-c', `run '/tmp/ws/run 1/prompt.md' --model 'claude-sonnet-5' --effort 'high'`]
+		});
 		expect(() => buildHarnessInvocation({ harness: 'custom' }, input)).toThrow(/--command/);
 	});
 });
@@ -117,7 +169,7 @@ describe('formatLaunchBanner', () => {
 		const invocation = buildHarnessInvocation({ harness: 'claude_code' }, input);
 		expect(formatLaunchBanner(invocation, input, meta)).toBe(
 			`$ claude -p --output-format stream-json --verbose --model 'claude-sonnet-5' < '/tmp/ws/run 1/prompt.md'\n` +
-				`# tines runner: harness=claude_code model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+				`# tines runner: harness=claude_code model=claude-sonnet-5 effort=(provider-default) timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
 		);
 	});
 
@@ -157,7 +209,7 @@ describe('formatLaunchBanner', () => {
 		const invocation = buildHarnessInvocation({ harness: 'codex' }, input);
 		expect(formatLaunchBanner(invocation, input, { ...meta, harness: 'codex' })).toBe(
 			`$ codex exec --json --skip-git-repo-check --model claude-sonnet-5 'Do the thing'\n` +
-				`# tines runner: harness=codex model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+				`# tines runner: harness=codex model=claude-sonnet-5 effort=(provider-default) timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
 		);
 	});
 
@@ -173,13 +225,17 @@ describe('formatLaunchBanner', () => {
 	});
 
 	it('custom: the template as expanded, not as written', () => {
+		const routed = { ...input, effort: 'high' };
 		const invocation = buildHarnessInvocation(
-			{ harness: 'custom', command: 'my-agent --model {model} -w {workspace} < {prompt_file}' },
-			input
+			{
+				harness: 'custom',
+				command: 'my-agent --model {model} --effort {effort} -w {workspace} < {prompt_file}'
+			},
+			routed
 		);
-		expect(formatLaunchBanner(invocation, input, { ...meta, harness: 'custom' })).toBe(
-			`$ my-agent --model 'claude-sonnet-5' -w '/tmp/ws/run 1' < '/tmp/ws/run 1/prompt.md'\n` +
-				`# tines runner: harness=custom model=claude-sonnet-5 timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+		expect(formatLaunchBanner(invocation, routed, { ...meta, harness: 'custom' })).toBe(
+			`$ my-agent --model 'claude-sonnet-5' --effort 'high' -w '/tmp/ws/run 1' < '/tmp/ws/run 1/prompt.md'\n` +
+				`# tines runner: harness=custom model=claude-sonnet-5 effort=high timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
 		);
 	});
 
@@ -748,5 +804,100 @@ describe('pathWithin', () => {
 		expect(pathWithin('/opt/homebrew/lib/node_modules/tines/dist/index.js', '/cfg/cli')).toBe(
 			false
 		);
+	});
+});
+
+describe('buildSpawnEnv env items', () => {
+	it('an empty env override replaces the inherited host value', () => {
+		const env = buildSpawnEnv(
+			{ EMPTY: 'host value' },
+			{
+				binDir: null,
+				apiKey: 'key',
+				apiUrl: 'https://tines.test',
+				extra: [{ name: 'EMPTY', value: '' }]
+			}
+		);
+		expect(env).toHaveProperty('EMPTY', '');
+	});
+
+	it('merges extra variables but Tines-owned ones and PATH always win', () => {
+		const env = buildSpawnEnv(
+			{ PATH: '/usr/bin', KEEP: 'base' },
+			{
+				binDir: '/managed/bin',
+				apiKey: 'rk_real',
+				apiUrl: 'https://tines.test/',
+				extra: [
+					{ name: 'GH_TOKEN', value: 'ghp_x' },
+					{ name: 'KEEP', value: 'override' },
+					{ name: 'TINES_API_KEY', value: 'rk_planted' },
+					{ name: 'TINES_API_URL', value: 'https://evil.test' },
+					{ name: 'PATH', value: '/evil' }
+				]
+			}
+		);
+		expect(env.GH_TOKEN).toBe('ghp_x');
+		expect(env.KEEP).toBe('override');
+		expect(env.TINES_API_KEY).toBe('rk_real');
+		expect(env.TINES_API_URL).toBe('https://tines.test');
+		expect(env.PATH).toBe(`/managed/bin${delimiter}/usr/bin`);
+	});
+});
+
+describe('redactSecrets', () => {
+	it('masks each secret and its JSON-escaped form, including short ones', () => {
+		const text = 'token=s3cr"et\\n {"text":"s3cr\\"et"} pin=ab ab';
+		expect(redactSecrets(text, ['s3cr"et', 'ab'])).toBe('token=***\\n {"text":"***"} pin=*** ***');
+	});
+
+	it('is applied by LogBatcher.append when configured', async () => {
+		const chunks: string[] = [];
+		const batcher = new LogBatcher(
+			async (chunk) => {
+				chunks.push(chunk);
+			},
+			{ redact: ['ghp_secretvalue'] }
+		);
+		batcher.append('GH_TOKEN=ghp_secretvalue exported\n');
+		await batcher.flush();
+		expect(chunks.join('')).toBe('GH_TOKEN=*** exported\n');
+		expect(chunks.join('')).not.toContain('ghp_secretvalue');
+	});
+});
+
+describe('streaming secret masking', () => {
+	it('masks every split of literal and JSON-escaped secrets, including overlapping values', async () => {
+		const secrets = ['abc', 'abcdef', 'quote"and\nnewline', 'xy', ''];
+		const input = 'before abcdef / quote"and\nnewline / "quote\\"and\\nnewline" / xy after';
+		const expected = 'before *** / *** / "***" / *** after';
+		for (let split = 0; split <= input.length; split++) {
+			const raw = new SecretRedactor(secrets);
+			expect(raw.write(input.slice(0, split)) + raw.write(input.slice(split)) + raw.end()).toBe(
+				expected
+			);
+			const chunks: string[] = [];
+			const batcher = new LogBatcher(async (chunk) => void chunks.push(chunk), {
+				redact: secrets,
+				maxBytes: 1
+			});
+			batcher.append(input.slice(0, split));
+			await batcher.flush();
+			batcher.append(input.slice(split));
+			await batcher.finish();
+			expect(chunks.join('')).toBe(expected);
+		}
+	});
+
+	it('holds a possible secret prefix through flush and releases unmatched final text', async () => {
+		const chunks: string[] = [];
+		const batcher = new LogBatcher(async (chunk) => void chunks.push(chunk), {
+			redact: ['secret']
+		});
+		batcher.append('value=sec');
+		await batcher.flush();
+		expect(chunks.join('')).toBe('value=');
+		await batcher.finish();
+		expect(chunks.join('')).toBe('value=sec');
 	});
 });

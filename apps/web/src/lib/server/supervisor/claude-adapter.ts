@@ -30,7 +30,7 @@ import {
 	LAUNCH_STALL_MS
 } from '@tines/shared';
 import { sql, type Kysely } from 'kysely';
-import { decryptSecret } from '../crypto';
+import { decryptSecret, requireEncryptionKey } from '../crypto';
 import { getDb, newId, type Database } from '../db';
 import type {
 	AdapterEndInput,
@@ -53,6 +53,7 @@ import {
 	setTransferPhase
 } from './resume';
 import { buildResumePreamble, buildSupervisorPreamble } from './preamble';
+import { envDigest, resolvedEnvForIssue, type ResolvedEnvEntry } from '../api/context';
 
 // ---------------------------------------------------------------------------
 // Config shapes (runner.config / agent_run.provider_meta are adapter-owned)
@@ -63,6 +64,8 @@ export interface ClaudeRunnerConfig {
 	environment_id?: string;
 	/** Per-tier managed agents, each with the model/effort it was built for. */
 	agents?: Partial<Record<ModelTier, { agent_id: string; model: string; effort?: string }>>;
+	/** Immutable agent identities keyed by canonical [tier, model, effort]. */
+	agents_by_signature?: Record<string, { agent_id: string; model: string; effort?: string }>;
 }
 
 /** `agent_run.provider_meta` for Claude runs. */
@@ -75,6 +78,8 @@ export interface ClaudeRunMeta {
 	credential_id?: string;
 	/** Set once end-of-run provider resources were garbage-collected. */
 	gc_done?: boolean;
+	/** Digest of the env items the vault was built for (names/versions, no values). */
+	env_digest?: string;
 	/**
 	 * Set when the end finalizer retained this run's session for a resume:
 	 * the session is deliberately left idle and its vault alive, so the GC
@@ -92,15 +97,6 @@ export interface ClaudeAdapterOptions {
 
 // ---------------------------------------------------------------------------
 // Environment plumbing
-
-function requireEncryptionKey(env: Env): string {
-	if (!env.SECRET_ENCRYPTION_KEY) {
-		throw new Error(
-			'SECRET_ENCRYPTION_KEY is not configured; cannot use stored provider credentials'
-		);
-	}
-	return env.SECRET_ENCRYPTION_KEY;
-}
 
 /**
  * Canonicalizes a repo context item's URL to the one form the Managed
@@ -187,13 +183,15 @@ interface ProviderContext {
 		ctx: RunnerContext,
 		tier: ModelTier,
 		model: string,
-		effort: string | undefined
+		effort: string | undefined,
+		record?: AdapterLaunchInput['recordEffortEvidence']
 	): Promise<string>;
 	createRunVault(
 		ctx: RunnerContext,
 		runId: string,
 		runKey: string,
-		apiHost: string
+		apiHost: string,
+		secrets?: { name: string; value: string }[]
 	): Promise<{ vaultId: string; credentialId: string }>;
 }
 
@@ -228,15 +226,29 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		return decryptSecret(settings.github_pat_enc, requireEncryptionKey(env));
 	}
 
-	async function persistConfig(runnerId: string, config: ClaudeRunnerConfig): Promise<void> {
-		await db
-			.updateTable('runner')
-			.set({
-				config: JSON.stringify(config),
-				resume_config_revision: sql<number>`resume_config_revision + 1`
-			})
-			.where('id', '=', runnerId)
-			.execute();
+	async function persistConfig(
+		runnerId: string,
+		merge: (current: ClaudeRunnerConfig) => ClaudeRunnerConfig
+	): Promise<ClaudeRunnerConfig> {
+		for (let attempt = 0; attempt < 5; attempt++) {
+			const stored = await db
+				.selectFrom('runner')
+				.select(['config', 'resume_config_revision'])
+				.where('id', '=', runnerId)
+				.executeTakeFirstOrThrow();
+			const next = merge(parseJson<ClaudeRunnerConfig>(stored.config) ?? {});
+			const updated = await db
+				.updateTable('runner')
+				.set({
+					config: JSON.stringify(next),
+					resume_config_revision: sql<number>`resume_config_revision + 1`
+				})
+				.where('id', '=', runnerId)
+				.where('resume_config_revision', '=', stored.resume_config_revision)
+				.executeTakeFirst();
+			if (Number(updated.numUpdatedRows) === 1) return next;
+		}
+		throw new Error('runner configuration changed repeatedly while caching managed resources');
 	}
 
 	/**
@@ -285,8 +297,10 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 			if (!existing) throw e;
 			environmentId = existing.id;
 		}
-		ctx.config.environment_id = environmentId;
-		await persistConfig(ctx.row.id, ctx.config);
+		ctx.config = await persistConfig(ctx.row.id, (current) => ({
+			...current,
+			environment_id: environmentId
+		}));
 		return environmentId;
 	}
 
@@ -301,33 +315,106 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		ctx: RunnerContext,
 		tier: ModelTier,
 		model: string,
-		effort: string | undefined
+		effort: string | undefined,
+		record?: AdapterLaunchInput['recordEffortEvidence']
 	): Promise<string> {
 		const modelParam = effort
 			? { id: model, effort: effort as 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
 			: model;
-		const existing = ctx.config.agents?.[tier];
+		const signature = JSON.stringify([tier, model, effort ?? null]);
+		const existing =
+			ctx.config.agents_by_signature?.[signature] ??
+			(ctx.config.agents?.[tier]?.model === model && ctx.config.agents?.[tier]?.effort === effort
+				? ctx.config.agents[tier]
+				: undefined);
 		if (existing && existing.model === model && existing.effort === effort) {
-			return existing.agent_id;
+			let returned: {
+				model?: string | { id?: string; effort?: string | { type?: string } };
+			} | null = null;
+			try {
+				returned = (await ctx.client.beta.agents.retrieve(existing.agent_id)) as unknown as {
+					model?: string | { id?: string; effort?: string | { type?: string } };
+				};
+			} catch (e) {
+				// A deleted cached agent is a cache miss. Authentication, throttling and
+				// transient provider failures are not proof that replacing it is safe.
+				if (!(e instanceof Anthropic.APIError && e.status === 404)) throw e;
+			}
+			if (returned) {
+				const observedModel =
+					typeof returned.model === 'string' ? returned.model : returned.model?.id;
+				const rawEffort = typeof returned.model === 'object' ? returned.model?.effort : undefined;
+				const observedEffort = typeof rawEffort === 'string' ? rawEffort : rawEffort?.type;
+				const verified =
+					observedModel === model && (effort === undefined || observedEffort === effort);
+				const mismatch =
+					(observedModel !== undefined && observedModel !== model) ||
+					(effort !== undefined && observedEffort !== undefined && observedEffort !== effort);
+				// Evidence names the agent that was actually selected. An
+				// unverifiable cache entry is only a miss; replacement creation
+				// records the first application milestone if it succeeds.
+				if (effort && (verified || mismatch))
+					await record?.({
+						status: mismatch ? 'rejected' : 'confirmed',
+						transport: 'managed_agent_config',
+						attempted_effort: effort,
+						provider_agent_id: existing.agent_id,
+						...(observedModel ? { observed_model: observedModel } : {}),
+						...(observedEffort ? { observed_effort: observedEffort } : {}),
+						...(mismatch
+							? { reason: 'cached provider agent configuration conflicts with intent' }
+							: {})
+					});
+				if (mismatch) throw new Error('cached provider agent configuration conflicts with intent');
+				// A cache key is only a hint. If retrieval omits the fields needed to
+				// verify this signature, provision a fresh agent instead of silently
+				// trusting stale local metadata.
+				if (verified) return existing.agent_id;
+			}
 		}
-		let agentId: string;
-		if (existing) {
-			await ctx.client.beta.agents.update(existing.agent_id, { model: modelParam });
-			agentId = existing.agent_id;
-		} else {
-			const created = await ctx.client.beta.agents.create({
-				name: `tines-${ctx.row.name}-${tier}`,
-				description: `Tines runner "${ctx.row.name}", tier ${tier}`,
-				model: modelParam,
-				tools: [{ type: 'agent_toolset_20260401' }]
+		const created = await ctx.client.beta.agents.create({
+			name: `tines-${ctx.row.name}-${tier}-${effort ?? 'default'}`,
+			description: `Tines runner "${ctx.row.name}", tier ${tier}, effort ${effort ?? 'provider default'}`,
+			model: modelParam,
+			tools: [{ type: 'agent_toolset_20260401' }]
+		});
+		const agentId = created.id;
+		if (effort) {
+			const returned = created as unknown as {
+				model?: string | { id?: string; effort?: string | { type?: string } };
+			};
+			const observedModel =
+				typeof returned.model === 'string' ? returned.model : returned.model?.id;
+			const rawEffort = typeof returned.model === 'object' ? returned.model?.effort : undefined;
+			const observedEffort = typeof rawEffort === 'string' ? rawEffort : rawEffort?.type;
+			const mismatch =
+				(observedModel !== undefined && observedModel !== model) ||
+				(observedEffort !== undefined && observedEffort !== effort);
+			await record?.({
+				status: mismatch
+					? 'rejected'
+					: observedModel === model && observedEffort === effort
+						? 'confirmed'
+						: 'accepted_unconfirmed',
+				transport: 'managed_agent_config',
+				attempted_effort: effort,
+				provider_agent_id: agentId,
+				...(observedModel ? { observed_model: observedModel } : {}),
+				...(observedEffort ? { observed_effort: observedEffort } : {}),
+				...(mismatch ? { reason: 'provider returned a conflicting model or effort' } : {})
 			});
-			agentId = created.id;
+			if (mismatch)
+				throw new Error(
+					`provider returned ${observedModel ?? 'unknown model'} / ${observedEffort ?? 'unknown effort'} for requested ${model} / ${effort}`
+				);
 		}
-		ctx.config.agents = {
-			...ctx.config.agents,
-			[tier]: { agent_id: agentId, model, ...(effort ? { effort } : {}) }
-		};
-		await persistConfig(ctx.row.id, ctx.config);
+		ctx.config = await persistConfig(ctx.row.id, (current) => ({
+			...current,
+			agents_by_signature: {
+				...current.agents_by_signature,
+				[signature]: { agent_id: agentId, model, ...(effort ? { effort } : {}) }
+			}
+		}));
 		return agentId;
 	}
 
@@ -336,7 +423,8 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 		ctx: RunnerContext,
 		runId: string,
 		runKey: string,
-		apiHost: string
+		apiHost: string,
+		secrets: { name: string; value: string }[] = []
 	): Promise<{ vaultId: string; credentialId: string }> {
 		const vault = await ctx.client.beta.vaults.create({
 			display_name: `tines-run-${runId}`,
@@ -355,6 +443,20 @@ function createProviderContext(env: Env, opts: ClaudeAdapterOptions): ProviderCo
 					injection_location: { header: true }
 				}
 			});
+			// One credential per secret env item; the agent sees a placeholder
+			// and the value is substituted at egress (v1: any host).
+			for (const secret of secrets) {
+				await ctx.client.beta.vaults.credentials.create(vault.id, {
+					display_name: `${secret.name} for ${runId}`,
+					auth: {
+						type: 'environment_variable',
+						secret_name: secret.name,
+						secret_value: secret.value,
+						networking: { type: 'unrestricted' },
+						injection_location: { header: true }
+					}
+				});
+			}
 			return { vaultId: vault.id, credentialId: credential.id };
 		} catch (e) {
 			await ctx.client.beta.vaults.delete(vault.id).catch(() => {});
@@ -664,7 +766,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		const apiHost = new URL(base).hostname;
 		if (!input.model) throw new Error('Claude launches need a resolved model for the tier');
 		const overrides = parseJson<RunnerTierOverrides>(ctx.row.tiers);
-		const effort = overrides?.[input.tier]?.effort;
+		const effort = input.effort ?? undefined;
 
 		// Launch materials, assembled at launch time over our own API.
 		const [issue, prompt, context] = await Promise.all([
@@ -701,6 +803,17 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 
 		const issueRef = `${issue.project_name}/${issue.number}`;
 
+		// Env items, decrypted server-side: secrets become vault credentials,
+		// public values become preamble exports. The digest (no values) joins
+		// the resume fingerprint so an env change forces a fresh vault.
+		const resolvedEnv: ResolvedEnvEntry[] = await resolvedEnvForIssue(
+			db,
+			env,
+			ctx.row.user_id,
+			input.issueId
+		);
+		const currentEnvDigest = resolvedEnv.length > 0 ? await envDigest(resolvedEnv) : null;
+
 		// Continuation: the idle session this issue's previous run left on this
 		// runner, when every guard passes. Ownership moves to this run — the
 		// vault credential is rotated to its key and the session retagged —
@@ -721,6 +834,8 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			issueId: input.issueId,
 			runId: input.runId,
 			model: input.model,
+			effort: input.effort,
+			envDigest: currentEnvDigest,
 			now: Date.now()
 		});
 		if (resume) {
@@ -737,6 +852,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				timeoutMinutes: input.runner.max_run_minutes,
 				apiUrl: base,
 				repoDirs: repos.map((r) => r.dir),
+				skills: context.skills.map(({ name, description }) => ({ name, description })),
 				previousRunId: resume.previous_run_id
 			});
 			// Everything up to the send is retryable-by-abandonment: nothing has
@@ -794,6 +910,8 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				const resumedMeta: ClaudeRunMeta = {
 					vault_id: resume.vault_id,
 					credential_id: resume.credential_id,
+					// The fingerprint matched, so the retained vault holds exactly this env set.
+					...(currentEnvDigest ? { env_digest: currentEnvDigest } : {}),
 					// Start the log after the predecessor's last rendered event, so
 					// its conversation does not replay into this run's log — and so
 					// its `end_turn` cannot be read as this run completing.
@@ -808,12 +926,19 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		}
 
 		const environmentId = await provider.ensureEnvironment(ctx);
-		const agentId = await provider.ensureTierAgent(ctx, input.tier, input.model, effort);
+		const agentId = await provider.ensureTierAgent(
+			ctx,
+			input.tier,
+			input.model,
+			effort,
+			input.recordEffortEvidence
+		);
 		const { vaultId, credentialId } = await provider.createRunVault(
 			ctx,
 			input.runId,
 			input.runKey,
-			apiHost
+			apiHost,
+			resolvedEnv.filter((e) => e.secret).map((e) => ({ name: e.name, value: e.value }))
 		);
 
 		const preamble = buildSupervisorPreamble({
@@ -823,7 +948,12 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			issueRef,
 			timeoutMinutes: input.runner.max_run_minutes,
 			apiUrl: base,
-			repoDirs: repos.map((r) => r.dir)
+			repoDirs: repos.map((r) => r.dir),
+			skills: context.skills.map(({ name, description }) => ({ name, description })),
+			envExports: resolvedEnv
+				.filter((e) => !e.secret)
+				.map((e) => ({ name: e.name, value: e.value })),
+			envSecretNames: resolvedEnv.filter((e) => e.secret).map((e) => e.name)
 		});
 
 		const budget = parseJson<RunnerBudget>(ctx.row.budget);
@@ -870,7 +1000,11 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			throw e;
 		}
 
-		const meta: ClaudeRunMeta = { vault_id: vaultId, credential_id: credentialId };
+		const meta: ClaudeRunMeta = {
+			vault_id: vaultId,
+			credential_id: credentialId,
+			...(currentEnvDigest ? { env_digest: currentEnvDigest } : {})
+		};
 		return {
 			provider_session_id: session.id,
 			// Best-effort console link: correct for default-workspace keys; the
@@ -995,6 +1129,8 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				runnerId: run.runner_id,
 				harness: 'claude_managed',
 				model: input.model,
+				effort: input.effort,
+				envDigest: meta.env_digest ?? null,
 				preambleVariant: 'claude_managed'
 			}),
 			expiresAt,

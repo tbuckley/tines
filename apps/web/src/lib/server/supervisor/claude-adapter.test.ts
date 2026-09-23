@@ -4,11 +4,12 @@
  * real request shapes (session budget in cents, vault credential scoping,
  * repo resources, run-id tagging) without any network.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { encryptSecret } from '../crypto';
 import { createTestDb, type TestDb } from '../api/test-db';
 import { canonicalGitHubRepoUrl, createClaudeAdapter } from './claude-adapter';
 import { resumeFingerprint } from './resume';
+import { envDigest } from '../api/context';
 import { addIssue, addRun, addRunner, NOW, REVIEW, seedBase, USER } from './test-fixtures';
 
 const ENC_KEY = 'test-encryption-key';
@@ -61,6 +62,7 @@ function fakeNetwork(overrides: Record<string, (call: RecordedCall) => unknown> 
 					version: 1
 				}
 			],
+			env: [],
 			overridden: [],
 			conflicts: []
 		})
@@ -77,7 +79,12 @@ function fakeNetwork(overrides: Record<string, (call: RecordedCall) => unknown> 
 		const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
 		const call: RecordedCall = { method, path: url.pathname, body, headers };
 		calls.push(call);
-		const handler = overrides[`${method} ${url.pathname}`] ?? defaults[`${method} ${url.pathname}`];
+		const handler =
+			overrides[`${method} ${url.pathname}`] ??
+			defaults[`${method} ${url.pathname}`] ??
+			(method === 'GET' && url.pathname.startsWith('/v1/agents/')
+				? () => ({ id: url.pathname.split('/').at(-1), version: 1 })
+				: undefined);
 		if (!handler) {
 			// Unrouted mutations should fail tests loudly; unrouted GET/POST
 			// housekeeping (events send, archive) succeeds with an empty object.
@@ -136,6 +143,28 @@ async function world(
 	}
 	addIssue(t, { id: 'iss_1' });
 	return { t, runnerId };
+}
+
+/** Two effective env items for iss_1's owner: one public, one secret. */
+async function addEnvItems(t: TestDb) {
+	const insert = t.sqlite.prepare(
+		`INSERT INTO context_item
+			(id, user_id, kind, name, description, env_value, env_value_enc, env_hint, position, version, created_at, updated_at)
+		 VALUES (?, ?, 'env', ?, '', ?, ?, ?, 0, 1, 0, 0)`
+	);
+	insert.run('ctx_env_pub', USER, 'NPM_REGISTRY', 'https://r.example', null, null);
+	insert.run(
+		'ctx_env_sec',
+		USER,
+		'GH_TOKEN',
+		null,
+		await encryptSecret('github_pat_plaintext', ENC_KEY),
+		'github_pat_…text'
+	);
+	return envDigest([
+		{ name: 'NPM_REGISTRY', value: '', secret: false, itemId: 'ctx_env_pub', version: 1 },
+		{ name: 'GH_TOKEN', value: '', secret: true, itemId: 'ctx_env_sec', version: 1 }
+	]);
 }
 
 function launchInput(runnerId: string) {
@@ -202,7 +231,37 @@ describe('claude adapter launch', () => {
 	});
 
 	it('provisions lazily, delivers the key via a per-run vault, and caps the session', async () => {
-		const net = fakeNetwork();
+		const net = fakeNetwork({
+			'GET /api/v1/issues/iss_1/context': () => ({
+				prompt: { text: '', parts: [] },
+				skills: [
+					{
+						item_id: 'ctx_skill',
+						name: 'review-checklist',
+						description: ' Check the\n implementation   before review. ',
+						scope: {},
+						files: [{ path: 'SKILL.md', content: 'SECRET SKILL BODY' }],
+						file_count: 1,
+						version: 1,
+						inherited_from: null
+					}
+				],
+				repos: [
+					{
+						item_id: 'ctx_1',
+						name: 'web',
+						scope: {},
+						url: 'https://github.com/o/web',
+						branch: 'main',
+						dir: 'web',
+						version: 1
+					}
+				],
+				env: [],
+				overridden: [],
+				conflicts: []
+			})
+		});
 		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
 		const result = await adapter.launch(launchInput(runnerId));
 
@@ -217,7 +276,7 @@ describe('claude adapter launch', () => {
 		// Tier agent: minimal — default toolset, no directive system prompt.
 		const [agentCreate] = net.of('POST /v1/agents');
 		expect(agentCreate.body).toMatchObject({
-			name: 'tines-claude-cloud-balanced',
+			name: 'tines-claude-cloud-balanced-default',
 			model: 'claude-sonnet-5',
 			tools: [{ type: 'agent_toolset_20260401' }]
 		});
@@ -262,6 +321,11 @@ describe('claude adapter launch', () => {
 		expect(events[0].content[0].text).toContain('# Supervisor run');
 		expect(events[0].content[0].text).toContain('demo/12');
 		expect(events[0].content[0].text).toContain('THE LAUNCH PROMPT');
+		expect(events[0].content[0].text).toContain(
+			'`review-checklist`: Check the implementation before review.'
+		);
+		expect(events[0].content[0].text).toContain('tines issues context demo/12 --json');
+		expect(events[0].content[0].text).not.toContain('SECRET SKILL BODY');
 		// The run key never appears in prompt text.
 		expect(events[0].content[0].text).not.toContain('tines_runkey_secret');
 
@@ -276,38 +340,354 @@ describe('claude adapter launch', () => {
 		// Provisioned ids are cached on the runner for the next launch.
 		const config = JSON.parse(
 			(t.all('SELECT config FROM runner WHERE id = ?', runnerId)[0] as { config: string }).config
-		) as { environment_id: string; agents: Record<string, { agent_id: string; model: string }> };
+		) as {
+			environment_id: string;
+			agents_by_signature: Record<string, { agent_id: string; model: string }>;
+		};
 		expect(config.environment_id).toBe('env_1');
-		expect(config.agents.balanced).toMatchObject({ agent_id: 'agent_1', model: 'claude-sonnet-5' });
+		expect(Object.values(config.agents_by_signature)[0]).toMatchObject({
+			agent_id: 'agent_1',
+			model: 'claude-sonnet-5'
+		});
 		expect(t.all('SELECT resume_config_revision FROM runner WHERE id = ?', runnerId)).toEqual([
 			{ resume_config_revision: 2 }
 		]);
 	});
 
-	it('re-provisions a drifted tier agent instead of freezing it', async () => {
+	it('delivers env items: a vault credential per secret, an export line per public value, digest in meta', async () => {
+		const digest = await addEnvItems(t);
+		const net = fakeNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		const result = await adapter.launch(launchInput(runnerId));
+
+		// The run key credential first, then exactly one per secret item —
+		// any-host egress, header substitution — and none for the public one.
+		const creds = net.of('POST /v1/vaults/vlt_1/credentials');
+		expect(creds).toHaveLength(2);
+		expect(creds[0].body).toMatchObject({ auth: { secret_name: 'TINES_API_KEY' } });
+		expect(creds[1].body).toEqual({
+			display_name: 'GH_TOKEN for arun_l1',
+			auth: {
+				type: 'environment_variable',
+				secret_name: 'GH_TOKEN',
+				secret_value: 'github_pat_plaintext',
+				networking: { type: 'unrestricted' },
+				injection_location: { header: true }
+			}
+		});
+
+		// The public value reaches the agent as a preamble export; the secret
+		// plaintext is in the vault call only, never in the session request.
+		const [sessionCreate] = net.of('POST /v1/sessions');
+		const text = (sessionCreate.body as { initial_events: { content: { text: string }[] }[] })
+			.initial_events[0].content[0].text;
+		expect(text).toContain("`export NPM_REGISTRY='https://r.example'`");
+		expect(text).toContain('Secret environment variables (`GH_TOKEN`) are vault credentials');
+		expect(JSON.stringify(sessionCreate.body)).not.toContain('github_pat_plaintext');
+
+		// The digest (no values) is recorded so a later env change forces a
+		// fresh vault instead of a resume onto stale credentials.
+		expect(JSON.parse(result.provider_meta ?? '{}')).toMatchObject({
+			vault_id: 'vlt_1',
+			env_digest: digest
+		});
+		expect(result.provider_meta).not.toContain('github_pat_plaintext');
+	});
+
+	it('provisions a separate signature instead of mutating a drifted tier agent', async () => {
 		({ t, runnerId } = await world({
 			runnerConfig: {
 				environment_id: 'env_1',
 				agents: { balanced: { agent_id: 'agent_old', model: 'claude-sonnet-4-6' } }
 			}
 		}));
-		const net = fakeNetwork({
-			'POST /v1/agents/agent_old': () => ({ id: 'agent_old', version: 2 })
-		});
+		const net = fakeNetwork();
 		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
 		await adapter.launch(launchInput(runnerId));
 
-		expect(net.of('POST /v1/agents')).toHaveLength(0); // no new agent
+		expect(net.of('POST /v1/agents')).toHaveLength(1);
 		expect(net.of('POST /v1/environments')).toHaveLength(0); // env cached
-		const [update] = net.of('POST /v1/agents/agent_old');
-		expect(update.body).toMatchObject({ model: 'claude-sonnet-5' });
+		expect(net.of('POST /v1/agents/agent_old')).toHaveLength(0);
 		const config = JSON.parse(
 			(t.all('SELECT config FROM runner WHERE id = ?', runnerId)[0] as { config: string }).config
-		) as { agents: Record<string, { model: string }> };
-		expect(config.agents.balanced.model).toBe('claude-sonnet-5');
+		) as { agents_by_signature: Record<string, { model: string }> };
+		expect(Object.values(config.agents_by_signature)[0]?.model).toBe('claude-sonnet-5');
 		expect(t.all('SELECT resume_config_revision FROM runner WHERE id = ?', runnerId)).toEqual([
 			{ resume_config_revision: 1 }
 		]);
+	});
+
+	it('confirms an exact provider-returned effort before creating the session', async () => {
+		const net = fakeNetwork({
+			'POST /v1/agents': () => ({
+				id: 'agent_effort',
+				version: 1,
+				model: { id: 'claude-sonnet-5', effort: { type: 'high' } }
+			})
+		});
+		const recordEffortEvidence = vi.fn(async () => {});
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await adapter.launch({
+			...launchInput(runnerId),
+			effort: 'high',
+			recordEffortEvidence
+		});
+
+		expect(recordEffortEvidence).toHaveBeenCalledWith({
+			status: 'confirmed',
+			transport: 'managed_agent_config',
+			attempted_effort: 'high',
+			provider_agent_id: 'agent_effort',
+			observed_model: 'claude-sonnet-5',
+			observed_effort: 'high'
+		});
+		expect(net.of('POST /v1/sessions')).toHaveLength(1);
+	});
+
+	it('records and rejects a conflicting provider effort before session creation', async () => {
+		const net = fakeNetwork({
+			'POST /v1/agents': () => ({
+				id: 'agent_effort',
+				version: 1,
+				model: { id: 'claude-sonnet-5', effort: 'medium' }
+			})
+		});
+		const recordEffortEvidence = vi.fn(async () => {});
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await expect(
+			adapter.launch({
+				...launchInput(runnerId),
+				effort: 'high',
+				recordEffortEvidence
+			})
+		).rejects.toThrow('provider returned');
+
+		expect(recordEffortEvidence).toHaveBeenCalledWith(
+			expect.objectContaining({ status: 'rejected', observed_effort: 'medium' })
+		);
+		expect(net.of('POST /v1/sessions')).toHaveLength(0);
+	});
+
+	it('retrieves and confirms a cached effort agent before reuse', async () => {
+		({ t, runnerId } = await world({
+			runnerConfig: {
+				environment_id: 'env_1',
+				agents_by_signature: {
+					'["balanced","claude-sonnet-5","high"]': {
+						agent_id: 'agent_cached',
+						model: 'claude-sonnet-5',
+						effort: 'high'
+					}
+				}
+			}
+		}));
+		const net = fakeNetwork({
+			'GET /v1/agents/agent_cached': () => ({
+				id: 'agent_cached',
+				model: { id: 'claude-sonnet-5', effort: { type: 'high' } }
+			})
+		});
+		const recordEffortEvidence = vi.fn(async () => {});
+		await createClaudeAdapter(t.env, { fetch: net.fetch }).launch({
+			...launchInput(runnerId),
+			effort: 'high',
+			recordEffortEvidence
+		});
+		expect(net.of('POST /v1/agents')).toHaveLength(0);
+		expect(recordEffortEvidence).toHaveBeenCalledWith(
+			expect.objectContaining({ status: 'confirmed', provider_agent_id: 'agent_cached' })
+		);
+	});
+
+	it('replaces a cached effort agent that can no longer be retrieved', async () => {
+		({ t, runnerId } = await world({
+			runnerConfig: {
+				environment_id: 'env_1',
+				agents_by_signature: {
+					'["balanced","claude-sonnet-5","high"]': {
+						agent_id: 'agent_stale',
+						model: 'claude-sonnet-5',
+						effort: 'high'
+					}
+				}
+			}
+		}));
+		const net = fakeNetwork({
+			'GET /v1/agents/agent_stale': () => new Response('gone', { status: 404 }),
+			'POST /v1/agents': () => ({
+				id: 'agent_replacement',
+				model: { id: 'claude-sonnet-5', effort: 'high' }
+			})
+		});
+		await createClaudeAdapter(t.env, { fetch: net.fetch }).launch({
+			...launchInput(runnerId),
+			effort: 'high'
+		});
+		expect(net.of('POST /v1/agents')).toHaveLength(1);
+		expect(net.of('POST /v1/sessions')[0]?.body).toMatchObject({ agent: 'agent_replacement' });
+	});
+
+	it('replaces a cached effort agent whose retrieved configuration is unverifiable', async () => {
+		({ t, runnerId } = await world({
+			runnerConfig: {
+				environment_id: 'env_1',
+				agents_by_signature: {
+					'["balanced","claude-sonnet-5","high"]': {
+						agent_id: 'agent_unverifiable',
+						model: 'claude-sonnet-5',
+						effort: 'high'
+					}
+				}
+			}
+		}));
+		const net = fakeNetwork({
+			'GET /v1/agents/agent_unverifiable': () => ({ id: 'agent_unverifiable' }),
+			'POST /v1/agents': () => ({
+				id: 'agent_replacement',
+				model: { id: 'claude-sonnet-5', effort: 'high' }
+			})
+		});
+		await createClaudeAdapter(t.env, { fetch: net.fetch }).launch({
+			...launchInput(runnerId),
+			effort: 'high'
+		});
+		expect(net.of('POST /v1/agents')).toHaveLength(1);
+		expect(net.of('POST /v1/sessions')[0]?.body).toMatchObject({ agent: 'agent_replacement' });
+	});
+
+	it('records no accepted evidence for an unverifiable cached agent when replacement fails', async () => {
+		({ t, runnerId } = await world({
+			runnerConfig: {
+				environment_id: 'env_1',
+				agents_by_signature: {
+					'["balanced","claude-sonnet-5","high"]': {
+						agent_id: 'agent_unverifiable',
+						model: 'claude-sonnet-5',
+						effort: 'high'
+					}
+				}
+			}
+		}));
+		const net = fakeNetwork({
+			'GET /v1/agents/agent_unverifiable': () => ({ id: 'agent_unverifiable' }),
+			'POST /v1/agents': () => new Response('unavailable', { status: 503 })
+		});
+		const recordEffortEvidence = vi.fn(async () => {});
+		await expect(
+			createClaudeAdapter(t.env, { fetch: net.fetch }).launch({
+				...launchInput(runnerId),
+				effort: 'high',
+				recordEffortEvidence
+			})
+		).rejects.toThrow();
+		expect(recordEffortEvidence).not.toHaveBeenCalled();
+		expect(net.of('POST /v1/sessions')).toHaveLength(0);
+	});
+
+	it('rejects a cached effort agent whose retrieved configuration conflicts', async () => {
+		({ t, runnerId } = await world({
+			runnerConfig: {
+				environment_id: 'env_1',
+				agents_by_signature: {
+					'["balanced","claude-sonnet-5","high"]': {
+						agent_id: 'agent_conflict',
+						model: 'claude-sonnet-5',
+						effort: 'high'
+					}
+				}
+			}
+		}));
+		const net = fakeNetwork({
+			'GET /v1/agents/agent_conflict': () => ({
+				id: 'agent_conflict',
+				model: { id: 'claude-sonnet-5', effort: 'low' }
+			})
+		});
+		await expect(
+			createClaudeAdapter(t.env, { fetch: net.fetch }).launch({
+				...launchInput(runnerId),
+				effort: 'high'
+			})
+		).rejects.toThrow('cached provider agent configuration conflicts with intent');
+		expect(net.of('POST /v1/agents')).toHaveLength(0);
+		expect(net.of('POST /v1/sessions')).toHaveLength(0);
+	});
+
+	it('does not treat a non-404 cached-agent retrieval failure as a cache miss', async () => {
+		({ t, runnerId } = await world({
+			runnerConfig: {
+				environment_id: 'env_1',
+				agents_by_signature: {
+					'["balanced","claude-sonnet-5","high"]': {
+						agent_id: 'agent_unavailable',
+						model: 'claude-sonnet-5',
+						effort: 'high'
+					}
+				}
+			}
+		}));
+		const net = fakeNetwork({
+			'GET /v1/agents/agent_unavailable': () => new Response('unavailable', { status: 503 })
+		});
+		await expect(
+			createClaudeAdapter(t.env, { fetch: net.fetch }).launch({
+				...launchInput(runnerId),
+				effort: 'high'
+			})
+		).rejects.toThrow();
+		expect(net.of('POST /v1/agents')).toHaveLength(0);
+		expect(net.of('POST /v1/sessions')).toHaveLength(0);
+	});
+
+	it('CAS-merges different signatures launched concurrently', async () => {
+		({ t, runnerId } = await world({ runnerConfig: { environment_id: 'env_1' } }));
+		let agent = 0;
+		const net = fakeNetwork({
+			'POST /v1/agents': (call) => ({
+				id: `agent_${++agent}`,
+				model: (call.body as { model: unknown }).model
+			})
+		});
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await Promise.all([
+			adapter.launch({ ...launchInput(runnerId), effort: 'low' }),
+			adapter.launch({ ...launchInput(runnerId), effort: 'high' })
+		]);
+		const config = JSON.parse(
+			(t.all('SELECT config FROM runner WHERE id = ?', runnerId)[0] as { config: string }).config
+		) as { agents_by_signature: Record<string, unknown> };
+		expect(Object.keys(config.agents_by_signature)).toEqual(
+			expect.arrayContaining([
+				'["balanced","claude-sonnet-5","low"]',
+				'["balanced","claude-sonnet-5","high"]'
+			])
+		);
+	});
+
+	it('keeps same-signature concurrent misses bound to each created agent', async () => {
+		({ t, runnerId } = await world({ runnerConfig: { environment_id: 'env_1' } }));
+		let agent = 0;
+		const net = fakeNetwork({
+			'POST /v1/agents': (call) => ({
+				id: `agent_${++agent}`,
+				model: (call.body as { model: unknown }).model
+			})
+		});
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await Promise.all([
+			adapter.launch({ ...launchInput(runnerId), effort: 'high' }),
+			adapter.launch({ ...launchInput(runnerId), effort: 'high' })
+		]);
+		expect(net.of('POST /v1/agents')).toHaveLength(2);
+		expect(
+			net.of('POST /v1/sessions').map((call) => (call.body as { agent: string }).agent)
+		).toEqual(expect.arrayContaining(['agent_1', 'agent_2']));
+		const config = JSON.parse(
+			(t.all('SELECT config FROM runner WHERE id = ?', runnerId)[0] as { config: string }).config
+		) as { agents_by_signature: Record<string, { agent_id: string }> };
+		expect(config.agents_by_signature['["balanced","claude-sonnet-5","high"]']?.agent_id).toMatch(
+			/^agent_[12]$/
+		);
 	});
 
 	it('mounts a .git-suffixed context URL in canonical form', async () => {
@@ -326,6 +706,7 @@ describe('claude adapter launch', () => {
 						version: 1
 					}
 				],
+				env: [],
 				overridden: [],
 				conflicts: []
 			})
@@ -354,6 +735,7 @@ describe('claude adapter launch', () => {
 						version: 1
 					}
 				],
+				env: [],
 				overridden: [],
 				conflicts: []
 			})
@@ -822,7 +1204,37 @@ describe('claude adapter resume launch (the hand-over)', () => {
 
 	it('continues the retained session instead of creating one: rotate, retag, send', async () => {
 		const { t, runnerId } = await handoverWorld();
-		const net = handoverNetwork();
+		const net = handoverNetwork({
+			'GET /api/v1/issues/iss_1/context': () => ({
+				prompt: { text: '', parts: [] },
+				skills: [
+					{
+						item_id: 'ctx_current_skill',
+						name: 'current-skill',
+						description: ' Current skill\n metadata. ',
+						scope: {},
+						files: [{ path: 'SKILL.md', content: 'CURRENT SKILL BODY' }],
+						file_count: 1,
+						version: 1,
+						inherited_from: null
+					}
+				],
+				repos: [
+					{
+						item_id: 'ctx_1',
+						name: 'web',
+						scope: {},
+						url: 'https://github.com/o/web',
+						branch: 'main',
+						dir: 'web',
+						version: 1
+					}
+				],
+				env: [],
+				overridden: [],
+				conflicts: []
+			})
+		});
 		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
 		const result = await adapter.launch(launchInput(runnerId));
 
@@ -840,8 +1252,19 @@ describe('claude adapter resume launch (the hand-over)', () => {
 		expect(retag.body).toMatchObject({ metadata: { tines_run_id: 'arun_l1' } });
 		const send = net.of('POST /v1/sessions/sesn_kept/events')[0]!;
 		expect(net.calls.indexOf(rotate)).toBeLessThan(net.calls.indexOf(send));
-		const events = (send.body as { events: Array<{ type: string }> }).events;
+		const events = (
+			send.body as {
+				events: Array<{ type: string; content: Array<{ type: string; text: string }> }>;
+			}
+		).events;
 		expect(events[0]!.type).toBe('user.message');
+		const resumeText = events[0]!.content[0]!.text;
+		expect(resumeText).toContain(
+			'The current effective skill set below replaces every prior attachment list and cached skill copy.'
+		);
+		expect(resumeText).toContain('- `current-skill`: Current skill metadata.');
+		expect(resumeText).not.toContain('stale-skill');
+		expect(resumeText).not.toContain('Stale skill metadata.');
 
 		expect(
 			t.all(
@@ -905,6 +1328,60 @@ describe('claude adapter resume launch (the hand-over)', () => {
 		// and the session it is talking in are both live.
 		expect(sweepNet.of('DELETE /v1/vaults/vlt_1')).toHaveLength(0);
 		expect(sweepNet.of('POST /v1/sessions/sesn_kept/archive')).toHaveLength(0);
+	});
+
+	it('an env set the retained vault was not built for forces a cold launch', async () => {
+		const { t, runnerId } = await handoverWorld();
+		// The resource's fingerprint predates these items, so it cannot match.
+		await addEnvItems(t);
+		const net = handoverNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		const result = await adapter.launch(launchInput(runnerId));
+
+		expect(result.provider_session_id).not.toBe('sesn_kept');
+		expect(net.of('POST /v1/sessions')).toHaveLength(1);
+		expect(net.of('POST /v1/vaults')).toHaveLength(1);
+		expect(net.of('POST /v1/sessions/sesn_kept/events')).toHaveLength(0);
+		// The fresh vault carries the secret; the digest now travels with the run.
+		expect(
+			net
+				.of('POST /v1/vaults/vlt_1/credentials')
+				.map((c) => (c.body as { auth: { secret_name: string } }).auth.secret_name)
+		).toEqual(['TINES_API_KEY', 'GH_TOKEN']);
+		expect(
+			t.all(
+				'SELECT resumed_from_run_id, resume_fallback_reason FROM agent_run WHERE id = ?',
+				'arun_l1'
+			)
+		).toEqual([{ resumed_from_run_id: null, resume_fallback_reason: 'incompatible' }]);
+	});
+
+	it('resumes when the env set matches the retained fingerprint, carrying the digest forward', async () => {
+		const { t, runnerId } = await handoverWorld();
+		const digest = await addEnvItems(t);
+		t.sqlite.prepare('UPDATE run_resource SET resume_fingerprint = ? WHERE id = ?').run(
+			resumeFingerprint({
+				runnerId,
+				harness: 'claude_managed',
+				model: 'claude-sonnet-5',
+				preambleVariant: 'claude_managed',
+				envDigest: digest
+			}),
+			'rres_h'
+		);
+		const net = handoverNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		const result = await adapter.launch(launchInput(runnerId));
+
+		expect(result.provider_session_id).toBe('sesn_kept');
+		expect(net.of('POST /v1/vaults')).toHaveLength(0);
+		// No credential is (re)created: the retained vault already holds GH_TOKEN.
+		expect(net.of('POST /v1/vaults/vlt_1/credentials')).toHaveLength(0);
+		expect(JSON.parse(result.provider_meta!)).toMatchObject({
+			vault_id: 'vlt_1',
+			env_digest: digest
+		});
+		expect(result.provider_meta).not.toContain('github_pat_plaintext');
 	});
 
 	it('a provider error before the send launches fresh instead of failing the run', async () => {
@@ -972,6 +1449,41 @@ describe('claude adapter finalizeEnd (retain or archive)', () => {
 		});
 		return { t, runnerId };
 	}
+
+	it.each([undefined, 'digest-of-effective-env'])(
+		'retains the launch env fingerprint (%s) through finalizeEnd',
+		async (digest) => {
+			const { t } = await endedWorld();
+			const net = fakeNetwork();
+			const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+			const provider_meta = JSON.stringify({
+				...JSON.parse(runRef.provider_meta),
+				...(digest ? { env_digest: digest } : {})
+			});
+			t.sqlite
+				.prepare('UPDATE agent_run SET provider_meta = ? WHERE id = ?')
+				.run(provider_meta, runRef.id);
+			await adapter.finalizeEnd!({ ...runRef, provider_meta }, endInput);
+			const [resource] = t.all('SELECT resume_fingerprint FROM run_resource');
+			if (digest) {
+				expect(resource.resume_fingerprint).toBe(
+					JSON.stringify({
+						version: 2,
+						runner_id: runRef.runner_id,
+						harness: 'claude_managed',
+						model: endInput.model,
+						effort: null,
+						preamble_variant: 'claude_managed',
+						env_digest: digest
+					})
+				);
+			} else {
+				expect(resource.resume_fingerprint).toBe(
+					'v1|rnr_c1|claude_managed|claude-sonnet-5|claude_managed'
+				);
+			}
+		}
+	);
 
 	it('a run that advanced its issue into an awaiting state keeps its session and vault', async () => {
 		const { t } = await endedWorld();

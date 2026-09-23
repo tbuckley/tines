@@ -97,6 +97,17 @@ async function fixture() {
 }
 
 describe('workflow package closure export', () => {
+	it('can freeze export time so publication confirmation can rebuild identical bytes', async () => {
+		const { t, main } = await fixture();
+		const first = await exportWorkflowPackage(t.db, USER, main.id, {}, { exportedAt: 12345 });
+		const rebuilt = await exportWorkflowPackage(t.db, USER, main.id, {}, { exportedAt: 12345 });
+		expect(rebuilt).toEqual(first);
+		expect(first.exported_at).toBe(12345);
+		await expect(
+			exportWorkflowPackage(t.db, USER, main.id, {}, { exportedAt: -1 })
+		).rejects.toThrow('Internal exportedAt');
+	});
+
 	it('copies complete inheritance including Standard, overridden instructions, gates, ordered skills and repo declarations only', async () => {
 		const { t, main, dependency } = await fixture();
 		const events = await t.db.selectFrom('event').selectAll().execute();

@@ -27,10 +27,23 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Resolve preview identity
+        id: identity
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          commit=$(git rev-parse HEAD)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "version=preview-pr-${PR_NUMBER}-${commit:0:12}" >> "$GITHUB_OUTPUT"
+
       # Only the worker is uploaded, so only the web app is built. No unit
       # tests here: ci.yml runs them (and the e2e suite) on this same commit,
       # and a preview is not a gate — the sooner the URL is up, the better.
       - run: pnpm --filter @tines/web build
+        env:
+          TINES_BUILD_CHANNEL: preview
+          TINES_BUILD_VERSION: ${{ steps.identity.outputs.version }}
+          TINES_BUILD_COMMIT: ${{ steps.identity.outputs.commit }}
 
       # Previews use the "preview" wrangler environment: a separate worker
       # (tines-web-preview) bound to its own D1 database (tines-preview), so
@@ -61,7 +74,7 @@ jobs:
         run: |
           pnpm exec wrangler versions upload --env preview \
             --preview-alias "$PREVIEW_ALIAS" \
-            --message "PR #${{ github.event.pull_request.number }} (${{ github.event.pull_request.head.sha }})" \
+            --message "PR #${{ github.event.pull_request.number }} (built ${{ steps.identity.outputs.commit }})" \
             | tee upload.log
           url=$(grep -oE "https://${PREVIEW_ALIAS}-[A-Za-z0-9.-]+\.workers\.dev" upload.log | head -n1)
           if [ -z "$url" ]; then
@@ -75,6 +88,7 @@ jobs:
         env:
           PREVIEW_URL: ${{ steps.upload.outputs.url }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BUILT_SHA: ${{ steps.identity.outputs.commit }}
         with:
           script: |
             const marker = '<!-- tines-preview-url -->';
@@ -82,7 +96,7 @@ jobs:
               marker,
               `**Preview:** ${process.env.PREVIEW_URL}`,
               '',
-              `This URL is stable for the PR and always serves its latest push (currently ${process.env.HEAD_SHA}). Runs against the shared preview database; production is unaffected.`,
+              `This URL is stable for the PR and serves built commit ${process.env.BUILT_SHA} (PR head ${process.env.HEAD_SHA}). Runs against the shared preview database; production is unaffected.`,
             ].join('\n');
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;

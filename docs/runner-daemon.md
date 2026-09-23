@@ -22,6 +22,9 @@ Four setup steps from nothing to an agent working an issue. The hosted app is
 
 3. **Runner** — install the daemon as a service (or paste the block the dialog shows):
 
+   Using Codex? Configure its [permissions](#codex-permissions) before starting the runner,
+   and use `--harness codex`.
+
    ```sh
    TINES_API_KEY=tines_… tines runner install \
      --url https://tines.tbuckley.dev \
@@ -53,24 +56,38 @@ is only needed for registration and never appears in a service unit. Both values
 come from `tines login` (the same directory's `config.json`) instead of the environment; the
 env vars take precedence when set.
 
-Flags (shared by `install` and `daemon`; `install` writes the ones you give into the unit):
+Flags (nine are shared by `install` and `daemon`; `install` writes the shared ones you give
+into the unit):
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
 | `--name` | Runner name, unique per user; name it machine-plus-harness, e.g. `macbook-claude` — routing rules and agent comments address it | the hostname |
 | `--harness` | `claude-code`, `codex`, or `custom` | `claude-code` |
-| `--command` | Custom harness command template; placeholders `{prompt_file}`, `{workspace}`, `{model}` | — |
-| `--max-concurrent` | Simultaneous runs on this machine (1–100); sent on every poll, so a restart with a new value updates the server-side cap | 1 |
+| `--command` | Custom harness command template; placeholders `{prompt_file}`, `{workspace}`, `{model}`, `{effort}` | — |
+| `--max-concurrent` | Simultaneous runs on this machine (1–100), or the machine-owned ceiling when remote adjustment is enabled | 1 |
+| `--allow-remote-concurrency` | Let signed-in operators request a cap up to the local ceiling; never enabled remotely | off |
 | `--poll-interval` | Seconds between polls | 15 |
-| `--no-cli-refresh` | Skip the managed CLI install; harnesses use whatever `tines` is on the ambient PATH | refresh on |
-| `--no-self-update` | Never exit for the service manager to relaunch a newer daemon (see "Keeping the daemon itself current") | self-update on |
 | `--keep-workspaces` | Keep settled runs' workspaces for debugging: `never`, `failed`, or `always` | `never` |
 | `--keep-workspaces-for` | Hours a kept workspace survives | 72 |
 | `--keep-workspaces-max` | Most kept workspaces to hold at once (oldest go first) | 20 |
+| `--no-cli-refresh` | Foreground `daemon` only: skip the managed CLI install; harnesses use whatever `tines` is on the ambient PATH | refresh on |
+| `--no-self-update` | Foreground `daemon` only: never exit for the service manager to relaunch a newer daemon (see "Keeping the daemon itself current") | self-update on |
+
+The service created by `runner install` always keeps both the harness-facing CLI and the daemon
+itself current, so `install` does not accept the two `--no-*` flags.
+
+Custom command placeholders are shell-quoted before the daemon passes the expanded template
+to `sh -c`. A missing model or effort expands to the empty shell word `''`, so the flag can
+remain in the template: `my-runner --prompt {prompt_file} --model {model} --effort {effort}`.
+The effort placeholder forwards an effort already present on the assignment; it does not
+enable effort routing for custom harnesses, which currently advertise no effort capability.
 
 Each run's workspace (under the config dir) contains `prompt.md` (supervisor preamble +
-stitched context + issue block), `skills/<name>/…`, `repos.json`, and a clone of each listed
-repository made with the machine's own git credentials. The harness runs with
+stitched context + issue block), generated `.agents/skills/<name>/…`, `repos.json`, and a
+clone of each listed repository made with the machine's own git credentials. The daemon
+owns only `.agents/skills`: every launch replaces that subtree with the complete current
+effective set, while `.agents` siblings and a legacy root `skills/` directory are left alone.
+The harness runs with
 `TINES_API_KEY` set to the run's ephemeral key and `TINES_API_URL` set to the API base.
 When the run settles the workspace is deleted, unless `--keep-workspaces` says otherwise
 (see "Debugging a failed run") or the supervisor retained it for a resume — a run that moved
@@ -91,6 +108,48 @@ the new one once. Run it on the daemon machine and the stored token is updated i
 just restart the daemon; elsewhere, the daemon exits with a clear 401 message until the new
 token is dropped into its config.
 
+## Codex permissions
+
+Before starting a Codex runner, edit or create `~/.codex/config.toml` for the OS user that
+runs the daemon. For the usual service installed by `tines runner install`, merge these
+settings into that file:
+
+```toml
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true
+```
+
+`sandbox_mode` is a top-level key, so place it before any table headers. If the file already
+has a `[sandbox_workspace_write]` table, update it instead of adding a duplicate table.
+
+Workspace-write lets Codex edit the per-run workspace, including cloned repositories.
+Outbound network access lets subprocesses such as `tines` reach `TINES_API_URL`; it permits
+connections beyond that Tines server too.
+
+These are defaults for every Codex session run by this OS user. Commands with network access
+can send data off the machine, so enable these permissions only for work and repositories
+you trust. Tines gives each run an ephemeral API key and revokes it when the run ends; do not
+put that key in Codex configuration. The key's lifetime does not restrict network
+destinations.
+
+Tines invokes `codex exec` without overriding its sandbox or network settings. The snippet
+uses Codex's sandbox configuration and is not compatible with `default_permissions` or the
+permission-profile configuration model. If you use a permission profile, consult the
+[OpenAI configuration reference](https://developers.openai.com/codex/config-reference) for
+your chosen model before editing it; do not remove organization-managed policy. See
+[Config basics](https://developers.openai.com/codex/config-basic) for configuration
+precedence and managed constraints. A foreground daemon or custom service explicitly given
+`CODEX_HOME` reads configuration from that home; the normal Tines installer does not copy an
+arbitrary shell `CODEX_HOME` into its service unit.
+
+If a new run cannot edit files or `tines` reports a network denial, check the configuration
+used by the daemon's OS user and any higher-priority or managed policy, then start another
+run. An online runner confirms only that registration and heartbeat work. These settings do
+not guarantee authentication, DNS, or every Git operation, and Tines does not recommend
+`danger-full-access`, changing approval policy, or bypassing managed restrictions.
+
 ## The agent-facing CLI
 
 Every push to `main` deploys the API **and** publishes a new `tines` to npm, so a launch
@@ -103,7 +162,8 @@ So the daemon maintains its own copy. At start, and before each launch if the la
 is more than 10 minutes old, it runs:
 
 ```sh
-npm install --prefix ~/.config/tines/cli tines@latest --min-release-age=0 --no-audit --no-fund
+npm install --prefix ~/.config/tines/cli tines@latest \
+  --min-release-age=0 --no-audit --no-fund --loglevel=error
 ```
 
 and prepends `~/.config/tines/cli/node_modules/.bin` to the harness's `PATH`. Notes:
@@ -119,9 +179,20 @@ and prepends `~/.config/tines/cli/node_modules/.bin` to the harness's `PATH`. No
   unchanged.
 - **Failures never fail a run.** npm missing, registry unreachable, or an install hanging
   past 60s all degrade to the last-good copy in the prefix, then to the ambient `PATH`.
-  The daemon logs it, and every run's log records which CLI executed it on its first line.
+  The daemon logs it, and every run's log records which CLI executed it, on the line
+  just after the clones (item 2 below).
 - To reset, delete `~/.config/tines/cli` (it is rebuilt on the next refresh). To opt out
   entirely, pass `--no-cli-refresh`.
+- **Restart the daemon after upgrading it.** The refresh runs inside the daemon process, so
+  a daemon that has been up since before this feature shipped never performs one: the prefix
+  is simply absent and every harness silently falls through to the ambient `PATH`. If agents
+  report a `tines` older than npm's, check the daemon first — `ls ~/.config/tines/cli`
+  (missing prefix), then `tines --version` against `npm view tines version`.
+
+An older daemon can keep writing the former `skills/` layout during a rolling upgrade. Its
+supervisor preamble tells the agent to recover current skill names, descriptions, and file
+contents with `tines issues context <ref> --json`. Refreshing the harness-facing CLI does
+not change workspace materialization; restart or let the managed service restart the daemon.
 
 ### Keeping the daemon itself current
 
@@ -226,12 +297,17 @@ agent re-reading the repository from zero. When the runner is opted in (Agents �
 runner's resume settings, off by default), the supervisor instead keeps the finished run's
 workspace and its harness session, and the send-back is delivered as a continuation:
 
-- the daemon launches in the **kept workspace** — no wipe, no re-clone, no skills or
-  `repos.json` rewrite; only `prompt.md` changes;
+- the daemon launches in the **kept workspace** — no wipe and no re-clone; repository edits
+  and `repos.json` remain, while `prompt.md` and the generated `.agents/skills` subtree are
+  refreshed from the new assignment (including removals);
 - Claude Code is launched as `claude -p --resume <session-id> …`, so the conversation
   carries on rather than starting over;
 - the prompt is the reduced continuation message (what changed since the last run, the
   current stage's instructions and the issue block), not the full cold launch prompt;
+- the issue block uses the same essential-comment selection as a cold launch, and the resume
+  preamble says the refreshed skill set replaces the prior one. Older agent comment IDs
+  resolve current bodies through `tines issues show --json`;
+  bodies already present in the retained conversation cannot be removed retroactively;
 - the launch banner names it: `# tines runner: … resumed=<previous-run-id>`, and the run
   row says `resumed run <id>`.
 
@@ -250,6 +326,21 @@ and reboots, and it is launched from the managed prefix, which is what lets it u
 ```sh
 TINES_API_KEY=tines_… tines runner install --name macbook-claude --harness claude-code
 ```
+
+To let the Agents page adjust concurrency, opt in locally and set the highest value this
+machine may run:
+
+```bash
+TINES_API_KEY=tines_… tines runner install --name macbook-claude --harness claude-code \
+  --allow-remote-concurrency --max-concurrent 4
+```
+
+The web request starts at 1 for a new runner and can never exceed 4 in this example. Raising it
+can increase CPU, memory, network, and provider usage or cost. To disable adjustment, pause the
+runner, wait for zero active runs, uninstall it, then reinstall with the complete desired flags
+but without `--allow-remote-concurrency`. `runner restart` preserves the installed arguments and
+therefore does not change this policy. Lowering the requested cap lets existing runs finish and
+blocks new claims until usage is below the new cap.
 
 In order, it:
 
@@ -323,7 +414,7 @@ thinks; every run's launch banner shows which daemon binary actually ran it (`cl
   `rate_limit_event` on its stream, or as its own message on stderr when the limit was
   already spent before the process started — the daemon finish-reports the run as rate
   limited rather than failed. The issue takes no strike, and the runner's card reads
-  "rate limited — resumes <time>" until the window resets. Nothing needs doing: the
+  "usage limit — resumes <time>" until the window resets. Nothing needs doing: the
   supervisor dispatches to it again on its own. A weekly limit is re-probed once a day,
   which costs one run that ends in about a second.
 - **Network errors**: polls retry with backoff; the loop never crashes. A 401 (rotated
@@ -389,3 +480,11 @@ tines runner workspaces prune --all
 Both sweeps and both commands only ever delete a directory containing a `kept.json`. The
 workspaces directory is shared by every run of every daemon on the machine, so an unmarked
 directory is assumed to be a live run and is left alone.
+
+## Reasoning effort
+
+Current Codex and Claude Code daemons discover and report exact-model effort support at boot. Set routed effort by target position, for example `tines routing set codex:balanced claude:balanced --project Example --effort 1=low --effort 2=medium`. A runner-tier effort is the fallback when routing omits it. Explicit routed effort never launches through an old or incompatible daemon; the next compatible ordered target may win.
+
+During daemon rollout, an old daemon may still take a run that has only runner-tier effort. Tines omits the setting and records `legacy_not_applied`; actual provider effort is unknown. After upgrade, Claude receives `--effort VALUE` and Codex receives `-c model_reasoning_effort="VALUE"`. Successful local spawn is recorded as `accepted_unconfirmed`, not proof of internal reasoning depth.
+
+To roll back, save the current route/tier JSON, remove routed effort and every applicable local tier effort, inspect `tines issues dispatch`, then settle active effort assignments before downgrading the server. Clearing a route override alone can reveal a broader override or runner-tier fallback.

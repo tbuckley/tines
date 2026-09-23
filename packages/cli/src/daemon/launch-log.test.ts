@@ -12,7 +12,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { FinishRunRequest } from '@tines/shared';
+import type { FinishRunRequest, RunnerAssignment } from '@tines/shared';
 import { cliVersion } from '../version.js';
 import { CLI_BIN, NODE } from '../test-bin.js';
 
@@ -20,7 +20,7 @@ const RUN_ID = 'run_stub1';
 const RUN_KEY = 'trk_stub_run_key_never_logged';
 
 /** The assignment the stub hands out once: no repos, no skills, one run. */
-function assignment(timeoutMinutes: number, model: string): unknown {
+function assignment(timeoutMinutes: number, model: string, env?: RunnerAssignment['env']) {
 	return {
 		run: {
 			id: RUN_ID,
@@ -32,6 +32,7 @@ function assignment(timeoutMinutes: number, model: string): unknown {
 		prompt: 'PROMPT BODY',
 		bundle: { skills: [], repos: [] },
 		run_key: RUN_KEY,
+		...(env ? { env } : {}),
 		timeout_minutes: timeoutMinutes
 	};
 }
@@ -39,6 +40,7 @@ function assignment(timeoutMinutes: number, model: string): unknown {
 interface Harvest {
 	log: string;
 	finish: FinishRunRequest | null;
+	raw: string | null;
 }
 
 /**
@@ -48,17 +50,21 @@ interface Harvest {
  */
 function stubSupervisor(
 	timeoutMinutes = 30,
-	model = 'claude-sonnet-5'
+	model = 'claude-sonnet-5',
+	env?: RunnerAssignment['env']
 ): {
 	server: Server;
 	done: Promise<Harvest>;
 	/** Live view, for tests that must act while the run is still going. */
 	harvest: Harvest;
 } {
-	const harvest: Harvest = { log: '', finish: null };
+	const harvest: Harvest = { log: '', finish: null, raw: null };
 	let handedOut = false;
 	let resolve!: (h: Harvest) => void;
-	const done = new Promise<Harvest>((r) => (resolve = r));
+	const done = new Promise<Harvest>((r, reject) => {
+		resolve = r;
+		rejectPending = reject;
+	});
 
 	const server = createServer((req, res) => {
 		let body = '';
@@ -73,12 +79,16 @@ function stubSupervisor(
 				return reply({ runner: { id: 'rnr_stub', name: 'stub' }, runner_token: 'rt_stub' });
 			}
 			if (url === '/api/v1/runners/rnr_stub/poll') {
-				const assignments = handedOut ? [] : [assignment(timeoutMinutes, model)];
+				const assignments = handedOut ? [] : [assignment(timeoutMinutes, model, env)];
 				handedOut = true;
 				return reply({ assignments, cancels: [] });
 			}
 			if (url === `/api/v1/runs/${RUN_ID}/logs`) {
 				harvest.log += (JSON.parse(body) as { chunk: string }).chunk;
+				return reply({ ok: true });
+			}
+			if (url === `/api/v1/runs/${RUN_ID}/log/raw`) {
+				harvest.raw = body;
 				return reply({ ok: true });
 			}
 			if (url === `/api/v1/runs/${RUN_ID}/finish`) {
@@ -269,12 +279,32 @@ function startDaemon(
 		env.PATH = `${harness.fakeCodexDir}${delimiter}${process.env.PATH ?? ''}`;
 		env.CODEX_HOME = join(dir, 'codex-home');
 	}
-	return spawn(NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+	const daemon = spawn(NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+	let stderr = '';
+	daemon.stderr?.on(
+		'data',
+		(data: Buffer) => (stderr = (stderr + data.toString('utf8')).slice(-4000))
+	);
+	daemon.on('exit', (code) => {
+		if (code === null) return;
+		rejectPending?.(
+			new Error(`daemon exited with code ${code} before the run was reported:\n${stderr}`)
+		);
+	});
+	return daemon;
 }
 
 let child: ChildProcess | null = null;
 let configDir: string | null = null;
 let server: Server | null = null;
+/**
+ * Fails the pending `done` the moment the daemon dies on its own. Without
+ * this a daemon crash (an unhandled error at boot, say) reads as a silent
+ * 30-second timeout with no clue why — the daemon's stderr is not otherwise
+ * surfaced. afterEach's SIGKILL exits with a signal, not a code, so it does
+ * not trip this.
+ */
+let rejectPending: ((err: Error) => void) | null = null;
 
 afterEach(async () => {
 	// Wait for the daemon to actually be gone before removing its config dir:
@@ -326,7 +356,7 @@ describe('the run log a local run leaves behind', () => {
 		expect(lines[0]).toMatch(/^warning: no daemon-managed tines CLI/);
 		expect(lines[1]).toBe(`$ cat '${join(workspace, 'prompt.md')}'`);
 		expect(lines[2]).toBe(
-			`# tines runner: harness=custom model=claude-sonnet-5 timeout=30m cli=${cliVersion()} workspace=${workspace}`
+			`# tines runner: harness=custom model=claude-sonnet-5 effort=(provider-default) timeout=30m cli=${cliVersion()} workspace=${workspace}`
 		);
 		// The harness's own output sits between the banner and the exit line.
 		expect(lines[3]).toBe('PROMPT BODY');
@@ -567,3 +597,89 @@ describe('the run log a local run leaves behind', () => {
 		});
 	}, 30_000);
 });
+
+it('masks split env secrets in both rendered and raw logs through a spawned Claude daemon', async () => {
+	const secret = 'private"token\nwith-newline';
+	const {
+		server: stub,
+		done,
+		harvest
+	} = stubSupervisor(30, 'claude-sonnet-5', [
+		{ name: 'E2E_SECRET', value: secret, secret: true },
+		{ name: 'E2E_PUBLIC', value: 'public-payload', secret: false }
+	]);
+	server = stub;
+	await new Promise<void>((resolve) => stub.listen(0, '127.0.0.1', resolve));
+	configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-env-'));
+	const bin = join(configDir, 'fakebin');
+	mkdirSync(bin);
+	writeFileSync(
+		join(bin, 'writer.mjs'),
+		`
+const secret = process.env.E2E_SECRET;
+const text = process.env.E2E_PUBLIC + ' secret=' + secret;
+const event = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
+const cut = event.indexOf(JSON.stringify(secret).slice(1, -1)) + 9;
+process.stdout.write(event.slice(0, cut));
+process.stderr.write('diagnostic secret=' + secret.slice(0, 9));
+await new Promise((resolve) => setTimeout(resolve, 2200));
+process.stdout.write(event.slice(cut) + '\\n');
+process.stderr.write(secret.slice(9) + '\\n');
+`
+	);
+	writeFileSync(join(bin, 'claude'), '#!/bin/sh\nexec node "$(dirname "$0")/writer.mjs"\n', {
+		mode: 0o755
+	});
+	child = startDaemon((stub.address() as AddressInfo).port, configDir, { fakeClaudeDir: bin });
+	await done;
+	await expect.poll(() => harvest.raw, { timeout: 10_000 }).not.toBeNull();
+	expect(harvest.finish?.status).toBe('completed');
+	expect(harvest.log).toContain('diagnostic secret=');
+	expect(harvest.log.match(/\*\*\*/g)).toHaveLength(2);
+	expect(harvest.log).not.toContain(secret.slice(0, 9));
+	expect(harvest.log).not.toContain(secret.slice(9));
+	expect(harvest.log).toContain('[agent] public-payload secret=***');
+	expect(JSON.parse(harvest.raw!).message.content[0].text).toBe('public-payload secret=***');
+	for (const output of [harvest.log, harvest.raw!]) {
+		expect(output).not.toContain(secret);
+		expect(output).not.toContain(JSON.stringify(secret).slice(1, -1));
+	}
+}, 30_000);
+
+it.each(['provider', 'rate_limit'] as const)(
+	'masks env secrets in %s errors, finish reports and daemon diagnostics',
+	async (failure) => {
+		const secret = 'private-error-token';
+		const { server: stub, done } = stubSupervisor(30, 'claude-sonnet-5', [
+			{ name: 'E2E_SECRET', value: secret, secret: true }
+		]);
+		server = stub;
+		await new Promise<void>((resolve) => stub.listen(0, '127.0.0.1', resolve));
+		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-error-'));
+		const bin = join(configDir, 'fakebin');
+		mkdirSync(bin);
+		writeFileSync(
+			join(bin, 'writer.mjs'),
+			failure === 'provider'
+				? `console.log(JSON.stringify({ type: 'result', is_error: true, result: 'API Error: 529 ' + process.env.E2E_SECRET })); process.exitCode = 1;`
+				: `console.error("You've hit your limit: " + process.env.E2E_SECRET); process.exitCode = 1;`
+		);
+		writeFileSync(join(bin, 'claude'), '#!/bin/sh\nexec node "$(dirname "$0")/writer.mjs"\n', {
+			mode: 0o755
+		});
+		child = startDaemon((stub.address() as AddressInfo).port, configDir, { fakeClaudeDir: bin });
+		let diagnostics = '';
+		child.stderr?.on('data', (data: Buffer) => {
+			diagnostics += data.toString();
+		});
+		const harvest = await done;
+		expect(harvest.finish).toMatchObject({
+			status: 'failed',
+			judgment: failure === 'provider' ? 'interrupted' : 'rate_limited'
+		});
+		expect(harvest.finish?.error).toContain('***');
+		expect(JSON.stringify(harvest)).not.toContain(secret);
+		expect(diagnostics).not.toContain(secret);
+	},
+	30_000
+);

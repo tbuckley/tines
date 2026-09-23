@@ -7,6 +7,7 @@ import {
 } from '@tines/shared';
 import { api, apiContext, ApiFail, notFound } from '$lib/server/api/core';
 import { getIssueUsage, getUsage } from '$lib/server/api/usage';
+import { getCohortUsage } from '$lib/server/api/usage-cohorts';
 import { authorizeUsageFilters } from '$lib/server/api/usage-ledger';
 import {
 	mintUsageScope,
@@ -30,6 +31,7 @@ const recognized = [
 	'by',
 	'mode',
 	'issue',
+	'done_state',
 	'scope'
 ];
 
@@ -59,7 +61,7 @@ export const GET: RequestHandler = api(async (event) => {
 				remedy: 'remove unsupported parameters'
 			});
 	for (const name of recognized)
-		if (params.getAll(name).length > 1)
+		if (name !== 'done_state' && params.getAll(name).length > 1)
 			throw new ApiFail(422, 'invalid_field', `Duplicate "${name}" parameter`, { field: name });
 		else if (params.has(name) && params.get(name) === '')
 			throw new ApiFail(422, 'invalid_field', `"${name}" cannot be empty`, { field: name });
@@ -86,8 +88,10 @@ export const GET: RequestHandler = api(async (event) => {
 		if (replayPayload.owner !== actor.userId) throw notFound();
 	}
 	const mode = replayPayload?.mode ?? params.get('mode') ?? 'period';
-	if (!['period', 'issue'].includes(mode))
-		throw new ApiFail(422, 'invalid_field', 'mode must be period or issue', { field: 'mode' });
+	if (!['period', 'issue', 'cohort'].includes(mode))
+		throw new ApiFail(422, 'invalid_field', 'mode must be period, issue, or cohort', {
+			field: 'mode'
+		});
 	if (mode === 'issue') {
 		const issueId = replayPayload?.mode === 'issue' ? replayPayload.issue : params.get('issue');
 		if (!issueId)
@@ -128,6 +132,95 @@ export const GET: RequestHandler = api(async (event) => {
 				material
 			));
 		return json(report, { headers: { 'cache-control': 'private, no-store' } });
+	}
+	if (mode === 'cohort') {
+		const cohortPayload = replayPayload?.mode === 'cohort' ? replayPayload : null;
+		const workflow = cohortPayload?.workflow ?? params.get('workflow');
+		if (!workflow)
+			throw new ApiFail(422, 'invalid_field', 'cohort mode requires workflow', {
+				field: 'workflow'
+			});
+		const contradictions = replay
+			? []
+			: ['by', 'state', 'runner', 'tier', 'outcome', 'accounting_status', 'issue'].filter((name) =>
+					params.has(name)
+				);
+		if (contradictions.length)
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'cohort mode cannot include period grouping filters',
+				{
+					field: contradictions[0],
+					remedy: 'remove the conflicting option'
+				}
+			);
+		try {
+			if (!cohortPayload)
+				resolveUsagePeriod(
+					{
+						window: (params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined,
+						from: params.get('from') ?? undefined,
+						to: params.get('to') ?? undefined
+					},
+					'UTC'
+				);
+			const report = await getCohortUsage(
+				db,
+				actor.userId,
+				{
+					workflow,
+					project: cohortPayload?.project ?? params.get('project') ?? undefined,
+					window: cohortPayload
+						? undefined
+						: ((params.get('window') ?? undefined) as 'today' | '7d' | '30d' | undefined),
+					from: cohortPayload ? undefined : (params.get('from') ?? undefined),
+					to: cohortPayload ? undefined : (params.get('to') ?? undefined),
+					done_states:
+						cohortPayload || !params.has('done_state') ? undefined : params.getAll('done_state')
+				},
+				Date.now(),
+				cohortPayload
+					? {
+							from: cohortPayload.from,
+							to: cohortPayload.to,
+							timezone: cohortPayload.timezone,
+							timezone_source: cohortPayload.timezone_source,
+							observed_through: cohortPayload.observed_through,
+							selected_states: cohortPayload.selected_states,
+							selection_basis: cohortPayload.selection_basis
+						}
+					: undefined
+			);
+			if (!report) throw notFound();
+			report.scope =
+				replay ??
+				(await mintUsageScope(
+					{
+						v: 1,
+						owner: actor.userId,
+						mode: 'cohort',
+						from: report.from,
+						to: report.to,
+						timezone: report.timezone,
+						timezone_source: report.timezone_source,
+						project: cohortPayload?.project ?? params.get('project'),
+						workflow,
+						selected_states: report.selected_states,
+						selection_basis: report.selection_basis,
+						definitions_resolved_at: report.generated_at,
+						observed_through: report.observed_through
+					},
+					material
+				));
+			return json(report, { headers: { 'cache-control': 'private, no-store' } });
+		} catch (error) {
+			if (error instanceof UsageInputError)
+				throw new ApiFail(422, 'invalid_usage_period', error.message, {
+					field: error.field ?? 'from/to'
+				});
+			throw error;
+		}
 	}
 	if (params.has('issue'))
 		throw new ApiFail(422, 'invalid_field', 'issue requires mode=issue', { field: 'issue' });

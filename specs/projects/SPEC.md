@@ -170,21 +170,28 @@ saying what the scope is.
    both pointers (`ON DELETE SET NULL`).
 5. **The switcher never lists archived projects**, and `PATCH /preferences`
    refuses one for either pointer (422 `invalid_field`).
-6. **One switcher, in the header, at every width.** `Tines · <project> ▾` sits
-   next to the wordmark on desktop and on a phone alike: the phone header is
-   otherwise empty between the wordmark and the avatar, while the bottom bar's
-   Projects slot is a sixth of the screen and truncated the name away (human
-   review, Tines/259). The bottom bar stays pure navigation. At every width the
-   Projects tab opens the focused project's home, or the remembered grid under
-   All projects; Manage projects and the project breadcrumb lead to the grid.
-7. **Hidden below two projects.** With zero or one project the switcher does not
-   render and every page looks as it did before; a single project still behaves
-   as the focus for the New-issue default. The first-project experience belongs
-   to onboarding (Tines/183).
+6. **One project control, in the header, at every width.** It sits next to the
+	 wordmark on desktop and phone. At two or more live projects its compact
+	 label is the focus; at zero or one it says Projects while its accessible
+	 name still reports the focus. Focus choices are separate from the real-link
+	 actions Open project (when focused), Manage projects (the remembered grid),
+	 and New project (`/projects?new=1`). Archived projects are omitted.
+
+	 **Responsive chrome boundary.** The three primary destinations — Issues,
+	 Workflows, and Agents — move into the
+	 header at 48rem (`md`); below that width they remain in the bottom bar so the
+	 switcher and account control keep a valid width budget. Main content and
+	 workflow import/export action bars reserve the bottom bar's full height and
+	 safe-area inset on the same boundary. Browser coverage sweeps both sides of
+	 the 40rem and 48rem edges so overflow cannot hide at a breakpoint.
+7. **Available at every project count.** With no live projects the control
+	 offers Manage projects and New project without an empty radio group. With
+	 one, it also offers All projects and that project, but does not focus it
+	 automatically. A sole project remains the separate New-issue default.
 8. **New issue's default project:** the focus, else `last_project_id` (last
    focused or last created in), else — at two or more projects — an empty,
    required select. Never `projects[0]`.
-9. **nav-memory** remembers the non-project Issues filters (category, state,
+9. **nav-memory** remembers the non-project Issues filters (category, workflow, state,
    label, q) per tab as before; it strips `project`, which would otherwise
    re-fire the one-shot on every click of the Issues tab.
    Issue-page Back keeps an Issues target, but keeps a remembered project page

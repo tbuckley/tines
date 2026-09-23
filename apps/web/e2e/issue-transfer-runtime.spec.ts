@@ -4,7 +4,7 @@ import type {
 	IssueTransferResult,
 	ListResponse
 } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { TRANSFER_RUNTIME } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
 import { apiClient, body } from './helpers';

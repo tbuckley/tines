@@ -5,11 +5,14 @@ import {
 	DEFAULT_RESUME_MAX_TURNS,
 	DEFAULT_RESUME_WINDOW_HOURS,
 	DEFAULT_MANAGED_RUN_COST_USD,
+	MANAGED_CLAUDE_EFFORTS,
+	isEffortToken,
 	MODEL_TIERS,
 	RUNNER_NAME_PATTERN,
 	RUNNER_ONLINE_WINDOW_MS,
 	RUNNER_TYPES,
 	type CreateRunnerRequest,
+	type EffortCapabilitiesV1,
 	type ModelTier,
 	type RegisterRunnerRequest,
 	type Runner,
@@ -28,7 +31,7 @@ import { newId, randomString, type Database } from '$lib/server/db';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { pingAnthropicKey } from '$lib/server/supervisor/claude-adapter';
 import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
-import { builtinTierModels } from '$lib/server/supervisor/logic';
+import { builtinTierModels, resolveEffort, resolveTier } from '$lib/server/supervisor/logic';
 import { isResumeProviderSupported } from '$lib/server/supervisor/resume';
 import {
 	ApiFail,
@@ -39,6 +42,7 @@ import {
 	type ActorContext
 } from './core';
 import { eventInsert } from './events';
+import { projectConcurrencyControl } from './runner-concurrency';
 import { scopeLabel } from './scope';
 
 /**
@@ -238,12 +242,11 @@ export function validateTierOverrides(value: unknown): RunnerTierOverrides | nul
 		}
 		const model = requireString(rec.model, `tiers.${tier}.model`, { max: 200 });
 		const effort = optionalString(rec.effort, `tiers.${tier}.effort`, { max: 50 });
-		const efforts = ['low', 'medium', 'high', 'xhigh', 'max'];
-		if (effort !== undefined && !efforts.includes(effort)) {
+		if (effort !== undefined && !isEffortToken(effort)) {
 			throw new ApiFail(
 				422,
 				'invalid_field',
-				`"tiers.${tier}.effort" must be one of: ${efforts.join(', ')}`,
+				`"tiers.${tier}.effort" must be a lowercase effort token (1-32 characters)`,
 				{ field: `tiers.${tier}.effort` }
 			);
 		}
@@ -349,6 +352,7 @@ export function runnerOnline(
 }
 
 function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
+	const online = runnerOnline(row, now);
 	let config: Record<string, unknown> = {};
 	try {
 		config = JSON.parse(row.config) as Record<string, unknown>;
@@ -367,12 +371,34 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 	} catch {
 		// An unreadable budget renders as "no limits" (and enforces nothing).
 	}
+	let effortCapabilities: Runner['effort_capabilities'] = null;
+	try {
+		effortCapabilities = row.effort_capabilities
+			? (JSON.parse(row.effort_capabilities) as Runner['effort_capabilities'])
+			: null;
+	} catch {
+		// Unreadable assertions advertise no choices and fail closed on save/dispatch.
+	}
+	const effortModels =
+		row.type === 'claude_managed'
+			? Object.fromEntries(
+					Object.entries(MANAGED_CLAUDE_EFFORTS).map(([model, efforts]) => [model, [...efforts]])
+				)
+			: effortCapabilities?.version === 1 && 'models' in effortCapabilities
+				? Object.fromEntries(
+						(effortCapabilities as EffortCapabilitiesV1).models.map(({ model, efforts }) => [
+							model,
+							efforts
+						])
+					)
+				: null;
 	return {
 		id: row.id,
 		type: row.type as RunnerType,
 		name: row.name,
 		status: row.status as RunnerStatus,
 		max_concurrent: row.max_concurrent,
+		concurrency_control: projectConcurrencyControl(row, online),
 		max_run_minutes: row.max_run_minutes,
 		resume_enabled: row.resume_enabled === 1,
 		resume_window_hours: row.resume_window_hours,
@@ -385,8 +411,10 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		budget,
 		has_api_key: row.secret_enc !== null,
 		config,
-		online: runnerOnline(row, now),
+		online,
 		last_seen_at: row.last_seen_at,
+		effort_capabilities: effortCapabilities,
+		effort_models: effortModels,
 		draining: row.draining === 1,
 		launch_failures: row.launch_failures,
 		backoff_until: row.backoff_until,
@@ -555,6 +583,8 @@ export async function createRunner(
 				name,
 				status: 'active',
 				max_concurrent: maxConcurrent,
+				concurrency_mode: 'legacy',
+				concurrency_revision: 0,
 				max_run_minutes: maxRunMinutes,
 				default_tier: defaultTier,
 				tiers: tiers ? JSON.stringify(tiers) : null,
@@ -598,12 +628,33 @@ export async function updateRunner(
 ): Promise<Runner> {
 	const row = await runnerQuery(db, actor.userId).where('runner.id', '=', id).executeTakeFirst();
 	if (!row) throw notFound();
+	for (const field of [
+		'concurrency_mode',
+		'concurrency_ceiling',
+		'concurrency_requested',
+		'concurrency_applied_revision',
+		'concurrency_applied_cap',
+		'concurrency_control'
+	]) {
+		if (field in (body as unknown as Record<string, unknown>)) {
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				`"${field}" is reported by the local daemon and cannot be changed here`,
+				{
+					field
+				}
+			);
+		}
+	}
 
 	const changed: string[] = [];
 	const patch: Partial<{
 		name: string;
 		status: string;
 		max_concurrent: number;
+		concurrency_requested: number;
+		concurrency_revision: number;
 		max_run_minutes: number;
 		default_tier: string;
 		tiers: string | null;
@@ -638,8 +689,54 @@ export async function updateRunner(
 	}
 	if (body.max_concurrent !== undefined) {
 		const cap = validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
+		if (row.type === 'local') {
+			if (
+				!Number.isSafeInteger(body.expected_concurrency_revision) ||
+				(body.expected_concurrency_revision as number) < 0 ||
+				body.expected_concurrency_revision !== row.concurrency_revision
+			) {
+				throw new ApiFail(
+					409,
+					'concurrency_conflict',
+					'Concurrency policy changed; review the current runner and try again',
+					{
+						runner: serializeRunner(row)
+					}
+				);
+			}
+			if (
+				row.concurrency_mode !== 'remote' ||
+				row.concurrency_instance_id === null ||
+				row.concurrency_instance_id !== row.daemon_instance_id ||
+				row.concurrency_ceiling === null
+			) {
+				throw new ApiFail(
+					409,
+					'concurrency_unavailable',
+					'This local daemon has not enabled web concurrency adjustment',
+					{
+						runner: serializeRunner(row)
+					}
+				);
+			}
+			if (cap > row.concurrency_ceiling) {
+				throw new ApiFail(
+					422,
+					'invalid_field',
+					`"max_concurrent" cannot exceed the local ceiling ${row.concurrency_ceiling}`,
+					{
+						field: 'max_concurrent',
+						ceiling: row.concurrency_ceiling
+					}
+				);
+			}
+		}
 		if (cap !== row.max_concurrent) {
 			patch.max_concurrent = cap;
+			if (row.type === 'local') {
+				patch.concurrency_requested = cap;
+				patch.concurrency_revision = row.concurrency_revision + 1;
+			}
 			changed.push('max_concurrent');
 		}
 	}
@@ -737,6 +834,41 @@ export async function updateRunner(
 			changed.push('resume_max_cost_usd');
 		}
 	}
+	if (changed.includes('tiers') || changed.includes('config')) {
+		const finalRunner = {
+			...row,
+			...patch,
+			config: patch.config ?? row.config,
+			tiers: patch.tiers === undefined ? row.tiers : patch.tiers
+		};
+		const finalTiers = finalRunner.tiers
+			? (JSON.parse(finalRunner.tiers) as RunnerTierOverrides)
+			: null;
+		for (const tier of MODEL_TIERS) {
+			const tierOverride = finalTiers?.[tier];
+			const effort =
+				tierOverride && typeof tierOverride !== 'string' ? tierOverride.effort : undefined;
+			if (!effort) continue;
+			if (finalRunner.type === 'local' && !finalRunner.effort_capabilities) {
+				throw new ApiFail(
+					422,
+					'effort_incompatible',
+					`"tiers.${tier}.effort" requires an upgraded, connected daemon capability report`,
+					{ field: `tiers.${tier}.effort`, action: 'upgrade_or_reconnect_daemon' }
+				);
+			}
+			const resolvedTier = resolveTier(finalRunner, tier);
+			const compatibility = resolveEffort(finalRunner, resolvedTier, null);
+			if (!compatibility.compatible) {
+				throw new ApiFail(
+					422,
+					'effort_incompatible',
+					`"tiers.${tier}.effort" cannot apply ${effort} to ${resolvedTier.model ?? 'the fixed model'}: ${compatibility.reason}`,
+					{ field: `tiers.${tier}.effort`, model: resolvedTier.model, requested_effort: effort }
+				);
+			}
+		}
+	}
 	const revisionChanged = changed.some(
 		(field) =>
 			field === 'api_key' || field === 'config' || field === 'tiers' || field === 'default_tier'
@@ -747,7 +879,50 @@ export async function updateRunner(
 		return serializeRunner(row);
 	}
 
-	await runAtomic(env, [
+	const eventId = newId('evt');
+	const concurrencyGuard =
+		row.type === 'local' && body.max_concurrent !== undefined
+			? sql<boolean>`EXISTS (
+					SELECT 1 FROM runner
+					WHERE id = ${id} AND user_id = ${actor.userId}
+						AND concurrency_mode = 'remote'
+						AND concurrency_revision = ${body.expected_concurrency_revision!}
+						AND concurrency_instance_id = daemon_instance_id
+						AND concurrency_ceiling = ${row.concurrency_ceiling}
+				)`
+			: sql<boolean>`EXISTS (SELECT 1 FROM runner WHERE id = ${id} AND user_id = ${actor.userId})`;
+	const results = await runAtomic(env, [
+		eventInsert(
+			db,
+			actor,
+			{
+				id: eventId,
+				type: 'runner.updated',
+				payload: {
+					runner_id: id,
+					name: patch.name ?? row.name,
+					changed,
+					...(changed.includes('max_concurrent')
+						? {
+								source: 'operator',
+								reason: 'requested',
+								concurrency: {
+									before: {
+										requested_cap: row.concurrency_requested,
+										revision: row.concurrency_revision
+									},
+									after: {
+										requested_cap: patch.concurrency_requested ?? patch.max_concurrent,
+										revision: patch.concurrency_revision ?? row.concurrency_revision
+									}
+								}
+							}
+						: {}),
+					...(patch.status !== undefined ? { status: patch.status } : {})
+				}
+			},
+			{ predicate: concurrencyGuard }
+		),
 		db
 			.updateTable('runner')
 			.set({
@@ -758,17 +933,20 @@ export async function updateRunner(
 				updated_at: Date.now()
 			})
 			.where('id', '=', id)
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'runner.updated',
-			payload: {
-				runner_id: id,
-				name: patch.name ?? row.name,
-				changed,
-				...(patch.status !== undefined ? { status: patch.status } : {})
-			}
-		})
+			.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`)
+			.compile()
 	]);
+	if ((results[0]?.meta.changes ?? 0) === 0) {
+		const current = await getRunner(db, actor.userId, id);
+		throw new ApiFail(
+			409,
+			'concurrency_conflict',
+			'Concurrency policy changed; review the current runner and try again',
+			{
+				runner: current
+			}
+		);
+	}
 	effects.signalDispatch();
 	// Pausing stops new assignments immediately AND cancels the runner's
 	// not-yet-acknowledged `assigned` runs — nothing is running yet, so the
@@ -849,14 +1027,11 @@ export async function registerRunner(
 		});
 		const changed = ['runner_token', 'config'];
 		const patch: Partial<{
-			max_concurrent: number;
 			max_run_minutes: number;
 			default_tier: string;
 		}> = {};
-		if (body.max_concurrent !== undefined) {
-			patch.max_concurrent = validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
-			changed.push('max_concurrent');
-		}
+		if (body.max_concurrent !== undefined)
+			validateBoundedInt(body.max_concurrent, 'max_concurrent', 1, 100);
 		if (body.max_run_minutes !== undefined) {
 			patch.max_run_minutes = validateBoundedInt(
 				body.max_run_minutes,
@@ -884,7 +1059,10 @@ export async function registerRunner(
 						? { resume_config_revision: sql<number>`resume_config_revision + 1` }
 						: {}),
 					runner_token_hash: tokenHash,
-					last_seen_at: now,
+					last_seen_at: null,
+					concurrency_instance_id: null,
+					concurrency_applied_instance_id: null,
+					concurrency_unavailable_reason: 'awaiting_policy',
 					updated_at: now
 				})
 				.where('id', '=', existing.id)
@@ -926,6 +1104,8 @@ export async function registerRunner(
 				name,
 				status: 'active',
 				max_concurrent: maxConcurrent,
+				concurrency_mode: 'legacy',
+				concurrency_revision: 0,
 				max_run_minutes: maxRunMinutes,
 				default_tier: defaultTier,
 				tiers: null,
@@ -933,7 +1113,7 @@ export async function registerRunner(
 				config: JSON.stringify(config),
 				secret_enc: null,
 				runner_token_hash: tokenHash,
-				last_seen_at: now,
+				last_seen_at: null,
 				launch_failures: 0,
 				draining: 0,
 				backoff_until: null,
@@ -988,7 +1168,14 @@ export async function rotateRunnerToken(
 	await runAtomic(env, [
 		db
 			.updateTable('runner')
-			.set({ runner_token_hash: await sha256Hex(token), updated_at: Date.now() })
+			.set({
+				runner_token_hash: await sha256Hex(token),
+				last_seen_at: null,
+				concurrency_instance_id: null,
+				concurrency_applied_instance_id: null,
+				concurrency_unavailable_reason: 'awaiting_policy',
+				updated_at: Date.now()
+			})
 			.where('id', '=', id)
 			.compile(),
 		eventInsert(db, actor, {

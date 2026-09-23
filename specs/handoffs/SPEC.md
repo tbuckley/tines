@@ -26,6 +26,10 @@ from run attribution the supervisor already writes — no column stores a round.
 - **A run's summary comment is its last comment on the issue**; its earlier ones
   fold to `earlier_comment_ids`, resolvable against `IssueDetail.comments`. Only
   one body per run is duplicated onto the payload, not the whole thread.
+- **Launch history is selected independently of the round boundary.** The final
+  comment of the newest completed same-issue run with a comment is protected,
+  alongside every human/unknown-provenance comment and three other newest agent
+  comments. Cross-issue runs cannot become the protected handoff.
 - **A stage visited twice in one round is one group, latest run first.** Every
   earlier attempt carries `returned_via`: the transition that brought the issue
   back into that state afterwards ("sent back by Automated Review").

@@ -68,7 +68,26 @@ export function resumeFingerprint(input: {
 	harness: string;
 	model: string | null;
 	preambleVariant: string;
+	effort?: string | null;
+	/**
+	 * Digest of the effective env items (names, ids, versions — no values).
+	 * Serialized only when given, so fingerprints of rows written before env
+	 * items existed stay byte-identical; a changed env set fails the match
+	 * and takes the cold-launch path, which builds a fresh vault.
+	 */
+	envDigest?: string | null;
 }): string {
+	if (input.effort || input.envDigest) {
+		return JSON.stringify({
+			version: 2,
+			runner_id: input.runnerId,
+			harness: input.harness,
+			model: input.model,
+			effort: input.effort ?? null,
+			preamble_variant: input.preambleVariant,
+			...(input.envDigest ? { env_digest: input.envDigest } : {})
+		});
+	}
 	return [
 		'v1',
 		input.runnerId,
@@ -432,6 +451,8 @@ export async function prepareManagedResume(
 		issueId: string;
 		runId: string;
 		model: string | null;
+		effort?: string | null;
+		envDigest?: string | null;
 		now: number;
 	}
 ): Promise<{
@@ -495,6 +516,8 @@ export async function prepareManagedResume(
 			runnerId: runner.id,
 			harness: 'claude_managed',
 			model: input.model,
+			effort: input.effort,
+			envDigest: input.envDigest,
 			preambleVariant: 'claude_managed'
 		})
 	});

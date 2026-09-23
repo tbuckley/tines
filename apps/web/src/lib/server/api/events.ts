@@ -1,5 +1,5 @@
 import type { Actor, ActorRun, TinesEvent } from '@tines/shared';
-import { sql, type CompiledQuery, type Kysely } from 'kysely';
+import { sql, type CompiledQuery, type Kysely, type RawBuilder } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { ApiFail, type ActorContext } from './core';
 
@@ -43,6 +43,8 @@ export interface EventInput {
 	issueId?: string | null;
 	projectId?: string | null;
 	payload?: Record<string, unknown>;
+	/** Parameterized SQL producing the JSON payload; mutually exclusive with payload. */
+	payloadSql?: RawBuilder<string>;
 }
 
 /**
@@ -73,7 +75,7 @@ export function eventInsert(
 		actor_user_id: actor.userId,
 		actor_api_key_id: actor.apiKeyId,
 		issue_id: input.issueId ?? null,
-		payload: JSON.stringify(input.payload ?? {}),
+		payload: input.payloadSql ?? JSON.stringify(input.payload ?? {}),
 		created_at: input.createdAt ?? Date.now()
 	};
 	// Issue-scoped attribution belongs to the issue's project at the instant the
@@ -111,12 +113,18 @@ export function eventInsert(
 export function actorRunOf(row: {
 	run_id: string;
 	runner_name: string | null;
+	run_workflow_name?: string | null;
+	run_state_name?: string | null;
 	run_project_name: string | null;
 	run_issue_number: number | null;
 }): ActorRun {
 	return {
 		run_id: row.run_id,
 		runner_name: row.runner_name ?? 'unknown runner',
+		stage:
+			row.run_workflow_name && row.run_state_name
+				? { workflow_name: row.run_workflow_name, state_name: row.run_state_name }
+				: null,
 		issue_ref:
 			row.run_project_name && row.run_issue_number != null
 				? { project_name: row.run_project_name, number: row.run_issue_number }
@@ -132,6 +140,8 @@ export function actorOf(row: {
 	/** Run-key provenance (resolved through agent_run to the runner). */
 	actor_run_id?: string | null;
 	actor_runner_name?: string | null;
+	actor_run_workflow_name?: string | null;
+	actor_run_state_name?: string | null;
 	actor_run_project_name?: string | null;
 	actor_run_issue_number?: number | null;
 }): Actor {
@@ -145,6 +155,8 @@ export function actorOf(row: {
 		actor.run = actorRunOf({
 			run_id: row.actor_run_id,
 			runner_name: row.actor_runner_name ?? null,
+			run_workflow_name: row.actor_run_workflow_name ?? null,
+			run_state_name: row.actor_run_state_name ?? null,
 			run_project_name: row.actor_run_project_name ?? null,
 			run_issue_number: row.actor_run_issue_number ?? null
 		});
@@ -187,6 +199,8 @@ export function eventQuery(db: Kysely<Database>, userId: string) {
 				'api_key.name as actor_api_key_name',
 				'actor_run.id as actor_run_id',
 				'actor_runner.name as actor_runner_name',
+				'api_key.run_workflow_name as actor_run_workflow_name',
+				'api_key.run_state_name as actor_run_state_name',
 				'actor_run_project.name as actor_run_project_name',
 				'actor_run_issue.number as actor_run_issue_number',
 				'issue.number as issue_number',
