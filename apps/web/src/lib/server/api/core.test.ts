@@ -222,6 +222,8 @@ describe('isControlPlanePath', () => {
 		['/api/v1/routing-rules', 'GET'],
 		['/api/v1/routing-rules/rul_1', 'PATCH'],
 		['/api/v1/supervisor/settings', 'PUT'],
+		['/api/v1/supervisor/rates', 'POST'],
+		['/api/v1/supervisor/rates/umr_1', 'DELETE'],
 		['/api/v1/issues/iss_1/resume', 'POST'],
 		// Key metadata stays fenced even to a read.
 		['/api/v1/api-keys', 'GET'],
@@ -274,6 +276,8 @@ describe('isControlPlanePath', () => {
 		['/api/v1/runners', 'HEAD'],
 		['/api/v1/runners/rnr_1', 'GET'],
 		['/api/v1/supervisor/settings', 'GET'],
+		['/api/v1/supervisor/rates', 'GET'],
+		['/api/v1/supervisor/rates', 'HEAD'],
 		['/api/v1/supervisor/settings', 'HEAD'],
 		// The queue is unfenced by construction: the rule matches
 		// `supervisor/settings`, not `supervisor/*`.

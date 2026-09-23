@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import {
+	admitEffort,
 	supportedEfforts,
 	type EffortCapabilities,
 	type EffortCapabilitiesV1,
@@ -39,9 +40,15 @@ export function assignmentEffortRejection(
 		return `effort assignment requires ${capabilities.harness}, but this daemon runs ${harness}`;
 	if (capabilities.catalog_digest !== assignment.effort.capability_digest)
 		return 'effort capability catalog changed after assignment delivery';
-	const allowed = supportedEfforts(capabilities, assignment.run.model);
-	if (!allowed?.includes(assignment.effort.value))
-		return `${assignment.run.model ?? 'the assigned model'} does not support effort ${assignment.effort.value}`;
+	const admission = admitEffort(
+		supportedEfforts(capabilities, assignment.run.model),
+		assignment.effort.value,
+		assignment.effort.verification === 'asserted'
+	);
+	if (!admission.ok)
+		return admission.reason.startsWith('unsupported_effort:')
+			? `${assignment.run.model ?? 'the assigned model'} does not support effort ${assignment.effort.value}`
+			: `${assignment.run.model ?? 'the assigned model'}: ${admission.reason}`;
 	return null;
 }
 
@@ -106,7 +113,8 @@ async function discoverClaude(daemonVersion: string): Promise<EffortCapabilities
 			harness_version: version.trim().slice(0, 100),
 			catalog_revision: 'claude-effort-v1',
 			catalog_digest: digest(models),
-			models
+			models,
+			accepts_asserted_effort: true
 		};
 	} catch (error) {
 		return failure(
@@ -190,7 +198,8 @@ async function discoverCodex(daemonVersion: string): Promise<EffortCapabilitiesV
 							harness: 'codex',
 							harness_version: harnessVersion,
 							catalog_digest: digest(models),
-							models
+							models,
+							accepts_asserted_effort: true
 						});
 				}
 			}

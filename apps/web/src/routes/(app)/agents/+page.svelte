@@ -19,6 +19,7 @@
 		isActiveRun,
 		isStaleTierOverride,
 		MODEL_TIERS,
+		RECOGNIZED_EFFORT_VALUES,
 		RUNNER_NAME_PATTERN,
 		utilizationLabel
 	} from '@tines/shared';
@@ -49,6 +50,7 @@
 	import { stageRunsHref } from '$lib/stage-stats-view';
 	import FleetQueuePanel from '$lib/components/FleetQueuePanel.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import ModelRateDialog from '$lib/components/ModelRateDialog.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
 	import PatInstructions from '$lib/components/PatInstructions.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
@@ -567,6 +569,12 @@
 	let editCapTokens = $state('');
 	let editApiKey = $state('');
 	let savingEdit = $state(false);
+	let rateDialogOpen = $state(false);
+	let rateEdit = $state<(typeof data.rates.user_rates)[number] | null>(null);
+	async function retireUserRate(id: string) {
+		await api.deleteSupervisorRate(id);
+		await invalidateAll();
+	}
 
 	/**
 	 * Opened from the Now row's "Raise cap": land the caret on the field the
@@ -661,10 +669,29 @@
 	/** Tiers apply unless the runner has a fixed configuration (custom harness). */
 	const editTiersApply = $derived(editTarget !== null && editTarget.tier_models !== null);
 
-	function effortChoices(runner: Runner | null, tier: ModelTier, modelOverride = ''): string[] {
-		if (!runner) return [];
+	type EffortChoices = {
+		choices: string[];
+		verified: boolean;
+		model: string;
+		assertable: boolean;
+	};
+
+	function effortChoices(
+		runner: Runner | null,
+		tier: ModelTier,
+		modelOverride = ''
+	): EffortChoices {
+		if (!runner) return { choices: [], verified: false, model: '', assertable: false };
 		const model = modelOverride.trim() || runner.tier_models?.[tier] || '';
-		return runner.effort_models?.[model] ?? [];
+		const listed = runner.effort_models?.[model];
+		if (listed !== undefined)
+			return { choices: listed, verified: true, model, assertable: runner.effort_assertable };
+		return {
+			choices: runner.effort_assertable ? [...RECOGNIZED_EFFORT_VALUES] : [],
+			verified: false,
+			model,
+			assertable: runner.effort_assertable
+		};
 	}
 
 	const bootstrapCommand = $derived.by(() => {
@@ -910,13 +937,16 @@
 	let ruleWarnings = $state<ShadowWarning[]>([]);
 	const wildcardEffortChoices = $derived(
 		[
-			...new Set(data.runners.flatMap((runner) => Object.values(runner.effort_models ?? {}).flat()))
+			...new Set([
+				...data.runners.flatMap((runner) => Object.values(runner.effort_models ?? {}).flat()),
+				...(data.runners.some((runner) => runner.effort_assertable) ? RECOGNIZED_EFFORT_VALUES : [])
+			])
 		].sort()
 	);
 
-	function targetEffortChoices(target: (typeof ruleTargets)[number]): string[] {
+	function targetEffortChoices(target: (typeof ruleTargets)[number]): EffortChoices {
 		const runner = data.runners.find((candidate) => candidate.id === target.runner_id);
-		if (!runner) return [];
+		if (!runner) return { choices: [], verified: false, model: '', assertable: false };
 		const tier = target.tier || runner.default_tier;
 		const override = runner.tiers?.[tier]?.model ?? '';
 		return effortChoices(runner, tier, override);
@@ -1707,6 +1737,48 @@
 				</div>
 			</form>
 
+			<div class="space-y-2 border-t pt-5">
+				<div class="flex items-center justify-between gap-3">
+					<div>
+						<p class="text-sm font-medium">Model rates</p>
+						<p class="text-muted-foreground text-xs">
+							Rates for models without a built-in price. New entries can reprice unpriced runs.
+						</p>
+					</div>
+					<Button
+						size="sm"
+						variant="outline"
+						onclick={() => {
+							rateEdit = null;
+							rateDialogOpen = true;
+						}}>Add rate</Button
+					>
+				</div>
+				{#if data.rates.user_rates.length}
+					<ul class="divide-y rounded-md border text-sm">
+						{#each data.rates.user_rates as rate (rate.id)}
+							<li class="flex items-center justify-between gap-3 p-2.5">
+								<span
+									><code>{rate.model}</code> · ${rate.input_rate}/{rate.output_rate} input/output · v{rate.version}</span
+								>
+								<span class="flex gap-2"
+									><Button
+										size="sm"
+										variant="ghost"
+										onclick={() => {
+											rateEdit = rate;
+											rateDialogOpen = true;
+										}}>Edit</Button
+									><Button size="sm" variant="ghost" onclick={() => void retireUserRate(rate.id)}
+										>Remove</Button
+									></span
+								>
+							</li>
+						{/each}
+					</ul>
+				{:else}<p class="text-muted-foreground text-xs">No user-entered rates yet.</p>{/if}
+			</div>
+
 			<!-- GitHub PAT: one credential shared across managed runners, write-only -->
 			<form onsubmit={savePat} class="space-y-1.5 border-t pt-5">
 				<p class="text-sm font-medium">GitHub access</p>
@@ -1756,6 +1828,15 @@
 
 <!-- add runner: local shows the daemon bootstrap (the daemon registers itself);
      Claude managed creates the runner here with a ping-validated key -->
+<ModelRateDialog
+	bind:open={rateDialogOpen}
+	model={rateEdit?.model ?? ''}
+	initial={rateEdit}
+	rates={data.rates}
+	onsaved={invalidateAll}
+	onclose={() => (rateDialogOpen = false)}
+/>
+
 <Modal bind:open={addRunnerOpen} title="Add runner" onclose={resetAddRunner}>
 	{#if createdRunner}
 		<!-- final, skippable step: add the new runner to routing (flow 3) -->
@@ -2292,21 +2373,31 @@
 											class="w-full min-w-0"
 											aria-label={`Effort for ${tier}`}
 											value={editTierEfforts[tier] ?? ''}
-											disabled={(editTierModels[tier] ?? '').trim() === '' || choices.length === 0}
+											disabled={(editTierModels[tier] ?? '').trim() === '' ||
+												choices.choices.length === 0}
 											onchange={(e) =>
 												(editTierEfforts = { ...editTierEfforts, [tier]: e.currentTarget.value })}
 										>
 											<option value="">effort —</option>
-											{#if editTierEfforts[tier] && !choices.includes(editTierEfforts[tier])}
+											{#if editTierEfforts[tier] && !choices.choices.includes(editTierEfforts[tier])}
 												<option value={editTierEfforts[tier]}
 													>{editTierEfforts[tier]} (incompatible)</option
 												>
 											{/if}
-											{#each choices as effort (effort)}
-												<option value={effort}>{effort}</option>
+											{#each choices.choices as effort (effort)}
+												<option value={effort}
+													>{effort}{choices.verified ? '' : ' (unverified)'}</option
+												>
 											{/each}
 										</Select>
 									</div>
+									{#if choices.model && !choices.verified}
+										<p class="text-muted-foreground pl-0 text-xs sm:col-span-2 sm:pl-22">
+											{choices.assertable
+												? `Tines can't confirm ${choices.model} supports effort. An unsupported value fails the run.`
+												: "Upgrade this runner's daemon to set effort on new models."}
+										</p>
+									{/if}
 								{/if}
 							</div>
 							{#if stale}
@@ -2637,14 +2728,21 @@
 									(ruleTargets[i] = { ...ruleTargets[i], effort: e.currentTarget.value })}
 							>
 								<option value="">inherit</option>
-								{#if target.effort && !choices.includes(target.effort)}
+								{#if target.effort && !choices.choices.includes(target.effort)}
 									<option value={target.effort}>{target.effort} (incompatible)</option>
 								{/if}
-								{#each choices as effort (effort)}
-									<option value={effort}>{effort}</option>
+								{#each choices.choices as effort (effort)}
+									<option value={effort}>{effort}{choices.verified ? '' : ' (unverified)'}</option>
 								{/each}
 							</Select></label
 						>
+						{#if choices.model && !choices.verified}
+							<p class="text-muted-foreground col-span-full text-xs">
+								{choices.assertable
+									? `Tines can't confirm ${choices.model} supports effort. An unsupported value fails the run.`
+									: "Upgrade this runner's daemon to set effort on new models."}
+							</p>
+						{/if}
 						<label class="space-y-1 text-xs"
 							><span class="font-medium">Tier</span>
 							<Select

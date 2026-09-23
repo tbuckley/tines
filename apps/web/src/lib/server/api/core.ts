@@ -227,6 +227,7 @@ const CONTROL_PLANE_RULES: ControlPlaneRule[] = [
 	{ pattern: /^\/api\/v1\/runners(\/|$)/, readable: true },
 	{ pattern: /^\/api\/v1\/routing-rules(\/|$)/ },
 	{ pattern: /^\/api\/v1\/supervisor\/settings(\/|$)/, readable: true },
+	{ pattern: /^\/api\/v1\/supervisor\/rates(\/|$)/, readable: true },
 	{ pattern: /^\/api\/v1\/issues\/[^/]+\/resume$/ },
 	// Moving an issue between projects is an operator act: an agent may review
 	// the move (the preview is the argument it makes to its owner) but the POST
@@ -273,7 +274,7 @@ export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 	return new ApiFail(
 		403,
 		'run_key_forbidden',
-		'Run keys cannot modify runners, routing rules, supervisor settings, parked issues, issue pins, or API keys, ' +
+		'Run keys cannot modify runners, routing rules, supervisor settings, model rates, parked issues, issue pins, or API keys, ' +
 			'cannot create, edit or delete env context items, ' +
 			'cannot import a library or install a workflow package, cannot archive or unarchive projects, cannot create, rename, or delete ' +
 			'labels, and cannot apply or remove a label a routing rule is scoped to (reading the library and ' +

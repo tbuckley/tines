@@ -29,6 +29,7 @@ import {
 	EFFORT_CAPABILITIES_MAX_BYTES,
 	EFFORT_CAPABILITIES_MAX_EFFORTS,
 	EFFORT_CAPABILITIES_MAX_MODELS,
+	admitEffort,
 	supportedEfforts
 } from '@tines/shared';
 import type { RequestEvent } from '@sveltejs/kit';
@@ -62,6 +63,7 @@ import {
 } from '$lib/server/supervisor/resume';
 import { effectiveAutomationEnabled } from '$lib/server/supervisor/settings';
 import { priceCodexUsage } from '$lib/server/supervisor/codex-pricing';
+import { pricingCatalogFor } from '$lib/server/supervisor/user-rates';
 import { listArtifacts } from './artifacts';
 import { listLabels } from './labels';
 import {
@@ -721,11 +723,20 @@ async function deliverAssignedRun(
 			const parsed = runner.effort_capabilities
 				? (JSON.parse(runner.effort_capabilities) as EffortCapabilities)
 				: null;
-			if (parsed?.version === 1 && 'models' in parsed) deliveryCapabilities = parsed;
-			const allowed = supportedEfforts(parsed, run.model);
-			if (!allowed?.includes(run.resolved_effort))
+			if (parsed?.version !== 1 || !('models' in parsed)) {
 				effortRaceReason =
 					'assignment effort is not supported by the daemon capability report at delivery';
+			} else {
+				deliveryCapabilities = parsed;
+				const admission = admitEffort(
+					supportedEfforts(parsed, run.model),
+					run.resolved_effort,
+					parsed.accepts_asserted_effort === true
+				);
+				if (!admission.ok)
+					effortRaceReason =
+						'assignment effort is not supported by the daemon capability report at delivery';
+			}
 		} catch {
 			effortRaceReason = 'daemon capability report is unreadable at delivery';
 		}
@@ -837,7 +848,10 @@ async function deliverAssignedRun(
 							version: 1 as const,
 							value: run.resolved_effort,
 							source: JSON.parse(run.effort_source),
-							capability_digest: deliveryCapabilities!.catalog_digest
+							capability_digest: deliveryCapabilities!.catalog_digest,
+							...(deliveryCapabilities && supportedEfforts(deliveryCapabilities, run.model) === null
+								? { verification: 'asserted' as const }
+								: {})
 						}
 					}
 				: {}),
@@ -870,7 +884,10 @@ async function deliverAssignedRun(
 						version: 1 as const,
 						value: run.resolved_effort,
 						source: JSON.parse(run.effort_source),
-						capability_digest: deliveryCapabilities!.catalog_digest
+						capability_digest: deliveryCapabilities!.catalog_digest,
+						...(deliveryCapabilities && supportedEfforts(deliveryCapabilities, run.model) === null
+							? { verification: 'asserted' as const }
+							: {})
 					}
 				}
 			: {}),
@@ -1656,11 +1673,12 @@ export async function finishRun(
 		await markRunRunning(db, env, run, now);
 	}
 	if (usage && (pricingEvidence.evidence || body.pricing_evidence !== undefined)) {
+		const catalog = await pricingCatalogFor(db, run.user_id, run.model ?? '');
 		usage =
 			!pricingEvidence.valid && usage.cost_source === 'provider' && usage.cost_usd !== undefined
 				? { ...usage, pricing: { version: 1, evaluated_at: now, status: 'provider_authoritative' } }
 				: pricingEvidence.valid
-					? priceCodexUsage({ run, usage, evidence: pricingEvidence.evidence, now })
+					? priceCodexUsage({ run, usage, evidence: pricingEvidence.evidence, now }, catalog)
 					: {
 							...usage,
 							cost_usd: undefined,
@@ -1672,7 +1690,10 @@ export async function finishRun(
 								reason: 'invalid_pricing_evidence'
 							}
 						};
-	} else if (usage) usage = priceCodexUsage({ run, usage, now });
+	} else if (usage) {
+		// Without evidence nothing is priced, so no catalog (or user rate) is read.
+		usage = priceCodexUsage({ run, usage, now });
+	}
 	// The daemon marks the ends it knows were its own fault — a shutdown, an
 	// orphan killed after a restart — as interruptions. Honoured only on a
 	// failure, and only for that exact value: everything else (a harness

@@ -440,6 +440,7 @@
 										Target {target.runner_name} — {target.tier}{target.model
 											? ` / ${target.model}`
 											: ''}: {target.verdict} — {target.detail}
+										{target.effort_verification === 'asserted' ? ' (asserted effort)' : ''}
 									</p>{/each}
 								{#if side.routing.active_run}<p class="text-xs">
 										Active run: {side.routing.active_run.id} on {side.routing.active_run

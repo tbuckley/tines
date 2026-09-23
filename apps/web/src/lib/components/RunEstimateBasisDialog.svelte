@@ -1,9 +1,16 @@
 <script lang="ts">
 	import type { AgentRun } from '@tines/shared';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import ModelRateDialog from './ModelRateDialog.svelte';
+	import { invalidateAll } from '$app/navigation';
+	import { api } from '$lib/api';
+	import type { SupervisorRatesResponse } from '@tines/shared';
 
 	let { run, open, onclose }: { run: AgentRun; open: boolean; onclose: () => void } = $props();
 	let dialog: HTMLDialogElement;
+	let rateDialogOpen = $state(false);
+	let rates = $state<SupervisorRatesResponse | null>(null);
+	let builtinNotice = $state(false);
 	const usage = $derived(run.usage);
 	const pricing = $derived(usage?.pricing);
 	const basis = $derived(pricing?.status === 'calculated' ? pricing.basis : null);
@@ -66,6 +73,19 @@
 	};
 	const count = (value: number | undefined) =>
 		value === undefined ? 'unknown' : value.toLocaleString();
+	async function openRateDialog() {
+		rates = await api.getSupervisorRates();
+		const model = evidence?.model ?? run.model;
+		// A built-in rate cannot be overridden; saving would only return 422.
+		builtinNotice = rates.builtin.some((entry) => entry.model === model);
+		if (builtinNotice) return;
+		// The native <dialog> sits in the top layer and would cover the rate modal.
+		onclose();
+		rateDialogOpen = true;
+	}
+	async function rateSaved() {
+		await invalidateAll();
+	}
 </script>
 
 <dialog
@@ -107,7 +127,13 @@
 						? `; provider effective ${basis.source_effective_at}`
 						: '; provider effective date not published'}
 				</p>
-				{#if basis.source_url.startsWith('https://')}
+				{#if basis.rate_source === 'user'}
+					<p class="text-xs">
+						Rate entered by you on {new Date(
+							basis.rate_entered_at ?? basis.rate_selected_at
+						).toISOString()}
+					</p>
+				{:else if basis.source_url.startsWith('https://')}
 					<a
 						class="text-xs break-all underline"
 						href={basis.source_url}
@@ -143,6 +169,14 @@
 			{#if evidence?.model}<p class="text-xs break-all">
 					Reported launch model: {evidence.model}
 				</p>{/if}
+			{#if (pricing.reason === 'unsupported_model' || pricing.reason === 'missing_rate') && (evidence?.model || run.model)}
+				<Button size="sm" onclick={() => void openRateDialog()}
+					>Enter a rate for {evidence?.model ?? run.model}</Button
+				>
+				{#if builtinNotice}<p class="text-muted-foreground text-xs">
+						Tines already has a built-in rate for this model, so it cannot be replaced.
+					</p>{/if}
+			{/if}
 		{:else if usage?.cost_source === 'priced'}
 			<p class="text-sm">This historical estimate has no recorded rate basis.</p>
 		{:else if usage?.cost_source === 'provider'}
@@ -171,3 +205,12 @@
 		{/if}
 	</div>
 </dialog>
+{#if rates}
+	<ModelRateDialog
+		bind:open={rateDialogOpen}
+		model={evidence?.model ?? run.model ?? ''}
+		modelReadonly={true}
+		{rates}
+		onsaved={rateSaved}
+	/>
+{/if}
