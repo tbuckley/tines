@@ -103,11 +103,17 @@ test('round-trips and clears a model-aware routing effort in the existing dialog
 				harness: 'codex',
 				harness_version: 'e2e',
 				catalog_digest: 'e2e-routing-effort',
-				models: [{ model, efforts: ['low', 'ultra'] }]
+				models: [{ model, efforts: ['low', 'ultra'] }],
+				accepts_asserted_effort: true
 			}
 		}
 	});
 	expect(poll.ok(), await poll.text()).toBe(true);
+	const assertedModel = 'gpt-e2e-unlisted';
+	const assertedSave = await api.patch(`/api/v1/runners/${runner.id}`, {
+		tiers: { balanced: { model: assertedModel } }
+	});
+	expect(assertedSave.ok(), await assertedSave.text()).toBe(true);
 
 	await signIn(context, ALICE.sessionToken);
 	await gotoHydrated(page, `/agents?new=rule&project=${project.id}#routing`);

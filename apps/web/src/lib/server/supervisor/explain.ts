@@ -228,7 +228,8 @@ export async function explainDispatch(
 			tier: resolved.tier,
 			model: resolved.model,
 			verdict,
-			detail
+			detail,
+			...(effort.verification ? { effort_verification: effort.verification } : {})
 		});
 	}
 	const firstOk = targetVerdicts.find((t) => t.verdict === 'ok') ?? null;
@@ -326,7 +327,10 @@ function verdictLine(input: {
 	// The same target the fleet queue groups by (`speakingTarget`): the first
 	// `ok` one, because that is where dispatch would send it, else the first.
 	const first = speakingTarget(input.targets)!;
-	if (first.verdict === 'ok') return `Eligible — would dispatch to ${first.runner_name} next pass`;
+	if (first.verdict === 'ok')
+		return `Eligible — would dispatch to ${first.runner_name} next pass${
+			first.effort_verification === 'asserted' ? ' (asserted effort)' : ''
+		}`;
 	const why =
 		first.verdict === 'paused'
 			? `${first.runner_name} is paused`

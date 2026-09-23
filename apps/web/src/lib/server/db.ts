@@ -433,6 +433,20 @@ export interface SupervisorSettingsTable {
 	updated_at: number;
 }
 
+export interface UserModelRateTable {
+	id: string;
+	user_id: string;
+	model: string;
+	version: number;
+	input_rate: string;
+	cache_read_rate: string;
+	cache_write_rate: string | null;
+	output_rate: string;
+	copied_from: string | null;
+	created_at: number;
+	retired_at: number | null;
+}
+
 export interface RunResourceTable {
 	id: string;
 	user_id: string;
@@ -639,6 +653,7 @@ export interface Database {
 	run_resource: RunResourceTable;
 	routing_rule: RoutingRuleTable;
 	supervisor_settings: SupervisorSettingsTable;
+	user_model_rate: UserModelRateTable;
 	supervisor_sweep_state: SupervisorSweepStateTable;
 	user_preference: UserPreferenceTable;
 	library_install: LibraryInstallTable;

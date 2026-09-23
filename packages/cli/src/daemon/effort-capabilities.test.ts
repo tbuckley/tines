@@ -17,17 +17,23 @@ const capabilities: EffortCapabilitiesV1 = {
 	harness: 'codex',
 	harness_version: '0.153.4',
 	catalog_digest: 'catalog-a',
-	models: [{ model: 'gpt-5.6', efforts: ['low', 'high'] }]
+	models: [{ model: 'gpt-5.6', efforts: ['low', 'high'] }],
+	accepts_asserted_effort: true
 };
 
-function assignment(value = 'low', digest = 'catalog-a'): RunnerAssignment {
+function assignment(
+	value = 'low',
+	digest = 'catalog-a',
+	verification?: 'asserted'
+): RunnerAssignment {
 	return {
 		run: { id: 'arun_1', model: 'gpt-5.6' },
 		effort: {
 			version: 1,
 			value,
 			capability_digest: digest,
-			source: { kind: 'runner_tier', runner_id: 'rnr_1', tier: 'balanced' }
+			source: { kind: 'runner_tier', runner_id: 'rnr_1', tier: 'balanced' },
+			...(verification ? { verification } : {})
 		}
 	} as unknown as RunnerAssignment;
 }
@@ -45,11 +51,28 @@ describe('assignmentEffortRejection', () => {
 			'this daemon runs claude_code'
 		);
 		expect(assignmentEffortRejection(assignment(), undefined, 'codex')).toContain('requires');
+		expect(
+			assignmentEffortRejection(
+				{
+					...assignment('ultra'),
+					effort: { ...assignment('ultra').effort!, verification: 'asserted' }
+				},
+				{ ...capabilities, models: [] },
+				'codex'
+			)
+		).toBeNull();
 	});
 
 	it('preserves old assignments without an effort block', () => {
 		const old = { run: { id: 'arun_old' } } as unknown as RunnerAssignment;
 		expect(assignmentEffortRejection(old, undefined, 'custom')).toBeNull();
+	});
+
+	it('rejects asserted effort when the fresh probe lists the model without it', () => {
+		const asserted = assignment('ultra', 'catalog-a', 'asserted');
+		expect(assignmentEffortRejection(asserted, capabilities, 'codex')).toContain(
+			'does not support'
+		);
 	});
 });
 

@@ -415,6 +415,10 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		last_seen_at: row.last_seen_at,
 		effort_capabilities: effortCapabilities,
 		effort_models: effortModels,
+		effort_assertable:
+			row.type === 'claude_managed' ||
+			(effortCapabilities?.version === 1 &&
+				(effortCapabilities as EffortCapabilitiesV1).accepts_asserted_effort === true),
 		draining: row.draining === 1,
 		launch_failures: row.launch_failures,
 		backoff_until: row.backoff_until,
