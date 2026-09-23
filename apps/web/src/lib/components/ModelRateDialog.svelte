@@ -78,8 +78,10 @@
 				reprice
 			};
 			const result = await api.createSupervisorRate(body);
-			let remaining = result.remaining;
-			while (remaining > 0) remaining = (await api.repriceSupervisorRate(model.trim())).remaining;
+			// Page by cursor: runs this rate still cannot price stay unpriced, so
+			// `remaining` may never reach zero.
+			let cursor = result.next_cursor;
+			while (cursor) cursor = (await api.repriceSupervisorRate(model.trim(), cursor)).next_cursor;
 			open = false;
 			await onsaved?.();
 			onclose?.();

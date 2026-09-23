@@ -87,15 +87,34 @@ export function repriceQueries(
 	return queries;
 }
 
+/** Opaque page cursor: `<created_at>:<id>` of the last row a pass examined. */
+export function parseRepriceCursor(cursor: string | null | undefined) {
+	if (!cursor) return null;
+	const match = /^(\d+):(\S+)$/.exec(cursor);
+	return match ? { created_at: Number(match[1]), id: match[2]! } : null;
+}
+
+/**
+ * One bounded pass over eligible unpriced runs, oldest first. Runs the current
+ * catalog still cannot price stay unpriced, so callers page with `next_cursor`
+ * (null once the last page is examined) rather than looping on `remaining`.
+ */
 export async function repriceUnpricedRuns(
 	db: Kysely<Database>,
 	env: Env,
 	userId: string,
 	model: string,
-	now = Date.now()
-): Promise<{ repriced: number; still_unpriced: number; remaining: number }> {
+	now = Date.now(),
+	cursor: string | null = null
+): Promise<{
+	repriced: number;
+	still_unpriced: number;
+	remaining: number;
+	next_cursor: string | null;
+}> {
 	const catalog = await pricingCatalogFor(db, userId, model);
-	const rows = (await db
+	const after = parseRepriceCursor(cursor);
+	let query = db
 		.selectFrom('agent_run')
 		.select(['id', 'usage', 'created_at'])
 		.where('user_id', '=', userId)
@@ -103,7 +122,12 @@ export async function repriceUnpricedRuns(
 		.where('usage', 'is not', null)
 		.where(
 			sql<boolean>`json_extract(usage, '$.pricing.status') = 'unpriced' AND json_extract(usage, '$.pricing.reason') IN ('unsupported_model', 'missing_rate')`
-		)
+		);
+	if (after)
+		query = query.where(
+			sql<boolean>`(created_at > ${after.created_at} OR (created_at = ${after.created_at} AND id > ${after.id}))`
+		);
+	const rows = (await query
 		.orderBy('created_at', 'asc')
 		.orderBy('id', 'asc')
 		.limit(REPRICE_LIMIT)
@@ -121,5 +145,11 @@ export async function repriceUnpricedRuns(
 			sql<boolean>`json_extract(usage, '$.pricing.status') = 'unpriced' AND json_extract(usage, '$.pricing.reason') IN ('unsupported_model', 'missing_rate')`
 		)
 		.executeTakeFirstOrThrow();
-	return { repriced, still_unpriced: stillUnpriced, remaining: Number(remainingRow.count) };
+	const last = rows.at(-1);
+	return {
+		repriced,
+		still_unpriced: stillUnpriced,
+		remaining: Number(remainingRow.count),
+		next_cursor: rows.length === REPRICE_LIMIT && last ? `${last.created_at}:${last.id}` : null
+	};
 }

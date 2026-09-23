@@ -8,7 +8,12 @@ import type { Database } from '$lib/server/db';
 import { newId } from '$lib/server/db';
 import { runAtomic, ApiFail, requireString } from './core';
 import { CODEX_RATES, RATE_PATTERN } from '../supervisor/codex-pricing';
-import { currentUserRate, repriceUnpricedRuns, serializeUserRate } from '../supervisor/user-rates';
+import {
+	currentUserRate,
+	parseRepriceCursor,
+	repriceUnpricedRuns,
+	serializeUserRate
+} from '../supervisor/user-rates';
 
 const rateFields = ['input_rate', 'cache_read_rate', 'cache_write_rate', 'output_rate'] as const;
 
@@ -24,8 +29,10 @@ function rate(value: unknown, field: string, nullable = false): string | null {
 			}
 		);
 	}
-	const whole = value.split('.')[0]!;
-	if (whole.length > 7 || Number(whole) > 1_000_000) {
+	const [whole, fraction = ''] = value.split('.');
+	// RATE_PATTERN forbids leading zeros, so the whole part compares exactly;
+	// any nonzero fraction on 1000000 is over the cap.
+	if (Number(whole) > 1_000_000 || (Number(whole) === 1_000_000 && /[1-9]/.test(fraction))) {
 		throw new ApiFail(422, 'invalid_field', `"${field}" must be at most 1,000,000`, { field });
 	}
 	return value;
@@ -118,7 +125,7 @@ export async function createRate(
 	await runAtomic(env, [db.insertInto('user_model_rate').values(row).compile()]);
 	const repricing = input.reprice
 		? await repriceUnpricedRuns(db, env, userId, input.model, now)
-		: { repriced: 0, still_unpriced: 0, remaining: 0 };
+		: { repriced: 0, still_unpriced: 0, remaining: 0, next_cursor: null };
 	return { rate: serializeUserRate(row), ...repricing };
 }
 
@@ -127,11 +134,16 @@ export async function repriceRate(
 	env: Env,
 	userId: string,
 	model: string,
+	cursor: string | null = null,
 	now = Date.now()
 ) {
+	if (cursor !== null && !parseRepriceCursor(cursor))
+		throw new ApiFail(422, 'invalid_field', '"cursor" is not a valid reprice cursor', {
+			field: 'cursor'
+		});
 	if (!model || model.length > 200)
 		throw new ApiFail(422, 'invalid_field', '"model" must be a valid model id', { field: 'model' });
-	return repriceUnpricedRuns(db, env, userId, model, now);
+	return repriceUnpricedRuns(db, env, userId, model, now, cursor);
 }
 
 export async function retireRate(

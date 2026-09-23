@@ -45,7 +45,7 @@ describe('user model rates', () => {
 
 describe('repriceUnpricedRuns', () => {
 	const createdAt = Date.parse('2026-09-11T03:30:00Z');
-	const evidence = (model: string): CodexPricingEvidenceV1 => ({
+	const evidence = (model: string, cacheWrite = 0): CodexPricingEvidenceV1 => ({
 		version: 1,
 		harness: 'codex',
 		model,
@@ -56,25 +56,25 @@ describe('repriceUnpricedRuns', () => {
 		raw_usage: {
 			input_tokens: 1000,
 			cached_input_tokens: 600,
-			cache_write_input_tokens: 0,
+			cache_write_input_tokens: cacheWrite,
 			output_tokens: 100
 		},
 		model_rerouted: false,
 		measurement_status: 'complete',
 		terminal_snapshots: 1
 	});
-	const priced = (model: string) =>
+	const priced = (model: string, cacheWrite = 0) =>
 		JSON.stringify(
 			priceCodexUsage(
 				{
 					run: { model, created_at: createdAt },
 					usage: {
-						input_tokens: 400,
+						input_tokens: 400 - cacheWrite,
 						cache_read_tokens: 600,
-						cache_write_tokens: 0,
+						cache_write_tokens: cacheWrite,
 						output_tokens: 100
 					},
-					evidence: evidence(model),
+					evidence: evidence(model, cacheWrite),
 					now: createdAt + 1
 				},
 				CODEX_RATES
@@ -115,7 +115,7 @@ describe('repriceUnpricedRuns', () => {
 		const before = { other: usageOf('arun_other_model'), builtin: usageOf('arun_builtin') };
 		const result = await repriceUnpricedRuns(t.db, t.env, USER, 'future-model', createdAt + 100);
 
-		expect(result).toEqual({ repriced: 1, still_unpriced: 0, remaining: 0 });
+		expect(result).toEqual({ repriced: 1, still_unpriced: 0, remaining: 0, next_cursor: null });
 		const after = JSON.parse(usageOf('arun_target')) as AgentRunUsage;
 		expect(after.pricing).toMatchObject({
 			status: 'calculated',
@@ -130,7 +130,8 @@ describe('repriceUnpricedRuns', () => {
 		expect(await repriceUnpricedRuns(t.db, t.env, USER, 'future-model', createdAt + 200)).toEqual({
 			repriced: 0,
 			still_unpriced: 0,
-			remaining: 0
+			remaining: 0,
+			next_cursor: null
 		});
 		expect(usageOf('arun_target')).toBe(repriced);
 	});
@@ -142,8 +143,58 @@ describe('repriceUnpricedRuns', () => {
 		expect(await repriceUnpricedRuns(t.db, t.env, USER, 'future-model', createdAt + 100)).toEqual({
 			repriced: 0,
 			still_unpriced: 1,
-			remaining: 1
+			remaining: 1,
+			next_cursor: null
 		});
 		expect(usageOf('arun_a')).toBe(unpriced);
+	});
+
+	const insertRate = (t: ReturnType<typeof createTestDb>, write: string | null) =>
+		t.sqlite
+			.prepare(
+				`INSERT INTO user_model_rate (id,user_id,model,version,input_rate,cache_read_rate,cache_write_rate,output_rate,created_at) VALUES (?,?,?,?,?,?,?,?,?)`
+			)
+			.run('umr_p', USER, 'future-model', 1, '3', '0.3', write, '9', createdAt + 50);
+
+	it('ends paging when a run the rate cannot price stays unpriced', async () => {
+		const { t, run, usageOf } = setup();
+		const unpriceable = priced('future-model', 50);
+		run('future-model', unpriceable, 'arun_needs_write');
+		run('future-model', priced('future-model'), 'arun_ok');
+		insertRate(t, null);
+
+		const result = await repriceUnpricedRuns(t.db, t.env, USER, 'future-model', createdAt + 100);
+		expect(result).toEqual({ repriced: 1, still_unpriced: 1, remaining: 1, next_cursor: null });
+		expect(usageOf('arun_needs_write')).toBe(unpriceable);
+		expect(JSON.parse(usageOf('arun_ok')).pricing.status).toBe('calculated');
+	});
+
+	it('pages past a full page of unpriceable runs to price later ones', async () => {
+		const { t, run, usageOf } = setup();
+		const unpriceable = priced('future-model', 50);
+		for (let i = 0; i < 200; i++)
+			run('future-model', unpriceable, `arun_u${String(i).padStart(3, '0')}`);
+		// Same created_at as the stuck rows; `arun_z` sorts after them by id.
+		run('future-model', priced('future-model'), 'arun_z_priceable');
+		insertRate(t, null);
+
+		const first = await repriceUnpricedRuns(t.db, t.env, USER, 'future-model', createdAt + 100);
+		expect(first).toMatchObject({ repriced: 0, still_unpriced: 200, remaining: 201 });
+		expect(first.next_cursor).toBe(`${createdAt}:arun_u199`);
+		expect(JSON.parse(usageOf('arun_z_priceable')).pricing.status).toBe('unpriced');
+
+		const second = await repriceUnpricedRuns(
+			t.db,
+			t.env,
+			USER,
+			'future-model',
+			createdAt + 100,
+			first.next_cursor
+		);
+		expect(second).toEqual({ repriced: 1, still_unpriced: 0, remaining: 200, next_cursor: null });
+		expect(JSON.parse(usageOf('arun_z_priceable')).pricing).toMatchObject({
+			status: 'calculated',
+			basis: { rate_source: 'user' }
+		});
 	});
 });
