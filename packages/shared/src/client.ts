@@ -104,6 +104,19 @@ import type {
 	UsageReport,
 	UsageWindow
 } from './usage.js';
+import type {
+	AcquireStateRetirementHoldRequest,
+	ApplyStateRetirementRequest,
+	PrepareStateRetirementRequest,
+	StateRetirementHold,
+	StateRetirementInventoryV1,
+	StateRetirementPlanResponse,
+	StateRetirementReceiptV1,
+	StateRetirementVerification,
+	ReleaseStateRetirementHoldRequest,
+	StateRetirementRollbackPrepareResponse,
+	StateRetirementRollbackApplyRequest
+} from './state-retirement.js';
 
 export interface TimeResponse {
 	/** ISO 8601 timestamp (UTC). */
@@ -286,6 +299,34 @@ export function createApiClient(options: ApiClientOptions) {
 
 	return {
 		getTime: () => get<TimeResponse>('/api/time'),
+		getStateRetirementInventory: () =>
+			get<StateRetirementInventoryV1>('/api/v1/state-retirement/inventory'),
+		acquireStateRetirementHold: (body: AcquireStateRetirementHoldRequest) =>
+			request<StateRetirementHold>('POST', '/api/v1/state-retirement/holds', body),
+		prepareStateRetirement: (body: PrepareStateRetirementRequest) =>
+			request<StateRetirementPlanResponse>('POST', '/api/v1/state-retirement/prepare', body),
+		applyStateRetirement: (body: ApplyStateRetirementRequest) =>
+			request<StateRetirementReceiptV1>('POST', '/api/v1/state-retirement/apply', body),
+		getStateRetirementReceipt: (id: string) =>
+			get<StateRetirementReceiptV1>(`/api/v1/state-retirement/receipts/${encodeURIComponent(id)}`),
+		verifyStateRetirementReceipt: (id: string) =>
+			get<StateRetirementVerification>(
+				`/api/v1/state-retirement/receipts/${encodeURIComponent(id)}/verification`
+			),
+		releaseStateRetirementHold: (id: string, body: ReleaseStateRetirementHoldRequest) =>
+			request<{ hold_id: string; status: string; released_at: number | null }>(
+				'POST',
+				`/api/v1/state-retirement/holds/${encodeURIComponent(id)}/release`,
+				body
+			),
+		prepareStateRetirementRollback: (body: { receipt_id: string }) =>
+			request<StateRetirementRollbackPrepareResponse>(
+				'POST',
+				'/api/v1/state-retirement/rollback/prepare',
+				body
+			),
+		applyStateRetirementRollback: (body: StateRetirementRollbackApplyRequest) =>
+			request<StateRetirementReceiptV1>('POST', '/api/v1/state-retirement/rollback/apply', body),
 		getVersion: () => get<VersionResponse>('/api/version'),
 
 		// Projects

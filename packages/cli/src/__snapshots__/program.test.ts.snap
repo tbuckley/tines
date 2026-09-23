@@ -33,6 +33,7 @@ Commands:
   routing           Scoped routing rules: which runner takes which issues (most
                     specific scope wins)
   supervisor        The automation kill switch, quota policy, and attempt limit
+  state-retirement  Preserve guidance before state inheritance is retired
   usage [options]   Compare finalized run spend for a period
   events            Read the activity log
   help [command]    display help for command
@@ -1543,6 +1544,136 @@ Options:
 Show a schedule (<project>/<name>): config, next/last run, recent instances
 
 Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines state-retirement": "Usage: tines state-retirement [options] [command]
+
+Preserve guidance before state inheritance is retired
+
+Options:
+  -h, --help                            display help for command
+
+Commands:
+  inventory [options]                   Write a versioned, read-only inventory
+                                        for human review
+  hold [options]                        Acquire a durable dispatch drain for a
+                                        reviewed inventory
+  prepare [options]                     Prepare a signed, reviewed preservation
+                                        plan after the drain
+  apply [options]                       Apply a signed plan once, or recover its
+                                        durable receipt
+  receipt [options] <receipt>           Read a durable state-retirement receipt
+  release [options] <hold>              Explicitly release a verified or
+                                        abandoned operator hold
+  rollback-prepare [options] <receipt>  Prepare a separately signed conditional
+                                        rollback
+  rollback-apply [options]              Apply a signed conditional rollback once
+  help [command]                        display help for command
+",
+  "tines state-retirement apply": "Usage: tines state-retirement apply [options]
+
+Apply a signed plan once, or recover its durable receipt
+
+Options:
+  --plan <file>              signed plan JSON
+  --inventory <file>         override the post-drain inventory embedded in the
+                             plan
+  --confirm-digest <digest>  confirm the exact plan digest
+  -u, --url <url>            base URL of the Tines API (or set TINES_API_URL, or
+                             run \`tines login\`; default
+                             https://tines.tbuckley.dev)
+  --api-key <key>            API key (or set TINES_API_KEY, or run \`tines
+                             login\`)
+  --json                     output the raw JSON response
+  -h, --help                 display help for command
+",
+  "tines state-retirement hold": "Usage: tines state-retirement hold [options]
+
+Acquire a durable dispatch drain for a reviewed inventory
+
+Options:
+  --inventory <file>         exact inventory JSON written by inventory
+  --confirm-digest <digest>  confirm the reviewed inventory digest
+  -u, --url <url>            base URL of the Tines API (or set TINES_API_URL, or
+                             run \`tines login\`; default
+                             https://tines.tbuckley.dev)
+  --api-key <key>            API key (or set TINES_API_KEY, or run \`tines
+                             login\`)
+  --json                     output the raw JSON response
+  -h, --help                 display help for command
+",
+  "tines state-retirement inventory": "Usage: tines state-retirement inventory [options]
+
+Write a versioned, read-only inventory for human review
+
+Options:
+  --out <file>     write the exact inventory JSON to this file
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines state-retirement prepare": "Usage: tines state-retirement prepare [options]
+
+Prepare a signed, reviewed preservation plan after the drain
+
+Options:
+  --hold <id>         durable state-retirement hold
+  --inventory <file>  optional original inventory JSON used to acquire the hold
+  --out <file>        write the plan JSON to this file
+  -u, --url <url>     base URL of the Tines API (or set TINES_API_URL, or run
+                      \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>     API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json              output the raw JSON response
+  -h, --help          display help for command
+",
+  "tines state-retirement receipt": "Usage: tines state-retirement receipt [options] <receipt>
+
+Read a durable state-retirement receipt
+
+Options:
+  --verify         verify exact current targets and journals
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines state-retirement release": "Usage: tines state-retirement release [options] <hold>
+
+Explicitly release a verified or abandoned operator hold
+
+Options:
+  --confirm <hold>  repeat the hold id as owner confirmation
+  -u, --url <url>   base URL of the Tines API (or set TINES_API_URL, or run
+                    \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>   API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json            output the raw JSON response
+  -h, --help        display help for command
+",
+  "tines state-retirement rollback-apply": "Usage: tines state-retirement rollback-apply [options]
+
+Apply a signed conditional rollback once
+
+Options:
+  --plan <file>    rollback authorization JSON
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines state-retirement rollback-prepare": "Usage: tines state-retirement rollback-prepare [options] <receipt>
+
+Prepare a separately signed conditional rollback
+
+Options:
+  --out <file>     write the rollback authorization
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)

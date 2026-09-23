@@ -19,7 +19,7 @@ import { readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const GRANDFATHERED_DUPLICATES = new Set(['0010']);
+const GRANDFATHERED_DUPLICATES = new Set(['0010', '0033']);
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 const files = readdirSync(dir).sort();

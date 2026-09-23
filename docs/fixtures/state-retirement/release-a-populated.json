@@ -1,0 +1,45 @@
+{
+	"evidence": "local",
+	"schema": "Release A fixture consumed by the frozen A worker against the B schema",
+	"user_id": "fixture-owner",
+	"workflow": { "id": "fixture-workflow", "name": "Design Craft" },
+	"states": [
+		{ "id": "fixture-craft", "name": "Craft", "inherits_from_state_id": null },
+		{ "id": "fixture-building", "name": "Building", "inherits_from_state_id": "fixture-craft" }
+	],
+	"project": { "id": "fixture-project", "name": "Product A" },
+	"issue": { "id": "fixture-issue", "number": 1, "state_id": "fixture-building" },
+	"context": [
+		{
+			"id": "fixture-root-prompt",
+			"kind": "prompt",
+			"name": "stage-guidance",
+			"workflow_state_id": "fixture-craft",
+			"body": "Local Craft guidance bytes."
+		},
+		{
+			"id": "fixture-root-journal",
+			"kind": "prompt",
+			"name": "journal",
+			"project_id": "fixture-project",
+			"workflow_state_id": "fixture-craft",
+			"body": "- 2026-09-22: local preservation fixture."
+		}
+	],
+	"expected_after_release_a": {
+		"pointers": [],
+		"copied_context": [
+			{
+				"kind": "prompt",
+				"name": "Guidance — preserved from Design Craft / Craft",
+				"workflow_state_id": "fixture-building"
+			},
+			{
+				"kind": "prompt",
+				"name": "journal",
+				"project_id": "fixture-project",
+				"workflow_state_id": "fixture-building"
+			}
+		]
+	}
+}

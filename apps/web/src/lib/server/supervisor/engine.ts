@@ -210,6 +210,14 @@ export async function loadEligibleIssues(
 		WHERE project.user_id = ${userId}
 			AND project.archived_at IS NULL
 			AND st.category = 'active'
+			AND NOT EXISTS (
+				SELECT 1
+				FROM state_retirement_hold h
+				JOIN state_retirement_hold_state hs ON hs.hold_id = h.id
+				WHERE h.user_id = ${userId}
+					AND h.released_at IS NULL
+					AND hs.state_id = issue.state_id
+			)
 			AND issue.needs_attention = 0
 			AND NOT EXISTS (
 				SELECT 1 FROM issue_link dl WHERE dl.source_issue_id = issue.id AND dl.kind = 'duplicate_of'
@@ -401,6 +409,14 @@ export async function claimRun(
 			-- reading the queue and this claim.
 			AND project.archived_at IS NULL
 			AND st.category = 'active'
+			AND NOT EXISTS (
+				SELECT 1
+				FROM state_retirement_hold h
+				JOIN state_retirement_hold_state hs ON hs.hold_id = h.id
+				WHERE h.user_id = ${input.userId}
+					AND h.released_at IS NULL
+					AND hs.state_id = issue.state_id
+			)
 			AND issue.needs_attention = 0
 			AND NOT EXISTS (
 				SELECT 1 FROM agent_run
