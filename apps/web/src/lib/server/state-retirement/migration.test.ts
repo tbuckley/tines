@@ -76,7 +76,6 @@ describe('state retirement Release A migration', () => {
 	it('makes an active hold fail closed for old-worker run and pointer writes', () => {
 		const db = preReleaseADb();
 		seedPopulatedInheritance(db);
-		db.exec(readFileSync(`${migrationsDir}/${migrationName}`, 'utf8'));
 		acquireHold(db);
 
 		// RAISE(IGNORE) gives an old claim the same zero-row CAS result as a lost race.
@@ -124,7 +123,6 @@ describe('state retirement Release A migration', () => {
 	it('allows only one active hold per owner and state', () => {
 		const db = preReleaseADb();
 		seedPopulatedInheritance(db);
-		db.exec(readFileSync(`${migrationsDir}/${migrationName}`, 'utf8'));
 		acquireHold(db);
 		db.exec(`
 			INSERT INTO state_retirement_hold

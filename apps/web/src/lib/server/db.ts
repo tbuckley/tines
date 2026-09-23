@@ -539,6 +539,7 @@ export interface StateRetirementRestoreAuthorizationTable {
 	child_state_id: string;
 	parent_state_id: string;
 	consumed_at: number | null;
+}
 
 export interface WorkflowPublicationTable {
 	id: string;

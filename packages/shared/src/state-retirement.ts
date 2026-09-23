@@ -1,9 +1,29 @@
-/** Read-only Release A inventory for retiring state-context inheritance. */
+/** Read-only Release A inventory and preservation-plan contracts. */
+
+import type { ContextKind, ContextFile } from './types.js';
+
+export type StateRetirementDiagnosticCode =
+	| 'state_inheritance_cycle'
+	| 'dangling_state_parent'
+	| 'foreign_state_parent'
+	| 'retirement_no_pointers'
+	| 'retirement_inventory_invalid'
+	| 'retirement_unsupported_kind'
+	| 'retirement_inherited_env'
+	| 'retirement_unrepresentable_order'
+	| 'retirement_collision'
+	| 'retirement_enumeration_bound'
+	| 'retirement_repo_conflict'
+	| 'retirement_position_overflow';
+
 export interface StateRetirementDiagnostic {
-	code: 'state_inheritance_cycle' | 'dangling_state_parent' | 'foreign_state_parent';
-	state_id: string;
-	parent_state_id: string;
+	code: StateRetirementDiagnosticCode;
+	state_id?: string;
+	parent_state_id?: string;
+	item_id?: string;
 	message: string;
+	/** A compact, non-secret witness of the counterexample. */
+	details?: Record<string, unknown>;
 }
 
 export interface StateRetirementInventoryV1 {
@@ -18,11 +38,7 @@ export interface StateRetirementInventoryV1 {
 		parent_state_id: string;
 		chain: string[];
 	}>;
-	/**
-	 * Exact, deterministically ordered database witness. It intentionally keeps
-	 * losing context candidates and empty sets so a reviewed cutover can be
-	 * invalidated by any relevant insertion, deletion, re-scope, or byte edit.
-	 */
+	/** Exact, deterministically ordered database witness. */
 	witness: StateRetirementWitnessV1;
 }
 
@@ -55,9 +71,168 @@ export interface StateRetirementHold {
 		state_name: string;
 		state_category: string;
 	}>;
-	active_runs: Array<{
-		id: string;
-		state_id_at_start: string;
-		status: string;
+	active_runs: Array<{ id: string; state_id_at_start: string; status: string }>;
+}
+
+export interface StateRetirementScope {
+	project_id: string | null;
+	workflow_state_id: string | null;
+	label_id: string | null;
+	issue_id: string | null;
+}
+
+export interface StateRetirementTargetClass {
+	id: string;
+	state_id: string;
+	project: { kind: 'explicit'; id: string } | { kind: 'unmatched' };
+	label_ids: string[];
+	issue: { kind: 'explicit'; id: string } | { kind: 'none' };
+}
+
+export interface StateRetirementRawFile extends ContextFile {
+	id: string;
+	context_item_id: string;
+	created_at: number;
+	updated_at: number;
+}
+
+/** A witness row with secrets deliberately absent. */
+export interface StateRetirementRawItem {
+	id: string;
+	kind: string;
+	name: string;
+	description: string;
+	scope: StateRetirementScope;
+	body: string | null;
+	repo_url: string | null;
+	repo_branch: string | null;
+	repo_dir: string | null;
+	config: string | null;
+	position: number;
+	version: number;
+	created_at: number;
+	updated_at: number;
+	files: StateRetirementRawFile[];
+	/** Public env metadata only; never a value or ciphertext. */
+	env_hint?: string | null;
+	env_secret?: boolean;
+}
+
+export interface StateRetirementSourceOrder {
+	item_id: string;
+	kind: string;
+	name: string;
+	position: number;
+	state_depth: number;
+	scope: StateRetirementScope;
+	body_sha256?: string;
+}
+
+export interface StateRetirementAllocation {
+	source_item_id: string;
+	copy_item_id: string;
+	copy_file_ids: string[];
+	name: string;
+	scope: StateRetirementScope;
+	position: number;
+	version: 1;
+	source_version: number;
+}
+
+export interface StateRetirementCopyOperation {
+	kind: 'copy_context_item';
+	allocation: StateRetirementAllocation;
+	payload: {
+		item: Omit<StateRetirementRawItem, 'id' | 'files' | 'version' | 'updated_at'>;
+		files: Array<{ id: string; path: string; content: string }>;
+	};
+}
+
+export interface StateRetirementPointerOperation {
+	kind: 'clear_pointer';
+	child_state_id: string;
+	original_parent_state_id: string;
+	state_witness: Record<string, unknown>;
+}
+
+export type StateRetirementOperation =
+	StateRetirementCopyOperation | StateRetirementPointerOperation;
+
+export interface StateRetirementEffectiveItem {
+	item_id: string;
+	kind: ContextKind | string;
+	name: string;
+	scope: StateRetirementScope;
+	body?: string;
+	files?: ContextFile[];
+	repo?: { url: string; branch: string | null; dir: string };
+	env?: { secret: boolean; hint: string | null };
+	position: number;
+	version: number;
+	inherited_from: string | null;
+	is_journal: boolean;
+}
+
+export interface StateRetirementEffectiveBundle {
+	prompts: StateRetirementEffectiveItem[];
+	skills: StateRetirementEffectiveItem[];
+	repos: StateRetirementEffectiveItem[];
+	envs: StateRetirementEffectiveItem[];
+	overridden: Array<{ item_id: string; overridden_by: string; kind: string; name: string }>;
+	repo_conflicts: Array<{ dir: string; item_ids: string[] }>;
+	journal: { state_id: string | null; item_id: string | null; version: number | null };
+}
+
+export interface StateRetirementLaunchDifference {
+	before_text: string;
+	after_text: string;
+	body_changes: Array<{ source_item_id: string; copy_item_id: string | null; same_bytes: boolean }>;
+	heading_changes: Array<{ before: string | null; after: string | null }>;
+	allowed: boolean;
+}
+
+export interface StateRetirementTargetComparison {
+	target: StateRetirementTargetClass;
+	before: StateRetirementEffectiveBundle;
+	after: StateRetirementEffectiveBundle;
+	launch: StateRetirementLaunchDifference;
+	raw_prompt_order: StateRetirementSourceOrder[];
+	candidate_item_ids: string[];
+}
+
+export interface StateRetirementRollbackData {
+	original_pointers: Array<{
+		child_state_id: string;
+		parent_state_id: string;
+		state_witness: Record<string, unknown>;
 	}>;
+	source_to_copy: Record<string, string[]>;
+	source_item_ids: string[];
+	source_file_ids: string[];
+}
+
+export interface StateRetirementPlanV1 {
+	version: 1;
+	applyable: boolean;
+	inventory: {
+		owner_id: string;
+		captured_at: number;
+		inventory_digest: string;
+		topology_digest: string;
+	};
+	held_states: string[];
+	active_run_ids: string[];
+	targets: StateRetirementTargetClass[];
+	diagnostics: StateRetirementDiagnostic[];
+	comparisons: StateRetirementTargetComparison[];
+	allocations: StateRetirementAllocation[];
+	source_to_copy: Record<string, string[]>;
+	proposed_operations: StateRetirementOperation[];
+	rollback: StateRetirementRollbackData;
+}
+
+export interface StateRetirementPlannerOptions {
+	max_targets?: number;
+	max_labels?: number;
+	max_copies?: number;
 }

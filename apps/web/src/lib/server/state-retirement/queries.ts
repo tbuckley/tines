@@ -57,7 +57,9 @@ export function retirementWitnessExpression(userId: string): RawBuilder<string> 
 						'project_id', project_id, 'workflow_state_id', workflow_state_id,
 						'issue_id', issue_id, 'label_id', label_id, 'body', body,
 						'repo_url', repo_url, 'repo_branch', repo_branch, 'repo_dir', repo_dir,
-						'config', config, 'position', position, 'version', version,
+						'config', config, 'env_hint', env_hint,
+						'env_secret', CASE WHEN env_value_enc IS NOT NULL THEN 1 ELSE 0 END,
+						'position', position, 'version', version,
 						'created_at', created_at, 'updated_at', updated_at) AS row_json
 					FROM context_item WHERE user_id = ${userId} AND kind != 'artifact' ORDER BY id
 				)), '[]'),
