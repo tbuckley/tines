@@ -1913,6 +1913,41 @@ export interface SupervisorSettingsResponse extends SupervisorSettings {
 	canceled_runs?: number;
 }
 
+export interface UserModelRate {
+	id: string;
+	model: string;
+	version: number;
+	input_rate: string;
+	cache_read_rate: string;
+	cache_write_rate: string | null;
+	output_rate: string;
+	copied_from: string | null;
+	created_at: number;
+	retired_at: number | null;
+}
+
+export interface SupervisorRatesResponse {
+	user_rates: UserModelRate[];
+	builtin: Array<{
+		model: string;
+		rates: Record<
+			'input_tokens' | 'cache_read_tokens' | 'cache_write_tokens' | 'output_tokens',
+			string | null
+		>;
+	}>;
+	unpriced_models: Array<{ model: string; runs: number }>;
+}
+
+export interface CreateUserModelRateRequest {
+	model: string;
+	input_rate: string;
+	cache_read_rate: string;
+	cache_write_rate: string | null;
+	output_rate: string;
+	copied_from?: string;
+	reprice?: boolean;
+}
+
 /**
  * Per-user UI preferences. Never read by agents: `/api/v1/preferences` is
  * control-plane fenced, GET included. See specs/projects/SPEC.md "Project focus".
@@ -2437,7 +2472,9 @@ export interface RunPricingBasisV1 {
 	model: string;
 	model_identity: 'requested_launch_no_observed_reroute';
 	usage_scope: 'attempt';
-	plan: 'api_standard';
+	plan: 'api_standard' | 'user_entered';
+	rate_source?: 'user';
+	rate_entered_at?: number;
 	context_band: 'short' | 'published';
 	rate_id: string;
 	rate_version: number;
@@ -2459,6 +2496,7 @@ export type RunPricingV1 = {
 	version: 1;
 	evidence?: CodexPricingEvidenceV1;
 	evaluated_at: number;
+	repriced_from?: { evaluated_at: number; reason: RunPricingReason };
 } & (
 	| { status: 'calculated'; basis: RunPricingBasisV1 }
 	| { status: 'unpriced'; reason: RunPricingReason }

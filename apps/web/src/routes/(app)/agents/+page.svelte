@@ -50,6 +50,7 @@
 	import { stageRunsHref } from '$lib/stage-stats-view';
 	import FleetQueuePanel from '$lib/components/FleetQueuePanel.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import ModelRateDialog from '$lib/components/ModelRateDialog.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
 	import PatInstructions from '$lib/components/PatInstructions.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
@@ -568,6 +569,12 @@
 	let editCapTokens = $state('');
 	let editApiKey = $state('');
 	let savingEdit = $state(false);
+	let rateDialogOpen = $state(false);
+	let rateEdit = $state<(typeof data.rates.user_rates)[number] | null>(null);
+	async function retireUserRate(id: string) {
+		await api.deleteSupervisorRate(id);
+		await invalidateAll();
+	}
 
 	/**
 	 * Opened from the Now row's "Raise cap": land the caret on the field the
@@ -1730,6 +1737,48 @@
 				</div>
 			</form>
 
+			<div class="space-y-2 border-t pt-5">
+				<div class="flex items-center justify-between gap-3">
+					<div>
+						<p class="text-sm font-medium">Model rates</p>
+						<p class="text-muted-foreground text-xs">
+							Rates for models without a built-in price. New entries can reprice unpriced runs.
+						</p>
+					</div>
+					<Button
+						size="sm"
+						variant="outline"
+						onclick={() => {
+							rateEdit = null;
+							rateDialogOpen = true;
+						}}>Add rate</Button
+					>
+				</div>
+				{#if data.rates.user_rates.length}
+					<ul class="divide-y rounded-md border text-sm">
+						{#each data.rates.user_rates as rate (rate.id)}
+							<li class="flex items-center justify-between gap-3 p-2.5">
+								<span
+									><code>{rate.model}</code> · ${rate.input_rate}/{rate.output_rate} input/output · v{rate.version}</span
+								>
+								<span class="flex gap-2"
+									><Button
+										size="sm"
+										variant="ghost"
+										onclick={() => {
+											rateEdit = rate;
+											rateDialogOpen = true;
+										}}>Edit</Button
+									><Button size="sm" variant="ghost" onclick={() => void retireUserRate(rate.id)}
+										>Remove</Button
+									></span
+								>
+							</li>
+						{/each}
+					</ul>
+				{:else}<p class="text-muted-foreground text-xs">No user-entered rates yet.</p>{/if}
+			</div>
+
 			<!-- GitHub PAT: one credential shared across managed runners, write-only -->
 			<form onsubmit={savePat} class="space-y-1.5 border-t pt-5">
 				<p class="text-sm font-medium">GitHub access</p>
@@ -1779,6 +1828,15 @@
 
 <!-- add runner: local shows the daemon bootstrap (the daemon registers itself);
      Claude managed creates the runner here with a ping-validated key -->
+<ModelRateDialog
+	bind:open={rateDialogOpen}
+	model={rateEdit?.model ?? ''}
+	initial={rateEdit}
+	rates={data.rates}
+	onsaved={invalidateAll}
+	onclose={() => (rateDialogOpen = false)}
+/>
+
 <Modal bind:open={addRunnerOpen} title="Add runner" onclose={resetAddRunner}>
 	{#if createdRunner}
 		<!-- final, skippable step: add the new runner to routing (flow 3) -->

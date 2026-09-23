@@ -63,6 +63,7 @@ import {
 } from '$lib/server/supervisor/resume';
 import { effectiveAutomationEnabled } from '$lib/server/supervisor/settings';
 import { priceCodexUsage } from '$lib/server/supervisor/codex-pricing';
+import { pricingCatalogFor } from '$lib/server/supervisor/user-rates';
 import { listArtifacts } from './artifacts';
 import { listLabels } from './labels';
 import {
@@ -1672,11 +1673,12 @@ export async function finishRun(
 		await markRunRunning(db, env, run, now);
 	}
 	if (usage && (pricingEvidence.evidence || body.pricing_evidence !== undefined)) {
+		const catalog = await pricingCatalogFor(db, run.user_id, run.model ?? '');
 		usage =
 			!pricingEvidence.valid && usage.cost_source === 'provider' && usage.cost_usd !== undefined
 				? { ...usage, pricing: { version: 1, evaluated_at: now, status: 'provider_authoritative' } }
 				: pricingEvidence.valid
-					? priceCodexUsage({ run, usage, evidence: pricingEvidence.evidence, now })
+					? priceCodexUsage({ run, usage, evidence: pricingEvidence.evidence, now }, catalog)
 					: {
 							...usage,
 							cost_usd: undefined,
@@ -1688,7 +1690,12 @@ export async function finishRun(
 								reason: 'invalid_pricing_evidence'
 							}
 						};
-	} else if (usage) usage = priceCodexUsage({ run, usage, now });
+	} else if (usage) {
+		usage = priceCodexUsage(
+			{ run, usage, now },
+			await pricingCatalogFor(db, run.user_id, run.model ?? '')
+		);
+	}
 	// The daemon marks the ends it knows were its own fault — a shutdown, an
 	// orphan killed after a restart — as interruptions. Honoured only on a
 	// failure, and only for that exact value: everything else (a harness
