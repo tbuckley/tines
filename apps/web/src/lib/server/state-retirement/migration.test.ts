@@ -10,9 +10,14 @@ function preReleaseADb(): DatabaseSync {
 	const db = new DatabaseSync(':memory:');
 	db.exec('PRAGMA foreign_keys = ON');
 	for (const file of readdirSync(migrationsDir).sort()) {
-		if (file >= migrationName) break;
+		// Main now has migrations after the original A filename. Model the
+		// deployed ordering explicitly: all current-main migrations first, then
+		// the colliding, already-applied A file.
+		if (file === migrationName) continue;
+		if (file > '0040_run_key_stage_snapshot.sql') continue;
 		db.exec(readFileSync(`${migrationsDir}/${file}`, 'utf8'));
 	}
+	db.exec(readFileSync(`${migrationsDir}/${migrationName}`, 'utf8'));
 	return db;
 }
 
@@ -53,8 +58,6 @@ describe('state retirement Release A migration', () => {
 	it('is additive and preserves populated inheritance before a hold exists', () => {
 		const db = preReleaseADb();
 		seedPopulatedInheritance(db);
-
-		db.exec(readFileSync(`${migrationsDir}/${migrationName}`, 'utf8'));
 
 		expect(
 			db.prepare("SELECT inherits_from_state_id FROM workflow_state WHERE id = 'child'").get()

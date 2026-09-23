@@ -291,7 +291,6 @@ export function createApiClient(options: ApiClientOptions) {
 
 	return {
 		getTime: () => get<TimeResponse>('/api/time'),
-<<<<<<< HEAD
 		getStateRetirementInventory: () =>
 			get<StateRetirementInventoryV1>('/api/v1/state-retirement/inventory'),
 		acquireStateRetirementHold: (body: AcquireStateRetirementHoldRequest) =>
