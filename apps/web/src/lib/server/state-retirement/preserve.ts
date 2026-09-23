@@ -122,7 +122,7 @@ function readWitness(inventory: StateRetirementInventoryV1): {
 	projects: Set<string>;
 	issues: Map<string, { project_id: string; state_id: string }>;
 	issueLabels: Map<string, string[]>;
-	labels: Set<string>;
+	labels: Map<string, string>;
 } {
 	const witness = inventory.witness;
 	const workflows = new Map(
@@ -163,13 +163,19 @@ function readWitness(inventory: StateRetirementInventoryV1): {
 			issueLabels.set(issueId, [...(issueLabels.get(issueId) ?? []), labelId]);
 	}
 	for (const labels of issueLabels.values()) labels.sort();
-	const labels = new Set<string>();
+	const labels = new Map<string, string>();
+	for (const row of witness.labels) {
+		const id = str(row.id);
+		if (id) labels.set(id, str(row.name, id));
+	}
 	const items = witness.context_items
 		.map((row) => normalizeItem(row, witness.context_files))
 		.filter((row) => row.kind !== 'artifact');
-	for (const row of items) if (row.scope.label_id) labels.add(row.scope.label_id);
+	for (const row of items)
+		if (row.scope.label_id && !labels.has(row.scope.label_id))
+			labels.set(row.scope.label_id, row.scope.label_id);
 	for (const issueLabelIds of issueLabels.values())
-		for (const labelId of issueLabelIds) labels.add(labelId);
+		for (const labelId of issueLabelIds) if (!labels.has(labelId)) labels.set(labelId, labelId);
 	return { items, states, workflows, projects, issues, issueLabels, labels };
 }
 
@@ -221,18 +227,21 @@ function layerRank(scope: StateRetirementScope): number {
 	);
 }
 
-function sortRows(rows: StateRetirementRawItem[], chain: string[]): StateRetirementRawItem[] {
+function sortRows(
+	rows: StateRetirementRawItem[],
+	chain: string[],
+	labels: Map<string, string>
+): StateRetirementRawItem[] {
 	const depth = (row: StateRetirementRawItem) =>
 		row.scope.workflow_state_id ? chain.indexOf(row.scope.workflow_state_id) : chain.length - 1;
+	const labelSortKey = (row: StateRetirementRawItem) =>
+		(row.scope.label_id ? labels.get(row.scope.label_id) : '')?.toLowerCase() ||
+		(row.scope.label_id ?? '');
 	return [...rows].sort(
 		(a, b) =>
 			layerRank(a.scope) - layerRank(b.scope) ||
 			depth(a) - depth(b) ||
-			((a.scope.label_id ?? '').toLowerCase() < (b.scope.label_id ?? '').toLowerCase()
-				? -1
-				: (a.scope.label_id ?? '').toLowerCase() > (b.scope.label_id ?? '').toLowerCase()
-					? 1
-					: 0) ||
+			(labelSortKey(a) < labelSortKey(b) ? -1 : labelSortKey(a) > labelSortKey(b) ? 1 : 0) ||
 			a.position - b.position ||
 			a.created_at - b.created_at ||
 			a.id.localeCompare(b.id)
@@ -334,11 +343,13 @@ function bundle(
 	target: StateRetirementTargetClass,
 	chain: string[],
 	states: Map<string, State>,
-	workflows: Map<string, Workflow>
+	workflows: Map<string, Workflow>,
+	labels: Map<string, string>
 ): StateRetirementEffectiveBundle {
 	const matched = sortRows(
 		rows.filter((row) => matches(row, target, chain)),
-		chain
+		chain,
+		labels
 	);
 	const prompts = matched
 		.filter((row) => row.kind === 'prompt')
@@ -392,7 +403,7 @@ function enumerateTargets(
 	const pointerStates = [
 		...new Set(inventory.pointers.map((pointer) => pointer.child_state_id))
 	].sort();
-	const relevantLabels = [...data.labels].sort();
+	const relevantLabels = [...data.labels.keys()].sort();
 	const maxLabels = options.max_labels ?? DEFAULT_MAX_LABELS;
 	if (relevantLabels.length > maxLabels) {
 		return {
@@ -458,9 +469,10 @@ function enumerateTargets(
 
 function sourceOrder(
 	rows: StateRetirementRawItem[],
-	chain: string[]
+	chain: string[],
+	labels: Map<string, string>
 ): StateRetirementSourceOrder[] {
-	return sortRows(rows, chain)
+	return sortRows(rows, chain, labels)
 		.filter((row) => row.kind === 'prompt')
 		.map((row) => ({
 			item_id: row.id,
@@ -684,11 +696,12 @@ export function planStateRetirement(
 	const beforeBundles = new Map<string, StateRetirementEffectiveBundle>();
 	for (const target of base.targets) {
 		const chain = stateChain(target.state_id, data.states);
-		const before = bundle(data.items, target, chain, data.states, data.workflows);
+		const before = bundle(data.items, target, chain, data.states, data.workflows, data.labels);
 		beforeBundles.set(targetKey(target), before);
 		for (const row of sortRows(
 			data.items.filter((candidate) => matches(candidate, target, chain)),
-			chain
+			chain,
+			data.labels
 		)) {
 			if (
 				!row.scope.workflow_state_id ||
@@ -723,7 +736,8 @@ export function planStateRetirement(
 		const chain = stateChain(target.state_id, data.states);
 		const rows = sortRows(
 			data.items.filter((row) => matches(row, target, chain)),
-			chain
+			chain,
+			data.labels
 		);
 		for (const kind of ['skill', 'repo'] as const) {
 			const winners = new Map<string, StateRetirementRawItem>();
@@ -837,7 +851,8 @@ export function planStateRetirement(
 		const order = new Map(
 			sortRows(
 				entries.map((entry) => entry.row),
-				chain
+				chain,
+				data.labels
 			).map((row, index) => [row.id, index])
 		);
 		entries.sort((a, b) => order.get(a.row.id)! - order.get(b.row.id)!);
@@ -870,7 +885,14 @@ export function planStateRetirement(
 			...data.items,
 			...copies.filter((row) => row.scope.workflow_state_id === target.state_id)
 		];
-		const after = bundle(projectedRows, target, [target.state_id], data.states, data.workflows);
+		const after = bundle(
+			projectedRows,
+			target,
+			[target.state_id],
+			data.states,
+			data.workflows,
+			data.labels
+		);
 		const launch = launchDifference(
 			before,
 			after,
@@ -882,7 +904,8 @@ export function planStateRetirement(
 		const same = semanticBundle(before) === semanticBundle(after);
 		const raw = sortRows(
 			data.items.filter((row) => matches(row, target, chain)),
-			chain
+			chain,
+			data.labels
 		);
 		const candidateIds = raw
 			.filter((row) => row.kind === 'skill' || row.kind === 'repo' || row.kind === 'env')
@@ -892,7 +915,7 @@ export function planStateRetirement(
 			before,
 			after,
 			launch,
-			raw_prompt_order: sourceOrder(raw, chain),
+			raw_prompt_order: sourceOrder(raw, chain, data.labels),
 			candidate_item_ids: candidateIds
 		});
 		if (!same || !launch.allowed)

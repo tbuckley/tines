@@ -167,4 +167,34 @@ describe('pure state-retirement preservation planner', () => {
 			plan.diagnostics.some((diagnostic) => diagnostic.code === 'retirement_enumeration_bound')
 		).toBe(true);
 	});
+
+	it('witnesses same-rank prompt order by label name, with id fallback only for dangling labels', () => {
+		const inventory = fixture();
+		inventory.witness.labels = [
+			{ id: 'label-a', name: 'Zebra' },
+			{ id: 'label-z', name: 'Alpha' }
+		];
+		inventory.witness.context_items.push(
+			item('label-a-prompt', 'prompt', 'label-a', 'root', 0, {
+				label_id: 'label-a',
+				body: 'Zebra'
+			}),
+			item('label-z-prompt', 'prompt', 'label-z', 'root', 0, { label_id: 'label-z', body: 'Alpha' })
+		);
+
+		const plan = planStateRetirement(inventory);
+		const comparison = plan.comparisons.find(
+			(candidate) =>
+				candidate.target.state_id === 'building' &&
+				candidate.target.project.kind === 'explicit' &&
+				candidate.target.project.id === 'project' &&
+				candidate.target.label_ids.join(',') === 'label-a,label-z'
+		);
+		expect(comparison).toBeDefined();
+		expect(
+			comparison!.raw_prompt_order
+				.filter((row) => row.item_id.endsWith('-prompt'))
+				.map((row) => row.item_id)
+		).toEqual(['label-z-prompt', 'label-a-prompt']);
+	});
 });
