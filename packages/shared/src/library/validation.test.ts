@@ -5,6 +5,7 @@ import {
 	canonicalizeLibraryValue,
 	libraryDocumentDigest,
 	parseLibraryV3Document,
+	parseLibraryV3MutationDocument,
 	renderDeclaredTokens,
 	withLibraryDocumentDigest
 } from './index.js';
@@ -26,6 +27,34 @@ function changed(path: string, value: unknown, source: unknown = automatedPackag
 }
 
 describe('strict portable document boundary', () => {
+	it('keeps historical pointers inspectable but rejects them for mutation, including malformed values', async () => {
+		const historical = JSON.stringify(await withLibraryDocumentDigest(inheritedPackage()));
+		await expect(
+			parseLibraryV3Document(historical, { allowMissingDigest: true })
+		).resolves.toBeTruthy();
+		await expect(
+			parseLibraryV3MutationDocument(historical, { allowMissingDigest: true })
+		).rejects.toMatchObject({
+			diagnostics: [
+				{
+					path: '/workflows/0/states/0/inherits_from',
+					code: 'state_inheritance_removed'
+				}
+			]
+		});
+		const malformed = inheritedPackage();
+		malformed.workflows[0].states[0].inherits_from = false as never;
+		await expect(
+			parseLibraryV3MutationDocument(JSON.stringify(malformed), { allowMissingDigest: true })
+		).rejects.toMatchObject({
+			diagnostics: [
+				{
+					path: '/workflows/0/states/0/inherits_from',
+					code: 'state_inheritance_removed'
+				}
+			]
+		});
+	});
 	it.each(['\u00a0', '\u000b', '\ufeff'])('rejects non-JSON whitespace %j', async (space) => {
 		await expect(parseLibraryV3Document(space + '{}')).rejects.toMatchObject({
 			diagnostics: [{ code: 'invalid_json' }]

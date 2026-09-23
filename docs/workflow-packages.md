@@ -1,6 +1,10 @@
 # Workflow package files
 
-Implementation status: v3 whole-library transfer and workflow packages are implemented across the shared contract, API, CLI, and browser. The package path includes workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` commands. Whole-library import remains best effort; it is not an atomic workflow installation. Public gallery/discovery and dependency fetching remain intentionally out of scope.
+Implementation status: v3 whole-library transfer and workflow packages are implemented across the shared contract, API, CLI, and browser. Historical v1/v2/v3 documents remain inspectable and downloadable, including signed fixtures, but new preparation and installation accept only pointer-free workflow state definitions. The package path includes exact-workflow export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` commands. Whole-library import remains best effort; it is not an atomic workflow installation. Public gallery/discovery and dependency fetching remain intentionally out of scope.
+
+### Superseding decision — 2026-09-22
+
+State inheritance is retired for new library/package mutation. Exported workflow packages contain the selected workflow and exact state-scoped context; they do not flatten inherited context or include dependency workflows. Historical documents with a non-null `inherits_from` value remain available for strict validation, inspection, and download, and the browser/CLI explains why they cannot be prepared or installed. Preparation and installation reject the retired field before allocation or writes, including malformed non-null values after valid envelope decoding. Whole-library v1/v2/v3 inspection retains its historical parser, while mutation uses the pointer-free parser. Existing committed install receipts are still recoverable when the authenticated request matches, even if the original document is now retired.
 
 ## Public snapshots
 
@@ -46,9 +50,9 @@ the downloaded JSON file. Tines parses local bytes first, then sends workflow fi
 instance for server validation. Choose **Preview installation**, review what will be installed, and then choose **Install workflow**. Nothing is installed until you confirm the prepared preview. Technical plan identifiers remain under **Technical details**. Legacy and whole-library files are
 directed to the existing best-effort library importer; workflow-profile files use the atomic flow.
 
-Resolve each declared destination value, edit the proposed names for the independent main and
-dependency copies, and opt into any schedules or routing rules. Main/dependency roles follow the
-file’s `main_workflow_id`, regardless of workflow array order. Schedules are unchecked by default
+Resolve each declared destination value, review the independent selected-workflow copy, and opt
+into any schedules or routing rules. The file’s `main_workflow_id` identifies that one workflow;
+there are no dependency copies or inheritance roles. Schedules are unchecked by default
 and install paused. A destination project is only required by selected project-bound automation or
 a declared text value that is actually used. Preparation shows the full resolved package, exact
 before/after substitutions, every create/reuse/skip operation, and destination runner/model support.
@@ -81,7 +85,7 @@ only canonical package JSON to stdout, making redirection safe; errors and diagn
 stderr. `validate --json` returns the complete server validation object, including the sealed
 document and digest, and exits 1 when `valid` is false.
 
-Use `GET /api/v1/workflows/<workflow-id>/export`. The ID is required: multiple workflows can share a display name. Export includes complete definitions of every inheritance dependency, even Standard (as an independent bundled copy), gates, exact-state instructions and ordered prompt/skill/repo context. It preserves overridden inherited entries. Global/project/label/issue context, journals, history, credentials and runtime state are excluded. Repositories are declarations; export fetches nothing from them.
+Use `GET /api/v1/workflows/<workflow-id>/export`. The ID is required: multiple workflows can share a display name. Export includes the chosen workflow, gates, exact-state instructions and ordered prompt/skill/repo context. Global/project/label/issue context, journals, history, credentials and runtime state are excluded. Repositories are declarations; export fetches nothing from them.
 
 A saved file is authoritative. Later source edits do not change it. Its `sha256:` digest covers all document content and metadata except the top-level digest field, using canonical JSON. Validate edited files through `POST /api/v1/library/validate` with `{ "document_json": "<the original file text>" }`. The response contains `valid`, `digest`, `document`, `diagnostics`, and `limits`. Validating a file with an absent digest fills it; a present but mismatching digest is an error. Always pass raw file text so duplicate keys are not lost before validation. A validation result is not destination capability validation or installation approval.
 
@@ -106,8 +110,8 @@ Export accepts `source_project_id=<owned ID>`, repeated `schedule_id=<ID>`, and 
 
 ### Browser authoring and review
 
-Open a workflow and choose **Export package**. The browser route shows the complete main and
-inheritance workflow graph, gates, ordered state-scoped context, every skill file and repository
+Open a workflow and choose **Export package**. The browser route shows the chosen workflow, gates,
+ordered exact-state context, every skill file and repository
 declaration, destination prerequisites, and explicitly selected automation. Source project,
 schedule, and tier preferences are opt-in. Rebuilding from source warns before discarding any
 candidate-only edits. Eligible and selected schedules expose their complete templates, recurrence,
@@ -152,7 +156,7 @@ refreshes or rebuilds; refreshing never silently merges or writes draft text int
 
 Settings → Export / import downloads v3 `profile:library` files. These also contain ambient scopes, projects, labels and optional journals. Review sensitive prompt and skill contents before sharing. On import, every workflow has a local-ID mapping row. Choose an existing workflow by destination ID or create an independently named workflow. Duplicate source names remain distinct in an empty destination; collisions with ambiguous existing names require explicit choices. Settings proposes unused renamed creates. The preview resets whenever a choice changes.
 
-The whole-library endpoint retains v1/v2 readers; `GET /api/v1/export?version=2` explicitly requests a compatibility export for an older deployment. Older name-based files cannot disambiguate duplicate workflows or ambiguous slash-based state references and are refused truthfully. Compatible inheritance updates require overwrite; v1 files never compare or clear a destination pointer. A refused structural overwrite leaves existing target states available. Import is best effort and reports each create/skip/overwrite/refusal/error. Existing project defaults and existing label colors stay unchanged.
+The whole-library endpoint retains v1/v2 readers; `GET /api/v1/export?version=2` explicitly requests a compatibility export for an older deployment. Older name-based files cannot disambiguate duplicate workflows or ambiguous slash-based state references and are refused truthfully. Historical pointer-bearing files remain inspectable/downloadable, but mutation reports the path-specific retired-field explanation and leaves destination pointers untouched. Import is best effort and reports each create/skip/refusal/error. Existing project defaults and existing label colors stay unchanged.
 
 ## Prepare a destination review
 
@@ -253,9 +257,9 @@ read an owner receipt but cannot commit an installation.
 Node SQLite fixture cannot prove. It boots the built Worker against a fresh
 Wrangler D1 database, applies the repository migrations and triggers, drives
 the public prepare/install/recovery endpoints, and audits durable rows with
-Wrangler. Each rollback/nonce checkpoint reads all ten family counts in one
+Wrangler. Each rollback/nonce checkpoint reads all ordinary object-family counts in one
 scalar-subquery SELECT, while successful installs read each physical table once
-and check exact IDs, receipt mappings, schedule state, and inheritance in
+and check exact IDs, receipt mappings, schedule state, and null pointers in
 memory. Temporary database triggers inject failures without exposing any
 test-only application endpoint or production switch.
 
@@ -268,8 +272,8 @@ E2E_PORT=8791 pnpm --filter web exec playwright test e2e/native-install.spec.ts
 The gate submits the complete 800-statement compiled batch and proves exact
 receipt-to-row mappings and one-copy counts for every object and event family.
 The 801-statement case is rejected by preparation before any write. It injects
-native failures into workflow, state, transition, context, file,
-inherited-pointer, label, schedule, routing, and event phases and verifies full
+native failures into workflow, state, transition, context, file, label,
+schedule, routing, and event phases and verifies full
 rollback and unchanged issues/project defaults. It also exercises stale
 destination guards, transaction-time expiry, old-nonce child guards, a truly
 concurrent first commit, socket-level discarded-response recovery, and
@@ -291,12 +295,13 @@ apply before compilation.
 
 Run `E2E_PORT=8799 pnpm test:e2e workflow-package-import.spec.ts workflow-package-export.spec.ts`
 against the isolated local Wrangler backend. The export journey passes Alice's browser download
-to Bob, then reads installed inheritance, ordered effective prompt parts, artifact gates, and exact
-skill files through the ordinary API. It proves zero automatic issues/schedules before explicitly
+to Bob, then reads installed exact-state context, artifact gates, and exact skill files through the
+ordinary API. It proves zero automatic issues/schedules before explicitly
 creating an inspection issue for the effective-context read.
 
-The import cases also validate a dependency-first file and check ID-based rename and prepared graph
-roles at desktop and phone widths, preserving the validated source document through preparation.
+The import cases validate pointer-free files and check ID-based rename and prepared graph roles at
+desktop and phone widths, preserving the validated source document through preparation. Historical
+pointer-bearing files remain inspection/download fixtures and are refused before preparation.
 They cover expiry (a real preparation backdated with the local test signing key),
 a late D1 skill-file failure with all allocated rows rolled back, and recovery across reload/404,
 same-plan retry, dropped committed response, and receipt lookup. Only fault injection is intercepted;
@@ -313,13 +318,12 @@ transition. The test emits a JSON attachment containing the file and plan digest
 object, project, issue, runner, run, log, artifact, and final-state identifier for the acceptance run.
 
 The export journey is also the integrated two-account/two-destination-project file exercise. It
-exports a QA-style main plus inherited dependency, two skills with exact file bytes, ordered prompts,
-a repository declaration, artifact gate, declared target workflow, label substitution, and optional daily schedule/project-tier
-configuration. The destination starts with colliding workflow names. The first independent copy omits
-automation and is inspected through ordinary workflow/context APIs from two projects. A second renamed
-copy selects the paused schedule and a supported local-runner tier for one project. The journey pins
-zero automatic issues, `run_count=0`, unchanged project defaults, exact substitutions and inherited
-order, then edits one dependency copy and proves the source and sibling copy remain unchanged.
+exports one selected workflow, two skills with exact file bytes, ordered prompts, a repository
+declaration, artifact gate, declared target workflow, label substitution, and optional daily
+schedule/project-tier configuration. The destination starts with colliding workflow names. The
+independent copy omits automation and is inspected through ordinary workflow/context APIs from two
+projects. The journey pins zero automatic issues, `run_count=0`, unchanged project defaults, exact
+substitutions, then edits the copied workflow and proves the source remains unchanged.
 
 ## Public snapshot CLI
 

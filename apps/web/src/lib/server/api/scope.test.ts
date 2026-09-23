@@ -21,23 +21,6 @@ describe('scopeLabel', () => {
 		expect(scopeLabel({ issueProjectName: 'Tines', issueNumber: 7 })).toBe('issue Tines/7');
 	});
 
-	it('qualifies an inherited state layer with its workflow', () => {
-		// Only inherited layers ask for this: a prompt can stitch a base state
-		// and the state that inherits it, and two same-named states must not
-		// collide under one `## Context: state X` heading.
-		const scope = { stateName: 'Merging', workflowId: 'wf_base', workflowName: 'Shared stages' };
-		expect(scopeLabel(scope, { qualifyState: true })).toBe('state Shared stages / Merging');
-		expect(scopeLabel(scope)).toBe('state Merging');
-	});
-
-	it('falls back to the workflow id when a qualified layer has no workflow name', () => {
-		expect(
-			scopeLabel({ stateName: 'Merging', workflowId: 'wf_base' }, { qualifyState: true })
-		).toBe('state wf_base / Merging');
-		// Nothing to qualify with: the short label rather than a stray slash.
-		expect(scopeLabel({ stateName: 'Merging' }, { qualifyState: true })).toBe('state Merging');
-	});
-
 	it('labels the empty scope "global"', () => {
 		expect(scopeLabel({})).toBe('global');
 	});

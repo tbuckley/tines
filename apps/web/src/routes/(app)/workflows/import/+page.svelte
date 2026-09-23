@@ -70,6 +70,11 @@
 	);
 	const canRetry = $derived(!!recovery && document_?.digest === recovery.documentDigest);
 	const reviewComplete = $derived(requiredReviewIds.every((id) => reviewed.has(id)));
+	const retiredInheritance = $derived(
+		!!document_?.workflows.some((workflow) =>
+			workflow.states.some((state) => state.inherits_from !== null)
+		)
+	);
 	const errorAction = $derived.by(() => {
 		if (errorCode === 'routing_unavailable')
 			return { href: '/agents#routing', label: 'Configure destination runners' };
@@ -232,7 +237,7 @@
 	}
 
 	async function prepare() {
-		if (!document_ || recovery) return;
+		if (!document_ || recovery || retiredInheritance) return;
 		stage = 'preparing';
 		error = null;
 		errorCode = null;
@@ -536,6 +541,16 @@
 		<PackageReceipt {receipt} />
 	{:else if document_}
 		<div class="space-y-8">
+			{#if retiredInheritance}<section
+					class="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4"
+				>
+					<h2 class="font-semibold">Historical package — installation unavailable</h2>
+					<p class="text-muted-foreground mt-1 text-sm">
+						This document contains removed state inheritance. You can inspect and download it, but
+						preparation and installation are disabled. Provide a reviewed pointer-free package
+						instead; Tines will not flatten it automatically.
+					</p>
+				</section>{/if}
 			{#if plan && resolvedDocument}<PackageReview
 					document={resolvedDocument}
 					{reviewed}
@@ -558,14 +573,14 @@
 			{#if tokenInvoker}<div class="flex justify-end">
 					<Button size="sm" variant="outline" onclick={backToToken}>Back to passage</Button>
 				</div>{/if}
-			{#if !plan}<Button onclick={prepare} disabled={stage === 'preparing'}
+			{#if !plan}<Button onclick={prepare} disabled={stage === 'preparing' || retiredInheritance}
 					>{stage === 'preparing' ? 'Preparing preview…' : 'Preview installation'}</Button
 				>{/if}
 		</div>
 	{/if}
 </div>
 
-{#if stage === 'prepared' && plan}
+{#if stage === 'prepared' && plan && !retiredInheritance}
 	<div
 		class="bg-background/95 fixed inset-x-0 bottom-[calc(4rem+1px+env(safe-area-inset-bottom,0px))] z-30 border-t px-4 py-2 backdrop-blur md:bottom-0"
 		data-testid="install-actions"

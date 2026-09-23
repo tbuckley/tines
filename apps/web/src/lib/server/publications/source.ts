@@ -23,9 +23,9 @@ const jsonRows = (query: RawBuilder<unknown>) =>
 const ids = (values: string[]) => sql`(SELECT value FROM json_each(${JSON.stringify(values)}))`;
 
 /**
- * Resolve the exact owned workflow closure whose rows can affect a public
- * package. IDs stay private: callers store this selection only in the private
- * publication source row and expose the resulting hash in the review proof.
+ * Resolve the exact owned workflow whose rows can affect a public package.
+ * State inheritance is retired, so a publication never pulls in another
+ * workflow through a state pointer.
  */
 export async function resolvePublicationSourceSelection(
 	db: Kysely<Database>,
@@ -43,32 +43,9 @@ export async function resolvePublicationSourceSelection(
 			'Only an owned workflow can be published'
 		);
 
-	const ownerByState = new Map(
-		available.flatMap((workflow) => workflow.states.map((state) => [state.id, workflow] as const))
-	);
-	const closure = new Map([[main.id, main]]);
-	const queue = [main];
-	for (const workflow of queue)
-		for (const state of workflow.states) {
-			if (!state.inherits_from) continue;
-			const dependency = ownerByState.get(state.inherits_from);
-			if (!dependency)
-				throw new ApiFail(
-					422,
-					'missing_dependency',
-					`State "${state.name}" has an unavailable inheritance dependency`
-				);
-			if (!closure.has(dependency.id)) {
-				closure.set(dependency.id, dependency);
-				queue.push(dependency);
-			}
-		}
-
 	return {
-		workflowIds: [...closure.keys()].sort(),
-		stateIds: [...closure.values()]
-			.flatMap((workflow) => workflow.states.map((state) => state.id))
-			.sort(),
+		workflowIds: [main.id],
+		stateIds: main.states.map((state) => state.id).sort(),
 		projectId: options.source_project_id ?? null,
 		scheduleIds: [...(options.schedule_ids ?? [])].sort(),
 		options: structuredClone(options)
@@ -93,7 +70,7 @@ export function publicationSourceExpression(
 		'initial_state_id', w.initial_state_id, 'created_at', w.created_at, 'updated_at', w.updated_at,
 		'states', ${jsonRows(sql`SELECT json_object(
 			'id', s.id, 'workflow_id', s.workflow_id, 'name', s.name, 'category', s.category,
-			'position', s.position, 'inherits_from_state_id', s.inherits_from_state_id,
+			'position', s.position,
 			'created_at', s.created_at
 		) AS row_json FROM workflow_state s WHERE s.workflow_id = w.id ORDER BY s.position, s.id`)},
 		'transitions', ${jsonRows(sql`SELECT json_object(

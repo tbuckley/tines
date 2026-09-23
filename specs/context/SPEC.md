@@ -6,6 +6,17 @@
 
 Issues tell an agent *what* to do; context tells it *how*. This spec adds **context items** — prompts, skills, and repo pointers — that attach to issues, workflow states, and projects, and merge into a single **effective context** for any issue. The effective context is the bundle an agent would be launched with: a stitched prompt, skill directories to seed into its workspace, and repositories to check out.
 
+## Superseding decision — 2026-09-22
+
+State inheritance is retired in Release B. The nullable
+`workflow_state.inherits_from_state_id` column remains for historical schema
+compatibility and inspection, but runtime matching is exact-state only and
+workflow inputs with a non-null `inherits_from` are rejected before mutation.
+Context is copied into each approved consumer scope by the reviewed retirement
+workflow; automatic state-chain matching and project/root journal inheritance
+are not available. Project descendants and any future journal-sharing contract
+remain separate, approved work.
+
 **This spec covers creating, scoping, viewing, and assembling context — not delivering it to agents.** Agent consumption (the supervisor seeding workspaces, launching with the stitched prompt) comes with the supervisor phase. The only consumption surfaces here are the API, a read-only CLI command, and the web UI.
 
 ## Goals
@@ -23,7 +34,9 @@ Issues tell an agent *what* to do; context tells it *how*. This spec adds **cont
 - **Sharing/reuse across users**, and no library of shareable context bundles. Items belong to one user and are generally written for one scope.
 - **Binary or large files**: skill files are small text files stored in D1. The web editor can read local text files from a selected folder, but uploads, binaries, and R2-backed bundles are future work.
 - **Versioning**: items are mutable and live-referenced, like workflows. Edits emit events; no history.
-- **Inheritance beyond states**: inheritance ships on the **state** dimension only (Tines/238). Projects are still flat; when nesting lands (Tines/185) the project dimension applies the same rule stated below, unchanged. **Item-to-item inheritance** — one item extending another regardless of scope — is the reserved path for sharing between unrelated projects and is deliberately not built.
+- **Automatic inheritance**: retired in Release B. Projects remain flat, and
+  project descendants plus any item-to-item or journal-sharing contract are
+  reserved for a separately approved design.
 
 ## Concepts
 
@@ -75,7 +88,7 @@ This is why scope is columns on the item rather than a join table per element: t
 **Coherence validation** (422 on violation):
 
 - `issue_id` and `project_id` both set → the issue must belong to that project (the UI omits the redundant combination; the API tolerates it when coherent).
-- `issue_id` and `workflow_state_id` both set → the state must belong to the issue's bound workflow. Inheritance does not relax this: an item scoped to an issue *and* to an **ancestor** of that issue's state is incoherent (the base is not in the issue's workflow) and 422s. Scope one to the base state alone, or to the issue alone.
+- `issue_id` and `workflow_state_id` both set → the state must belong to the issue's bound workflow. Scope is exact-state only; a state from another workflow is incoherent and 422s.
 - All referenced elements must belong to the authenticated user (states may also come from the system standard workflow).
 
 `project ∧ state` combinations are *not* checked against the project's default workflow — issues choose workflows per issue, so any of the user's states may pair with any project. The UI surfaces a gentle hint when the pairing can never currently match (no issue in that project uses that state's workflow), but it is not an error.
@@ -107,9 +120,11 @@ Within a layer, items order by `position`, then `created_at`, then `id` (timesta
 
 **Same-rank layers, and why they exist.** Names are unique per exact scope, so for the single-valued dimensions every exact scope is its own layer and within-layer collisions are impossible by construction. Labels break that: an issue carrying both `design` and `qa` matches a `label design` layer *and* a `label qa` layer, which have the same rank, and each may hold a skill named `component-testing`. Such layers are ordered **by label name** (case-insensitively, then by label id), which is deterministic, needs no schema, and is visible — the losing item appears in `overridden`, and both `## Context: … · label …` headings are in the prompt. It is arbitrary in the sense that `design` beating `qa` carries no meaning; a `label.position` priority column is the principled upgrade if that ever matters. The rationale for the order: general house rules first, then what-this-stage-of-work means, then what kind of work this is, then refinements — each layer reads as a refinement of the previous. The rule is generative, not enumerated: a future role dimension slots in by picking a weight, without re-deciding anything.
 
-**Inheritable dimensions.** A dimension may be **inheritable**: its values form a forest — one parent each, chains of at most 3 values, no cycles, all four refused with a readable 422. An item matches an issue when the issue's value for that dimension **or any of its ancestors** equals the item's; the AND across dimensions is unchanged, and so is every rank in the table above. Ancestors stitch **before** their descendants (root → leaf), as a **tie-break inside the existing rank**, applied in ascending dimension weight: `project ∧ base` still ranks with `project ∧ state` (rank 3), before any label or issue layer, and ancestor depth only decides among rows of equal rank — ahead of the label-name tie-break, because state's weight (2) is below label's (4). An inherited layer renders the **qualified** label `state <workflow> / <state>` so two same-named states cannot collide under one `## Context: state X` heading, and the effective-context API marks its parts, skills, repos and `overridden` entries with `inherited_from` (the base state's id, name, workflow id and workflow name; `null` otherwise). A parentless value therefore resolves byte-identically to how it did before inheritance existed.
-
-**State inheritance.** The pointer is `workflow_state.inherits_from_state_id`, settable as `inherits_from` on `WorkflowStateInput` in workflow create and edit. On an **existing** state the field is merge-patch: absent = unchanged, `null` = clear, a string = set — so the many callers that round-trip states as `{id, name, category}` cannot silently wipe a pointer. The base may live in another workflow or in the standard workflow (which can be a base, never a child). The convention for a shared base is a workflow with **no transitions** whose states are categorized `backlog`: legal as an initial state, undispatchable by the supervisor, so no `template` flag is needed.
+**Inheritance (historical Release A model).** Release B does not match ancestor
+values, stitch inherited layers, or resolve a root state. The nullable pointer
+and `inherited_from` response shape remain only for historical schema and
+receipt/package inspection; new workflow inputs with a non-null pointer are
+rejected before mutation.
 
 **Per-kind merge:**
 
@@ -170,8 +185,10 @@ One uniform rule for every anchor that context is scoped to — **reject by defa
 - **Deleting a project** (`DELETE /api/v1/projects/:id`), **deleting a workflow** (`DELETE /api/v1/workflows/:id`), and **removing a workflow state** (via the whole-workflow `PATCH /api/v1/workflows/:id`, where states are edited) are rejected with a 422 naming the attached context items whenever any item's scope references the deleted element (for workflows: any of their states). Existing phase-one guards (no issues in the project / state / workflow) still apply first.
 - Each of these requests accepts **`force_delete_context: true`** in the body. With it, the operation proceeds and every attached item is deleted — all-or-nothing per request, even when one PATCH removes multiple states. The response reports the deleted items, and each one emits its own `context.deleted` event, attributed to the deleting actor, in the same transaction.
 - **Deleting a label** (`DELETE /api/v1/labels/:id`) follows the same rule: rejected with a 422 (`label_in_use`) naming the context items *and* the routing rules scoped to it, and accepting **`force: true`** in the body, which deletes them with the label. A label-scoped routing rule is **deleted, never label-stripped** — stripping would silently broaden `label docs ∧ project X` into `project X`, which is a live rule doing something nobody asked for. (The flag is `force`, not `force_delete_context`, because it sweeps rules as well as context.)
-- **Removing a state, or deleting a workflow, that other states inherit from** is rejected with a 422 (`state_inherited` / `workflow_inherited`) naming the children as `<workflow> / <state>`. **`force_clear_inheritance: true`** clears the children's pointers in the same transaction and reports them (`cleared_inheritance` on the response, `inheritance_changed` on the event). This is a **separate flag from `force_delete_context`** on purpose: consenting to sweep your own context is not consent to change another workflow's prompts.
-- **Pointing a state at a base the same request removes** is rejected with a 422 (`inheritance_target_removed`) naming the base. The target is still stored when the write is validated, so without this check the request would reach the batch and fail on the foreign key as an unhandled error — the one refusal in this feature that would not be readable. Keeping an *existing* pointer onto a removed state is the `state_inherited` case above, not this one.
+- **State inheritance operations are retired.** Removing a state or workflow
+  never clears another state's pointer, and affirmative
+  `force_clear_inheritance` inputs are rejected. Historical pointers remain
+  inspectable only through the compatibility and receipt surfaces.
 - **Issues** cannot be deleted in phase one, so issue-scoped items have no orphan path.
 - An item whose scope references a force-deleted anchor is deleted entirely, even if its other dimensions survive (there is no "partially scoped" leftover).
 

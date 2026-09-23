@@ -6,7 +6,6 @@ import {
 	type ArtifactRequirement,
 	type ArtifactType,
 	type CreateWorkflowRequest,
-	type ClearedInheritance,
 	type DeletedContextItem,
 	type StateCategory,
 	type UpdateWorkflowRequest,
@@ -19,7 +18,6 @@ import { idChunks, newId, type Database, type WorkflowStateTable } from '$lib/se
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
 import {
-	MAX_INHERITANCE_CHAIN,
 	ApiFail,
 	notFound,
 	optionalString,
@@ -39,14 +37,6 @@ interface ResolvedState {
 	isNew: boolean;
 	/** Initial stage instructions (new states only): seeds a state-scoped prompt item. */
 	prompt?: string;
-	/**
-	 * The requested base state (Tines/238). `undefined` means "unchanged" and
-	 * is only reachable for an existing state; `null` clears. A string that
-	 * named a state in the same request is already rewritten to that state's
-	 * id here; anything else is a candidate id in another workflow, checked
-	 * against the DB by `resolveInheritance`.
-	 */
-	inheritsFrom: string | null | undefined;
 }
 
 export interface ResolvedDef {
@@ -59,6 +49,17 @@ export interface ResolvedDef {
 		requires?: ArtifactRequirement[];
 	}[];
 	initialStateId: string;
+}
+
+function rejectForceClearInheritance(value: unknown): void {
+	if (value === true || value === 1 || value === '1' || value === 'true' || value === 'yes') {
+		throw new ApiFail(
+			422,
+			'state_inheritance_removed',
+			'force_clear_inheritance is retired; pointers cannot be created or cleared by this API',
+			{ field: 'force_clear_inheritance', retired: true }
+		);
+	}
 }
 
 type DiffTransition = {
@@ -235,27 +236,13 @@ export function resolveDef(
 				{ state_id: input.id }
 			);
 		}
-		// Inheritance pointer: merge-patch on an existing state (absent =
-		// unchanged), plain "no base" on a new one. Resolution of the value
-		// against this request's own states happens below, once every name is
-		// known; anything unresolved is left for `resolveInheritance`.
-		let inheritsFrom: string | null | undefined;
-		if (input.inherits_from === undefined) {
-			inheritsFrom = input.id === undefined ? null : undefined;
-		} else if (input.inherits_from === null) {
-			inheritsFrom = null;
-		} else {
-			inheritsFrom = requireString(input.inherits_from, `states[${i}].inherits_from`, {
-				max: 100
-			}).trim();
-			if (!inheritsFrom) {
-				throw new ApiFail(
-					422,
-					'invalid_field',
-					`State "${name}" has an empty inherits_from; use null to clear it`,
-					{ field: `states[${i}].inherits_from` }
-				);
-			}
+		if (input.inherits_from !== undefined && input.inherits_from !== null) {
+			throw new ApiFail(
+				422,
+				'state_inheritance_removed',
+				'State inheritance was removed; create an exact-state context item instead',
+				{ field: `states[${i}].inherits_from`, retired: true }
+			);
 		}
 		const state: ResolvedState = {
 			id: input.id ?? newId('wfs'),
@@ -263,8 +250,7 @@ export function resolveDef(
 			category: input.category,
 			position: i,
 			isNew: input.id === undefined,
-			prompt,
-			inheritsFrom
+			prompt
 		};
 		if (byId.has(state.id)) {
 			throw new ApiFail(422, 'duplicate_state', `State id "${state.id}" is listed more than once`);
@@ -272,23 +258,6 @@ export function resolveDef(
 		states.push(state);
 		byName.set(name, state);
 		byId.set(state.id, state);
-	}
-
-	// Now that every name is known, point each `inherits_from` at a state in
-	// this request when it names one. An unresolved string stays as-is: it is
-	// a candidate state id in another workflow, which only the DB can judge.
-	for (const [i, state] of states.entries()) {
-		if (typeof state.inheritsFrom !== 'string') continue;
-		const local = byId.get(state.inheritsFrom) ?? byName.get(state.inheritsFrom);
-		if (local === state || state.inheritsFrom === state.id) {
-			throw new ApiFail(
-				422,
-				'self_inheritance',
-				`State "${state.name}" cannot inherit from itself`,
-				{ field: `states[${i}].inherits_from` }
-			);
-		}
-		if (local) state.inheritsFrom = local.id;
 	}
 
 	const resolveRef = (ref: string, what: string): ResolvedState => {
@@ -347,319 +316,6 @@ export function resolveDef(
 	return { states, transitions, initialStateId: initial.id };
 }
 
-// ---------------------------------------------------------------------------
-// Inheritance (Tines/238)
-
-/** A state as the inheritance machinery needs to name it in a message. */
-interface StateRef {
-	id: string;
-	name: string;
-	workflowId: string;
-	workflowName: string;
-}
-
-/** One pointer that this request moves — the `inheritance_changed` payload entry. */
-export interface InheritanceChange {
-	/** The child's workflow name (external children on a forced clear are elsewhere). */
-	workflow: string;
-	/** The child state's name. */
-	state: string;
-	/** `<workflow> / <state>` of the old and new base, or null. */
-	from: string | null;
-	to: string | null;
-}
-
-export interface ResolvedInheritance {
-	/** Final pointer per state in the request, including the unchanged ones. */
-	pointers: Map<string, string | null>;
-	/** Ids of the states whose stored pointer this request moves — the UPDATE pass. */
-	changedIds: Set<string>;
-	/** Only the states whose stored pointer this request moves. */
-	changes: InheritanceChange[];
-	/** Denormalized refs for every state named above. */
-	refs: Map<string, StateRef>;
-}
-
-const stateRefLabel = (ref: StateRef | undefined, id: string): string =>
-	ref ? `${ref.workflowName} / ${ref.name}` : id;
-
-/** Loads states by id, restricted to workflows the user can see (own or system). */
-async function loadVisibleStates(
-	db: Kysely<Database>,
-	userId: string,
-	ids: string[]
-): Promise<Map<string, StateRef & { inheritsFrom: string | null }>> {
-	if (ids.length === 0) return new Map();
-	const rows = await db
-		.selectFrom('workflow_state')
-		.innerJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
-		.select([
-			'workflow_state.id as id',
-			'workflow_state.name as name',
-			'workflow_state.inherits_from_state_id as inherits_from_state_id',
-			'workflow.id as workflow_id',
-			'workflow.name as workflow_name'
-		])
-		// Same visibility predicate as `resolveScope`: your workflows, or the
-		// shared standard workflow (which can be a base, never a child).
-		.where((eb) => eb.or([eb('workflow.user_id', '=', userId), eb('workflow.user_id', 'is', null)]))
-		.where('workflow_state.id', 'in', ids)
-		.execute();
-	return new Map(
-		rows.map((r) => [
-			r.id,
-			{
-				id: r.id,
-				name: r.name,
-				workflowId: r.workflow_id,
-				workflowName: r.workflow_name,
-				inheritsFrom: r.inherits_from_state_id
-			}
-		])
-	);
-}
-
-/**
- * The DB half of inheritance validation, beside the pure `resolveDef`: every
- * referenced base exists and is visible, and no chain this request would
- * store cycles or exceeds `MAX_INHERITANCE_CHAIN` — walking upwards from the
- * request's own states *and* downwards through states that already inherit
- * from them, since a new parent lengthens their chains too.
- *
- * Returns the final pointer for every state in the request (`undefined` in
- * `ResolvedState.inheritsFrom` means "keep what is stored") plus the subset
- * that actually moves, which is both the UPDATE pass and the event payload.
- */
-export async function resolveInheritance(
-	db: Kysely<Database>,
-	userId: string,
-	workflow: { id: string | null; name: string },
-	states: ResolvedState[],
-	current: { id: string; name: string; inherits_from: string | null }[]
-): Promise<ResolvedInheritance> {
-	const currentById = new Map(current.map((s) => [s.id, s]));
-	const requestIds = new Set(states.map((s) => s.id));
-	const pointers = new Map<string, string | null>();
-	for (const s of states) {
-		pointers.set(
-			s.id,
-			s.inheritsFrom === undefined ? (currentById.get(s.id)?.inherits_from ?? null) : s.inheritsFrom
-		);
-	}
-
-	const refs = new Map<string, StateRef>();
-	for (const s of states) {
-		refs.set(s.id, {
-			id: s.id,
-			name: s.name,
-			workflowId: workflow.id ?? '',
-			workflowName: workflow.name
-		});
-	}
-
-	// Everything the walks need to know about states outside this request.
-	const external = new Map<string, StateRef & { inheritsFrom: string | null }>();
-	const loadExternal = async (ids: string[]) => {
-		const missing = ids.filter((id) => !requestIds.has(id) && !external.has(id));
-		if (missing.length === 0) return;
-		const loaded = await loadVisibleStates(db, userId, [...new Set(missing)]);
-		for (const [id, row] of loaded) {
-			external.set(id, row);
-			refs.set(id, row);
-		}
-	};
-
-	// 1. Every base a state points at must exist and be visible.
-	const targets = [...pointers.values()].filter((v): v is string => v !== null);
-	await loadExternal(targets);
-	for (const s of states) {
-		const target = pointers.get(s.id);
-		if (target === null || target === undefined) continue;
-		// A base this same request drops is still stored at validation time,
-		// so it would pass the existence check below and then fail the batch
-		// on the FK as an unhandled error. Refuse it here instead, so every
-		// way of getting inheritance wrong answers with a readable 422. Only a
-		// pointer this request *moves* is caught: keeping a stored pointer onto
-		// a state being removed is the `state_inherited` guard's case, which
-		// answers with its own 422 and clears under `force_clear_inheritance`.
-		if (
-			!requestIds.has(target) &&
-			currentById.has(target) &&
-			target !== (currentById.get(s.id)?.inherits_from ?? null)
-		) {
-			throw new ApiFail(
-				422,
-				'inheritance_target_removed',
-				`State "${s.name}" inherits from state "${currentById.get(target)!.name}", which this request removes: keep that state, or point elsewhere`,
-				{ field: 'inherits_from', state_id: s.id }
-			);
-		}
-		if (!requestIds.has(target) && !external.has(target)) {
-			throw new ApiFail(
-				422,
-				'unknown_state',
-				`State "${s.name}" inherits from unknown state "${target}"`,
-				{ field: 'inherits_from', state_id: s.id }
-			);
-		}
-	}
-
-	const nextOf = (id: string): string | null =>
-		requestIds.has(id) ? (pointers.get(id) ?? null) : (external.get(id)?.inheritsFrom ?? null);
-
-	/** Walks up from `startId`, returning the chain (leaf → root, `startId` first). */
-	const walkUp = async (startId: string, startName: string): Promise<string[]> => {
-		const chain = [startId];
-		const seen = new Set([startId]);
-		let cursor = nextOf(startId);
-		while (cursor !== null) {
-			if (seen.has(cursor)) {
-				const loop = [...chain, cursor].map((id) => stateRefLabel(refs.get(id), id));
-				throw new ApiFail(422, 'inheritance_cycle', `Inheritance would loop: ${loop.join(' → ')}`, {
-					chain: [...chain, cursor]
-				});
-			}
-			chain.push(cursor);
-			seen.add(cursor);
-			if (chain.length > MAX_INHERITANCE_CHAIN) {
-				const labels = chain.map((id) => stateRefLabel(refs.get(id), id));
-				throw new ApiFail(
-					422,
-					'inheritance_too_deep',
-					`Inheritance chain for state "${startName}" is ${chain.length} states long (${labels.join(' → ')}); the limit is ${MAX_INHERITANCE_CHAIN}`,
-					{ chain }
-				);
-			}
-			await loadExternal([cursor]);
-			cursor = nextOf(cursor);
-		}
-		return chain;
-	};
-
-	// 2. Ancestors: cycles and depth, for every state in the request.
-	const chainLength = new Map<string, number>();
-	for (const s of states) {
-		chainLength.set(s.id, (await walkUp(s.id, s.name)).length);
-	}
-
-	// 3. Descendants: states elsewhere that already inherit from one of ours.
-	// Giving a state a parent lengthens their chains, so the cap has to be
-	// checked from below too or "no stored chain exceeds the cap" would only
-	// hold for the states this request happens to mention.
-	let frontier = states.filter((s) => (pointers.get(s.id) ?? null) !== null).map((s) => s.id);
-	let distance = 1;
-	while (frontier.length > 0 && distance < MAX_INHERITANCE_CHAIN) {
-		const children = await db
-			.selectFrom('workflow_state')
-			.innerJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
-			.select([
-				'workflow_state.id as id',
-				'workflow_state.name as name',
-				'workflow.id as workflow_id',
-				'workflow.name as workflow_name',
-				'workflow_state.inherits_from_state_id as parent_id'
-			])
-			.where('workflow_state.inherits_from_state_id', 'in', frontier)
-			.where((eb) =>
-				eb.or([eb('workflow.user_id', '=', userId), eb('workflow.user_id', 'is', null)])
-			)
-			.execute();
-		const next: string[] = [];
-		for (const child of children) {
-			// A child listed in this request has its own pointer in `pointers`
-			// and was already walked from the top.
-			if (requestIds.has(child.id)) continue;
-			refs.set(child.id, {
-				id: child.id,
-				name: child.name,
-				workflowId: child.workflow_id,
-				workflowName: child.workflow_name
-			});
-			const rootChain = chainLength.get(child.parent_id!) ?? 1;
-			if (rootChain + distance > MAX_INHERITANCE_CHAIN) {
-				throw new ApiFail(
-					422,
-					'inheritance_too_deep',
-					`Inheritance chain through "${stateRefLabel(refs.get(child.id), child.id)}" would be ${rootChain + distance} states long; the limit is ${MAX_INHERITANCE_CHAIN}`,
-					{ state_id: child.id }
-				);
-			}
-			chainLength.set(child.id, rootChain + distance);
-			next.push(child.id);
-		}
-		frontier = next;
-		distance += 1;
-	}
-
-	// 4. What actually moves.
-	const changes: InheritanceChange[] = [];
-	const changedIds = new Set<string>();
-	for (const s of states) {
-		const to = pointers.get(s.id) ?? null;
-		const from = currentById.get(s.id)?.inherits_from ?? null;
-		if (to === from) continue;
-		if (from) await loadExternal([from]);
-		changedIds.add(s.id);
-		changes.push({
-			workflow: workflow.name,
-			state: s.name,
-			from: from ? stateRefLabel(refs.get(from), from) : null,
-			to: to ? stateRefLabel(refs.get(to), to) : null
-		});
-	}
-	return { pointers, changedIds, changes, refs };
-}
-
-/**
- * States that inherit from any of `baseIds` and are not themselves going
- * away — the children a removal has to re-point or refuse. `excludeIds`
- * carries the states the same operation deletes.
- */
-async function inheritingChildren(
-	db: Kysely<Database>,
-	userId: string,
-	baseIds: string[],
-	excludeIds: Set<string>
-): Promise<(StateRef & { baseId: string })[]> {
-	if (baseIds.length === 0) return [];
-	const rows = await db
-		.selectFrom('workflow_state')
-		.innerJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
-		.select([
-			'workflow_state.id as id',
-			'workflow_state.name as name',
-			'workflow_state.inherits_from_state_id as base_id',
-			'workflow.id as workflow_id',
-			'workflow.name as workflow_name'
-		])
-		.where('workflow_state.inherits_from_state_id', 'in', baseIds)
-		.where((eb) => eb.or([eb('workflow.user_id', '=', userId), eb('workflow.user_id', 'is', null)]))
-		.execute();
-	return rows
-		.filter((r) => !excludeIds.has(r.id))
-		.map((r) => ({
-			id: r.id,
-			name: r.name,
-			workflowId: r.workflow_id,
-			workflowName: r.workflow_name,
-			baseId: r.base_id!
-		}));
-}
-
-/** `cleared_inheritance` entries for children a forced operation re-pointed to null. */
-function clearedInheritanceFor(
-	children: (StateRef & { baseId: string })[],
-	baseLabel: (id: string) => string
-): ClearedInheritance[] {
-	return children.map((c) => ({
-		state_id: c.id,
-		state_name: c.name,
-		workflow_id: c.workflowId,
-		workflow_name: c.workflowName,
-		was: baseLabel(c.baseId)
-	}));
-}
-
 /** Non-fatal advisories: a non-done state with no way out is probably a bug. */
 export function deadEndWarnings(def: {
 	states: Pick<ResolvedState, 'id' | 'name' | 'category'>[];
@@ -710,7 +366,7 @@ export async function loadWorkflows(
 			chunks.map((chunk) =>
 				db
 					.selectFrom('workflow_state')
-					.selectAll()
+					.select(['id', 'workflow_id', 'name', 'category', 'position', 'created_at'])
 					.where('workflow_id', 'in', chunk)
 					.orderBy('position asc')
 					.execute()
@@ -739,7 +395,7 @@ export async function loadWorkflows(
 				name: s.name,
 				category: s.category,
 				position: s.position,
-				inherits_from: s.inherits_from_state_id
+				inherits_from: null
 			})),
 			transitions: wfTransitions.map((t) => ({
 				id: t.id,
@@ -852,7 +508,6 @@ export function workflowInsertQueries(
 	actor: ActorContext,
 	opts: {
 		guard?: QueryGuard;
-		phase?: 'all' | 'shells' | 'inheritance';
 		eventId?: string;
 		/** Stable IDs for inline instruction seeds, keyed by preallocated state ID. */
 		promptIds?: Record<string, { id: string; eventId: string }>;
@@ -860,13 +515,12 @@ export function workflowInsertQueries(
 		name: string;
 		description: string;
 		def: ResolvedDef;
-		inh: ResolvedInheritance;
 		now: number;
 		/** Merged into the `workflow.created` payload (e.g. `{ starter: 'code' }`). */
 		eventPayload?: Record<string, unknown>;
 	}
 ): CompiledQuery[] {
-	const { id, name, description, def, inh, now } = opts;
+	const { id, name, description, def, now } = opts;
 	const shells: CompiledQuery[] = [
 		insertValues(
 			db,
@@ -938,33 +592,13 @@ export function workflowInsertQueries(
 				payload: {
 					workflow_id: id,
 					name,
-					...(inh.changes.length ? { inheritance_changed: inh.changes } : {}),
 					...opts.eventPayload
 				}
 			},
 			opts.guard
 		)
 	];
-	const inheritance: CompiledQuery[] = [
-		// Pointers go in a second pass: a self-FK cannot be satisfied by an
-		// insert whose target is later in the same batch, and intra-workflow
-		// inheritance is exactly that case.
-		...def.states
-			.filter((s) => (inh.pointers.get(s.id) ?? null) !== null)
-			.map((s) =>
-				db
-					.updateTable('workflow_state')
-					.set({ inherits_from_state_id: inh.pointers.get(s.id)! })
-					.where('id', '=', s.id)
-					.where(opts.guard?.predicate ?? sql<boolean>`1`)
-					.compile()
-			)
-	];
-	return opts.phase === 'shells'
-		? shells
-		: opts.phase === 'inheritance'
-			? inheritance
-			: [...shells.slice(0, -1), ...inheritance, shells[shells.length - 1]];
+	return shells;
 }
 
 /** Pure create fields and definition validation, shared with library planning. */
@@ -983,9 +617,8 @@ export async function createWorkflow(
 ): Promise<WorkflowResponse> {
 	const { name, description, def } = validateWorkflowCreateFields(body);
 	const id = newId('wf');
-	const inh = await resolveInheritance(db, actor.userId, { id, name }, def.states, []);
 	const now = Date.now();
-	await runAtomic(env, workflowInsertQueries(db, actor, { id, name, description, def, inh, now }));
+	await runAtomic(env, workflowInsertQueries(db, actor, { id, name, description, def, now }));
 	return loadWorkflow(db, actor.userId, id);
 }
 
@@ -997,6 +630,7 @@ export async function updateWorkflow(
 	id: string,
 	body: UpdateWorkflowRequest
 ): Promise<WorkflowResponse> {
+	rejectForceClearInheritance((body as Record<string, unknown>).force_clear_inheritance);
 	const current = await loadWorkflow(db, actor.userId, id);
 	if (current.is_system) {
 		throw new ApiFail(
@@ -1104,51 +738,6 @@ export async function updateWorkflow(
 		`remove state${removedStates.length === 1 ? ` "${removedStates[0].name}"` : 's'} from workflow "${current.name}"`
 	);
 
-	const inh = await resolveInheritance(db, actor.userId, { id, name }, def.states, current.states);
-
-	// Removing a state other states inherit from rewrites those states'
-	// prompts, so it is refused unless explicitly forced — the same
-	// reject-then-force posture as attached context, with its own flag
-	// (sweeping your own items is not consent to change another workflow).
-	const removedIds = new Set(removedStates.map((s) => s.id));
-	const blockedChildren = (
-		await inheritingChildren(db, actor.userId, [...removedIds], removedIds)
-	).filter((c) => !(keptIds.has(c.id) && (inh.pointers.get(c.id) ?? null) !== c.baseId));
-	const forceClearInheritance = body.force_clear_inheritance === true;
-	if (blockedChildren.length > 0 && !forceClearInheritance) {
-		const byBase = removedStates
-			.filter((s) => blockedChildren.some((c) => c.baseId === s.id))
-			.map((s) => ({
-				state_id: s.id,
-				state_name: s.name,
-				children: blockedChildren
-					.filter((c) => c.baseId === s.id)
-					.map((c) => ({
-						state_id: c.id,
-						state_name: c.name,
-						workflow_id: c.workflowId,
-						workflow_name: c.workflowName
-					}))
-			}));
-		throw new ApiFail(
-			422,
-			'state_inherited',
-			`Cannot remove ${byBase
-				.map(
-					(b) =>
-						`state "${b.state_name}" (${b.children.length} state${b.children.length === 1 ? ' inherits' : 's inherit'} context from it: ${b.children.map((c) => `${c.workflow_name} / ${c.state_name}`).join(', ')})`
-				)
-				.join('; ')}: re-point them first, or pass force_clear_inheritance to clear their pointers`,
-			{ states: byBase }
-		);
-	}
-	const clearedInheritance = forceClearInheritance
-		? clearedInheritanceFor(blockedChildren, (baseId) => {
-				const base = current.states.find((s) => s.id === baseId);
-				return base ? `${current.name} / ${base.name}` : baseId;
-			})
-		: [];
-
 	// Summary diff for the workflow.updated event payload.
 	const currentById = new Map(current.states.map((s) => [s.id, s]));
 	const statesAdded = def.states.filter((s) => s.isNew).map((s) => s.name);
@@ -1174,16 +763,6 @@ export async function updateWorkflow(
 	if (transitionDiff.removed) payload.transitions_removed = transitionDiff.removed;
 	if (transitionDiff.renamed.length) payload.transitions_renamed = transitionDiff.renamed;
 	if (transitionDiff.requirementsChanged) payload.transition_requirements_changed = true;
-	const inheritanceChanged = [
-		...inh.changes,
-		...clearedInheritance.map((c) => ({
-			workflow: c.workflow_name,
-			state: c.state_name,
-			from: c.was,
-			to: null
-		}))
-	];
-	if (inheritanceChanged.length) payload.inheritance_changed = inheritanceChanged;
 	if (def.initialStateId !== current.initial_state_id) {
 		payload.initial_changed = {
 			from: currentById.get(current.initial_state_id)?.name,
@@ -1200,19 +779,6 @@ export async function updateWorkflow(
 	// deleted. Transition ids are not referenced elsewhere, so the set is
 	// replaced wholesale.
 	queries.push(db.deleteFrom('workflow_transition').where('workflow_id', '=', id).compile());
-	// Every pointer onto a state about to vanish is nulled first: the FK has
-	// no ON DELETE action on purpose, so a dangling pointer would fail the
-	// batch rather than silently rewrite another workflow's prompts. This one
-	// statement covers both intra-workflow pointers and the forced clears.
-	if (removedStates.length > 0) {
-		queries.push(
-			db
-				.updateTable('workflow_state')
-				.set({ inherits_from_state_id: null })
-				.where('inherits_from_state_id', 'in', [...removedIds])
-				.compile()
-		);
-	}
 	for (const s of removedStates) {
 		queries.push(db.deleteFrom('workflow_state').where('id', '=', s.id).compile());
 	}
@@ -1270,16 +836,6 @@ export async function updateWorkflow(
 			);
 		}
 	}
-	// Pointer pass, after every insert so a new state can be a new state's base.
-	for (const stateId of inh.changedIds) {
-		queries.push(
-			db
-				.updateTable('workflow_state')
-				.set({ inherits_from_state_id: inh.pointers.get(stateId) ?? null })
-				.where('id', '=', stateId)
-				.compile()
-		);
-	}
 	queries.push(
 		db
 			.updateTable('workflow')
@@ -1292,7 +848,6 @@ export async function updateWorkflow(
 	if (categoriesChanged.some((change) => change.to === 'active')) effects.signalDispatch();
 	const updated = await loadWorkflow(db, actor.userId, id);
 	if (contextSweep.deleted.length > 0) updated.deleted_context = contextSweep.deleted;
-	if (clearedInheritance.length > 0) updated.cleared_inheritance = clearedInheritance;
 	return updated;
 }
 
@@ -1301,8 +856,12 @@ export async function deleteWorkflow(
 	env: Env,
 	actor: ActorContext,
 	id: string,
-	{ forceDeleteContext = false, forceClearInheritance = false } = {}
-): Promise<{ deleted_context: DeletedContextItem[]; cleared_inheritance: ClearedInheritance[] }> {
+	{
+		forceDeleteContext = false,
+		forceClearInheritance = false
+	}: { forceDeleteContext?: boolean; forceClearInheritance?: unknown } = {}
+): Promise<{ deleted_context: DeletedContextItem[]; cleared_inheritance: never[] }> {
+	rejectForceClearInheritance(forceClearInheritance);
 	const wf = await loadWorkflow(db, actor.userId, id);
 	if (wf.is_system) {
 		throw new ApiFail(403, 'workflow_read_only', 'The standard workflow cannot be deleted');
@@ -1329,30 +888,6 @@ export async function deleteWorkflow(
 		forceDeleteContext,
 		`delete workflow "${wf.name}"`
 	);
-	// States in *other* workflows that inherit from this one: deleting it
-	// would rewrite their prompts, so it is refused unless forced. Pointers
-	// inside this workflow die with it and need no consent.
-	const stateIds = wf.states.map((s) => s.id);
-	const children = await inheritingChildren(db, actor.userId, stateIds, new Set(stateIds));
-	if (children.length > 0 && !forceClearInheritance) {
-		throw new ApiFail(
-			422,
-			'workflow_inherited',
-			`Cannot delete workflow "${wf.name}": ${children.length} state${children.length === 1 ? ' in another workflow inherits' : 's in other workflows inherit'} context from it (${children.map((c) => `${c.workflowName} / ${c.name}`).join(', ')}): re-point them first, or pass force_clear_inheritance to clear their pointers`,
-			{
-				states: children.map((c) => ({
-					state_id: c.id,
-					state_name: c.name,
-					workflow_id: c.workflowId,
-					workflow_name: c.workflowName
-				}))
-			}
-		);
-	}
-	const clearedInheritance = clearedInheritanceFor(children, (baseId) => {
-		const base = wf.states.find((s) => s.id === baseId);
-		return base ? `${wf.name} / ${base.name}` : baseId;
-	});
 	await runAtomic(env, [
 		...sweep.queries,
 		db
@@ -1361,31 +896,15 @@ export async function deleteWorkflow(
 			.where('default_workflow_id', '=', id)
 			.compile(),
 		db.deleteFrom('workflow_transition').where('workflow_id', '=', id).compile(),
-		// Same pre-null as a state removal: the self-FK has no ON DELETE action.
-		db
-			.updateTable('workflow_state')
-			.set({ inherits_from_state_id: null })
-			.where('inherits_from_state_id', 'in', stateIds)
-			.compile(),
 		db.deleteFrom('workflow_state').where('workflow_id', '=', id).compile(),
 		db.deleteFrom('workflow').where('id', '=', id).compile(),
 		eventInsert(db, actor, {
 			type: 'workflow.deleted',
 			payload: {
 				workflow_id: id,
-				name: wf.name,
-				...(clearedInheritance.length
-					? {
-							inheritance_changed: clearedInheritance.map((c) => ({
-								workflow: c.workflow_name,
-								state: c.state_name,
-								from: c.was,
-								to: null
-							}))
-						}
-					: {})
+				name: wf.name
 			}
 		})
 	]);
-	return { deleted_context: sweep.deleted, cleared_inheritance: clearedInheritance };
+	return { deleted_context: sweep.deleted, cleared_inheritance: [] };
 }

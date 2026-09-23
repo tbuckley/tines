@@ -146,7 +146,12 @@ export interface TestDb {
 	}[];
 }
 
-export function createTestDb(): TestDb {
+export interface TestDbOptions {
+	/** Omit a migration to model a worker before that release boundary. */
+	excludeMigrations?: readonly string[];
+}
+
+export function createTestDb(options: TestDbOptions = {}): TestDb {
 	const sqlite = new DatabaseSync(':memory:');
 	const log: string[] = [];
 	const readLog: {
@@ -157,7 +162,9 @@ export function createTestDb(): TestDb {
 	// D1 enforces foreign keys; the tests must too (batch-order bugs show up
 	// as FK failures).
 	sqlite.exec('PRAGMA foreign_keys = ON');
+	const excluded = new Set(options.excludeMigrations ?? []);
 	for (const path of Object.keys(migrations).sort()) {
+		if (excluded.has(path.split('/').at(-1)!)) continue;
 		sqlite.exec(migrations[path]);
 	}
 

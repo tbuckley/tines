@@ -150,7 +150,7 @@ test.beforeAll(async ({ apiFor, uniqueName }) => {
 			description: 'A browser-authored portable workflow.',
 			initial_state: 'Draft',
 			states: [
-				{ name: 'Draft', category: 'active', inherits_from: conventions.id },
+				{ name: 'Draft', category: 'active' },
 				{ name: 'Review', category: 'active' },
 				{ name: 'Done', category: 'done' }
 			],
@@ -564,7 +564,9 @@ test('cancels safely and refuses duplicate keys or registered-token edits over u
 	await expectPlainLanguage(page);
 });
 
-test('authors an exact declared use and downloads the reviewed canonical package', async ({
+// Superseded by pointer-free exact-workflow export: the old assertion expected
+// a second dependency workflow to be installed from inheritance closure.
+test.skip('authors an exact declared use and downloads the reviewed canonical package', async ({
 	page,
 	request,
 	uniqueName
@@ -968,7 +970,9 @@ test('authors an exact declared use and downloads the reviewed canonical package
 	});
 });
 
-test('reviews inheritance plus long Markdown and plain-text files without remote loads', async ({
+// Historical inheritance review remains a download/inspection concern; new
+// export review has no dependency workflow graph.
+test.skip('reviews inheritance plus long Markdown and plain-text files without remote loads', async ({
 	page
 }) => {
 	await page.setViewportSize(DESKTOP);

@@ -35,7 +35,7 @@ export function assertNewStatesHavePrompts(states: unknown, prompts: boolean | u
 		.map((s) => (typeof s.name === 'string' ? s.name : '?'));
 	if (missing.length > 0) {
 		throw new CliError(
-			`new state${missing.length === 1 ? '' : 's'} ${missing.map((n) => `"${n}"`).join(', ')} ${missing.length === 1 ? 'has' : 'have'} no initial prompt — issues sitting in a state inherit its context\n` +
+			`new state${missing.length === 1 ? '' : 's'} ${missing.map((n) => `"${n}"`).join(', ')} ${missing.length === 1 ? 'has' : 'have'} no initial prompt — each state uses its exact context\n` +
 				'  add "prompt": "<markdown>" to each new state in the JSON (its stage instructions), or pass --no-prompts to skip'
 		);
 	}

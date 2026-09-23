@@ -112,21 +112,9 @@
 				name: `${wf.name} (copy)`,
 				description: wf.description,
 				initial_state: nameOf(wf.initial_state_id),
-				// Inheritance pointers come along: a copy that silently resolved a
-				// different context would not be a copy. Pointers inside this
-				// workflow remap by name (the API resolves a ref against the
-				// request's own states first); pointers at another workflow's
-				// state copy verbatim.
 				states: wf.states.map((s) => ({
 					name: s.name,
-					category: s.category,
-					...(s.inherits_from
-						? {
-								inherits_from: wf.states.some((o) => o.id === s.inherits_from)
-									? nameOf(s.inherits_from)
-									: s.inherits_from
-							}
-						: {})
+					category: s.category
 				})),
 				transitions: wf.transitions.map((t) => ({
 					name: t.name,

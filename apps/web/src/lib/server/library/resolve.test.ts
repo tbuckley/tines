@@ -255,7 +255,7 @@ describe('resolved package compilation', () => {
 				{ predicate: sql<boolean>`${enabled ? 1 : 0}` },
 				f.now
 			);
-			expect(validatePackageBatch(queries).statements).toBe(20);
+			expect(validatePackageBatch(queries).statements).toBe(19);
 			await runAtomic(f.t.env, queries);
 			const workflows = await f.t.db
 				.selectFrom('workflow')
@@ -276,7 +276,7 @@ describe('resolved package compilation', () => {
 					.select('inherits_from_state_id')
 					.where('id', '=', f.allocation.records['state:1'].id)
 					.executeTakeFirstOrThrow();
-				expect(state.inherits_from_state_id).toBe(f.allocation.records['state:3'].id);
+				expect(state.inherits_from_state_id).toBeNull();
 				const schedule = await f.t.db
 					.selectFrom('scheduled_task')
 					.selectAll()

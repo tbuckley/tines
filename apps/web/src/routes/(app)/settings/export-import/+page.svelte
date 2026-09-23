@@ -228,10 +228,10 @@
 	<h2 class="mb-1 text-lg font-medium">Import</h2>
 	<p class="text-muted-foreground mb-3 max-w-2xl text-sm">
 		Upload a file exported from Tines. Existing projects and matching workflows are skipped.
-		Conflicting workflow definitions or inheritance may be refused; overwrite updates supported
-		context and inheritance only. Each workflow is identified separately in v3 files. Whole-library
-		import is best effort: valid entries may succeed while others fail. Review the plan before
-		importing.
+		Conflicting workflow definitions may be refused; retired state-inheritance documents remain
+		available for inspection/download but cannot be imported. Each workflow is identified separately
+		in v3 files. Whole-library import is best effort: valid entries may succeed while others fail.
+		Review the plan before importing.
 	</p>
 
 	<div class="mb-3 flex flex-wrap items-center gap-3">
@@ -259,7 +259,7 @@
 	{#if document_}
 		<div class="mb-3 flex flex-wrap gap-4 text-sm">
 			<CheckboxField
-				label="Overwrite existing context items and inheritance pointers"
+				label="Overwrite existing context items"
 				checked={overwrite}
 				onCheckedChange={(checked) => {
 					overwrite = checked;

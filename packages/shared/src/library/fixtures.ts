@@ -108,8 +108,53 @@ export function inheritedPackage(): WorkflowPackageDocument {
 		routing: []
 	};
 }
+
+/** Current mutation fixture: one chosen workflow with exact, pointer-free context. */
+export function pointerFreePackage(): WorkflowPackageDocument {
+	const document = inheritedPackage();
+	const workflow = structuredClone(document.workflows[0]);
+	workflow.states = workflow.states.map((state) => ({ ...state, inherits_from: null }));
+	return {
+		...document,
+		workflows: [workflow],
+		context: document.context.map((item) => ({ ...item, state_id: 'state:1' })),
+		text_uses: document.text_uses.filter((use) => use.target.record_id === 'workflow:1')
+	};
+}
+
 export function automatedPackage(): WorkflowPackageDocument {
 	const d = inheritedPackage();
+	d.inputs.push({
+		id: 'input:2',
+		key: 'project',
+		type: 'project',
+		label: 'Destination project',
+		description: '',
+		required: true,
+		default: null
+	});
+	d.schedules.push({
+		id: 'schedule:1',
+		workflow: { kind: 'bundled_workflow', workflow_id: 'workflow:1' },
+		project: { kind: 'input_project', input_id: 'input:2' },
+		name: 'Weekly review',
+		title_template: 'Review {{date}}',
+		description_template: 'Review queued work.',
+		recurrence: { kind: 'preset', preset: { kind: 'weekly', time: '09:00', weekday: 1 } },
+		timezone: 'America/New_York',
+		require_all_closed: true,
+		start_state: null
+	});
+	d.routing.push({
+		id: 'routing:1',
+		scope: { state_id: 'state:1', project: { kind: 'input_project', input_id: 'input:2' } },
+		tier: 'balanced'
+	});
+	return d;
+}
+
+export function pointerFreeAutomatedPackage(): WorkflowPackageDocument {
+	const d = pointerFreePackage();
 	d.inputs.push({
 		id: 'input:2',
 		key: 'project',

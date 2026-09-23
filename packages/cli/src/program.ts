@@ -14,6 +14,7 @@ import { register as registerProjects } from './commands/projects.js';
 import { register as registerRouting } from './commands/routing.js';
 import { register as registerRunners } from './commands/runners.js';
 import { register as registerSchedules } from './commands/schedules.js';
+import { register as registerStateRetirement } from './commands/state-retirement.js';
 import { register as registerSupervisor } from './commands/supervisor.js';
 import { register as registerWorkflows } from './commands/workflows.js';
 import { register as registerUsage } from './commands/usage.js';
@@ -38,6 +39,7 @@ registerSchedules(program);
 registerRunners(program);
 registerRouting(program);
 registerSupervisor(program);
+registerStateRetirement(program);
 registerUsage(program);
 registerEvents(program);
 

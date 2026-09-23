@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { canonicalizeLibraryValue, withLibraryDocumentDigest } from '@tines/shared';
 import {
-	automatedPackage,
-	inheritedPackage
+	pointerFreeAutomatedPackage,
+	pointerFreePackage
 } from '../../../../../../packages/shared/src/library/fixtures';
 import { createTestDb } from '../api/test-db';
 import type { ActorContext } from '../api/core';
@@ -30,7 +30,7 @@ const signing = { BETTER_AUTH_SECRET: 'unit-test-signing-material' };
 async function fixture() {
 	const t = createTestDb();
 	seedBase(t);
-	const document = await withLibraryDocumentDigest(inheritedPackage());
+	const document = await withLibraryDocumentDigest(pointerFreePackage());
 	const document_json = JSON.stringify(document);
 	const preview = await prepareWorkflowPackage(t.db, signing, actor, document_json, {
 		inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } }
@@ -50,7 +50,7 @@ describe('atomic workflow package install', () => {
 		for (const mode of ['host', 'publisher'] as const) {
 			const t = createTestDb();
 			seedBase(t);
-			const document = await withLibraryDocumentDigest(inheritedPackage());
+			const document = await withLibraryDocumentDigest(pointerFreePackage());
 			const documentJson = canonicalizeLibraryValue(document);
 			const env = {
 				...t.env,
@@ -120,7 +120,7 @@ describe('atomic workflow package install', () => {
 		for (const mode of ['host', 'publisher'] as const) {
 			const t = createTestDb();
 			seedBase(t);
-			const document = await withLibraryDocumentDigest(inheritedPackage());
+			const document = await withLibraryDocumentDigest(pointerFreePackage());
 			const documentJson = canonicalizeLibraryValue(document);
 			const env = {
 				...t.env,
@@ -179,7 +179,7 @@ describe('atomic workflow package install', () => {
 	it('fences a hosted snapshot in the receipt transaction while preserving private plans', async () => {
 		const t = createTestDb();
 		seedBase(t);
-		const document = await withLibraryDocumentDigest(inheritedPackage());
+		const document = await withLibraryDocumentDigest(pointerFreePackage());
 		const documentJson = canonicalizeLibraryValue(document);
 		const env = {
 			...t.env,
@@ -310,7 +310,7 @@ describe('atomic workflow package install', () => {
 		expect(f.t.all('SELECT enabled,run_count FROM scheduled_task')).toEqual([]);
 		expect(f.t.all('SELECT * FROM issue')).toEqual([]);
 		expect(f.t.all('SELECT * FROM library_install')).toHaveLength(1);
-		expect(f.t.all('SELECT * FROM event')).toHaveLength(6);
+		expect(f.t.all('SELECT * FROM event')).toHaveLength(5);
 
 		vi.setSystemTime(Date.now() + PACKAGE_PLAN_TTL_MS + 1);
 		expect(
@@ -382,7 +382,7 @@ describe('atomic workflow package install', () => {
 				'INSERT INTO routing_rule(id,user_id,targets,created_at,updated_at) VALUES(?,?,?,1,1)'
 			)
 			.run('global', USER, JSON.stringify([{ runner_id: runner }]));
-		const document = await withLibraryDocumentDigest(automatedPackage());
+		const document = await withLibraryDocumentDigest(pointerFreeAutomatedPackage());
 		const document_json = JSON.stringify(document);
 		const beforeDefault = t.all('SELECT default_workflow_id FROM project WHERE id=?', PROJECT)[0];
 		const plan = await prepareWorkflowPackage(t.db, signing, actor, document_json, {
@@ -505,7 +505,7 @@ describe('atomic workflow package install', () => {
 					'INSERT INTO routing_rule(id,user_id,targets,created_at,updated_at) VALUES(?,?,?,1,1)'
 				)
 				.run('global', USER, JSON.stringify([{ runner_id: runner }]));
-			const document = await withLibraryDocumentDigest(automatedPackage());
+			const document = await withLibraryDocumentDigest(pointerFreeAutomatedPackage());
 			const document_json = JSON.stringify(document);
 			const plan = await prepareWorkflowPackage(t.db, signing, actor, document_json, {
 				inputs: {
@@ -569,7 +569,7 @@ describe('atomic workflow package install', () => {
 					'INSERT INTO routing_rule(id,user_id,targets,created_at,updated_at) VALUES(?,?,?,1,1)'
 				)
 				.run('global', USER, JSON.stringify([{ runner_id: runner }]));
-			const document = await withLibraryDocumentDigest(automatedPackage());
+			const document = await withLibraryDocumentDigest(pointerFreeAutomatedPackage());
 			const document_json = JSON.stringify(document);
 			const plan = await prepareWorkflowPackage(t.db, signing, actor, document_json, {
 				inputs: {
@@ -638,7 +638,7 @@ describe('atomic workflow package install', () => {
 		]);
 		expect(retries).toEqual([recovered, recovered]);
 		expect(f.t.all('SELECT * FROM library_install')).toHaveLength(1);
-		expect(f.t.all('SELECT * FROM workflow WHERE user_id IS NOT NULL')).toHaveLength(2);
+		expect(f.t.all('SELECT * FROM workflow WHERE user_id IS NOT NULL')).toHaveLength(1);
 
 		const duplicate = await fixture();
 		const duplicateBatch = duplicate.t.env.DB.batch.bind(duplicate.t.env.DB);
@@ -665,7 +665,7 @@ describe('atomic workflow package install', () => {
 		);
 		expect(raced.id).toBe(duplicate.preview.plan_id);
 		expect(duplicate.t.all('SELECT * FROM library_install')).toHaveLength(1);
-		expect(duplicate.t.all('SELECT * FROM workflow WHERE user_id IS NOT NULL')).toHaveLength(2);
+		expect(duplicate.t.all('SELECT * FROM workflow WHERE user_id IS NOT NULL')).toHaveLength(1);
 	});
 
 	it('reports an unknown outcome when both the atomic transport and receipt recovery fail', async () => {

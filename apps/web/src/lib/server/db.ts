@@ -32,7 +32,7 @@ export interface WorkflowStateTable {
 	name: string;
 	category: StateCategory;
 	position: number;
-	/** The state this one inherits context from (Tines/238), or null. */
+	/** Historical nullable state pointer; Release B runtime keeps it null. */
 	inherits_from_state_id: string | null;
 	created_at: number;
 }
@@ -501,6 +501,60 @@ export interface LibraryInstallTable {
 	created_at: number;
 }
 
+/** Durable drain covering an explicitly inventoried state component. */
+export interface StateRetirementHoldTable {
+	id: string;
+	user_id: string;
+	actor_key: string;
+	topology_digest: string;
+	inventory_digest: string;
+	created_at: number;
+	released_at: number | null;
+}
+
+export interface StateRetirementHoldStateTable {
+	hold_id: string;
+	user_id: string;
+	state_id: string;
+	workflow_name: string;
+	state_name: string;
+	state_category: StateCategory;
+}
+
+/** Immutable proof that a preservation or conditional rollback committed. */
+export interface StateRetirementReceiptTable {
+	id: string;
+	user_id: string;
+	hold_id: string;
+	actor_key: string;
+	kind: 'preserve' | 'rollback';
+	rollback_of_receipt_id: string | null;
+	inventory_digest: string;
+	plan_digest: string;
+	request_digest: string;
+	execution_nonce: string;
+	receipt_json: string;
+	committed_at: number;
+}
+
+export interface StateRetirementPointerTable {
+	hold_id: string;
+	user_id: string;
+	child_state_id: string;
+	original_parent_state_id: string;
+	state_witness: string;
+	successful_receipt_id: string | null;
+}
+
+export interface StateRetirementRestoreAuthorizationTable {
+	receipt_id: string;
+	user_id: string;
+	hold_id: string;
+	child_state_id: string;
+	parent_state_id: string;
+	consumed_at: number | null;
+}
+
 export interface WorkflowPublicationTable {
 	id: string;
 	user_id: string;
@@ -657,6 +711,11 @@ export interface Database {
 	supervisor_sweep_state: SupervisorSweepStateTable;
 	user_preference: UserPreferenceTable;
 	library_install: LibraryInstallTable;
+	state_retirement_hold: StateRetirementHoldTable;
+	state_retirement_hold_state: StateRetirementHoldStateTable;
+	state_retirement_receipt: StateRetirementReceiptTable;
+	state_retirement_pointer: StateRetirementPointerTable;
+	state_retirement_restore_authorization: StateRetirementRestoreAuthorizationTable;
 	workflow_publication: WorkflowPublicationTable;
 	workflow_publication_source: WorkflowPublicationSourceTable;
 	workflow_publisher_status: WorkflowPublisherStatusTable;

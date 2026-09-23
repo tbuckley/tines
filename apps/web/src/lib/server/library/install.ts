@@ -1,6 +1,6 @@
 import {
 	LibraryValidationError,
-	parseLibraryV3Document,
+	parseLibraryV3MutationDocument,
 	type WorkflowPackageInstallRequest,
 	type WorkflowPackageReceipt
 } from '@tines/shared';
@@ -59,7 +59,7 @@ function assertMatchingReceipt(
 
 async function assertDocumentDigest(documentJson: string, expected: string) {
 	try {
-		const document = await parseLibraryV3Document(documentJson);
+		const document = await parseLibraryV3MutationDocument(documentJson);
 		if (document.profile !== 'workflow')
 			throw new ApiFail(422, 'wrong_profile', 'Use whole-library import for library-profile files');
 		if (document.digest !== expected)
@@ -90,7 +90,6 @@ export async function installWorkflowPackage(
 		);
 	if (request.confirmation.plan_digest !== payload.plan_digest)
 		throw new ApiFail(409, 'confirmation_mismatch', 'Confirm the exact prepared plan digest');
-	await assertDocumentDigest(request.document_json, payload.document_digest);
 	const requestDigest = await packageRequestDigest(payload);
 
 	const prior = await receiptRow(db, actor.userId, payload.id);
@@ -98,6 +97,7 @@ export async function installWorkflowPackage(
 		assertMatchingReceipt(prior, payload, actorKey, requestDigest);
 		return parseReceipt(prior.receipt_json);
 	}
+	await assertDocumentDigest(request.document_json, payload.document_digest);
 
 	const { document, resolved, witnessRaw } = await reconstructPackagePlan(
 		db,

@@ -63,6 +63,8 @@ declare global {
 		PUBLIC_WORKFLOW_APPEAL_CONTACT?: string;
 		PUBLIC_WORKFLOW_MODERATION_QUEUE_READY?: string;
 		PUBLIC_WORKFLOW_MODERATION_JOURNEY_VERIFIED?: string;
+		/** Test-only release boundary switch for the frozen A worker journey. */
+		STATE_RETIREMENT_RELEASE?: string;
 	}
 
 	namespace App {
