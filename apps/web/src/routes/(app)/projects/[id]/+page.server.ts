@@ -27,6 +27,8 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		viaSession: true
 	};
 	const access = await resolveProjectAccess(db, actor, params.id).catch((e) => {
+		if (e instanceof ApiFail && e.status === 404)
+			error(404, `No project has the ID “${truncate(params.id)}”.`);
 		if (e instanceof ApiFail) error(e.status, e.message);
 		throw e;
 	});

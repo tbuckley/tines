@@ -65,6 +65,8 @@ export const load: PageServerLoad = async ({
 	const addressProjectId = directProject
 		? directProject.id
 		: await resolveAccessibleProjectRef(db, actor, params.project).catch((e) => {
+				if (e instanceof ApiFail && e.status === 404)
+					error(404, `You have no project named “${truncate(params.project)}”.`);
 				if (e instanceof ApiFail) error(e.status, e.message);
 				throw e;
 			});
@@ -74,7 +76,18 @@ export const load: PageServerLoad = async ({
 		.where('project_id', '=', addressProjectId)
 		.where('number', '=', number)
 		.executeTakeFirst();
-	if (!addressed) error(404, 'Issue unavailable');
+	if (!addressed) {
+		await resolveProjectAccess(db, actor, addressProjectId).catch((e) => {
+			if (e instanceof ApiFail) error(e.status, e.message);
+			throw e;
+		});
+		const named = await db
+			.selectFrom('project')
+			.select('name')
+			.where('id', '=', addressProjectId)
+			.executeTakeFirstOrThrow();
+		error(404, `Issue #${number} does not exist in “${truncate(named.name)}”.`);
+	}
 	const access = await resolveIssueAccess(db, actor, addressed.issue_id).catch((e) => {
 		if (e instanceof ApiFail) error(e.status, e.message);
 		throw e;

@@ -1,6 +1,6 @@
 # Shared-project implementation verification · 2026-09-23
 
-**Branch:** `tines/669-project-membership`. **Status:** slice 4 verified;
+**Branch:** `tines/669-project-membership`. **Status:** parent assembly in progress;
 the proposed [669 → 670/712 contract](../shared-project-execution-contract.md)
 is unreviewed until the parent lands and review completes. All fixtures ran in
 an isolated local Worker/D1 stack. No production project, run, account, or
@@ -85,3 +85,17 @@ after a member decision does not turn the member's saved choice into a run.
 Tines/648, run complete E2E/CI and navigation performance gates, review the
 whole acceptance matrix, and mark the proposed 669 → 670/712 contract reviewed
 only after the parent lands and review completes.
+
+## Parent assembly
+
+The shared branch merged main with Tines/648's scoped-key authorization and
+project switcher. Shared project reads now intersect membership with project
+key scope, while member write routes require their specific key permission.
+Invitations and acceptance remain session only; keys cannot grant consent.
+Regression tests cover the scoped read and write paths. The issue page resolves
+canonical project IDs directly, avoiding an extra project-access query on
+ordinary navigation. `pnpm --filter @tines/web perf:nav` passed all six cases,
+including the zero-duplicate issue-detail statement assertion. The combined
+`pnpm test` pass covered 345 shared, 719 CLI, and 2,251 web tests after the
+main merge. Isolated browser/API journeys passed 9/9, and isolated native D1
+collaboration interleavings passed 16/16.
