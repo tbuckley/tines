@@ -1306,9 +1306,10 @@ test.describe.serial('project controls at every project count', () => {
 					}
 				},
 				...projectIds.map((id) => ({
-					name: `archive Carol project ${id}`,
+					name: `delete Carol project ${id}`,
 					run: async () => {
-						expect((await api.post(`/api/v1/projects/${id}/archive`)).ok()).toBe(true);
+						expect((await api.post(`/api/v1/projects/${id}/unarchive`)).ok()).toBe(true);
+						expect((await api.delete(`/api/v1/projects/${id}`)).status()).toBe(204);
 					}
 				}))
 			]);
