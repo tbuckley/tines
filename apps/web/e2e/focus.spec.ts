@@ -473,10 +473,10 @@ focusTest.describe.serial('project focus', () => {
 				await expect(issueLinks.first()).toBeVisible();
 				expect(
 					await issueLinks.evaluateAll((links) => links.map((link) => link.getAttribute('href')))
-				).toEqual(expect.arrayContaining([`/issues/${encodeURIComponent(world.aName)}/1`]));
+				).toEqual(expect.arrayContaining([`/issues/${world.aId}/1`]));
 				expect(
 					await issueLinks.evaluateAll((links) => links.map((link) => link.getAttribute('href')))
-				).not.toContain(`/issues/${encodeURIComponent(world.bName)}/1`);
+				).not.toContain(`/issues/${world.bId}/1`);
 
 				await gotoHydrated(page, '/workflows');
 				const standard = page.locator('a[href="/workflows/wf_standard"]');
