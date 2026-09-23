@@ -42,6 +42,10 @@ ProxyWorker`, or `Network connection lost` and the dev server exits, check the w
   `/api/time`, shows an externally posted comment through polling, and still responds
   after the browser context closes. Short scripts or locator timeouts are not required as
   a workaround for this known fault.
+- A `Broken pipe`, `Connection reset by peer`, or `ProxyWorker` request that recovers on
+  attempt 2 does not by itself establish server death or resource exhaustion. Correlate the
+  first failing assertion with the server lifecycle and later successful requests before
+  treating the shard as a Worker failure.
 - `e2e/` is typechecked by nothing — `pnpm check` runs `svelte-check` against
   `.svelte-kit/tsconfig.json`, whose `include` is `src/`, `test/`, `tests/` and the vite
   config (Tines/159). To check it ad hoc, drop a `tsconfig.e2e-check.json` in `apps/web`:

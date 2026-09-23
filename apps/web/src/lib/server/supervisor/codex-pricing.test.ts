@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentRunUsage, CodexPricingEvidenceV1 } from '@tines/shared';
-import { CODEX_RATES, priceCodexUsage, type CodexRate } from './codex-pricing';
+import { CODEX_RATES, priceCodexUsage, userRateToCodexRate, type CodexRate } from './codex-pricing';
 
 const created_at = Date.parse('2026-09-11T03:30:00Z');
 const evidence = (overrides: Partial<CodexPricingEvidenceV1> = {}): CodexPricingEvidenceV1 => ({
@@ -419,5 +419,44 @@ describe('priceCodexUsage', () => {
 		);
 		const persisted = JSON.parse(JSON.stringify(before));
 		expect(persisted.pricing.basis.cost_usd_exact).toBe('0.00394');
+	});
+
+	it('prices an unsupported model from a user-entered rate', () => {
+		const row = {
+			id: 'umr_1',
+			model: 'future-model',
+			version: 1,
+			input_rate: '3',
+			cache_read_rate: '0.3',
+			cache_write_rate: null,
+			output_rate: '9',
+			created_at: created_at + 10
+		};
+		const result = priceCodexUsage(
+			{
+				run: { model: row.model, created_at: created_at - 10 },
+				usage: {
+					input_tokens: 400,
+					cache_read_tokens: 600,
+					cache_write_tokens: 0,
+					output_tokens: 100
+				},
+				evidence: evidence({
+					model: row.model,
+					raw_usage: {
+						input_tokens: 1000,
+						cached_input_tokens: 600,
+						cache_write_input_tokens: 0,
+						output_tokens: 100
+					}
+				}),
+				now: created_at + 100
+			},
+			[...CODEX_RATES, userRateToCodexRate(row)]
+		);
+		expect(result.pricing).toMatchObject({
+			status: 'calculated',
+			basis: { plan: 'user_entered', rate_source: 'user', rate_adopted_at: 0 }
+		});
 	});
 });

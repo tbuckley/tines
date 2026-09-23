@@ -41,7 +41,31 @@ export interface EffortCapabilitiesV1 {
 	catalog_revision?: string;
 	catalog_digest: string;
 	models: EffortModelCapability[];
+	/** This daemon can enforce user-asserted effort for unlisted models. */
+	accepts_asserted_effort?: true;
 	discovery_error?: string;
+}
+
+export type EffortAdmission =
+	{ ok: true; verification: 'verified' | 'asserted' } | { ok: false; reason: string };
+
+/** Admit an effort value against an exact-model catalog, optionally asserting an unlisted model. */
+export function admitEffort(
+	allowed: readonly string[] | null,
+	value: string,
+	assertable: boolean
+): EffortAdmission {
+	if (allowed !== null)
+		return allowed.includes(value)
+			? { ok: true, verification: 'verified' }
+			: { ok: false, reason: `unsupported_effort: allows ${allowed.join(', ')}` };
+	if (assertable && isRecognizedEffort(value)) return { ok: true, verification: 'asserted' };
+	if (!assertable)
+		return {
+			ok: false,
+			reason: 'daemon_upgrade_required: this daemon cannot accept effort for unlisted models'
+		};
+	return { ok: false, reason: 'capability_unavailable: exact model support was not reported' };
 }
 
 /** Verified managed-provider table; servers project this to clients. */

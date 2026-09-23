@@ -93,7 +93,9 @@ import type {
 	UpdateSupervisorSettingsRequest,
 	UpdateWorkflowRequest,
 	UserPreferences,
-	WorkflowResponse
+	WorkflowResponse,
+	SupervisorRatesResponse,
+	CreateUserModelRateRequest
 } from './types.js';
 import type {
 	CohortUsageReport,
@@ -628,6 +630,23 @@ export function createApiClient(options: ApiClientOptions) {
 		}) => get<SentBackDrilldown>(`/api/v1/supervisor/stats/sent-back${query(q)}`),
 		updateSupervisorSettings: (body: UpdateSupervisorSettingsRequest) =>
 			request<SupervisorSettingsResponse>('PUT', '/api/v1/supervisor/settings', body),
+		getSupervisorRates: () => get<SupervisorRatesResponse>('/api/v1/supervisor/rates'),
+		createSupervisorRate: (body: CreateUserModelRateRequest) =>
+			request<{
+				rate: import('./types.js').UserModelRate;
+				repriced: number;
+				still_unpriced: number;
+				remaining: number;
+				next_cursor: string | null;
+			}>('POST', '/api/v1/supervisor/rates', body),
+		repriceSupervisorRate: (model: string, cursor: string | null = null) =>
+			request<{
+				repriced: number;
+				still_unpriced: number;
+				remaining: number;
+				next_cursor: string | null;
+			}>('POST', '/api/v1/supervisor/rates/reprice', { model, cursor }),
+		deleteSupervisorRate: (id: string) => request<void>('DELETE', `/api/v1/supervisor/rates/${id}`),
 
 		// API keys (create/revoke require a browser session, not a key)
 		listApiKeys: (filters: { run_keys?: RunKeyFilter } = {}) =>
