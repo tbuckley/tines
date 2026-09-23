@@ -81,11 +81,6 @@ Owner hold is separate from decision authority: the native probe confirms a
 member decision can commit with a hold winning before the batch, and a hold
 after a member decision does not turn the member's saved choice into a run.
 
-**Parent assembly still owns:** rebase and review against current main and
-Tines/648, run complete E2E/CI and navigation performance gates, review the
-whole acceptance matrix, and mark the proposed 669 → 670/712 contract reviewed
-only after the parent lands and review completes.
-
 ## Parent assembly
 
 The shared branch merged main with Tines/648's scoped-key authorization and
@@ -96,6 +91,16 @@ Regression tests cover the scoped read and write paths. The issue page resolves
 canonical project IDs directly, avoiding an extra project-access query on
 ordinary navigation. `pnpm --filter @tines/web perf:nav` passed all six cases,
 including the zero-duplicate issue-detail statement assertion. The combined
-`pnpm test` pass covered 345 shared, 719 CLI, and 2,251 web tests after the
+`pnpm test` pass covered 345 shared, 719 CLI, and 2,252 web tests after the
 main merge. Isolated browser/API journeys passed 9/9, and isolated native D1
 collaboration interleavings passed 16/16.
+
+The complete `pnpm check` and `pnpm format:check` gates passed after the
+integration. Browser regressions exposed name-based URL expectations after
+the issue loader canonicalized project IDs; the affected error-page, issue
+creation, duplicate, and transfer specs were updated and rerun (24/24 for the
+first three; 24/24 for dialog
+and transfer after waiting for the entrance animation). CI runs all three
+Playwright shards on the final branch. Review still needs to decide whether
+the proposed execution contract is ready to become the reviewed 670/712
+dependency; this receipt does not make that claim.

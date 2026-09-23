@@ -716,7 +716,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 
 			// The refreshed review commits on a second, deliberate confirmation.
 			await page.getByTestId('transfer-confirm').click();
-			await expect(page).toHaveURL(new RegExp(`/issues/${sourceName}/\\d+$`));
+			await expect(page).toHaveURL(new RegExp(`/issues/${sourceId}/\\d+$`));
 			const moved = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
 			expect(moved.project_name).toBe(sourceName);
 			expect(moved.id).toBe(issueId);
@@ -776,9 +776,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await expect(modal.getByRole('alert')).toContainText('may have completed');
 			await modal.getByRole('button', { name: 'Check current issue' }).click();
 			const moved = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
-			await expect(page).toHaveURL(
-				new RegExp(`/issues/${encodeURIComponent(moved.project_name)}/${moved.number}$`)
-			);
+			await expect(page).toHaveURL(new RegExp(`/issues/${moved.project_id}/${moved.number}$`));
 			await page.close();
 		});
 	});

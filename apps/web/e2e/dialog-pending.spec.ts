@@ -132,6 +132,10 @@ async function openTransitionDialog(page: Page): Promise<void> {
 		await expect(sheet).toBeHidden();
 		await expect(dialogOf(page)).toBeVisible();
 	}
+	// The dialog can become visible before Svelte starts its entrance transition.
+	// Give the 150 ms transition time to start and finish before measuring layout
+	// or reversing it into an outro.
+	await page.waitForTimeout(200);
 	await entranceSettled(page);
 }
 
