@@ -51,7 +51,7 @@ export const POST: RequestHandler = api(async (event) => {
 		// Reject foreign/archived projects before consuming a potentially large body.
 		const project = await getProject(db, actor.userId, event.params.id);
 		await assertWritable(db, actor, project);
-		const parsed = await readIssueCreateMultipart(event.request);
+		const parsed = await readIssueCreateMultipart(event.request, actor);
 		const race =
 			import.meta.env.VITE_TINES_E2E === '1'
 				? event.request.headers.get('x-tines-e2e-linked-create-close')

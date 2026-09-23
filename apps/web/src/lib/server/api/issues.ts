@@ -1076,6 +1076,18 @@ export async function createIssue(
 	const initialState = body.state
 		? resolveStateRef(workflow, requireString(body.state, 'state', { max: 100 }).trim())
 		: resolveStateRef(workflow, workflow.initial_state_id);
+	const workflowWitness = await db
+		.selectFrom('workflow')
+		.select('decision_revision')
+		.where('id', '=', workflow.id)
+		.executeTakeFirstOrThrow();
+	const initialChoice =
+		project.shared_at !== null &&
+		actor.viaSession &&
+		!actor.bearerPresent &&
+		initialState.category !== 'done'
+			? (body.allow_my_agents ?? true)
+			: undefined;
 	if (body.allow_my_agents !== undefined) {
 		if (!actor.viaSession) {
 			throw new ApiFail(
@@ -1086,16 +1098,16 @@ export async function createIssue(
 		}
 		if (project.shared_at === null) {
 			throw new ApiFail(
-				409,
-				'sharing_not_active',
+				422,
+				'consent_mode_required',
 				'Personal permission is available after project sharing begins'
 			);
 		}
-		if (body.allow_my_agents && initialState.category !== 'active') {
+		if (body.allow_my_agents && initialState.category === 'done') {
 			throw new ApiFail(
 				422,
 				'permission_state_invalid',
-				'Permission can be enabled only when the issue starts in an active state'
+				'A done issue cannot store personal agent permission'
 			);
 		}
 	}
@@ -1136,7 +1148,11 @@ export async function createIssue(
 	const projectGuard = createProjectWriteGuard(actor, projectId, project.sharing_revision);
 	const linkGuard = linkPlan ? createIssueLinkAdmissionGuard(actor, linkPlan) : undefined;
 	const admissionGuard: QueryGuard = {
-		predicate: sql<boolean>`${projectGuard.predicate} AND ${linkGuard?.predicate ?? sql<boolean>`1`}`
+		predicate: sql<boolean>`${projectGuard.predicate} AND ${linkGuard?.predicate ?? sql<boolean>`1`}
+			AND EXISTS (SELECT 1 FROM workflow w JOIN workflow_state s ON s.workflow_id = w.id
+				WHERE w.id = ${workflow.id} AND w.decision_revision = ${workflowWitness.decision_revision}
+				AND s.id = ${initialState.id} AND s.category = ${initialState.category}
+				${body.state ? sql`` : sql`AND w.initial_state_id = ${initialState.id}`})`
 	};
 	const freshIssueGuard: QueryGuard = {
 		predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id} AND project_id = ${projectId})
@@ -1222,11 +1238,11 @@ export async function createIssue(
 		}
 		if (linkPlan) await recheckCreateIssueLinkPlan(db, actor, linkPlan);
 	}
-	if (body.allow_my_agents !== undefined) {
+	if (initialChoice !== undefined) {
 		queries.push(
 			sql`INSERT INTO issue_personal_choice
 				(issue_id, user_id, value, revision, issue_epoch, membership_revision, source_kind, updated_at)
-			SELECT ${id}, ${actor.userId}, ${body.allow_my_agents ? 'on' : 'off'}, 1,
+			SELECT ${id}, ${actor.userId}, ${initialChoice ? 'on' : 'off'}, 1,
 				i.consent_epoch, 0, 'explicit_issue', ${now}
 			FROM issue i JOIN project p ON p.id = i.project_id
 			WHERE i.id = ${id} AND p.user_id = ${actor.userId}
@@ -1239,7 +1255,7 @@ export async function createIssue(
 					type: 'issue.personal_permission_changed',
 					issueId: id,
 					projectId,
-					payload: { value: body.allow_my_agents ? 'on' : 'off', revision: 1 }
+					payload: { value: initialChoice ? 'on' : 'off', revision: 1 }
 				},
 				freshIssueGuard
 			)
@@ -1262,9 +1278,21 @@ export async function createIssue(
 		queries.push(...linkBatch.queries);
 	}
 	if (beforeCommit) await beforeCommit();
+	queries.push(
+		sql`SELECT id FROM issue WHERE id = ${id} AND project_id = ${projectId}
+		AND ${projectGuard.predicate}`.compile(db)
+	);
 	const results = await runAtomic(env, queries);
 	if (linkPlan && linkBatch) {
 		assertCreateIssueLinksCommitted(linkPlan, results, linkBatch, linkBatchOffset);
+	}
+	if (results.at(-1)?.results?.length !== 1) {
+		throw new ApiFail(
+			409,
+			'conflict',
+			'Project sharing or issue admission changed; refresh and try again',
+			{ committed: false }
+		);
 	}
 	effects.signalDispatch();
 
@@ -1409,6 +1437,33 @@ export async function updateIssue(
 	// guarded on the same write landing.
 	const now = Date.now();
 	const guarded = stateChanged || workflowChanged;
+	const structural = stateChanged || workflowChanged;
+	const resetConsent =
+		structural &&
+		(workflowChanged || nextState.category === 'done' || current.state.category === 'done');
+	const decisionToken = structural ? newId('dcn') : null;
+	const structuralWitness = structural
+		? await db
+				.selectFrom('issue as i')
+				.innerJoin('project as p', 'p.id', 'i.project_id')
+				.select([
+					'i.decision_revision',
+					'i.project_assignment_token',
+					'p.sharing_revision',
+					'p.shared_at'
+				])
+				.where('i.id', '=', id)
+				.where('p.user_id', '=', actor.userId)
+				.executeTakeFirst()
+		: null;
+	if (structural && !structuralWitness) throw notFound();
+	const targetWorkflowWitness = structural
+		? await db
+				.selectFrom('workflow')
+				.select('decision_revision')
+				.where('id', '=', workflow.id)
+				.executeTakeFirstOrThrow()
+		: null;
 	let update = db
 		.updateTable('issue')
 		.set({
@@ -1425,15 +1480,57 @@ export async function updateIssue(
 			// timestamp artifact freshness is measured against. A workflow
 			// change re-seats the state, so it stamps too.
 			...(stateChanged || workflowChanged ? { state_entered_at: now } : {}),
+			...(structural
+				? {
+						decision_revision: sql<number>`decision_revision + 1`,
+						last_decision_token: decisionToken,
+						...(resetConsent ? { consent_epoch: sql<number>`consent_epoch + 1` } : {})
+					}
+				: {}),
 			// Any non-run-key state move is a "manual" transition: it un-parks
 			// the issue and restarts the attempt budget.
 			...(stateChanged && !actor.agentRunId ? { needs_attention: 0, attempt_count: 0 } : {})
 		})
 		.where('id', '=', id);
 	if (guarded) update = update.where('state_id', '=', current.state.id);
-	const guard = guarded ? { issueId: id, stateId: nextState.id, updatedAt: now } : undefined;
+	if (structural && structuralWitness)
+		update = update
+			.where('decision_revision', '=', structuralWitness.decision_revision)
+			.where('project_assignment_token', '=', structuralWitness.project_assignment_token)
+			.where(sql<boolean>`EXISTS (SELECT 1 FROM project p WHERE p.id = issue.project_id
+			AND p.user_id = ${actor.userId} AND p.sharing_revision = ${structuralWitness.sharing_revision})`)
+			.where(sql<boolean>`EXISTS (SELECT 1 FROM workflow w JOIN workflow_state s ON s.workflow_id = w.id
+			WHERE w.id = ${workflow.id} AND w.decision_revision = ${targetWorkflowWitness!.decision_revision}
+			AND s.id = ${nextState.id} AND s.category = ${nextState.category})`);
+	const guard = structural
+		? {
+				predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id}
+		AND last_decision_token = ${decisionToken})`
+			}
+		: undefined;
 
 	const queries: CompiledQuery[] = [update.compile()];
+	if (structural && structuralWitness?.shared_at !== null) {
+		queries.push(
+			...releaseAssignedIssueQueries(db, {
+				issueId: id,
+				userId: actor.userId,
+				token: decisionToken!,
+				eventId: newId('evt'),
+				now,
+				reason: 'Issue decision changed before admission',
+				guard: guard!.predicate
+			})
+		);
+		if (resetConsent)
+			queries.push(
+				sql`UPDATE issue_personal_choice SET value = 'unset',
+			revision = revision + 1, issue_epoch = (SELECT consent_epoch FROM issue WHERE id = ${id}),
+			source_kind = NULL, source_schedule_id = NULL, source_grant_revision = NULL,
+			source_permission_epoch = NULL, updated_at = ${now}
+			WHERE issue_id = ${id} AND ${guard!.predicate}`.compile(db)
+			);
+	}
 	if (changed.length > 0) {
 		const payload: Record<string, unknown> = { changed, title };
 		if (pinChanged) {
@@ -1707,9 +1804,10 @@ export async function transitionIssue(
 	const implicitChoice =
 		consentMode &&
 		actor.viaSession &&
+		!actor.bearerPresent &&
 		target.to_state.category === 'active' &&
 		current.state.category !== 'done' &&
-		decision.consent_value === null;
+		(decision.consent_value === null || decision.consent_value === 'unset');
 	const desiredChoice =
 		consentMode && target.to_state.category === 'active' && current.state.category !== 'done'
 			? body.allow_my_agents !== undefined

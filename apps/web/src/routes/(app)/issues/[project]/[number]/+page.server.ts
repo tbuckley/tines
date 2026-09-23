@@ -3,6 +3,7 @@ import { truncate } from '$lib/format';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail, loadIssue } from '$lib/server/api/issues';
+import { readIssueConsent } from '$lib/server/api/personal-consent';
 import { listLabels } from '$lib/server/api/labels';
 import { listRunners } from '$lib/server/api/runners';
 import { listRoutingRules } from '$lib/server/api/routing';
@@ -70,6 +71,14 @@ export const load: PageServerLoad = async ({
 			);
 		}
 	);
+	const sharing = await db
+		.selectFrom('project')
+		.select('shared_at')
+		.where('id', '=', issue.project_id)
+		.where('user_id', '=', userId)
+		.executeTakeFirst();
+	const permissionReceipt =
+		sharing?.shared_at == null ? null : await readIssueConsent(db, userId, issue.id);
 	const canonicalPath = `/issues/${encodeURIComponent(issue.project_name)}/${issue.number}`;
 	if (!isDataRequest && url.pathname !== canonicalPath) {
 		// A native document redirect retains the browser fragment. Client data
@@ -128,6 +137,7 @@ export const load: PageServerLoad = async ({
 
 	return {
 		issue: issueDetail,
+		permissionReceipt,
 		canonicalPath,
 		events,
 		workflows: await workflowsPromise,

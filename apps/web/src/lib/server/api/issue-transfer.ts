@@ -457,6 +457,8 @@ export function transferIssueQueries(
 		SET project_id = ${payload.d},
 			number = ${nextIssueNumber(payload.d)},
 			project_assignment_token = ${newAssignmentToken},
+			decision_revision = decision_revision + 1,
+			consent_epoch = consent_epoch + 1,
 			updated_at = ${now}
 		WHERE id = ${payload.i}
 			AND project_id = ${payload.s}
@@ -507,7 +509,17 @@ export function transferIssueQueries(
 		WHERE issue.id = ${payload.i} AND issue.project_id = ${payload.d} AND ${moved}
 	`.compile(db);
 	return {
-		queries: [issueUpdate, contextUpdate, eventInsert, receipt],
+		queries: [
+			issueUpdate,
+			contextUpdate,
+			eventInsert,
+			receipt,
+			sql`UPDATE issue_personal_choice SET value = 'unset', revision = revision + 1,
+				issue_epoch = (SELECT consent_epoch FROM issue WHERE id = ${payload.i}),
+				source_kind = NULL, source_schedule_id = NULL, source_grant_revision = NULL,
+				source_permission_epoch = NULL, updated_at = ${now}
+				WHERE issue_id = ${payload.i} AND ${moved}`.compile(db)
+		],
 		eventId,
 		newAssignmentToken
 	};

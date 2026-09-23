@@ -16,6 +16,7 @@ import {
 	keyForRun,
 	NOW,
 	OPEN,
+	PROJECT,
 	REVIEW,
 	runById,
 	runnerById,
@@ -24,6 +25,7 @@ import {
 	USER
 } from '../supervisor/test-fixtures';
 import { encryptSecret, sha256Hex } from '../crypto';
+import { cancelRun } from '../supervisor/engine';
 import { ApiFail, type ActorContext } from './core';
 import {
 	appendLogTail,
@@ -265,6 +267,67 @@ describe('rotateRunnerToken', () => {
 // ---------------------------------------------------------------------------
 
 describe('pollRunner', () => {
+	it('keeps an admitted cancellation occupied for old daemons and settles only a matching cleanup acknowledgement', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { name: 'local runner' });
+		const issueId = addIssue(t);
+		const runId = addRun(t, { issueId, runnerId, status: 'running', startedAt: NOW });
+		t.sqlite
+			.prepare('UPDATE project SET shared_at = ?, sharing_revision = 1 WHERE id = ?')
+			.run(NOW, PROJECT);
+		t.sqlite
+			.prepare('UPDATE agent_run SET admitted_at = ?, admitted_daemon_instance_id = ? WHERE id = ?')
+			.run(NOW, 'boot_1', runId);
+		expect((await cancelRun(t.db, t.env, USER, runId)).kind).toBe('requested');
+		const old = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ instance_id: 'boot_1', owned_runs: [runId] },
+			NOW + 1
+		);
+		expect(old.response.cancels).toContain(runId);
+		const token = old.response.cancel_requests?.[0]?.token;
+		expect(token).toMatch(/^can_/);
+		await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{ instance_id: 'boot_1', owned_runs: [] },
+			NOW + 2
+		);
+		expect(runById(t, runId)?.status).toBe('running');
+		const wrong = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_1',
+				owned_runs: [],
+				cancellation_acks: [{ run_id: runId, token: 'can_wrong_token' }]
+			},
+			NOW + 3
+		);
+		expect(wrong.response.cancellation_acks).toBeUndefined();
+		expect(runById(t, runId)?.status).toBe('running');
+		const accepted = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				instance_id: 'boot_1',
+				owned_runs: [],
+				cancellation_acks: [{ run_id: runId, token: token! }]
+			},
+			NOW + 4
+		);
+		expect(accepted.response.cancellation_acks).toEqual([{ run_id: runId, token }]);
+		expect(runById(t, runId)?.status).toBe('canceled');
+	});
 	it('claims an instance silently, then atomically replaces and fences it once', async () => {
 		const t = world();
 		const id = addRunner(t);

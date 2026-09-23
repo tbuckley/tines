@@ -292,6 +292,7 @@
 
 	// The state badge/graph/buttons follow the in-flight transition, if any.
 	let pendingState = $state<WorkflowState | null>(null);
+	let transitionAllowsAgents = $state(true);
 	const currentState = $derived(pendingState ?? data.issue.state);
 
 	// Comments: server list + in-flight posts. A confirmed overlay entry is
@@ -524,6 +525,7 @@
 
 	function requestMove(transition: AllowedTransition) {
 		transitionComment = '';
+		transitionAllowsAgents = data.permissionReceipt?.my_agents.value !== 'off';
 		// From the phone's State sheet, the confirm dialog takes the sheet's
 		// place rather than stacking on it.
 		stateSheetOpen = false;
@@ -536,7 +538,25 @@
 		try {
 			// Comment BEFORE the transition: re-dispatch can never race past it.
 			if (comment) await api.createComment(data.issue.id, { body: comment });
-			await api.transitionIssue(data.issue.id, { transition_id: transition.transition_id });
+			const permission = data.permissionReceipt;
+			await api.transitionIssue(data.issue.id, {
+				transition_id: transition.transition_id,
+				...(permission
+					? {
+							expected_state_id: permission.issue_state.id,
+							expected_decision_revision: permission.issue_state.decision_revision,
+							expected_workflow_revision: permission.issue_state.workflow_revision,
+							expected_consent_epoch: permission.my_agents.epoch,
+							expected_consent_revision: permission.my_agents.revision,
+							...(transition.to_state.category === 'active'
+								? {
+										allow_my_agents: transitionAllowsAgents,
+										...(transitionAllowsAgents ? { disclosure_version: 1 } : {})
+									}
+								: {})
+						}
+					: {})
+			});
 			// Optimistic, but only once the server has accepted: the badge and graph
 			// animate ahead of the reload, while the State card behind the dialog is
 			// never mutated with the request still in flight (Tines/153).
@@ -1296,6 +1316,7 @@
 				{@const [dispatch, runs, runners] = agentActivityPanel.current.value}
 				<AgentActivityCard
 					issue={data.issue}
+					permission={data.permissionReceipt}
 					{dispatch}
 					{runs}
 					{runners}
@@ -1449,6 +1470,17 @@
 				Move this issue to <span class="font-medium">{transition.to_state.name}</span>
 				({transition.to_state.category.replaceAll('_', ' ')})?
 			</p>
+			{#if data.permissionReceipt && transition.to_state.category === 'active'}
+				<div class="rounded-md border p-3 text-sm">
+					<label class="flex min-h-11 items-center gap-2 font-medium">
+						<input type="checkbox" bind:checked={transitionAllowsAgents} /> Allow my agents after this
+						move
+					</label>
+					<p class="text-muted-foreground mt-1 text-xs">
+						Your agents may use your runner and account resources. This choice is yours alone.
+					</p>
+				</div>
+			{/if}
 			<div class="space-y-1.5">
 				<label class="text-sm font-medium" for="transition-comment">Comment (optional)</label>
 				<Textarea

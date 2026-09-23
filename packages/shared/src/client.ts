@@ -60,6 +60,7 @@ import type {
 	StatsQuery,
 	LaunchPromptResponse,
 	IssueDetail,
+	IssueConsentRequest,
 	IssueConsentReceipt,
 	IssueFilters,
 	IssueJournalResponse,
@@ -375,6 +376,8 @@ export function createApiClient(options: ApiClientOptions) {
 		getIssueByNumber: (projectId: string, number: number) =>
 			get<IssueDetail>(`/api/v1/projects/${projectId}/issues/${number}`),
 		getIssueConsent: (id: string) => get<IssueConsentReceipt>(`/api/v1/issues/${id}/my-consent`),
+		setIssueConsent: (id: string, body: IssueConsentRequest) =>
+			request<IssueConsentReceipt>('PUT', `/api/v1/issues/${id}/my-consent`, body),
 		setIssueHold: (id: string, body: AgentHoldRequest) =>
 			request<AgentHoldReceipt>('PUT', `/api/v1/issues/${id}/agent-hold`, body),
 		cancelIssueRun: (issueId: string, runId: string) =>

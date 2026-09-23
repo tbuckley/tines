@@ -19,6 +19,8 @@ import {
 	writeIssueConsent
 } from './personal-consent';
 import { writeIssueHold } from './issue-controls';
+import { createIssue, updateIssue } from './issues';
+import { TEST_NOOP_DISPATCH_EFFECTS } from './test-dispatch-effects';
 
 const session: ActorContext = {
 	userId: USER,
@@ -113,6 +115,60 @@ describe('owner issue permission', () => {
 			})
 		).rejects.toMatchObject({ status: 403, code: 'consent_browser_required' });
 		expect(t.all('SELECT * FROM issue_personal_choice')).toHaveLength(0);
+	});
+
+	it('treats Bearer plus cookie as key input for consent and disables implicit grants', async () => {
+		const { t } = sharedIssue();
+		const mixed = { ...session, bearerPresent: true };
+		await expect(
+			createIssue(t.db, t.env, mixed, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+				title: 'refused',
+				allow_my_agents: false
+			})
+		).rejects.toMatchObject({
+			status: 403,
+			code: 'consent_browser_required'
+		});
+		const created = await createIssue(t.db, t.env, mixed, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'unset'
+		});
+		expect(
+			t.all('SELECT * FROM issue_personal_choice WHERE issue_id = ?', created.id)
+		).toHaveLength(0);
+		await expect(
+			writeIssueConsent(t.db, t.env, mixed, created.id, {
+				value: 'on',
+				expected_revision: 0,
+				issue_epoch: 0,
+				decision_revision: 0
+			})
+		).rejects.toMatchObject({ status: 403, code: 'consent_browser_required' });
+	});
+
+	it('forced Done resets a choice and reopening cannot restore it', async () => {
+		const { t, issueId } = sharedIssue();
+		await writeIssueConsent(t.db, t.env, session, issueId, {
+			value: 'on',
+			expected_revision: 0,
+			issue_epoch: 0,
+			decision_revision: 0
+		});
+		await updateIssue(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, issueId, {
+			state: 'Closed'
+		});
+		const done = await readIssueConsent(t.db, USER, issueId);
+		expect(done.my_agents).toMatchObject({ value: 'unset', revision: 2, epoch: 1 });
+		await updateIssue(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, issueId, { state: 'Open' });
+		const reopened = await readIssueConsent(t.db, USER, issueId);
+		expect(reopened.my_agents).toMatchObject({ value: 'unset', revision: 3, epoch: 2 });
+		await expect(
+			writeIssueConsent(t.db, t.env, session, issueId, {
+				value: 'on',
+				expected_revision: 1,
+				issue_epoch: 0,
+				decision_revision: 0
+			})
+		).rejects.toMatchObject({ status: 409 });
 	});
 
 	it('hold releases assigned work without a strike and uses a revisioned release', async () => {

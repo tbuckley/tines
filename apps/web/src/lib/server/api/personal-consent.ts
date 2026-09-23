@@ -40,7 +40,7 @@ function consentFields(value: unknown): string[] {
 
 /** Reject choice-shaped input before a caller can reach a domain write. */
 export function rejectKeyConsentInput(actor: ActorContext, body: object): void {
-	if (actor.viaSession) return;
+	if (actor.viaSession && !actor.bearerPresent) return;
 	if (
 		consentFields(body).some((field) => (CONSENT_MUTATIONS as readonly string[]).includes(field))
 	) {
@@ -107,20 +107,37 @@ export async function readIssueConsent(
 			'i.decision_revision',
 			'w.decision_revision as workflow_revision',
 			'i.agent_hold',
+			'i.needs_attention',
 			'i.hold_revision',
 			's.id as state_id',
 			's.category as state_category',
 			'p.user_id as owner_id',
 			'p.shared_at',
+			'p.archived_at',
 			'p.sharing_revision',
 			'c.value as choice_value',
 			'c.revision as choice_revision',
+			'c.issue_epoch as choice_epoch',
 			'c.source_kind'
 		])
 		.where('i.id', '=', issueId)
 		.where('p.user_id', '=', userId)
 		.executeTakeFirst();
-	if (!row || row.shared_at === null) throw notFound();
+	if (!row) throw notFound();
+	if (row.shared_at === null)
+		throw new ApiFail(
+			409,
+			'consent_mode_required',
+			'Personal permission is available after project sharing begins'
+		);
+	const admitted = await db
+		.selectFrom('agent_run')
+		.select('id')
+		.where('issue_id', '=', issueId)
+		.where('status', 'in', ['launching', 'running'])
+		.where('admitted_at', 'is not', null)
+		.orderBy('created_at desc')
+		.executeTakeFirst();
 	return {
 		actor: 'owner',
 		project: { id: row.project_id, sharing_revision: row.sharing_revision },
@@ -137,8 +154,16 @@ export async function readIssueConsent(
 			revision: row.choice_revision ?? 0,
 			epoch: row.consent_epoch
 		},
-		readiness: row.agent_hold ? 'held' : 'unavailable',
-		admitted_run: null,
+		readiness: row.agent_hold
+			? 'held'
+			: row.state_category === 'active' &&
+				  row.choice_value === 'on' &&
+				  row.choice_epoch === row.consent_epoch &&
+				  !row.needs_attention &&
+				  row.archived_at === null
+				? 'eligible'
+				: 'unavailable',
+		admitted_run: admitted?.id ?? null,
 		committed_atomically: true
 	};
 }
@@ -155,7 +180,16 @@ export async function writeIssueConsent(
 	issueId: string,
 	body: IssueConsentRequest
 ): Promise<IssueConsentReceipt> {
-	if (!actor.viaSession) {
+	for (const field of ['user_id', 'subject_user_id', 'creator_user_id', 'actor_user_id']) {
+		if (field in body)
+			throw new ApiFail(
+				422,
+				'invalid_field',
+				'Personal permission always belongs to the signed-in person',
+				{ field }
+			);
+	}
+	if (!actor.viaSession || actor.bearerPresent) {
 		throw new ApiFail(
 			403,
 			'consent_browser_required',
@@ -205,7 +239,13 @@ export async function writeIssueConsent(
 		.where('i.id', '=', issueId)
 		.where('p.user_id', '=', actor.userId)
 		.executeTakeFirst();
-	if (!current || current.shared_at === null) throw notFound();
+	if (!current) throw notFound();
+	if (current.shared_at === null)
+		throw new ApiFail(
+			409,
+			'consent_mode_required',
+			'Personal permission is available after project sharing begins'
+		);
 	if (current.category === 'done') {
 		throw new ApiFail(422, 'issue_terminal', 'A done issue has no personal permission control');
 	}

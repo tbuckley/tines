@@ -1,5 +1,12 @@
 <script lang="ts">
-	import type { AgentRun, DispatchExplainer, IssueDetail, ModelTier, Runner } from '@tines/shared';
+	import type {
+		AgentRun,
+		DispatchExplainer,
+		IssueConsentReceipt,
+		IssueDetail,
+		ModelTier,
+		Runner
+	} from '@tines/shared';
 	import { MODEL_TIERS } from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconPin from '@tabler/icons-svelte/icons/pin';
@@ -16,6 +23,7 @@
 
 	let {
 		issue,
+		permission = null,
 		dispatch,
 		runs,
 		runners,
@@ -24,6 +32,7 @@
 		onerror
 	}: {
 		issue: IssueDetail;
+		permission?: IssueConsentReceipt | null;
 		dispatch: DispatchExplainer | null;
 		runs: AgentRun[];
 		runners: Runner[];
@@ -58,6 +67,56 @@
 	);
 
 	let savingPin = $state(false);
+	let savingPermission = $state(false);
+	let permissionMessage = $state<string | null>(null);
+	async function setPermission(value: 'on' | 'off') {
+		if (!permission || savingPermission) return;
+		savingPermission = true;
+		permissionMessage = null;
+		try {
+			const saved = await api.setIssueConsent(issue.id, {
+				value,
+				expected_revision: permission.my_agents.revision,
+				issue_epoch: permission.my_agents.epoch,
+				decision_revision: permission.issue_state.decision_revision,
+				...(value === 'on' ? { disclosure_version: 1 } : {})
+			});
+			permissionMessage = saved.message ?? `Permission ${value === 'on' ? 'enabled' : 'disabled'}.`;
+			await invalidateAll();
+		} catch (e) {
+			permissionMessage =
+				'Permission may have changed. Review the current choice before trying again.';
+			await invalidateAll();
+			onerror(e);
+		} finally {
+			savingPermission = false;
+		}
+	}
+	async function setHold(held: boolean) {
+		if (!permission || savingPermission) return;
+		savingPermission = true;
+		try {
+			const saved = await api.setIssueHold(issue.id, {
+				held,
+				expected_revision: permission.agent_hold.revision
+			});
+			permissionMessage = saved.message;
+			await invalidateAll();
+		} catch (e) {
+			await invalidateAll();
+			onerror(e);
+		} finally {
+			savingPermission = false;
+		}
+	}
+	async function cancelRun(runId: string) {
+		try {
+			await api.cancelIssueRun(issue.id, runId);
+			await invalidateAll();
+		} catch (e) {
+			onerror(e);
+		}
+	}
 	async function savePin() {
 		if (savingPin) return;
 		savingPin = true;
@@ -79,6 +138,40 @@
 	<h2 class="mb-3 flex items-center gap-1.5 text-sm font-semibold">
 		<IconRobot size={16} stroke={1.75} /> Agent activity
 	</h2>
+	{#if permission}
+		<div class="mb-4 space-y-2 rounded-md border p-3 text-sm">
+			<p class="font-medium">My agent permission: {permission.my_agents.value}</p>
+			<p class="text-muted-foreground text-xs">
+				Enabling lets your agents use your runner and account resources for this issue. Holding
+				stops new work without changing this choice. An admitted run can finish after permission
+				turns off.
+			</p>
+			<div class="flex flex-wrap gap-2">
+				{#if permission.issue_state.category !== 'done'}
+					<Button
+						size="sm"
+						variant="outline"
+						disabled={savingPermission || permission.my_agents.value === 'on'}
+						onclick={() => setPermission('on')}>Allow my agents</Button
+					>
+					<Button
+						size="sm"
+						variant="outline"
+						disabled={savingPermission || permission.my_agents.value === 'off'}
+						onclick={() => setPermission('off')}>Turn off</Button
+					>
+					<Button
+						size="sm"
+						variant="outline"
+						disabled={savingPermission}
+						onclick={() => setHold(!permission.agent_hold.held)}
+						>{permission.agent_hold.held ? 'Release hold' : 'Hold new work'}</Button
+					>
+				{/if}
+			</div>
+			{#if permissionMessage}<p role="status" class="text-xs">{permissionMessage}</p>{/if}
+		</div>
+	{/if}
 
 	{#if checklist}
 		{@render checklist()}
@@ -244,7 +337,7 @@
 			{:else}
 				<ul class="divide-y rounded-lg border">
 					{#each runs as run (run.id)}
-						<RunRow {run} />
+						<RunRow {run} oncancel={permission ? () => cancelRun(run.id) : undefined} />
 					{/each}
 				</ul>
 			{/if}

@@ -40,6 +40,9 @@ tines issues create <project> --title "…" -d @description.md
 tines issues create <project> --title "Linked" --blocked-by Other/12 --blocks Other/14 --duplicate-of Other/9
 tines issues show <project>/<number>
 tines issues move <project>/<number> <action>        # a workflow transition
+tines issues hold <project>/<number>                 # stop new admission, keep permission
+tines issues release <project>/<number>              # resume eligibility if permission remains on
+tines issues cancel-run <project>/<number> <run-id>   # request bounded cancellation
 tines issues transfer <project>/<number> --project <dest>   # move to another project (keeps ID, record and old refs)
 tines issues transfer <ref> --project <dest> --dry-run      # review only: no number allocated, nothing written
 tines issues transfer <ref> --project <dest> --inspect 0    # print any reviewed guidance item, including retained, in full

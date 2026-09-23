@@ -65,6 +65,7 @@
 		field: 'name' | 'file';
 	} | null>(null);
 	let attachmentValid = $state(true);
+	let allowMyAgents = $state(true);
 	let attachments = $state<{ id: string; file: File; name: string; editing: boolean }[]>([]);
 	let form = $state<HTMLFormElement | null>(null);
 
@@ -76,6 +77,8 @@
 		selectedProject?.default_workflow_id ?? workflows.find((w) => w.is_system)?.id ?? ''
 	);
 	const pickedWorkflow = $derived(workflows.find((w) => w.id === workflowId));
+	const pickedState = $derived(pickedWorkflow?.states.find((state) => state.id === stateId));
+	const consentMode = $derived(selectedProject?.shared_at != null);
 	const outgoingTransitions = $derived(
 		pickedWorkflow?.transitions.filter((transition) => transition.from_state_id === stateId) ?? []
 	);
@@ -94,6 +97,7 @@
 			createdHref = null;
 			attachmentServerError = null;
 			attachments = [];
+			allowMyAgents = true;
 			// No `projects[0]` fallback: under "All projects" with no last project
 			// the select starts empty and required, so nothing is filed by accident.
 			projectId = project?.id ?? defaultProjectId ?? '';
@@ -134,7 +138,16 @@
 				workflow_id: workflowId || undefined,
 				state: stateId || undefined,
 				schedule: repeatToScheduleInput(repeat) ?? undefined,
-				labels: labelIds.length > 0 ? labelIds : undefined
+				labels: labelIds.length > 0 ? labelIds : undefined,
+				...(consentMode
+					? {
+							allow_my_agents: pickedState?.category !== 'done' ? allowMyAgents : false,
+							expected_sharing_revision: selectedProject.sharing_revision,
+							...(pickedState?.category !== 'done' && allowMyAgents
+								? { disclosure_version: 1 }
+								: {})
+						}
+					: {})
 			};
 			const snapshot = attachments.map((attachment) => ({
 				name: attachment.name.trim(),
@@ -282,6 +295,17 @@
 			{#if pickedWorkflow}
 				<div class="bg-muted/40 rounded-md border p-2">
 					<WorkflowGraph workflow={pickedWorkflow} currentStateId={stateId || null} compact />
+				</div>
+			{/if}
+			{#if consentMode && pickedState?.category !== 'done'}
+				<div class="rounded-md border p-3 text-sm">
+					<label class="flex min-h-11 items-center gap-2 font-medium">
+						<input type="checkbox" bind:checked={allowMyAgents} /> Allow my agents on this issue
+					</label>
+					<p class="text-muted-foreground mt-1 text-xs">
+						If enabled, your agents may use your runner and account resources for this issue. You
+						can turn it off later. Other people's permission is separate.
+					</p>
 				</div>
 			{/if}
 			<div class="rounded-md border">

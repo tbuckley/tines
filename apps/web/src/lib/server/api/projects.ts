@@ -46,6 +46,8 @@ type ProjectRow = Awaited<ReturnType<ReturnType<typeof projectQuery>['execute']>
 function serializeProject(row: ProjectRow): Project {
 	return {
 		id: row.id,
+		shared_at: row.shared_at,
+		sharing_revision: row.sharing_revision,
 		name: row.name,
 		description: row.description,
 		default_workflow_id: row.default_workflow_id,

@@ -518,7 +518,25 @@ export function register(program: Command): void {
 	).action(async (ref: string, action: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
-		const moved = await api.transitionIssue(issue.id, { action });
+		let request: Parameters<typeof api.transitionIssue>[1] = { action };
+		const project = issue.project_id ? await api.getProject(issue.project_id) : null;
+		if (project?.shared_at != null) {
+			const transition = issue.allowed_transitions.find(
+				(candidate) => candidate.name.toLowerCase() === action.toLowerCase()
+			);
+			if (!transition)
+				throw new Error(`No current transition named "${action}"; refresh the issue`);
+			const permission = await api.getIssueConsent(issue.id);
+			request = {
+				transition_id: transition.transition_id,
+				expected_state_id: permission.issue_state.id,
+				expected_decision_revision: permission.issue_state.decision_revision,
+				expected_workflow_revision: permission.issue_state.workflow_revision,
+				expected_consent_revision: permission.my_agents.revision,
+				expected_consent_epoch: permission.my_agents.epoch
+			};
+		}
+		const moved = await api.transitionIssue(issue.id, request);
 		if (opts.json) return printJson(moved);
 		console.log(
 			`${moved.project_name}/#${moved.number}: ${issue.state.name} → ${moved.state.name} ("${action}")`
