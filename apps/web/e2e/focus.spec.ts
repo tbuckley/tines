@@ -1222,7 +1222,7 @@ test.describe.serial('project controls at every project count', () => {
 					element.scrollTop = element.scrollHeight;
 				});
 				await expect
-					.poll(async () => (await projectMenuGeometry(page)).choicesScrollTop)
+					.poll(async () => choices.evaluate((element) => element.scrollTop))
 					.toBeGreaterThan(0);
 				const scrolled = await projectMenuGeometry(page);
 				expect(scrolled.linkRects).toEqual(initial.linkRects);
