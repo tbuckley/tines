@@ -10,8 +10,8 @@ import {
 import { ApiFail, type ActorContext } from '../api/core';
 import type { DestinationSelection } from './destination';
 
-export const PACKAGE_COMPILER_VERSION = 1;
-export const HOSTED_PACKAGE_COMPILER_VERSION = 2;
+export const PACKAGE_COMPILER_VERSION = 2;
+export const HOSTED_PACKAGE_COMPILER_VERSION = 3;
 export const PACKAGE_PLAN_TTL_MS = 15 * 60_000;
 export const PACKAGE_TOKEN_MAX_BYTES = 512 * 1024;
 const DOMAIN = 'tines:workflow-install:v1';

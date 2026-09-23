@@ -13,7 +13,7 @@ import { loadWorkflows } from '../api/workflows';
 import { contextItemQuery, loadFiles, isJournal } from '../api/context';
 import { resolveRecurrence } from '../api/schedules';
 
-/** Complete transitive workflow closure, including all states and overridden context, without writes. */
+/** Export the chosen workflow and its exact-state context without writes. */
 export async function exportWorkflowPackage(
 	db: Kysely<Database>,
 	userId: string,
@@ -62,30 +62,7 @@ export async function exportWorkflowPackage(
 	const available = await loadWorkflows(db, userId);
 	const main = available.find((w) => w.id === workflowId);
 	if (!main) throw notFound();
-	const owners = new Map(available.flatMap((w) => w.states.map((state) => [state.id, w] as const)));
-	const closure = new Set([main.id]);
-	const queue = [main];
-	for (const workflow of queue)
-		for (const state of workflow.states)
-			if (state.inherits_from) {
-				const base = owners.get(state.inherits_from);
-				if (!base)
-					throw new ApiFail(
-						422,
-						'missing_dependency',
-						`State "${state.name}" has an unavailable inheritance dependency`
-					);
-				if (!closure.has(base.id)) {
-					closure.add(base.id);
-					queue.push(base);
-				}
-			}
-	const workflows = [
-		main,
-		...queue
-			.filter((w) => w.id !== main.id)
-			.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id))
-	];
+	const workflows = [main];
 	const workflowIds = new Map(workflows.map((w, i) => [w.id, `workflow:${i + 1}`]));
 	let stateCount = 0;
 	const states = workflows.flatMap((w) =>
@@ -242,9 +219,7 @@ export async function exportWorkflowPackage(
 					id: stateIds.get(s.id)!,
 					name: s.name,
 					category: s.category,
-					inherits_from: s.inherits_from
-						? { kind: 'bundled_state', state_id: stateIds.get(s.inherits_from)! }
-						: null
+					inherits_from: null
 				})),
 			transitions: [...w.transitions]
 				.sort((a, b) => a.id.localeCompare(b.id))

@@ -14,7 +14,6 @@ export interface DestinationWorkflow {
 		name: string;
 		category: StateCategory;
 		position: number;
-		inherits_from_state_id: string | null;
 	}[];
 	transitions: {
 		id: string;
@@ -123,7 +122,7 @@ export function packageDestinationExpression(
 	const workflows = jsonList(sql`SELECT json_object(
   'id',w.id,'user_id',w.user_id,'name',w.name,'description',w.description,
   'initial_state_id',w.initial_state_id,'updated_at',w.updated_at,
-  'states', ${jsonList(sql`SELECT ${jsonRow('s', ['id', 'name', 'category', 'position', 'inherits_from_state_id'])} AS row_json FROM workflow_state s WHERE s.workflow_id=w.id ORDER BY s.position,s.id`)},
+  'states', ${jsonList(sql`SELECT ${jsonRow('s', ['id', 'name', 'category', 'position'])} AS row_json FROM workflow_state s WHERE s.workflow_id=w.id ORDER BY s.position,s.id`)},
   'transitions', ${jsonList(sql`SELECT ${jsonRow('t', ['id', 'name', 'from_state_id', 'to_state_id', 'requirements'])} AS row_json FROM workflow_transition t WHERE t.workflow_id=w.id ORDER BY t.id`)}
  ) AS row_json FROM workflow w WHERE (w.user_id=${userId} OR w.user_id IS NULL) AND ${workflowPredicate} ORDER BY w.id`);
 	return sql<string>`json_object(

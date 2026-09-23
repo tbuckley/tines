@@ -68,7 +68,7 @@ async function fixture() {
 	await createContextItem(t.db, t.env, actor, {
 		kind: 'repo',
 		name: 'repo',
-		workflow_state_id: dependency.states[1].id,
+		workflow_state_id: main.states[1].id,
 		repo_url: 'https://github.com/tbuckley/tines',
 		repo_branch: 'main',
 		repo_dir: 'source'
@@ -108,11 +108,11 @@ describe('workflow package closure export', () => {
 		).rejects.toThrow('Internal exportedAt');
 	});
 
-	it('copies complete inheritance including Standard, overridden instructions, gates, ordered skills and repo declarations only', async () => {
+	it('copies the chosen workflow with exact-state context, gates, ordered skills and repo declarations only', async () => {
 		const { t, main, dependency } = await fixture();
 		const events = await t.db.selectFrom('event').selectAll().execute();
 		const document = await exportWorkflowPackage(t.db, USER, main.id);
-		expect(document.workflows.map((w) => w.name)).toEqual(['Shared', 'Standard', 'Shared']);
+		expect(document.workflows.map((w) => w.name)).toEqual(['Shared']);
 		expect(document.main_workflow_id).toBe(document.workflows[0].id);
 		expect(document.workflows[0].transitions[0].requires).toEqual([
 			{ artifact: 'report', type: 'text', content_type: 'text/markdown' }
@@ -122,7 +122,7 @@ describe('workflow package closure export', () => {
 				.filter((c) => c.kind === 'prompt')
 				.map((c) => c.body)
 				.sort()
-		).toEqual(['Inherited original', 'Main override', 'System scoped instructions']);
+		).toEqual(['Main override']);
 		expect(document.context.find((c) => c.kind === 'skill')).toMatchObject({
 			files: [
 				{ path: 'SKILL.md', content: 'Review the output.' },
@@ -182,7 +182,7 @@ describe('workflow package closure export', () => {
 			schedule_ids: ['schedule-source-1', 'schedule-source-0'],
 			tiers: [
 				{ state_id: main.states[0].id, tier: 'balanced', project_scoped: true },
-				{ state_id: dependency.states[0].id, tier: 'smartest' }
+				{ state_id: main.states[1].id, tier: 'smartest' }
 			]
 		});
 		expect(document.schedules).toMatchObject([

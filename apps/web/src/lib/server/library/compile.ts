@@ -15,7 +15,7 @@ import { routingRuleInsertQueries } from '../api/routing';
 import { scopeLabel, type ResolvedScope } from '../api/scope';
 import type { ResolvedPackage } from './resolve';
 
-/** All ordinary writes, fully guarded, with all shells before any inheritance. */
+/** All ordinary writes, fully guarded, with exact-state shells only. */
 export function compilePackageObjects(
 	db: Kysely<Database>,
 	actor: ActorContext,
@@ -43,7 +43,7 @@ export function compilePackageObjects(
 				category: s.category,
 				position,
 				isNew: true,
-				inheritsFrom: s.inherits_from ? id(s.inherits_from.state_id) : null
+				inheritsFrom: null
 			})),
 			transitions: workflow.transitions.map((t) => ({
 				id: id(t.id),
@@ -54,19 +54,9 @@ export function compilePackageObjects(
 			}))
 		};
 		const inh: ResolvedInheritance = {
-			pointers: new Map(def.states.map((s) => [s.id, s.inheritsFrom ?? null])),
-			changedIds: new Set(def.states.filter((s) => s.inheritsFrom).map((s) => s.id)),
-			changes: def.states
-				.filter((s) => s.inheritsFrom)
-				.map((s) => {
-					const base = refs.get(s.inheritsFrom!)!;
-					return {
-						workflow: workflow.name,
-						state: s.name,
-						from: null,
-						to: `${base.workflowName} / ${base.name}`
-					};
-				}),
+			pointers: new Map(def.states.map((s) => [s.id, null])),
+			changedIds: new Set(),
+			changes: [],
 			refs
 		};
 		return {
@@ -82,11 +72,6 @@ export function compilePackageObjects(
 	});
 	const queries = workflows.flatMap((options) =>
 		workflowInsertQueries(db, actor, { ...options, phase: 'shells' })
-	);
-	queries.push(
-		...workflows.flatMap((options) =>
-			workflowInsertQueries(db, actor, { ...options, phase: 'inheritance' })
-		)
 	);
 	const positions = new Map<string, number>();
 	for (const item of plan.context) {

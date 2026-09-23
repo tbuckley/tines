@@ -53,11 +53,7 @@ it('exports duplicate workflow names and state prompts by distinct local IDs wit
 			kind: 'bundled_state',
 			state_id: w.states[0].id
 		});
-		expect(w.states[0].inherits_from).toEqual({
-			kind: 'system_state',
-			workflow: 'Standard',
-			state_name: 'Open'
-		});
+		expect(w.states[0].inherits_from).toBeNull();
 	}
 	expect(await parseLibraryV3Document(JSON.stringify(document))).toEqual(document);
 	expect(await t.db.selectFrom('event').selectAll().execute()).toEqual(before);

@@ -76,15 +76,15 @@ describe('package compiled budgets (synthetic, not native D1 capacity evidence)'
 
 import { inheritedPackage } from '../../../../../../packages/shared/src/library/fixtures';
 import { validatePackageStructure } from './budgets';
-it('rejects an unavoidable structural statement bound before destination planning', () => {
+it('does not budget a retired inheritance phase', () => {
 	const document = inheritedPackage();
 	const prompt = document.context[0];
 	if (prompt.kind !== 'prompt') throw new Error('fixture');
 	for (let i = 0; i < 391; i++)
 		document.context.push({ ...prompt, id: `more:${i}`, name: `prompt-${i}` });
-	expect(validatePackageStructure(document)).toBe(800);
+	expect(validatePackageStructure(document)).toBe(799);
 	const skill = document.context.find((c) => c.kind === 'skill')!;
 	if (skill.kind !== 'skill') throw new Error('fixture');
 	skill.files.push({ id: 'one-more', path: 'one.txt', content: '' });
-	expect(() => validatePackageStructure(document)).toThrow('minimum_statements is 801');
+	expect(validatePackageStructure(document)).toBe(800);
 });

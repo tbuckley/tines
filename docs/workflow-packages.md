@@ -1,6 +1,10 @@
 # Workflow package files
 
-Implementation status: v3 whole-library transfer and workflow packages are implemented across the shared contract, API, CLI, and browser. The package path includes workflow closure export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` commands. Whole-library import remains best effort; it is not an atomic workflow installation. Public gallery/discovery and dependency fetching remain intentionally out of scope.
+Implementation status: v3 whole-library transfer and workflow packages are implemented across the shared contract, API, CLI, and browser. Historical v1/v2/v3 documents remain inspectable and downloadable, including signed fixtures, but new preparation and installation accept only pointer-free workflow state definitions. The package path includes exact-workflow export, file validation, signed destination preparation, atomic install, durable receipt recovery, and the `tines workflows export|validate|preview|install` commands. Whole-library import remains best effort; it is not an atomic workflow installation. Public gallery/discovery and dependency fetching remain intentionally out of scope.
+
+### Superseding decision — 2026-09-22
+
+State inheritance is retired for new library/package mutation. Exported workflow packages contain the selected workflow and exact state-scoped context; they do not flatten inherited context or include dependency workflows. Historical documents with a non-null `inherits_from` value remain available for strict validation, inspection, and download, and the browser/CLI explains why they cannot be prepared or installed. Preparation and installation reject the retired field before allocation or writes, including malformed non-null values after valid envelope decoding. Whole-library v1/v2/v3 inspection retains its historical parser, while mutation uses the pointer-free parser. Existing committed install receipts are still recoverable when the authenticated request matches, even if the original document is now retired.
 
 ## Public snapshots
 
@@ -81,7 +85,7 @@ only canonical package JSON to stdout, making redirection safe; errors and diagn
 stderr. `validate --json` returns the complete server validation object, including the sealed
 document and digest, and exits 1 when `valid` is false.
 
-Use `GET /api/v1/workflows/<workflow-id>/export`. The ID is required: multiple workflows can share a display name. Export includes complete definitions of every inheritance dependency, even Standard (as an independent bundled copy), gates, exact-state instructions and ordered prompt/skill/repo context. It preserves overridden inherited entries. Global/project/label/issue context, journals, history, credentials and runtime state are excluded. Repositories are declarations; export fetches nothing from them.
+Use `GET /api/v1/workflows/<workflow-id>/export`. The ID is required: multiple workflows can share a display name. Export includes the chosen workflow, gates, exact-state instructions and ordered prompt/skill/repo context. Global/project/label/issue context, journals, history, credentials and runtime state are excluded. Repositories are declarations; export fetches nothing from them.
 
 A saved file is authoritative. Later source edits do not change it. Its `sha256:` digest covers all document content and metadata except the top-level digest field, using canonical JSON. Validate edited files through `POST /api/v1/library/validate` with `{ "document_json": "<the original file text>" }`. The response contains `valid`, `digest`, `document`, `diagnostics`, and `limits`. Validating a file with an absent digest fills it; a present but mismatching digest is an error. Always pass raw file text so duplicate keys are not lost before validation. A validation result is not destination capability validation or installation approval.
 
@@ -106,8 +110,8 @@ Export accepts `source_project_id=<owned ID>`, repeated `schedule_id=<ID>`, and 
 
 ### Browser authoring and review
 
-Open a workflow and choose **Export package**. The browser route shows the complete main and
-inheritance workflow graph, gates, ordered state-scoped context, every skill file and repository
+Open a workflow and choose **Export package**. The browser route shows the chosen workflow, gates,
+ordered exact-state context, every skill file and repository
 declaration, destination prerequisites, and explicitly selected automation. Source project,
 schedule, and tier preferences are opt-in. Rebuilding from source warns before discarding any
 candidate-only edits. Eligible and selected schedules expose their complete templates, recurrence,
@@ -152,7 +156,7 @@ refreshes or rebuilds; refreshing never silently merges or writes draft text int
 
 Settings → Export / import downloads v3 `profile:library` files. These also contain ambient scopes, projects, labels and optional journals. Review sensitive prompt and skill contents before sharing. On import, every workflow has a local-ID mapping row. Choose an existing workflow by destination ID or create an independently named workflow. Duplicate source names remain distinct in an empty destination; collisions with ambiguous existing names require explicit choices. Settings proposes unused renamed creates. The preview resets whenever a choice changes.
 
-The whole-library endpoint retains v1/v2 readers; `GET /api/v1/export?version=2` explicitly requests a compatibility export for an older deployment. Older name-based files cannot disambiguate duplicate workflows or ambiguous slash-based state references and are refused truthfully. Compatible inheritance updates require overwrite; v1 files never compare or clear a destination pointer. A refused structural overwrite leaves existing target states available. Import is best effort and reports each create/skip/overwrite/refusal/error. Existing project defaults and existing label colors stay unchanged.
+The whole-library endpoint retains v1/v2 readers; `GET /api/v1/export?version=2` explicitly requests a compatibility export for an older deployment. Older name-based files cannot disambiguate duplicate workflows or ambiguous slash-based state references and are refused truthfully. Historical pointer-bearing files remain inspectable/downloadable, but mutation reports the path-specific retired-field explanation and leaves destination pointers untouched. Import is best effort and reports each create/skip/refusal/error. Existing project defaults and existing label colors stay unchanged.
 
 ## Prepare a destination review
 

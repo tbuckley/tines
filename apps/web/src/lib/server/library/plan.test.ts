@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { withLibraryDocumentDigest } from '@tines/shared';
 import {
-	automatedPackage,
-	inheritedPackage
+	pointerFreeAutomatedPackage,
+	pointerFreePackage
 } from '../../../../../../packages/shared/src/library/fixtures';
 import { createTestDb } from '../api/test-db';
 import { USER, PROJECT, seedBase, addRunner } from '../supervisor/test-fixtures';
@@ -26,7 +26,7 @@ const env = { BETTER_AUTH_SECRET: 'unit-test-signing-material' };
 async function fixture() {
 	const t = createTestDb();
 	seedBase(t);
-	const document = await withLibraryDocumentDigest(inheritedPackage());
+	const document = await withLibraryDocumentDigest(pointerFreePackage());
 	const raw = JSON.stringify(document);
 	const choices = { inputs: { 'input:1': { mode: 'create', name: 'qa', color: 'blue' } } };
 	return {
@@ -44,7 +44,7 @@ async function automatedFixture() {
 	t.sqlite
 		.prepare('INSERT INTO routing_rule(id,user_id,targets,created_at,updated_at) VALUES(?,?,?,1,1)')
 		.run('global', USER, JSON.stringify([{ runner_id: runner }]));
-	const document = await withLibraryDocumentDigest(automatedPackage());
+	const document = await withLibraryDocumentDigest(pointerFreeAutomatedPackage());
 	const raw = JSON.stringify(document);
 	const choices = {
 		inputs: {
@@ -73,7 +73,7 @@ describe('signed workflow package preparation and reconstruction', () => {
 		expect(payload.actor_key).toBe(`session:${USER}`);
 		expect(preview.document).toEqual(f.document);
 		expect(preview.resolved.context).toHaveLength(3);
-		expect(preview.budget.statements).toBe(20);
+		expect(preview.budget.statements).toBe(16);
 		expect(payload.budget).toEqual(preview.budget);
 		expect(
 			new Set(
@@ -91,7 +91,7 @@ describe('signed workflow package preparation and reconstruction', () => {
 		const f = await fixture();
 		const preview = await prepareWorkflowPackage(f.t.db, env, actor, f.raw, {
 			...f.choices,
-			workflow_names: { 'workflow:2': 'Reviewer' }
+			workflow_names: { 'workflow:1': 'Reviewer' }
 		});
 		const payload = await verifyPackagePlan(preview.plan_token, env.BETTER_AUTH_SECRET);
 		expect((await reconstructPackagePlan(f.t.db, actor, f.raw, payload)).resolved).toEqual(

@@ -2,11 +2,45 @@ import { inputToken, renderDeclaredTokens } from './inputs.js';
 import { validateLibraryV3Shape, invalid, pointer } from './schema.js';
 import {
 	LIBRARY_V3_MAX_RECORDS,
+	type LibraryDiagnostic,
 	type PortableLibraryV3Document,
 	type WorkflowPackageDocument,
 	type LibraryV3Workflow,
 	type SystemStateRef
 } from './types.js';
+
+/**
+ * B mutation gate. Historical documents remain parseable and digestable, but
+ * a non-null state pointer can no longer be used as an import/install input.
+ * Keep this scan deliberately shallow and path-specific: it also reports
+ * malformed non-null values before the strict historical reference walker
+ * gets a chance to reinterpret them.
+ */
+export function removedStateInheritanceDiagnostics(value: unknown): LibraryDiagnostic[] {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+	const document = value as Record<string, unknown>;
+	if (document.format !== 'tines.library' || document.version !== 3) return [];
+	if (document.profile !== 'workflow' && document.profile !== 'library') return [];
+	if (!Array.isArray(document.workflows)) return [];
+	const diagnostics: LibraryDiagnostic[] = [];
+	for (const [wi, rawWorkflow] of document.workflows.entries()) {
+		if (!rawWorkflow || typeof rawWorkflow !== 'object' || Array.isArray(rawWorkflow)) continue;
+		const states = (rawWorkflow as Record<string, unknown>).states;
+		if (!Array.isArray(states)) continue;
+		for (const [si, rawState] of states.entries()) {
+			if (!rawState || typeof rawState !== 'object' || Array.isArray(rawState)) continue;
+			const state = rawState as Record<string, unknown>;
+			if (!Object.hasOwn(state, 'inherits_from') || state.inherits_from === null) continue;
+			diagnostics.push({
+				path: `/workflows/${wi}/states/${si}/inherits_from`,
+				code: 'state_inheritance_removed',
+				message:
+					'State inheritance was removed; inspect or download this historical document, then provide a pointer-free document for mutation'
+			});
+		}
+	}
+	return diagnostics;
+}
 
 /** Validates every edge after deep shape checking, including unused optional records. */
 export function validateLibraryV3References(document: PortableLibraryV3Document): void {

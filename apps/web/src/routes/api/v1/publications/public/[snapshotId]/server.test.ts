@@ -91,7 +91,7 @@ beforeEach(() => {
 });
 
 describe('anonymous publication reads', () => {
-	it('allows an authenticated run key to prepare the read-only hosted install plan', async () => {
+	it('refuses an authenticated hosted install plan for a historical pointer package', async () => {
 		await seedPublication();
 		const runnerId = addRunner(t);
 		const issueId = addIssue(t);
@@ -118,8 +118,7 @@ describe('anonymous publication reads', () => {
 				})
 			})
 		} as unknown as Parameters<typeof prepareInstall>[0]);
-		expect(response.status).toBe(200);
-		expect(await response.json()).toMatchObject({ source: { snapshot_id: SNAPSHOT } });
+		expect(response.status).toBe(422);
 	});
 
 	it('returns only the selected DTO and byte-exact package with no caching', async () => {

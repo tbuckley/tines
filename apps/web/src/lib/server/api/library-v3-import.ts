@@ -1,5 +1,5 @@
 import {
-	parseLibraryV3Document,
+	parseLibraryV3MutationDocument,
 	LibraryValidationError,
 	type ImportLibraryRequest,
 	type ImportLibraryResponse,
@@ -17,13 +17,10 @@ import type { Database } from '$lib/server/db';
 import { ApiFail, type ActorContext } from './core';
 import {
 	createWorkflow,
-	updateWorkflow,
 	loadWorkflows,
 	validateWorkflowCreateFields,
 	workflowAsRequest,
-	workflowFingerprint,
-	resolveInheritance,
-	type ResolvedDef
+	workflowFingerprint
 } from './workflows';
 import { createProject, validateProjectFields } from './projects';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
@@ -72,7 +69,7 @@ export async function planLibraryV3Import(
 ): Promise<V3Plan> {
 	let parsed;
 	try {
-		parsed = await parseLibraryV3Document(JSON.stringify(request.document));
+		parsed = await parseLibraryV3MutationDocument(JSON.stringify(request.document));
 	} catch (error) {
 		if (!(error instanceof LibraryValidationError)) throw error;
 		throw new ApiFail(422, 'invalid_library', message(error), { diagnostics: error.diagnostics });
@@ -236,84 +233,23 @@ export async function planLibraryV3Import(
 		}
 	}
 	const standard = available.find((w) => w.is_system && w.name === 'Standard');
-	const stateId = (ref: NonNullable<LibraryV3Workflow['states'][number]['inherits_from']>) =>
+	const contextScopeStateId = (
+		ref: NonNullable<LibraryV3Workflow['states'][number]['inherits_from']>
+	) =>
 		ref.kind === 'bundled_state'
 			? plan.states.get(ref.state_id)
 			: standard?.states.find((s) => s.name === ref.state_name)?.id;
-	// Pointers compare after every source has a destination identity. Refused overwrites retain stored states.
+	// Pointer-free documents compare only their workflow structure. Existing
+	// historical pointers are never cleared or re-linked by import.
 	for (const step of plan.workflows) {
 		if (step.entry.action === 'refuse' || !step.existing) continue;
-		const different = step.source.states.some(
-			(s) =>
-				(s.inherits_from ? stateId(s.inherits_from) : null) !==
-				step.existing!.states.find((x) => x.name === s.name)?.inherits_from
-		);
-		step.entry.action = different
-			? request.on_collision === 'overwrite' && !step.existing.is_system
-				? 'overwrite'
-				: 'refuse'
-			: 'skip';
-		step.entry.reason = different
-			? step.entry.action === 'overwrite'
-				? 'Updating inheritance pointers on the selected target'
-				: 'Inheritance pointers differ; overwrite is required on an editable target'
-			: 'An identical workflow already exists';
-	}
-	// Remove unavailable creates to a fixpoint; then validate the combined prospective graph against stored descendants.
-	for (let changed = true; changed;) {
-		changed = false;
-		for (const step of plan.workflows.filter((s) => runnable(s.entry))) {
-			if (step.source.states.some((s) => s.inherits_from && !stateId(s.inherits_from))) {
-				step.entry.action = 'refuse';
-				step.entry.reason = 'An inheritance dependency is unavailable after planning';
-				if (!step.existing) for (const state of step.source.states) plan.states.delete(state.id);
-				changed = true;
-			}
-		}
-		if (changed) continue;
-		const active = plan.workflows.filter((s) => runnable(s.entry));
-		const graph: ResolvedDef['states'] = active.flatMap((step) =>
-			step.source.states.map((state, position) => ({
-				id: plan.states.get(state.id)!,
-				name: state.name,
-				category: state.category,
-				position,
-				isNew: !step.existing,
-				inheritsFrom: state.inherits_from ? stateId(state.inherits_from)! : null
-			}))
-		);
-		try {
-			await resolveInheritance(
-				db,
-				userId,
-				{ id: null, name: 'Library import' },
-				graph,
-				active.flatMap((s) => s.existing?.states ?? [])
-			);
-		} catch (error) {
-			if (!(error instanceof ApiFail)) throw error;
-			const owners = new Map(
-				active.flatMap((step) =>
-					step.source.states.map((state) => [plan.states.get(state.id)!, step] as const)
-				)
-			);
-			const chain = Array.isArray(error.details?.chain) ? (error.details.chain as string[]) : [];
-			let affected = chain.map((id) => owners.get(id)).find(Boolean);
-			let cursor = typeof error.details?.state_id === 'string' ? error.details.state_id : null;
-			const stored = new Map(available.flatMap((w) => w.states).map((state) => [state.id, state]));
-			const seen = new Set<string>();
-			while (!affected && cursor && !seen.has(cursor)) {
-				seen.add(cursor);
-				affected = owners.get(cursor);
-				cursor = stored.get(cursor)?.inherits_from ?? null;
-			}
-			if (!affected) throw error;
-			affected.entry.action = 'refuse';
-			affected.entry.reason = message(error);
-			if (!affected.existing)
-				for (const state of affected.source.states) plan.states.delete(state.id);
-			changed = true;
-		}
+		const same =
+			workflowFingerprint(workflowAsRequest(step.existing)) ===
+			workflowFingerprint(step.definition);
+		step.entry.action = same ? 'skip' : 'refuse';
+		step.entry.reason = same
+			? 'An identical workflow already exists'
+			: 'Target has a different structure; existing states remain available to scoped context';
 	}
 	for (const project of document.projects) {
 		const report = entry('project', project.id, project.name, 'create');
@@ -381,7 +317,7 @@ export async function planLibraryV3Import(
 			const payload = contextPayload(source);
 			validateContextCreateFields(payload);
 			const project = source.scope.project_id ? plan.projects.get(source.scope.project_id) : null;
-			const state = source.scope.state ? stateId(source.scope.state) : null;
+			const state = source.scope.state ? contextScopeStateId(source.scope.state) : null;
 			const label = source.scope.label_id ? plan.labels.get(source.scope.label_id) : null;
 			if (project === undefined || state === undefined || label === undefined) {
 				report.action = 'skip';
@@ -456,15 +392,12 @@ export async function applyLibraryV3Import(
 	// Drop planning placeholders: a failed create must never become a real scope/reference.
 	for (const map of [plan.states, plan.projects, plan.labels])
 		for (const [id, target] of map) if (target.startsWith('library-plan:')) map.delete(id);
-	const written = new Map<string, WorkflowResponse>();
 	for (const step of plan.workflows) {
 		if (step.existing) {
-			written.set(step.source.id, step.existing);
 			continue;
 		}
 		await attempt(step.entry, async () => {
 			const created = await createWorkflow(db, env, actor, step.definition);
-			written.set(step.source.id, created);
 			plan.workflowIds.set(step.source.id, created.id);
 			step.entry.target_id = created.id;
 			step.entry.target_name = created.name;
@@ -475,43 +408,16 @@ export async function applyLibraryV3Import(
 	const standard = (await loadWorkflows(db, actor.userId)).find(
 		(w) => w.is_system && w.name === 'Standard'
 	);
-	const resolveState = (ref: NonNullable<LibraryV3Workflow['states'][number]['inherits_from']>) => {
+	const resolveContextScopeState = (
+		ref: NonNullable<LibraryV3Workflow['states'][number]['inherits_from']>
+	) => {
 		const id =
 			ref.kind === 'bundled_state'
 				? plan.states.get(ref.state_id)
 				: standard?.states.find((s) => s.name === ref.state_name)?.id;
-		if (!id) throw Error('Declared state dependency was not created or is no longer available');
+		if (!id) throw Error('Declared state scope was not created or is no longer available');
 		return id;
 	};
-	// Clear moving old edges first: otherwise a valid edge reversal can transiently form a cycle.
-	for (const step of plan.workflows.filter((s) => s.existing && s.entry.action === 'overwrite'))
-		await attempt(step.entry, async () => {
-			const states = step.source.states.map((s) => {
-				const old = step.existing!.states.find((state) => state.name === s.name)!;
-				const target = s.inherits_from ? resolveState(s.inherits_from) : null;
-				return {
-					id: old.id,
-					name: old.name,
-					category: old.category,
-					inherits_from: target === old.inherits_from ? target : null
-				};
-			});
-			await updateWorkflow(db, env, actor, effects, step.existing!.id, { states });
-		});
-	// Every bundled state exists before pointers are applied, including interleaved workflow-level cycles.
-	for (const step of plan.workflows)
-		await attempt(step.entry, async () => {
-			const workflow = written.get(step.source.id);
-			if (!workflow) throw Error('Workflow was not created');
-			await updateWorkflow(db, env, actor, effects, workflow.id, {
-				states: step.source.states.map((s) => ({
-					id: plan.states.get(s.id)!,
-					name: s.name,
-					category: s.category,
-					inherits_from: s.inherits_from ? resolveState(s.inherits_from) : null
-				}))
-			});
-		});
 	for (const project of plan.document.projects)
 		await attempt(entries.get(project.id)!, async () => {
 			const ref = project.default_workflow;
@@ -547,7 +453,7 @@ export async function applyLibraryV3Import(
 				...payload,
 				project_id: project,
 				label_id: label,
-				workflow_state_id: source.scope.state ? resolveState(source.scope.state) : null
+				workflow_state_id: source.scope.state ? resolveContextScopeState(source.scope.state) : null
 			});
 			entry.target_id = created.id;
 		});

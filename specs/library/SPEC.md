@@ -9,6 +9,19 @@ Implemented by `apps/web/src/lib/server/api/library.ts`, typed in
 `packages/shared/src/types.ts` (`LibraryDocument`), surfaced at
 Settings → Export / import.
 
+## Superseding mutation policy — 2026-09-22
+
+The v1/v2/v3 descriptions below are retained as historical wire-format and
+inspection contracts. State inheritance is retired for new mutation: a
+workflow export contains the selected workflow and exact state-scoped context,
+and has no dependency closure or pointer patching. Historical documents with a
+non-null `inherits_from` value remain strictly parseable, inspectable, and
+downloadable, but preparation and installation reject that value before any
+allocation or write; malformed non-null values are rejected too after the
+envelope has decoded. Whole-library inspection keeps the historical parser.
+Authenticated matching committed receipts are recoverable before this
+eligibility check, so retirement does not strand an already committed install.
+
 ## The document
 
 ```jsonc

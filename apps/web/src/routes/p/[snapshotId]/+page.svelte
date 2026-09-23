@@ -36,6 +36,11 @@
 			: null
 	);
 	const visible = $derived(available && !checking);
+	const retiredInheritance = $derived(
+		snapshot.document.workflows.some((workflow) =>
+			workflow.states.some((state) => state.inherits_from !== null)
+		)
+	);
 
 	function stateName(id: string) {
 		return (
@@ -192,12 +197,19 @@
 					type="button"
 					onclick={(event) => reportDialog?.show(event.currentTarget)}>Report</button
 				>
-				{#if data.user}<a
+				{#if data.user && !retiredInheritance}<a
 						class="bg-primary text-primary-foreground rounded-md px-4 py-2 font-medium"
 						href="/workflows/import?publication={snapshot.snapshot_id}"
 						data-sveltekit-preload-data="off">Install a copy</a
 					>{/if}
-				{#if !data.user}<button
+				{#if retiredInheritance}<p
+						class="text-muted-foreground rounded-md border border-amber-500/40 bg-amber-500/5 px-4 py-2 text-sm"
+					>
+						This historical document contains removed state inheritance. Inspection and download
+						remain available; preparation and installation are disabled. Tines will not flatten it
+						automatically.
+					</p>{/if}
+				{#if !data.user && !retiredInheritance}<button
 						class="bg-primary text-primary-foreground rounded-md px-4 py-2 font-medium"
 						onclick={(event) => signIn?.open(event.currentTarget)}>Sign in to install</button
 					>{/if}

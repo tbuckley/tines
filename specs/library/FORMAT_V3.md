@@ -2,6 +2,18 @@
 
 Status: implementation contract for private file exchange. Public discovery and remote dependency fetching are not part of v3.
 
+## Superseding mutation policy — 2026-09-22
+
+This document retains the signed v3 examples and historical parsing contract.
+For new mutation, state inheritance is retired: exports contain one selected
+workflow and exact state-scoped context, with no dependency closure or pointer
+linking. Pointer-bearing documents, including malformed non-null
+`inherits_from` values after valid envelope decoding, remain available for
+strict inspection and download but are refused by prepare and install before
+allocation or writes. Whole-library inspection continues to use the historical
+reader. A matching authenticated committed receipt is recovered before the
+retired-input eligibility check.
+
 ## Envelope and identity
 
 A v3 document is UTF-8 JSON no larger than 5 MiB. Its required envelope is:

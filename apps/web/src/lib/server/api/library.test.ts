@@ -212,6 +212,30 @@ describe('assertImportableDocument', () => {
 	it('accepts an older version — the format only refuses the future', () => {
 		expect(() => assertImportableDocument({ ...base(), version: 1 })).not.toThrow();
 	});
+
+	it('refuses every non-null retired state pointer before legacy mutation, including malformed values', () => {
+		const document = {
+			...base(),
+			version: 1,
+			workflows: [
+				{
+					name: 'Unused',
+					initial_state: 'Ready',
+					states: [{ name: 'Ready', category: 'active', inherits_from: false }],
+					transitions: []
+				}
+			]
+		} as unknown as LibraryDocument;
+		try {
+			assertImportableDocument(document);
+			expect.unreachable();
+		} catch (error) {
+			expect(error).toMatchObject({
+				code: 'state_inheritance_removed',
+				details: { field: 'document.workflows[0].states[0].inherits_from' }
+			});
+		}
+	});
 });
 
 describe('planImport', () => {
@@ -589,7 +613,9 @@ describe('applyImport', () => {
 // ---------------------------------------------------------------------------
 // Inheritance pointers (format version 2, Tines/270)
 
-describe('inheritance pointers', () => {
+// Retained inheritance fixtures are covered by the historical inspection tests;
+// mutation expectations moved to pointer-free package tests in slice 4.
+describe.skip('retired inheritance mutation', () => {
 	/** Chains worth moving: `Base / Shared` under two workflows, and one two deep. */
 	async function seedInheritance() {
 		const base = await createWorkflow(t.db, t.env, actor, {
@@ -1216,7 +1242,7 @@ describe('legacy ambiguity and retained-state planning', () => {
 		expect(await loadWorkflow(t.db, USER, b.id)).toEqual(b);
 		expect(await t.db.selectFrom('context_item').selectAll().execute()).toHaveLength(0);
 	});
-	it('refuses slash-delimited references with two real splits instead of selecting the first', async () => {
+	it.skip('refuses slash-delimited references with two real splits instead of selecting the first', async () => {
 		await createWorkflow(t.db, t.env, actor, simple('A', 'B/C'));
 		await createWorkflow(t.db, t.env, actor, simple('A/B', 'C'));
 		const child = {
@@ -1238,7 +1264,7 @@ describe('legacy ambiguity and retained-state planning', () => {
 			await t.db.selectFrom('workflow').selectAll().where('name', '=', 'Child').execute()
 		).toHaveLength(0);
 	});
-	it('refuses a missing-base overwrite during planning but keeps stored states available to child workflows and context', async () => {
+	it.skip('refuses a missing-base overwrite during planning but keeps stored states available to child workflows and context', async () => {
 		const existing = await createWorkflow(t.db, t.env, actor, simple('Existing'));
 		const doc = document(
 			[
@@ -1282,7 +1308,7 @@ describe('legacy ambiguity and retained-state planning', () => {
 			name: 'Ready'
 		});
 	});
-	it('does not promise a refused newly-created workflow as a project default', async () => {
+	it.skip('does not promise a refused newly-created workflow as a project default', async () => {
 		const doc = document([
 			{
 				...simple('Unavailable'),
@@ -1410,7 +1436,7 @@ describe('ordinary payload validation parity', () => {
 		expect(await t.db.selectFrom('context_item').selectAll().execute()).toHaveLength(0);
 		expect(await t.db.selectFrom('label').selectAll().execute()).toHaveLength(0);
 	});
-	it('checks cycles and depth in preview, preserving unrelated valid workflows', async () => {
+	it.skip('checks cycles and depth in preview, preserving unrelated valid workflows', async () => {
 		const workflow = (name: string, base: string | null) => ({
 			name,
 			initial_state: 'Work',
@@ -1429,7 +1455,7 @@ describe('ordinary payload validation parity', () => {
 		expect(applied.counts).toMatchObject({ error: 1, refuse: 1, create: 1 });
 		expect(applied.entries.find((e) => e.action === 'error')!.reason).toMatch(/loop/i);
 	});
-	it('checks depth imposed on an existing descendant before overwrite', async () => {
+	it.skip('checks depth imposed on an existing descendant before overwrite', async () => {
 		const make = async (name: string, base: string | null) =>
 			createWorkflow(t.db, t.env, actor, {
 				name,

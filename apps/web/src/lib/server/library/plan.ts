@@ -1,5 +1,5 @@
 import {
-	parseLibraryV3Document,
+	parseLibraryV3MutationDocument,
 	canonicalizeLibraryValue,
 	LibraryValidationError,
 	publicationBytesSha256,
@@ -29,7 +29,7 @@ import {
 
 async function requireWorkflowDocument(raw: string): Promise<WorkflowPackageDocument> {
 	try {
-		const document = await parseLibraryV3Document(raw);
+		const document = await parseLibraryV3MutationDocument(raw);
 		if (document.profile !== 'workflow')
 			throw new ApiFail(422, 'wrong_profile', 'Use whole-library import for library-profile files');
 		return document;

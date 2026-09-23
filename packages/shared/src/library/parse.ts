@@ -7,6 +7,7 @@ import {
 	type LibraryDiagnostic,
 	type PortableLibraryV3Document
 } from './types.js';
+import { removedStateInheritanceDiagnostics } from './references.js';
 
 class StrictJsonParser {
 	private offset = 0;
@@ -265,6 +266,36 @@ export async function parseLibraryV3Document(
 			}
 		]);
 	return { ...document, digest: actual };
+}
+
+/** Mutation-only parser. Historical inspection must continue to use the normal parser. */
+export async function parseLibraryV3MutationDocument(
+	input: string | Uint8Array,
+	options: { allowMissingDigest?: boolean } = {}
+): Promise<PortableLibraryV3Document> {
+	const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input;
+	if (bytes.byteLength > LIBRARY_MAX_BYTES)
+		throw new LibraryValidationError([
+			{
+				path: '',
+				code: 'package_too_large',
+				message: `Document exceeds ${LIBRARY_MAX_BYTES} bytes`
+			}
+		]);
+	let source: string;
+	try {
+		source =
+			typeof input === 'string'
+				? input
+				: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(input);
+	} catch {
+		throw new LibraryValidationError([
+			{ path: '', code: 'invalid_utf8', message: 'Document is not valid UTF-8' }
+		]);
+	}
+	const diagnostics = removedStateInheritanceDiagnostics(new StrictJsonParser(source).parse());
+	if (diagnostics.length) throw new LibraryValidationError(diagnostics);
+	return parseLibraryV3Document(input, options);
 }
 
 export function diagnosticOf(error: unknown): LibraryDiagnostic[] {

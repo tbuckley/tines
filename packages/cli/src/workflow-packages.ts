@@ -301,10 +301,18 @@ const lines = (heading: string, values: string[]) =>
 
 export function formatWorkflowPackageReview(plan: PrepareWorkflowPackageResponse): string {
 	const { document, resolved } = plan;
+	const retiredInheritance = document.workflows.some((workflow) =>
+		workflow.states.some((state) => state.inherits_from !== null)
+	);
 	const output = [
 		`Workflow package plan ${plan.plan_digest}`,
 		`  file: ${plan.document_digest}`,
 		`  valid until: ${new Date(plan.expires_at).toISOString()}`,
+		...(retiredInheritance
+			? [
+					'  historical: state inheritance was removed; inspection/download remain available, preparation and installation are disabled'
+				]
+			: []),
 		`  budget: ${plan.budget.statements} statements, ${plan.budget.max_parameters} parameters, ${plan.budget.max_sql_bytes} SQL bytes, ${plan.budget.max_value_bytes} value bytes`,
 		'',
 		...lines(
@@ -321,7 +329,7 @@ export function formatWorkflowPackageReview(plan: PrepareWorkflowPackageResponse
 				`${workflow.id}: ${resolved.names[workflow.id] ?? workflow.name} — ${workflow.description}`,
 				...workflow.states.map(
 					(state) =>
-						`  state ${state.id}: ${state.name} (${state.category})${state.inherits_from ? ` inherits ${state.inherits_from.state_id}` : ''}`
+						`  state ${state.id}: ${state.name} (${state.category})${state.inherits_from ? ` [historical pointer: ${state.inherits_from.state_id}]` : ''}`
 				),
 				...workflow.transitions.map(
 					(transition) =>

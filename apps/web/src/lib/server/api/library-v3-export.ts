@@ -131,7 +131,9 @@ export async function buildLibraryV3Document(
 					id: stateId(state.id),
 					name: state.name,
 					category: state.category,
-					inherits_from: state.inherits_from ? stateRefs.get(state.inherits_from)! : null
+					// Historical pointers remain inspectable in old documents; all
+					// new library exports are pointer-free.
+					inherits_from: null
 				})),
 			transitions: [...w.transitions]
 				.sort((a, b) => a.id.localeCompare(b.id))
