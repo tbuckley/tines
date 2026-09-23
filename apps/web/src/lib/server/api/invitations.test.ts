@@ -77,6 +77,33 @@ function fixture() {
 }
 
 describe('invitations and membership', () => {
+	it('requires project write authority before a scoped key begins first sharing', async () => {
+		const t = fixture();
+		const readKey: ActorContext = {
+			...owner,
+			viaSession: false,
+			apiKeyId: 'key_read',
+			permissions: {
+				...FULL_API_KEY_PERMISSIONS,
+				projects: { access: 'read', scope: ['prj_shared'] }
+			}
+		};
+		await expect(
+			createInvitation(
+				t.db,
+				t.env,
+				readKey,
+				'prj_shared',
+				{ email: 'member@test.invalid', expected_sharing_revision: 0, confirm_sharing: true },
+				'https://example.test'
+			)
+		).rejects.toMatchObject({ code: 'insufficient_permissions' });
+		expect(t.all('SELECT id FROM project_invitation')).toEqual([]);
+		expect(t.all('SELECT shared_at FROM project WHERE id = ?', 'prj_shared')).toEqual([
+			{ shared_at: null }
+		]);
+	});
+
 	it('requires explicit first sharing; saves one invited person without exposing a token in inventory', async () => {
 		const t = fixture();
 		await expect(
