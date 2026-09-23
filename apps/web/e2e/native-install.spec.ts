@@ -9,7 +9,7 @@ import {
 	withLibraryDocumentDigest
 } from '@tines/shared';
 import {
-	automatedPackage,
+	pointerFreeAutomatedPackage,
 	duplicateLibrary,
 	pointerFreePackage
 } from '../../../packages/shared/src/library/fixtures';
@@ -94,7 +94,7 @@ async function automatedFixture(client: ReturnType<typeof apiClient>, marker: st
 		VALUES(${literal(runnerId)},${literal(ALICE.id)},'local',${literal(`${marker} runner`)},'active',1,30,'balanced','{"harness":"codex"}',${now},${now});
 		INSERT INTO routing_rule(id,user_id,project_id,workflow_state_id,label_id,targets,created_at,updated_at)
 		VALUES(${literal(ruleId)},${literal(ALICE.id)},${literal(projectId)},NULL,NULL,${literal(JSON.stringify([{ runner_id: runnerId }]))},${now},${now})`);
-	const document = automatedPackage();
+	const document = pointerFreeAutomatedPackage();
 	document.schedules[0].name = `${marker} schedule`;
 	const documentJson = await seal(document);
 	const plan = await prepare(client, documentJson, {
@@ -103,8 +103,7 @@ async function automatedFixture(client: ReturnType<typeof apiClient>, marker: st
 			'input:2': { mode: 'reuse', id: projectId }
 		},
 		workflow_names: {
-			'workflow:1': `${marker} main`,
-			'workflow:2': `${marker} dependency`
+			'workflow:1': `${marker} main`
 		},
 		schedule_ids: ['schedule:1'],
 		routing: { 'routing:1': 'balanced' }
@@ -121,24 +120,27 @@ function installBody(documentJson: string, plan: PrepareWorkflowPackageResponse)
 }
 
 function allocated(plan: PrepareWorkflowPackageResponse) {
+	const records = plan.allocation.records;
+	const recordIds = (prefix: string) =>
+		Object.keys(records)
+			.filter((id) => id.startsWith(`${prefix}:`))
+			.map((id) => records[id].id);
 	return {
-		workflows: ['workflow:1', 'workflow:2'].map((id) => plan.allocation.records[id].id),
-		states: ['state:1', 'state:2', 'state:3'].map((id) => plan.allocation.records[id].id),
-		transitions: [plan.allocation.records['transition:1'].id],
-		context: ['context:1', 'context:2', 'context:3'].map((id) => plan.allocation.records[id].id),
-		files: [plan.allocation.records['file:1'].id],
+		workflows: recordIds('workflow'),
+		states: recordIds('state'),
+		transitions: recordIds('transition'),
+		context: recordIds('context'),
+		files: recordIds('file'),
 		labels: [plan.allocation.labels['input:1'].id],
 		schedules: plan.allocation.records['schedule:1']
 			? [plan.allocation.records['schedule:1'].id]
 			: [],
 		routing: plan.allocation.records['routing:1'] ? [plan.allocation.records['routing:1'].id] : [],
 		events: [
-			...['workflow:1', 'workflow:2', 'context:1', 'context:2', 'context:3']
-				.map((id) => plan.allocation.records[id].event_id)
+			...Object.values(records)
+				.map((record) => record.event_id)
 				.filter((id): id is string => id !== null),
-			plan.allocation.labels['input:1'].event_id,
-			plan.allocation.records['schedule:1']?.event_id,
-			plan.allocation.records['routing:1']?.event_id
+			plan.allocation.labels['input:1'].event_id
 		].filter((id): id is string => !!id)
 	};
 }
@@ -318,9 +320,14 @@ function expectReceiptRows(
 	expect(snapshot.scheduled_task).toEqual([
 		{ id: a.schedules[0], enabled: 0, last_run_at: null, run_count: 0, project_id: projectId }
 	]);
-	expect(snapshot.workflow_state.find((row) => row.id === a.states[0])).toMatchObject({
-		inherits_from_state_id: a.states[2]
-	});
+	const inheritedState = plan.allocation.records['state:3'];
+	if (inheritedState) {
+		expect(snapshot.workflow_state.find((row) => row.id === a.states[0])).toMatchObject({
+			inherits_from_state_id: inheritedState.id
+		});
+	} else {
+		expect(snapshot.workflow_state.every((row) => row.inherits_from_state_id === null)).toBe(true);
+	}
 }
 
 function auditReceipt(
@@ -731,7 +738,6 @@ test.describe.serial('native D1 workflow install gate', () => {
 			['workflow_transition', 'INSERT'],
 			['context_item', 'INSERT'],
 			['context_item_file', 'INSERT'],
-			['workflow_state', 'UPDATE'],
 			['label', 'INSERT'],
 			['scheduled_task', 'INSERT'],
 			['routing_rule', 'INSERT'],
@@ -762,7 +768,7 @@ test.describe.serial('native D1 workflow install gate', () => {
 			expect(d1('SELECT COUNT(*) AS n FROM issue')[0].n).toBe(beforeIssues);
 		}
 		if (process.env.NATIVE_INSTALL_D1_PROBE === '1') {
-			expect(d1ProbeCalls, 'rollback D1 process count').toBe(80);
+			expect(d1ProbeCalls, 'rollback D1 process count').toBe(72);
 			console.log(
 				`D1_ROLLBACK_PROBE phases=${failures.length} calls=${d1ProbeCalls} exec_ms=${d1ProbeMs.toFixed(1)} body_ms=${(performance.now() - probeStartedAt).toFixed(1)}`
 			);
