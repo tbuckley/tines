@@ -468,7 +468,7 @@ export async function acceptInvitation(
 		: null;
 	const landingPath = landing
 		? `/issues/${encodeURIComponent(invite.project_id)}/${landing.number}`
-		: `/projects/${encodeURIComponent(invite.project_id)}`;
+		: `/issues?project=${encodeURIComponent(invite.project_id)}&category=awaiting_human`;
 	if (invite.accepted_at !== null) {
 		if (
 			invite.accepted_by_user_id === actor.userId &&

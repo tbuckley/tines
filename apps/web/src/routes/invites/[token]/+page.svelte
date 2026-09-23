@@ -38,7 +38,7 @@
 		<h1 class="text-2xl font-semibold">Join {data.invitation.project.name}</h1>
 		<p class="mt-3">
 			{data.invitation.project.owner} invited you to the whole project. Members can read its issues and
-			schedules. Your agents remain off until you choose permission in the browser.
+			schedules.
 		</p>
 		<p class="text-muted-foreground mt-3 text-sm">
 			Invitation expires {new Date(data.invitation.expires_at).toLocaleString()}.

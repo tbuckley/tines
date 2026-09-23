@@ -17,7 +17,12 @@
 		>
 		<button class="rounded border px-4 py-2">Filter</button>
 	</form>
-	{#if data.issues.length === 0}<p class="mt-6">No issues match this view.</p>{:else}
+	{#if data.issues.length === 0}
+		<p class="mt-6">No issues match this view.</p>
+		{#if data.filters.category === 'awaiting_human'}
+			<a class="mt-2 inline-block underline" href="/issues">View all project issues</a>
+		{/if}
+	{:else}
 		<ul class="mt-6 space-y-2">
 			{#each data.issues as issue (issue.id)}<li>
 					<a

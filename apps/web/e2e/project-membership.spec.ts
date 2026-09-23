@@ -80,6 +80,7 @@ test('two accounts join and read without owner-private payloads, then removal re
 
 test('resend replaces the old link and expiry blocks acceptance', async ({
 	request,
+	page,
 	uniqueName
 }) => {
 	const owner = apiClient(request, ALICE.apiKey);
@@ -126,4 +127,14 @@ test('resend replaces the old link and expiry blocks acceptance', async ({
 		})
 	);
 	expect(again.generation).toBe(3);
+	const latestUrl = (
+		await body<{ url: string }>(await request.get(`/api/v1/__e2e/invitation-email/${first.id}`))
+	).url;
+	await signIn(page.context(), BOB.sessionToken);
+	await gotoHydrated(page, new URL(latestUrl).pathname);
+	await page.getByRole('button', { name: 'Join project' }).click();
+	await expect(page.getByText('No issues match this view.')).toBeVisible();
+	await expect(page.getByRole('link', { name: 'View all project issues' })).toBeVisible();
+	await page.getByRole('link', { name: 'View all project issues' }).click();
+	await expect(page.getByRole('heading', { name: 'Issues' })).toBeVisible();
 });
