@@ -11,7 +11,9 @@ export interface CodexRate {
 	version: number;
 	model: string;
 	provider: 'openai';
-	plan: 'api_standard';
+	plan: 'api_standard' | 'user_entered';
+	rate_source?: 'user';
+	rate_entered_at?: number;
 	context_band: 'short' | 'published';
 	adopted_at: number;
 	source_url: string;
@@ -22,6 +24,8 @@ export interface CodexRate {
 		string | null
 	>;
 }
+
+export const RATE_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d{1,9})?$/;
 
 const ADOPTED = Date.parse('2026-09-11T03:30:00Z');
 const PRICING = 'https://developers.openai.com/api/docs/pricing';
@@ -51,6 +55,40 @@ function rate(
 			cache_read_tokens: read,
 			cache_write_tokens: write,
 			output_tokens: output
+		}
+	};
+}
+
+export interface UserRateRow {
+	id: string;
+	model: string;
+	version: number;
+	input_rate: string;
+	cache_read_rate: string;
+	cache_write_rate: string | null;
+	output_rate: string;
+	created_at: number;
+}
+
+export function userRateToCodexRate(row: UserRateRow): CodexRate {
+	return {
+		id: `user-rate:${row.id}`,
+		version: row.version,
+		model: row.model,
+		provider: 'openai',
+		plan: 'user_entered',
+		rate_source: 'user',
+		rate_entered_at: row.created_at,
+		context_band: 'published',
+		adopted_at: 0,
+		source_url: '',
+		source_checked_at: new Date(row.created_at).toISOString().slice(0, 10),
+		source_effective_at: null,
+		rates: {
+			input_tokens: row.input_rate,
+			cache_read_tokens: row.cache_read_rate,
+			cache_write_tokens: row.cache_write_rate,
+			output_tokens: row.output_rate
 		}
 	};
 }
@@ -136,7 +174,7 @@ function unpriced(
 }
 
 function scaledRate(value: string): bigint | null {
-	if (!/^(?:0|[1-9]\d*)(?:\.\d{1,9})?$/.test(value)) return null;
+	if (!RATE_PATTERN.test(value)) return null;
 	const [whole, fraction = ''] = value.split('.');
 	return BigInt(whole) * 1_000_000_000n + BigInt(fraction.padEnd(9, '0'));
 }
@@ -269,7 +307,10 @@ export function priceCodexUsage(
 		model: run.model,
 		model_identity: 'requested_launch_no_observed_reroute',
 		usage_scope: 'attempt',
-		plan: 'api_standard',
+		plan: selected.plan,
+		...(selected.plan === 'user_entered'
+			? { rate_source: 'user' as const, rate_entered_at: selected.rate_entered_at }
+			: {}),
 		context_band: selected.context_band,
 		rate_id: selected.id,
 		rate_version: selected.version,

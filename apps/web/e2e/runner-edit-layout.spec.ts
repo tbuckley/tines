@@ -10,9 +10,11 @@ const TABLET_EDGE = { width: 640, height: 900 };
 // behavior under test, and teardown releases them before another run.
 const runnerName = 'runner-edit-layout';
 const customRunnerName = 'runner-edit-fixed';
+const legacyRunnerName = 'runner-edit-legacy';
 
 let runner: Runner;
 let customRunner: Runner;
+let legacyRunner: Runner;
 
 test.describe.serial('runner edit responsive layout', () => {
 	test.beforeAll(async ({ apiFor, workerRequest }) => {
@@ -36,7 +38,8 @@ test.describe.serial('runner edit responsive layout', () => {
 					harness: 'codex',
 					harness_version: 'e2e',
 					catalog_digest: `runner-edit-layout-${runner.id}`,
-					models
+					models,
+					accepts_asserted_effort: true
 				}
 			}
 		});
@@ -63,11 +66,31 @@ test.describe.serial('runner edit responsive layout', () => {
 				})
 			)
 		).runner;
+		const legacy = await body<RunnerTokenResponse>(
+			await api.post('/api/v1/runners/register', { name: legacyRunnerName, harness: 'codex' })
+		);
+		legacyRunner = legacy.runner;
+		const legacyPoll = await workerRequest.post(`/api/v1/runners/${legacyRunner.id}/poll`, {
+			headers: { authorization: `Bearer ${legacy.runner_token}` },
+			data: {
+				instance_id: `runner-edit-legacy-${legacyRunner.id}`,
+				owned_runs: [],
+				effort_capabilities: {
+					version: 1,
+					daemon_version: 'e2e',
+					harness: 'codex',
+					harness_version: 'e2e',
+					catalog_digest: `runner-edit-legacy-${legacyRunner.id}`,
+					models
+				}
+			}
+		});
+		expect(legacyPoll.ok(), await legacyPoll.text()).toBe(true);
 	});
 
 	test.afterAll(async ({ apiFor }) => {
 		const api = apiFor(ALICE);
-		for (const created of [runner, customRunner]) {
+		for (const created of [runner, customRunner, legacyRunner]) {
 			if (created) await api.delete(`/api/v1/runners/${created.id}`);
 		}
 	});
@@ -221,9 +244,19 @@ test.describe.serial('runner edit responsive layout', () => {
 		await expect(model).toHaveAttribute('placeholder', /built-in/);
 		await expect(effort.locator('option:checked')).toHaveText('high');
 		await model.fill('unknown-model-with-a-long-but-contained-identifier');
-		await expect(effort.locator('option:checked')).toHaveText('high (incompatible)');
+		await expect(effort).toBeEnabled();
+		await expect(effort.locator('option:checked')).toHaveText('high (unverified)');
+		await expect(dialog.getByText(/Tines can't confirm .* supports effort/)).toBeVisible();
 		await assertSelectedLabelFits(effort);
 		await expect(dialog.getByText('stale override')).toHaveCount(0);
+		await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+		dialog = await openRunner(page, legacyRunner, PHONE);
+		await dialog.locator('#edit-model-balanced').fill('unknown-model-without-flag');
+		await expect(dialog.locator('#edit-effort-balanced')).toBeDisabled();
+		await expect(
+			dialog.getByText("Upgrade this runner's daemon to set effort on new models.")
+		).toBeVisible();
 		await dialog.getByRole('button', { name: 'Cancel' }).click();
 
 		dialog = await openRunner(page, customRunner, PHONE);

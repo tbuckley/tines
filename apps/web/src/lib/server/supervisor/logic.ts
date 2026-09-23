@@ -17,7 +17,12 @@ import {
 	type QueueVerdict,
 	type RoutingTarget
 } from '@tines/shared';
-import { MANAGED_CLAUDE_EFFORTS, supportedEfforts, type EffortCapabilities } from '@tines/shared';
+import {
+	admitEffort,
+	MANAGED_CLAUDE_EFFORTS,
+	supportedEfforts,
+	type EffortCapabilities
+} from '@tines/shared';
 
 // ---------------------------------------------------------------------------
 // Rule matching (winner-take-all; project above state — see routing.ts)
@@ -294,6 +299,7 @@ export interface EffortResolution {
 	resolved: string | null;
 	deliveryMode: EffortDeliveryMode;
 	compatible: boolean;
+	verification: 'verified' | 'asserted' | null;
 	reason: string | null;
 }
 
@@ -310,6 +316,7 @@ export function resolveEffort(
 			resolved: null,
 			deliveryMode: 'none',
 			compatible: true,
+			verification: null,
 			reason: null
 		};
 	if (!tier.model)
@@ -318,16 +325,19 @@ export function resolveEffort(
 			resolved,
 			deliveryMode: 'none',
 			compatible: false,
+			verification: null,
 			reason: 'unsupported_harness: this harness has no model effort control'
 		};
 	if (runner.type === 'claude_managed') {
 		const allowed = MANAGED_CLAUDE_EFFORTS[tier.model];
-		return allowed?.includes(resolved)
+		const admission = admitEffort(allowed ?? null, resolved, true);
+		return admission.ok
 			? {
 					requested: routedEffort,
 					resolved,
 					deliveryMode: 'enforce',
 					compatible: true,
+					verification: admission.verification,
 					reason: null
 				}
 			: {
@@ -335,7 +345,10 @@ export function resolveEffort(
 					resolved,
 					deliveryMode: 'none',
 					compatible: false,
-					reason: `unsupported_effort: ${tier.model} does not support ${resolved}`
+					verification: null,
+					reason: admission.reason.includes('unsupported_effort')
+						? `unsupported_effort: ${tier.model} does not support ${resolved}`
+						: admission.reason
 				};
 	}
 	if (runner.type !== 'local')
@@ -344,6 +357,7 @@ export function resolveEffort(
 			resolved,
 			deliveryMode: 'none',
 			compatible: false,
+			verification: null,
 			reason: 'unsupported_harness: this provider does not accept effort'
 		};
 	if (!runner.effort_capabilities) {
@@ -353,9 +367,17 @@ export function resolveEffort(
 					resolved,
 					deliveryMode: 'none',
 					compatible: false,
+					verification: null,
 					reason: 'daemon_upgrade_required: reconnect with an effort-capable daemon'
 				}
-			: { requested: null, resolved, deliveryMode: 'legacy_tier', compatible: true, reason: null };
+			: {
+					requested: null,
+					resolved,
+					deliveryMode: 'legacy_tier',
+					compatible: true,
+					verification: null,
+					reason: null
+				};
 	}
 	let capabilities: EffortCapabilities | null = null;
 	try {
@@ -363,17 +385,43 @@ export function resolveEffort(
 	} catch {
 		/* fail closed below */
 	}
-	const allowed = supportedEfforts(capabilities, tier.model);
-	return allowed?.includes(resolved)
-		? { requested: routedEffort, resolved, deliveryMode: 'enforce', compatible: true, reason: null }
+	if (!capabilities)
+		return {
+			requested: routedEffort,
+			resolved,
+			deliveryMode: 'none',
+			compatible: false,
+			verification: null,
+			reason: 'capability_unavailable: exact model support was not reported'
+		};
+	const admission = admitEffort(
+		supportedEfforts(capabilities, tier.model),
+		resolved,
+		capabilities.version === 1 &&
+			'accepts_asserted_effort' in capabilities &&
+			capabilities.accepts_asserted_effort === true
+	);
+	return admission.ok
+		? {
+				requested: routedEffort,
+				resolved,
+				deliveryMode: 'enforce',
+				compatible: true,
+				verification: admission.verification,
+				reason: null
+			}
 		: {
 				requested: routedEffort,
 				resolved,
 				deliveryMode: 'none',
 				compatible: false,
-				reason: allowed
-					? `unsupported_effort: ${tier.model} allows ${allowed.join(', ')}`
-					: 'capability_unavailable: exact model support was not reported'
+				verification: null,
+				reason: admission.reason.includes('unsupported_effort:')
+					? admission.reason.replace(
+							'unsupported_effort: allows',
+							`unsupported_effort: ${tier.model} allows`
+						)
+					: admission.reason
 			};
 }
 

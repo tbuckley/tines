@@ -8,6 +8,12 @@ The append-only catalog is `apps/web/src/lib/server/supervisor/codex-pricing.ts`
 
 Rates are selected by the run's immutable claim timestamp, not finish time. Add a new reviewed catalog version with a future adoption timestamp when a rate changes; never edit an adopted row. The persisted basis includes the exact rates, source, adoption/effective dates, normalized counters, and exact decimal result, so later catalog changes cannot reprice a run. Recheck the Sol promotion near 2026-11-21.
 
+## User-entered rates
+
+For an exact model with no built-in row, the Model rates control accepts decimal USD-per-million-token rates for input, cache reads, optional cache writes, and output. The row is append-only and versioned; the calculated run basis records the user-rate id and entry date. Built-in rates always win.
+
+Saving a rate may also reprice existing runs. Only runs whose stored pricing is `unpriced` with reason `unsupported_model` or `missing_rate` are eligible. Each pass is capped at 200 rows and uses a compare-and-set status guard, so concurrent finishes or reprices cannot overwrite a newer pricing decision. Calculated and provider-authoritative rows are unchanged. A null cache-write rate leaves runs with cache-write tokens unpriced.
+
 ## Measurement and arithmetic
 
 Codex JSONL reports cumulative thread totals. The daemon replaces, rather than adds, successive `turn.completed` snapshots and separates inclusive input into uncached input, cache reads, and cache writes. All four safe-integer dimensions must be present and non-overlapping. Tines calculates each class as `tokens × USD-per-million rate`, sums with scaled integers, divides by 1,000,000, and persists a canonical exact decimal; the existing numeric dollar field is only a compatibility projection. Display rounding never changes the stored basis.

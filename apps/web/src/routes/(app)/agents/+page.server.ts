@@ -7,6 +7,7 @@ import {
 	resolveProjectRef
 } from '$lib/server/api/supervisor';
 import { loadWorkflows } from '$lib/server/api/workflows';
+import { listRates } from '$lib/server/api/rates';
 import { getDb } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
@@ -26,7 +27,8 @@ export const load: PageServerLoad = async ({ locals, platform, parent, url }) =>
 		repoItems,
 		newestIssue,
 		layoutData,
-		fleetRuns
+		fleetRuns,
+		rates
 	] = await Promise.all([
 		listRunners(db, userId),
 		listRoutingRules(db, userId),
@@ -66,7 +68,8 @@ export const load: PageServerLoad = async ({ locals, platform, parent, url }) =>
 			.limit(1)
 			.executeTakeFirst(),
 		parent(),
-		listRuns(db, userId, { active: true }, { cursor: null, limit: 10000 })
+		listRuns(db, userId, { active: true }, { cursor: null, limit: 10000 }),
+		listRates(db, userId)
 	]);
 	// Counted before the partition, so an archived project's issues still count:
 	// the item asks whether the account has an issue at all.
@@ -116,6 +119,7 @@ export const load: PageServerLoad = async ({ locals, platform, parent, url }) =>
 		boardProjectName: boardProject?.name ?? null,
 		runsState,
 		fleetRuns: fleetRuns.items,
+		rates,
 		contextRepoUrls: repoItems.map((r) => r.repo_url).filter((u): u is string => u !== null)
 	};
 };
