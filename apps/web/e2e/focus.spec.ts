@@ -384,12 +384,8 @@ focusTest.describe.serial('project focus', () => {
 				await issueActivityLink.click();
 				await expect(page).toHaveURL('/activity');
 				await expect(page.getByRole('heading', { name: 'Activity', level: 1 })).toBeVisible();
-				await expect(
-					page.locator(`a[href="/issues/${world.bId}/1"]`).first()
-				).toBeVisible();
-				await expect(
-					page.locator(`a[href="/issues/${world.aId}/1"]`)
-				).toHaveCount(0);
+				await expect(page.locator(`a[href="/issues/${world.bId}/1"]`).first()).toBeVisible();
+				await expect(page.locator(`a[href="/issues/${world.aId}/1"]`)).toHaveCount(0);
 
 				// This fixture has no state context: the link remains available on an empty surface.
 				await gotoHydrated(page, `/workflows/${world.workflowId}`);
