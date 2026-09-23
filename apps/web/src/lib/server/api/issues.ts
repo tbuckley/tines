@@ -727,7 +727,7 @@ async function loadCommentHistory(db: Kysely<Database>, issueId: string) {
 		body: row.body,
 		actor: {
 			...actorOf(row),
-			...(row.author_run_id
+			...(row.author_run_id && !row.actor_run_id
 				? {
 						run: {
 							run_id: row.author_run_id,
