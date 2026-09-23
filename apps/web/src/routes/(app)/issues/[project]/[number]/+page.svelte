@@ -828,6 +828,17 @@
 					</a>
 				{/if}
 			</p>
+			{#if data.issue.schedule_origin}
+				<p class="text-muted-foreground mt-1 text-xs" data-testid="schedule-origin">
+					Created from schedule “{data.issue.schedule_origin.schedule_name}” using
+					{data.issue.schedule_origin.snapshot.cron} in
+					{data.issue.schedule_origin.snapshot.timezone}.
+					{#if !data.issue.scheduled_task_id}
+						The schedule was deleted; this issue keeps its history.
+					{/if}
+					Personal permission on this issue is separate from future schedule permission.
+				</p>
+			{/if}
 			{#if focusError}<p class="text-destructive mt-1 text-xs" role="alert">{focusError}</p>{/if}
 			{#if editingTitle}
 				<form onsubmit={saveTitle} class="mt-1 flex items-center gap-2">

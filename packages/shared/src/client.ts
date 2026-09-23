@@ -79,6 +79,8 @@ import type {
 	UsagePendingRun,
 	Runner,
 	Schedule,
+	ScheduleConsentRequest,
+	ScheduleConsentReceipt,
 	ScheduleFilters,
 	StateCategory,
 	SupervisorSettings,
@@ -413,6 +415,10 @@ export function createApiClient(options: ApiClientOptions) {
 		listProjectSchedules: (projectId: string, page: PageParams = {}) =>
 			get<ListResponse<Schedule>>(`/api/v1/projects/${projectId}/schedules${query(page)}`),
 		getSchedule: (id: string) => get<Schedule>(`/api/v1/schedules/${id}`),
+		getScheduleConsent: (id: string) =>
+			get<ScheduleConsentReceipt>(`/api/v1/schedules/${id}/my-consent`),
+		setScheduleConsent: (id: string, body: ScheduleConsentRequest) =>
+			request<ScheduleConsentReceipt>('PUT', `/api/v1/schedules/${id}/my-consent`, body),
 		updateSchedule: (id: string, body: UpdateScheduleRequest) =>
 			request<Schedule>('PATCH', `/api/v1/schedules/${id}`, body),
 		deleteSchedule: (id: string) => request<void>('DELETE', `/api/v1/schedules/${id}`),

@@ -124,6 +124,10 @@ function printIssueDetail(issue: IssueDetail): void {
 		console.log(`labels: ${issue.labels.map((l) => l.name).join(', ')}`);
 	}
 	console.log(`id: ${issue.id}`);
+	if (issue.schedule_origin)
+		console.log(
+			`created by schedule: ${issue.schedule_origin.schedule_name} [${issue.schedule_origin.schedule_id}]  permission epoch: ${issue.schedule_origin.permission_epoch}  (historical source; current issue permission is separate)`
+		);
 	printIssueLinks(issue.links);
 	if (issue.description) {
 		console.log(`\n${issue.description}`);

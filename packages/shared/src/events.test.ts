@@ -96,6 +96,7 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'api_key.created': { name: 'laptop' },
 	'api_key.revoked': { name: 'laptop' },
 	'scheduled_task.created': { name: 'Daily triage' },
+	'scheduled_task.personal_permission_changed': { schedule_id: 'sch_1', value: 'on' },
 	'scheduled_task.updated': { name: 'Daily triage' },
 	'scheduled_task.deleted': { name: 'Daily triage' },
 	'scheduled_task.skipped': { name: 'Daily triage', blocking: ['iss_2', 'iss_3'] },

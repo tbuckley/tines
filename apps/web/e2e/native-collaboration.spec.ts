@@ -1,11 +1,18 @@
 import type { APIRequestContext } from '@playwright/test';
-import type { IssueConsentReceipt, IssueDetail, Project, RunnerTokenResponse } from '@tines/shared';
+import type {
+	IssueConsentReceipt,
+	IssueDetail,
+	Project,
+	RunnerTokenResponse,
+	Schedule
+} from '@tines/shared';
 import { expect, test } from './fixtures';
 import { ALICE, BASE_URL, RUNROW, RUNROW_FAILED } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
 import {
 	apiClient,
 	body,
+	clickUntil,
 	errorBody,
 	fireSweep,
 	gotoHydrated,
@@ -37,6 +44,213 @@ function choice(issueId: string) {
 		`SELECT value, revision, issue_epoch FROM issue_personal_choice WHERE issue_id = ${sqlLiteral(issueId)}`
 	)[0];
 }
+
+async function recurringFixture(request: APIRequestContext, name: string) {
+	const fixture = await setup(request, name);
+	const initial = await body<IssueDetail & { schedule: Schedule }>(
+		await request.post(`/api/v1/projects/${fixture.project.id}/issues`, {
+			headers: sessionHeaders,
+			data: {
+				title: `${name} {{count}}`,
+				allow_my_agents: false,
+				schedule: {
+					preset: { kind: 'daily', time: '09:00' },
+					allow_my_agents_on_future_instances: true
+				}
+			}
+		})
+	);
+	return { ...fixture, initial, schedule: initial.schedule };
+}
+
+function instanceChoice(issueId: string) {
+	return d1<{ value: string; source_kind: string | null; source_grant_revision: number | null }>(
+		`SELECT value, source_kind, source_grant_revision FROM issue_personal_choice
+		WHERE issue_id=${sqlLiteral(issueId)}`
+	)[0];
+}
+
+test.describe.serial('native D1 future schedule permission ordering', () => {
+	test('phone browser keeps initial and future controls separate, then saves the future switch', async ({
+		request,
+		page,
+		uniqueName
+	}) => {
+		const f = await setup(request, uniqueName('future-phone'));
+		await signIn(page.context(), ALICE.sessionToken);
+		await page.setViewportSize({ width: 390, height: 844 });
+		await gotoHydrated(page, `/projects/${f.project.id}`);
+		const dialog = page.getByRole('dialog', { name: /New issue/ });
+		await clickUntil(page.getByRole('button', { name: 'New issue' }), async () => {
+			await expect(dialog).toBeVisible({ timeout: 2_000 });
+		});
+		await dialog.getByLabel('Title', { exact: true }).fill('Phone recurring {{count}}');
+		await dialog.getByRole('button', { name: 'Repeat' }).click();
+		await dialog.locator('#issue-repeat-kind').selectOption('daily');
+		await expect(dialog.getByLabel('Allow my agents on this issue')).toBeChecked();
+		const future = dialog.getByLabel('Allow my agents on future issues from this schedule');
+		await expect(future).not.toBeChecked();
+		await dialog.getByRole('button', { name: 'Create issue + schedule' }).click();
+		await expect(dialog).toBeHidden();
+		await expect(page.getByTestId('schedule-origin')).toContainText('Phone recurring {{count}}');
+		const row = d1<{ id: string }>(
+			`SELECT id FROM scheduled_task WHERE project_id=${sqlLiteral(f.project.id)}`
+		)[0];
+		await gotoHydrated(page, `/projects/${f.project.id}`);
+		const toggle = page.getByRole('switch', {
+			name: 'Allow my agents on future issues from Phone recurring {{count}}'
+		});
+		await expect(toggle).not.toBeChecked();
+		await toggle.check();
+		await expect(toggle).toBeChecked();
+		expect(
+			d1<{ value: string }>(
+				`SELECT value FROM schedule_personal_choice WHERE schedule_id=${sqlLiteral(row.id)}`
+			)
+		).toEqual([{ value: 'on' }]);
+	});
+
+	test('creation first inherits a live grant; later off revokes only inherited issues', async ({
+		request,
+		uniqueName
+	}) => {
+		const f = await recurringFixture(request, uniqueName('future-create-first'));
+		expect(instanceChoice(f.initial.id).source_kind).toBe('explicit_issue');
+		const next = await body<IssueDetail>(
+			await f.key.post(`/api/v1/schedules/${f.schedule.id}/run`)
+		);
+		expect(instanceChoice(next.id)).toMatchObject({
+			value: 'on',
+			source_kind: 'schedule',
+			source_grant_revision: 1
+		});
+		const off = await request.put(`/api/v1/schedules/${f.schedule.id}/my-consent`, {
+			headers: sessionHeaders,
+			data: { value: 'off', expected_revision: 1, permission_epoch: 0 }
+		});
+		expect(off.ok()).toBe(true);
+		expect(instanceChoice(next.id)).toMatchObject({ value: 'unset', source_kind: null });
+		expect(instanceChoice(f.initial.id)).toMatchObject({
+			value: 'off',
+			source_kind: 'explicit_issue'
+		});
+	});
+
+	test('cron reads the current grant without treating its event actor as consent', async ({
+		request,
+		uniqueName
+	}) => {
+		const f = await recurringFixture(request, uniqueName('future-cron'));
+		const due = () =>
+			d1(`UPDATE scheduled_task SET next_run_at=${Date.now() - 60_000}
+			WHERE id=${sqlLiteral(f.schedule.id)}`);
+		due();
+		await fireSweep(request);
+		const instances = () =>
+			d1<{ id: string }>(
+				`SELECT id FROM issue WHERE scheduled_task_id=${sqlLiteral(f.schedule.id)} ORDER BY number`
+			);
+		expect(instances()).toHaveLength(2);
+		expect(instanceChoice(instances()[1].id)).toMatchObject({
+			value: 'on',
+			source_kind: 'schedule'
+		});
+		const off = await request.put(`/api/v1/schedules/${f.schedule.id}/my-consent`, {
+			headers: sessionHeaders,
+			data: { value: 'off', expected_revision: 1, permission_epoch: 0 }
+		});
+		expect(off.ok()).toBe(true);
+		due();
+		await fireSweep(request);
+		expect(instances()).toHaveLength(3);
+		expect(instanceChoice(instances()[2].id)).toBeUndefined();
+	});
+
+	test('source off releases only assigned inherited work without a strike', async ({
+		request,
+		uniqueName
+	}) => {
+		const f = await recurringFixture(request, uniqueName('future-assigned'));
+		const next = await body<IssueDetail>(
+			await f.key.post(`/api/v1/schedules/${f.schedule.id}/run`)
+		);
+		const now = Date.now();
+		const assigned = `arun_future_assigned_${now}`;
+		const admitted = `arun_future_admitted_${now}`;
+		for (const [id, status, admittedAt] of [
+			[assigned, 'assigned', 'NULL'],
+			[admitted, 'running', String(now)]
+		]) {
+			d1(`INSERT INTO agent_run
+				(id,user_id,issue_id,runner_id,status,tier,log,created_at,admitted_at,state_id_at_start)
+				VALUES (${sqlLiteral(id)},${sqlLiteral(ALICE.id)},${sqlLiteral(next.id)},
+					${sqlLiteral(RUNROW_FAILED.runnerId)},${sqlLiteral(status)},'balanced','',
+					${now},${admittedAt},${sqlLiteral(next.state.id)})`);
+		}
+		const off = await request.put(`/api/v1/schedules/${f.schedule.id}/my-consent`, {
+			headers: sessionHeaders,
+			data: { value: 'off', expected_revision: 1, permission_epoch: 0 }
+		});
+		expect(off.ok()).toBe(true);
+		expect(
+			d1<{ status: string }>(`SELECT status FROM agent_run WHERE id=${sqlLiteral(assigned)}`)
+		).toEqual([{ status: 'canceled' }]);
+		expect(
+			d1<{ status: string }>(`SELECT status FROM agent_run WHERE id=${sqlLiteral(admitted)}`)
+		).toEqual([{ status: 'running' }]);
+		expect(
+			d1<{ attempt_count: number }>(
+				`SELECT attempt_count FROM issue WHERE id=${sqlLiteral(next.id)}`
+			)
+		).toEqual([{ attempt_count: 0 }]);
+	});
+
+	test('off committed after preparation but before creation selects no grant', async ({
+		request,
+		uniqueName
+	}) => {
+		const f = await recurringFixture(request, uniqueName('future-off-first'));
+		const running = request.post(`/api/v1/schedules/${f.schedule.id}/run`, {
+			headers: {
+				authorization: `Bearer ${ALICE.apiKey}`,
+				'x-tines-e2e-schedule-race': 'wait-for-off'
+			}
+		});
+		const off = await request.put(`/api/v1/schedules/${f.schedule.id}/my-consent`, {
+			headers: { ...sessionHeaders, 'x-tines-e2e-schedule-race': 'release-run-now' },
+			data: { value: 'off', expected_revision: 1, permission_epoch: 0 }
+		});
+		expect(off.ok()).toBe(true);
+		const created = await body<IssueDetail>(await running);
+		expect(instanceChoice(created.id)).toBeUndefined();
+		expect(
+			d1<{ schedule_id: string }>(
+				`SELECT schedule_id FROM issue_schedule_origin WHERE issue_id=${sqlLiteral(created.id)}`
+			)
+		).toEqual([{ schedule_id: f.schedule.id }]);
+	});
+
+	for (const action of ['delete', 'meaningful-change'] as const) {
+		test(`${action} committed after preparation rejects stale creation`, async ({
+			request,
+			uniqueName
+		}) => {
+			const f = await recurringFixture(request, uniqueName(`future-${action}-first`));
+			const before = d1<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM issue WHERE project_id=${sqlLiteral(f.project.id)}`
+			)[0].n;
+			const response = await request.post(`/api/v1/schedules/${f.schedule.id}/run`, {
+				headers: { authorization: `Bearer ${ALICE.apiKey}`, 'x-tines-e2e-schedule-race': action }
+			});
+			expect(response.status()).toBe(action === 'delete' ? 404 : 409);
+			expect(
+				d1<{ n: number }>(
+					`SELECT COUNT(*) AS n FROM issue WHERE project_id=${sqlLiteral(f.project.id)}`
+				)[0].n
+			).toBe(before);
+		});
+	}
+});
 
 test.describe.serial('native D1 owner permission', () => {
 	test('browser agent activity saves a choice and an owner hold', async ({

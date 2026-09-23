@@ -49,6 +49,10 @@ function printScheduleDetail(s: Schedule): void {
 	console.log(
 		`next run: ${s.enabled ? timestamp(s.next_run_at) : '(paused)'}  last run: ${s.last_run_at ? timestamp(s.last_run_at) : 'never'}  runs: ${s.run_count}  open instances: ${s.open_instances}`
 	);
+	if (s.my_future_permission)
+		console.log(
+			`my agents on future issues: ${s.my_future_permission.value === 'on' ? 'on' : 'off (default)'}  permission epoch: ${s.my_future_permission.epoch}  (change in the browser)`
+		);
 	console.log(`\ntitle template: ${s.title_template}`);
 	if (s.description_template) {
 		console.log('description template:');
@@ -79,13 +83,14 @@ export function register(program: Command): void {
 		printList(res, opts, (items) => {
 			if (items.length === 0) return console.log('no schedules');
 			table([
-				['NAME', 'RECURRENCE', 'NEXT RUN', 'LAST RUN', 'OPEN', ''],
+				['NAME', 'RECURRENCE', 'NEXT RUN', 'LAST RUN', 'OPEN', 'MY FUTURE', ''],
 				...items.map((s) => [
 					scheduleRef(s),
 					recurrenceLabel(s),
 					s.enabled ? timestamp(s.next_run_at) : '—',
 					s.last_run_at ? timestamp(s.last_run_at) : 'never',
 					String(s.open_instances),
+					s.my_future_permission ? (s.my_future_permission.value === 'on' ? 'on' : 'off') : '—',
 					s.enabled ? '' : '(paused)'
 				])
 			]);

@@ -517,6 +517,23 @@ export interface Issue {
 	/** The schedule keeps its original project when an instance moves. */
 	scheduled_task_project_id: string | null;
 	scheduled_task_project_name: string | null;
+	/** Durable creation provenance; it remains after a schedule is edited or deleted. */
+	schedule_origin?: {
+		schedule_id: string;
+		schedule_name: string;
+		permission_epoch: number;
+		definition_revision: number;
+		snapshot: {
+			title_template: string;
+			description_template: string;
+			workflow_id: string;
+			state_id: string | null;
+			resolved_start_state_id: string;
+			cron: string;
+			timezone: string;
+			require_all_closed: boolean;
+		};
+	} | null;
 	/** Pin: replaces routing-rule matching entirely for this issue. */
 	pinned_runner_id: string | null;
 	pinned_runner_name: string | null;
@@ -796,6 +813,8 @@ export interface CreateScheduleInput {
 	timezone?: string;
 	/** Only create a new instance when all previous instances are closed. */
 	require_all_closed?: boolean;
+	/** Browser-session-only choice for future instances; independent of the initial issue. */
+	allow_my_agents_on_future_instances?: boolean;
 }
 
 /** Create-issue response; `schedule` present when a recurrence was set. */
@@ -837,8 +856,55 @@ export interface Schedule {
 	run_count: number;
 	/** Linked issues currently in a non-done state (drives the gate). */
 	open_instances: number;
+	/** Semantic authorization lifetime, independent of execution definition changes. */
+	permission_epoch?: number;
+	/** Absent or off means future instances receive no inherited personal permission. */
+	my_future_permission?: { value: 'on' | 'off' | 'unset'; revision: number; epoch: number };
 	created_at: number;
 	updated_at: number;
+}
+
+export interface ScheduleConsentRequest {
+	value: 'on' | 'off';
+	expected_revision: number;
+	permission_epoch: number;
+}
+
+export interface ScheduleConsentReceipt {
+	schedule_id: string;
+	project_id: string;
+	my_future_permission: { value: 'on' | 'off' | 'unset'; revision: number; epoch: number };
+	readiness: 'saved' | 'paused' | 'archived';
+	message: string;
+}
+
+/** Allowlisted member projection; no owner library, runner or credential fields. */
+export interface SharedScheduleSummary {
+	id: string;
+	project: {
+		id: string;
+		name: string;
+		owner: { id: string; name: string };
+		archived_at: number | null;
+	};
+	name: string;
+	title_template: string;
+	description_template: string;
+	workflow: { id: string; name: string; start_state_id: string; start_state_name: string };
+	recurrence: {
+		cron: string;
+		preset: SchedulePreset | null;
+		timezone: string;
+		require_all_closed: boolean;
+		enabled: boolean;
+	};
+	permission_epoch: number;
+	my_future_permission: { value: 'on' | 'off' | 'unset'; revision: number; epoch: number };
+	roster: {
+		user: { id: string; name: string };
+		role: 'owner' | 'member';
+		value: 'on' | 'off' | 'unset';
+	}[];
 }
 
 /**
@@ -3200,6 +3266,7 @@ export const EVENT_TYPES = [
 	'api_key.created',
 	'api_key.revoked',
 	'scheduled_task.created',
+	'scheduled_task.personal_permission_changed',
 	'scheduled_task.updated',
 	'scheduled_task.deleted',
 	'scheduled_task.skipped',

@@ -149,6 +149,7 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 			.leftJoin('issue as eff_issue', 'eff_issue.id', 'effective.effective_issue_id')
 			.leftJoin('workflow_state as eff_state', 'eff_state.id', 'eff_issue.state_id')
 			.leftJoin('scheduled_task', 'scheduled_task.id', 'issue.scheduled_task_id')
+			.leftJoin('issue_schedule_origin as origin', 'origin.issue_id', 'issue.id')
 			.leftJoin(
 				'project as scheduled_task_project',
 				'scheduled_task_project.id',
@@ -164,6 +165,11 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				'state.position as state_position',
 				'state.inherits_from_state_id as state_inherits_from',
 				'scheduled_task.name as scheduled_task_name',
+				'origin.schedule_id as origin_schedule_id',
+				'origin.schedule_name as origin_schedule_name',
+				'origin.permission_epoch as origin_permission_epoch',
+				'origin.definition_revision as origin_definition_revision',
+				'origin.snapshot as origin_snapshot',
 				'scheduled_task_project.id as scheduled_task_project_id',
 				'scheduled_task_project.name as scheduled_task_project_name',
 				'pin_runner.name as pinned_runner_name'
@@ -298,6 +304,15 @@ export function serializeIssue(row: IssueRow): Issue {
 		scheduled_task_name: row.scheduled_task_name,
 		scheduled_task_project_id: row.scheduled_task_project_id,
 		scheduled_task_project_name: row.scheduled_task_project_name,
+		schedule_origin: row.origin_schedule_id
+			? {
+					schedule_id: row.origin_schedule_id,
+					schedule_name: row.origin_schedule_name!,
+					permission_epoch: row.origin_permission_epoch!,
+					definition_revision: row.origin_definition_revision!,
+					snapshot: JSON.parse(row.origin_snapshot!)
+				}
+			: null,
 		pinned_runner_id: row.pinned_runner_id,
 		pinned_runner_name: row.pinned_runner_name,
 		pinned_tier: row.pinned_tier as ModelTier | null,
@@ -1020,7 +1035,27 @@ export async function createIssue(
 	initialFiles: InitialIssueFile[] = [],
 	beforeCommit?: () => Promise<void>
 ): Promise<CreateIssueResponse> {
-	assertConsentFieldsSupported(actor, body, ['allow_my_agents', 'disclosure_version']);
+	assertConsentFieldsSupported(actor, body, [
+		'allow_my_agents',
+		'disclosure_version',
+		'allow_my_agents_on_future_instances'
+	]);
+	if ('allow_my_agents_on_future_instances' in body)
+		throw new ApiFail(422, 'invalid_field', 'Future permission belongs inside "schedule"', {
+			field: 'schedule.allow_my_agents_on_future_instances'
+		});
+	if (body.schedule && 'allow_my_agents' in body.schedule)
+		throw new ApiFail(422, 'invalid_field', 'Initial issue permission belongs at the top level', {
+			field: 'allow_my_agents'
+		});
+	const futureChoice = body.schedule?.allow_my_agents_on_future_instances;
+	if (futureChoice !== undefined && typeof futureChoice !== 'boolean')
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'"schedule.allow_my_agents_on_future_instances" must be a boolean',
+			{ field: 'schedule.allow_my_agents_on_future_instances' }
+		);
 	if (
 		body.disclosure_version !== undefined &&
 		(!Number.isInteger(body.disclosure_version) || body.disclosure_version < 1)
@@ -1046,6 +1081,12 @@ export async function createIssue(
 		.where('user_id', '=', actor.userId)
 		.executeTakeFirst();
 	if (!project) throw notFound();
+	if (futureChoice !== undefined && project.shared_at === null)
+		throw new ApiFail(
+			409,
+			'consent_mode_required',
+			'Future permission is available after project sharing begins'
+		);
 	// Creating issues (and the schedules that ride along) is a project-level
 	// write: no draining run is exempt from it.
 	await assertWritable(db, actor, project);
@@ -1192,6 +1233,39 @@ export async function createIssue(
 		})
 	);
 	if (scheduleQueries) queries.push(scheduleQueries[1]);
+	if (schedule) {
+		const snapshot = JSON.stringify({
+			title_template: title,
+			description_template: description,
+			workflow_id: workflow.id,
+			state_id: scheduleStateId,
+			resolved_start_state_id: initialState.id,
+			resolved_start_state_name: initialState.name,
+			resolved_start_category: initialState.category,
+			cron: schedule.recurrence.cron,
+			preset: schedule.recurrence.preset,
+			timezone: schedule.timezone,
+			require_all_closed: schedule.requireAllClosed
+		});
+		queries.push(
+			sql`INSERT INTO issue_schedule_origin
+			(issue_id, schedule_id, schedule_name, permission_epoch, definition_revision, snapshot, created_at)
+			SELECT ${id}, ${schedule.id}, ${schedule.name}, 0, 1, ${snapshot}, ${now}
+			WHERE EXISTS (SELECT 1 FROM issue WHERE id = ${id})
+				AND EXISTS (SELECT 1 FROM scheduled_task WHERE id = ${schedule.id})`.compile(db)
+		);
+		if (futureChoice !== undefined) {
+			queries.push(
+				sql`INSERT INTO schedule_personal_choice
+				(schedule_id, user_id, value, revision, permission_epoch, membership_revision, updated_at)
+				SELECT ${schedule.id}, ${actor.userId}, ${futureChoice ? 'on' : 'off'}, 1,
+					s.permission_epoch, 0, ${now}
+				FROM scheduled_task s JOIN project p ON p.id = s.project_id
+				WHERE s.id = ${schedule.id} AND p.user_id = ${actor.userId}
+					AND p.shared_at IS NOT NULL AND ${freshIssueGuard.predicate}`.compile(db)
+			);
+		}
+	}
 	if (resolvedLabels) {
 		queries.push(
 			...labelInserts(db, actor, resolvedLabels.toCreate, freshIssueGuard),

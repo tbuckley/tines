@@ -104,7 +104,18 @@ export async function readIssueCreateMultipart(
 		invalid('Invalid metadata');
 	const candidate = metadata as Partial<CreateIssueMultipartMetadata>;
 	if (actor)
-		assertConsentFieldsSupported(actor, candidate, ['allow_my_agents', 'disclosure_version']);
+		assertConsentFieldsSupported(actor, candidate, [
+			'allow_my_agents',
+			'disclosure_version',
+			'allow_my_agents_on_future_instances'
+		]);
+	for (const field of [
+		'allow_my_agents',
+		'disclosure_version',
+		'allow_my_agents_on_future_instances'
+	])
+		if (field in candidate)
+			invalid('Personal permission belongs inside "metadata.issue"', { field });
 	if (!candidate.issue || typeof candidate.issue !== 'object' || Array.isArray(candidate.issue)) {
 		invalid('"metadata.issue" must be an object', { field: 'metadata.issue' });
 	}

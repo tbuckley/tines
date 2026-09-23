@@ -166,6 +166,10 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'api_key.created': (_ev, p) => [text('created API key'), name(p.name)],
 	'api_key.revoked': (_ev, p) => [text('revoked API key'), name(p.name)],
 	'scheduled_task.created': (ev, p) => [text(`${action(ev.type)} schedule`), name(p.name)],
+	'scheduled_task.personal_permission_changed': (_ev, p) => [
+		text('changed future permission for schedule'),
+		name(p.schedule_id)
+	],
 	'scheduled_task.updated': (ev, p) => [text(`${action(ev.type)} schedule`), name(p.name)],
 	'scheduled_task.deleted': (ev, p) => [text(`${action(ev.type)} schedule`), name(p.name)],
 	'scheduled_task.skipped': (_ev, p) => {

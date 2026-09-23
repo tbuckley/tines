@@ -1,4 +1,4 @@
-# Shared project owner permission and admission
+# Shared project personal permission and admission
 
 This page records the owner execution boundary being added for Tines/669. The
 membership and invitation flows are delivered by later slices. Existing
@@ -67,10 +67,10 @@ settles unless permission is off or the issue is held.
 
 ## Availability
 
-This is an implementation contract, not a user launch point. This slice adds
-the owner execution boundary and its browser and CLI controls. No production
-sharing entry point exists in this branch. Invitations, member reads and
-decisions, schedule inheritance, and key consent belong to later work.
+This is an implementation contract, not a user launch point. The branch has
+the owner execution boundary and future schedule permission. No production
+sharing entry point exists yet. Invitations, member reads and decisions are
+later slices; key consent is a separate downstream issue.
 
 ## Isolated verification (2026-09-23)
 
@@ -98,5 +98,68 @@ The verification commands were `pnpm check`, `pnpm format:check`,
 `CI=1 E2E_PORT=8897 pnpm test:e2e native-collaboration.spec.ts native-schedules.spec.ts`.
 The combined native run passed 10 tests; the added claim/delivery case passed
 in a separate focused run. The web and CLI suites passed 2,251 and 719 tests
-respectively. These results verify the owner slice; member and
-schedule consent paths are delivered by later slices.
+respectively. These results verify the earlier owner slice; the schedule
+verification has its own receipt below.
+
+## Future schedule instances
+
+In consent-mode projects, the browser's New issue form offers two separate
+choices when Repeat is selected. The initial issue follows ordinary creator
+permission; future issues are **off by default**. The schedule's own browser
+control saves an on/off choice with an expected revision and semantic
+permission epoch. A key may read the safe schedule summary, but explicit
+permission input from an API key or run key is refused before creating or
+editing any issue or schedule. The CLI has no schedule consent command or
+flag. Imported schedules do not infer permission from their creator.
+
+Cron and Run now read the currently saved schedule choice inside the guarded
+creation batch. Their event actor never becomes the consenting person. The
+new issue records the schedule, grant revision, and permission epoch on its
+inherited choice. It also keeps a separate origin snapshot of the schedule's
+template, workflow, resolved start, recurrence, timezone, gate, and execution
+revision. That snapshot survives a later edit or deletion and does not grant
+permission by itself. Personal runner routing, pins, environment and
+credentials are never copied from the schedule.
+
+Turning future permission off revokes unlaunched, still-inherited instance
+choices. A person's explicit choice on an individual issue remains
+independent. Turning the future choice on again affects only issues created
+afterward. Deleting a schedule or changing its templates, workflow, effective
+start, recurrence, timezone, or gate clears future permission and inherited
+unlaunched permission. Renaming and pause/resume preserve it. A workflow
+initial-state change resets schedules that follow that initial state; a
+starting state's category change also resets affected schedules. Issue
+completion, transfer, and workflow replacement still clear that issue's
+permission without changing the schedule's future choice. The current owner
+is the only person with an active schedule choice until membership activation
+in a later slice; member execution remains unavailable in this release.
+
+## Isolated schedule verification (2026-09-23)
+
+All fixtures used the seeded Alice account, browser session and API key on a
+fresh disposable Worker/D1 stack. Shared mode was set only on test projects
+inside that stack. `native-collaboration.spec.ts` passed 11 tests, including
+phone controls, cron and Run now inheritance, a real browser off request
+committed after Run now prepared but before its batch, the reverse order,
+and deletion/meaningful-change winning before creation. In each losing
+creation case, the issue/event/cursor receipt had no partial new issue.
+An additional focused native case verifies that off cancels only an assigned
+inherited run without a strike, while an admitted run keeps its slot.
+`native-schedules.spec.ts` passed its six existing native gate, cursor,
+skip and rollback cases against the new creation batch. The source tests
+also cover explicit instance override, re-enable without retroactive grants,
+rename/pause/resume, semantic edits, workflow-follow initial state,
+completion/reopen, source deletion, current membership and key-read
+intersection. The full web and CLI unit suites and repository checks were
+run after the changes; their exact passing totals are recorded in the slice
+comment on Tines/714.
+
+Commands: `CI=1 E2E_PORT=18715 pnpm test:e2e native-collaboration.spec.ts
+native-schedules.spec.ts` (16 passed), then `CI=1 E2E_PORT=18716 pnpm test:e2e
+native-collaboration.spec.ts -g 'off committed after preparation'` (1 passed),
+then `CI=1 E2E_PORT=18717 pnpm test:e2e native-collaboration.spec.ts` (11
+passed), `CI=1 E2E_PORT=18718 pnpm test:e2e native-collaboration.spec.ts -g
+'phone browser keeps'` (1 passed) and `CI=1 E2E_PORT=18719 pnpm test:e2e
+native-collaboration.spec.ts -g 'source off releases'` (1 passed). The first
+native run preceded the real-session race refinement; the later runs prove
+the final ordering and assigned release. No production fixtures were created.

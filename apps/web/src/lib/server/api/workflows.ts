@@ -31,6 +31,7 @@ import { insertValues, type QueryGuard } from './query-guard';
 import { eventInsert } from './events';
 import { assertStatesNotScheduled, assertWorkflowNotScheduled } from './schedules';
 import { releaseAssignedIssueQueries } from '../supervisor/consent-admission';
+import { invalidateWorkflowSchedulePermissionQueries } from './schedule-consent';
 
 interface ResolvedState {
 	id: string;
@@ -1327,6 +1328,27 @@ export async function updateWorkflow(
 			.compile(),
 		eventInsert(db, actor, { type: 'workflow.updated', payload })
 	);
+	const initialChanged = def.initialStateId !== current.initial_state_id;
+	const changedCategoryIds = def.states
+		.filter(
+			(state) => currentById.get(state.id)?.category !== state.category && currentById.has(state.id)
+		)
+		.map((state) => state.id);
+	if (initialChanged || changedCategoryIds.length > 0) {
+		const token = newId('dcn');
+		queries.push(
+			sql`UPDATE scheduled_task SET permission_epoch = permission_epoch + 1,
+			last_update_token = ${token}
+		WHERE workflow_id = ${id}
+			AND EXISTS (SELECT 1 FROM project p WHERE p.id = scheduled_task.project_id
+				AND p.shared_at IS NOT NULL)
+			AND (${initialChanged ? sql`state_id IS NULL` : sql`0`}
+				${changedCategoryIds.length ? sql`OR state_id IN (${sql.join(changedCategoryIds)})` : sql``})`.compile(
+				db
+			)
+		);
+		queries.push(...invalidateWorkflowSchedulePermissionQueries(db, token, now));
+	}
 	if (doneStateIds.length) {
 		queries.push(
 			sql`UPDATE issue SET decision_revision = decision_revision + 1,

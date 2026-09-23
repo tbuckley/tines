@@ -19,7 +19,20 @@ export function ownerIssueConsentPredicate(
 				SELECT 1 FROM issue_personal_choice AS ipc
 				WHERE ipc.issue_id = ${issueId} AND ipc.user_id = ${projectOwner}
 					AND ipc.value = 'on' AND ipc.issue_epoch = ${issueEpoch}
-					AND ipc.source_kind = 'explicit_issue'
+					AND (ipc.source_kind = 'explicit_issue' OR (
+						ipc.source_kind = 'schedule'
+						AND EXISTS (
+							SELECT 1 FROM scheduled_task s
+							JOIN schedule_personal_choice sc ON sc.schedule_id = s.id
+							WHERE s.id = ipc.source_schedule_id
+								AND s.project_id = ${sql.ref(`${projectAlias}.id`)}
+								AND s.permission_epoch = ipc.source_permission_epoch
+								AND sc.user_id = ipc.user_id AND sc.value = 'on'
+								AND sc.revision = ipc.source_grant_revision
+								AND sc.permission_epoch = s.permission_epoch
+								AND sc.membership_revision = ipc.membership_revision
+						)
+					))
 			)
 		))
 	)`;

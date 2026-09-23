@@ -11,6 +11,7 @@ const CONSENT_FIELDS = [
 	'allow_my_agents_future',
 	'initial_allow_my_agents',
 	'future_allow_my_agents',
+	'allow_my_agents_on_future_instances',
 	'my_agents',
 	'personal_consent',
 	'disclosure_version',
@@ -24,6 +25,7 @@ const CONSENT_MUTATIONS = [
 	'allow_my_agents_future',
 	'initial_allow_my_agents',
 	'future_allow_my_agents',
+	'allow_my_agents_on_future_instances',
 	'my_agents',
 	'personal_consent',
 	'disclosure_version'

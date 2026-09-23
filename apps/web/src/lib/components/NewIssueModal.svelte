@@ -66,6 +66,7 @@
 	} | null>(null);
 	let attachmentValid = $state(true);
 	let allowMyAgents = $state(true);
+	let allowFutureAgents = $state(false);
 	let attachments = $state<{ id: string; file: File; name: string; editing: boolean }[]>([]);
 	let form = $state<HTMLFormElement | null>(null);
 
@@ -98,6 +99,7 @@
 			attachmentServerError = null;
 			attachments = [];
 			allowMyAgents = true;
+			allowFutureAgents = false;
 			// No `projects[0]` fallback: under "All projects" with no last project
 			// the select starts empty and required, so nothing is filed by accident.
 			projectId = project?.id ?? defaultProjectId ?? '';
@@ -137,7 +139,12 @@
 				description: description || undefined,
 				workflow_id: workflowId || undefined,
 				state: stateId || undefined,
-				schedule: repeatToScheduleInput(repeat) ?? undefined,
+				schedule: hasRepeat
+					? {
+							...repeatToScheduleInput(repeat),
+							...(consentMode ? { allow_my_agents_on_future_instances: allowFutureAgents } : {})
+						}
+					: undefined,
 				labels: labelIds.length > 0 ? labelIds : undefined,
 				...(consentMode
 					? {
@@ -330,6 +337,19 @@
 				{#if repeatOpen}
 					<div class="border-t px-3 py-3" transition:slide={{ duration: dur() }}>
 						<RepeatFields state={repeat} idPrefix="issue-repeat" />
+						{#if consentMode && hasRepeat}
+							<div class="mt-3 rounded-md border p-3 text-sm">
+								<label class="flex min-h-11 items-center gap-2 font-medium">
+									<input type="checkbox" bind:checked={allowFutureAgents} />
+									Allow my agents on future issues from this schedule
+								</label>
+								<p class="text-muted-foreground mt-1 text-xs">
+									Off by default. This is separate from permission on the first issue. If on, future
+									issues inherit your permission until you turn it off or meaningfully change the
+									schedule. Your agents may use your resources as work evolves.
+								</p>
+							</div>
+						{/if}
 					</div>
 				{/if}
 			</div>

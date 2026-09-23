@@ -17,6 +17,15 @@ export interface ProjectTable {
 	sharing_revision: Generated<number>;
 }
 
+export interface ProjectMemberTable {
+	project_id: string;
+	user_id: string;
+	revision: number;
+	joined_at: number;
+	revoked_at: number | null;
+	updated_at: number;
+}
+
 export interface WorkflowTable {
 	id: string;
 	/** NULL = system workflow (the built-in standard workflow). */
@@ -135,8 +144,32 @@ export interface ScheduledTaskTable {
 	run_count: number;
 	/** Monotonic fence for persisted schedule-definition changes. */
 	definition_revision: Generated<number>;
+	/** Monotonic lifetime of future-instance permission; cosmetic edits do not change it. */
+	permission_epoch: Generated<number>;
+	last_update_token: Generated<string | null>;
 	created_at: number;
 	updated_at: number;
+}
+
+export interface SchedulePersonalChoiceTable {
+	schedule_id: string;
+	user_id: string;
+	value: 'on' | 'off';
+	revision: number;
+	permission_epoch: number;
+	membership_revision: number;
+	last_request_token: string | null;
+	updated_at: number;
+}
+
+export interface IssueScheduleOriginTable {
+	issue_id: string;
+	schedule_id: string;
+	schedule_name: string;
+	permission_epoch: number;
+	definition_revision: number;
+	snapshot: string;
+	created_at: number;
 }
 
 export interface IssueLinkTable {
@@ -677,6 +710,7 @@ export interface WorkflowModerationAuditTable {
 
 export interface Database {
 	project: ProjectTable;
+	project_member: ProjectMemberTable;
 	workflow: WorkflowTable;
 	workflow_state: WorkflowStateTable;
 	workflow_transition: WorkflowTransitionTable;
@@ -688,6 +722,8 @@ export interface Database {
 	label: LabelTable;
 	issue_label: IssueLabelTable;
 	scheduled_task: ScheduledTaskTable;
+	schedule_personal_choice: SchedulePersonalChoiceTable;
+	issue_schedule_origin: IssueScheduleOriginTable;
 	context_item: ContextItemTable;
 	context_item_file: ContextItemFileTable;
 	artifact_version: ArtifactVersionTable;

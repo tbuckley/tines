@@ -80,6 +80,12 @@ or narrow the list's filters.
 When a recurrence is also supplied, the relationships apply only to the first issue; later
 scheduled instances start without copied relationships.
 
+For a shared project's recurring schedule, `schedules list` and `schedules show` report
+your saved future-instance permission and its epoch. They are read receipts: the CLI and
+API keys cannot turn personal permission on or off. Open the schedule in the browser to
+choose. The first issue's permission is independent of the future schedule choice; future
+permission starts off.
+
 ## Workflow package files
 
 Export a workflow and its inheritance/context closure as canonical JSON, validate an edited

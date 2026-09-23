@@ -65,6 +65,8 @@
 		| { kind: 'success'; projectName: string; number: number; refreshError?: string }
 		| { kind: 'error'; message: string };
 	let runResults = $state<Record<string, RunResult | undefined>>({});
+	let futureSaved = $state<string | null>(null);
+	let futureError = $state<Record<string, string | undefined>>({});
 	const refreshError =
 		'Issue created, but the list could not refresh. Reload the page to update it.';
 	const runRecoveryKey = 'tines:schedule-run-recovery';
@@ -131,6 +133,28 @@
 
 	const toggleEnabled = (s: Schedule) =>
 		mutate(s.id, () => api.updateSchedule(s.id, { enabled: !s.enabled }));
+
+	async function setFuturePermission(s: Schedule) {
+		const choice = s.my_future_permission;
+		if (!choice || busyId) return;
+		busyId = s.id;
+		futureSaved = null;
+		futureError[s.id] = undefined;
+		try {
+			await api.setScheduleConsent(s.id, {
+				value: choice.value === 'on' ? 'off' : 'on',
+				expected_revision: choice.revision,
+				permission_epoch: choice.epoch
+			});
+			futureSaved = s.id;
+			await invalidateAll();
+		} catch (error) {
+			futureError[s.id] = error instanceof ApiError ? error.message : 'Could not save permission.';
+			if (error instanceof ApiError && error.status === 409) await invalidateAll();
+		} finally {
+			busyId = null;
+		}
+	}
 
 	async function runNow(s: Schedule) {
 		if (busyId || readOnly) return;
@@ -251,6 +275,26 @@
 				require_all_closed: recurrence.require_all_closed,
 				...(recurrence.preset ? { preset: recurrence.preset } : { cron: recurrence.cron })
 			};
+			const meaningChanged =
+				editTitle !== editing.title_template ||
+				editDescription !== editing.description_template ||
+				editWorkflowId !== editing.workflow_id ||
+				(editStateId || null) !==
+					(editing.state_id ??
+						workflows.find((w) => w.id === editWorkflowId)?.initial_state_id ??
+						null) ||
+				recurrence.timezone !== editing.timezone ||
+				recurrence.require_all_closed !== editing.require_all_closed ||
+				JSON.stringify(recurrence.preset ?? null) !== JSON.stringify(editing.preset) ||
+				(recurrence.cron ?? null) !== (editing.preset ? null : editing.cron);
+			if (meaningChanged && editing.my_future_permission?.value === 'on') {
+				const ok = await confirmDialog({
+					title: 'Reset future permission?',
+					body: 'Changing the schedule’s work or starting state turns off future permission and revokes inherited permission on unlaunched issues. You can choose again afterward.',
+					confirmLabel: 'Save and reset permission'
+				});
+				if (!ok) return;
+			}
 			await api.updateSchedule(editing.id, body);
 			editOpen = false;
 			await invalidateAll();
@@ -287,6 +331,30 @@
 					· {s.workflow_name}{s.state_name ? ` / ${s.state_name}` : ''}
 				</p>
 			</div>
+			{#if s.my_future_permission}
+				<div class="basis-full rounded-md border px-3 py-2 text-sm">
+					<label class="flex min-h-11 items-center gap-2 font-medium">
+						<input
+							type="checkbox"
+							role="switch"
+							aria-label="Allow my agents on future issues from {s.name}"
+							checked={s.my_future_permission.value === 'on'}
+							disabled={busyId !== null}
+							onchange={() => setFuturePermission(s)}
+						/>
+						My agents on future issues
+					</label>
+					<p class="text-muted-foreground text-xs">
+						Off by default. New issues inherit only your current explicit permission; existing
+						issues keep independent choices. Changing the schedule's work or start state clears this
+						permission. Pause and rename preserve it.
+					</p>
+					{#if futureSaved === s.id}<p role="status">Future permission saved.</p>{/if}
+					{#if futureError[s.id]}<p class="text-destructive" role="alert">
+							{futureError[s.id]}
+						</p>{/if}
+				</div>
+			{/if}
 			<div
 				class="text-muted-foreground flex min-w-0 basis-full flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:block sm:shrink-0 sm:basis-auto sm:text-right"
 			>
