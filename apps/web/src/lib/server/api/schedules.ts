@@ -11,12 +11,11 @@ import {
 	type SchedulePreset,
 	type UpdateScheduleRequest
 } from '@tines/shared';
-import type { CompiledQuery, Kysely } from 'kysely';
+import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import {
-	instanceInserts,
-	openInstancesQuery,
-	scheduleEventInsert,
+	buildScheduleExecution,
+	parseExecutionReceipt,
 	scheduleExecQuery,
 	type ScheduleExecRow
 } from '$lib/server/schedule-sweep';
@@ -29,7 +28,7 @@ import {
 	type ActorContext,
 	type Page
 } from './core';
-import { assertWritable } from './archive';
+import { assertWritable, projectArchivedError } from './archive';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
@@ -376,20 +375,6 @@ export async function getScheduleForActor(
 	return schedule;
 }
 
-/** The exec-shaped row (owner, initial state) for run-now, user-scoped. */
-async function getScheduleExecRow(
-	db: Kysely<Database>,
-	userId: string,
-	id: string
-): Promise<ScheduleExecRow> {
-	const row = await scheduleExecQuery(db)
-		.where('scheduled_task.id', '=', id)
-		.where('project.user_id', '=', userId)
-		.executeTakeFirst();
-	if (!row) throw notFound();
-	return row;
-}
-
 async function getScheduleExecRowForActor(
 	db: Kysely<Database>,
 	actor: ActorContext,
@@ -506,6 +491,7 @@ export function scheduleInsertQueries(
 				next_run_at: schedule.nextRunAt,
 				last_run_at: initial ? now : null,
 				run_count: initial ? 1 : 0,
+				definition_revision: 1,
 				created_at: now,
 				updated_at: now
 			},
@@ -546,7 +532,12 @@ export async function updateSchedule(
 	id: string,
 	body: UpdateScheduleRequest
 ): Promise<Schedule> {
-	const current = await getScheduleForActor(db, actor, id);
+	const currentRow = await scheduleQuery(db, actor.userId)
+		.where(projectReadPredicate(actor, 'scheduled_task.project_id'))
+		.where('scheduled_task.id', '=', id)
+		.executeTakeFirst();
+	if (!currentRow) throw notFound();
+	const current = serializeSchedule(currentRow);
 	requireAccess(
 		actor,
 		[{ domain: 'project', access: 'write', projectId: current.project_id }],
@@ -558,6 +549,7 @@ export async function updateSchedule(
 			projectId: current.project_id
 		});
 	}
+	const revision = currentRow.definition_revision;
 	await assertWritable(db, actor, scheduleProject(current));
 
 	const name =
@@ -657,37 +649,72 @@ export async function updateSchedule(
 
 	const changed = Object.keys(payload).length > 2;
 	if (!changed && nextRunAt === current.next_run_at) return current;
-
-	await runAtomic(env, [
-		db
-			.updateTable('scheduled_task')
-			.set({
-				name,
-				title_template: titleTemplate,
-				description_template: descriptionTemplate,
-				workflow_id: workflowId,
-				state_id: stateId,
-				cron: recurrence.cron,
-				preset: recurrence.presetJson,
-				timezone,
-				require_all_closed: requireAllClosed ? 1 : 0,
-				enabled: enabled ? 1 : 0,
-				next_run_at: nextRunAt,
-				updated_at: now
-			})
-			.where('id', '=', id)
-			.compile(),
-		...(changed
-			? [
-					eventInsert(db, actor, {
-						type: 'scheduled_task.updated',
-						projectId: current.project_id,
-						payload
-					})
-				]
-			: [])
+	const eventId = newId('evt');
+	const updateQuery = db
+		.updateTable('scheduled_task')
+		.set({
+			name,
+			title_template: titleTemplate,
+			description_template: descriptionTemplate,
+			workflow_id: workflowId,
+			state_id: stateId,
+			cron: recurrence.cron,
+			preset: recurrence.presetJson,
+			timezone,
+			require_all_closed: requireAllClosed ? 1 : 0,
+			enabled: enabled ? 1 : 0,
+			...(recurrenceEdited || timezone !== current.timezone || resumed
+				? { next_run_at: nextRunAt }
+				: {}),
+			definition_revision: sql<number>`definition_revision + 1`,
+			updated_at: now
+		})
+		.where('id', '=', id)
+		.where('definition_revision', '=', revision)
+		.where(
+			sql<boolean>`EXISTS (
+				SELECT 1 FROM project
+				WHERE project.id = ${current.project_id}
+				  AND project.user_id = ${actor.userId}
+				  AND project.archived_at IS NULL
+			)`
+		)
+		.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`)
+		.compile();
+	const results = await runAtomic(env, [
+		eventInsert(
+			db,
+			actor,
+			{ id: eventId, type: 'scheduled_task.updated', projectId: current.project_id, payload },
+			{
+				predicate: sql<boolean>`EXISTS (
+						SELECT 1 FROM scheduled_task
+						JOIN project ON project.id = scheduled_task.project_id
+						WHERE scheduled_task.id = ${id}
+						  AND scheduled_task.definition_revision = ${revision}
+						  AND scheduled_task.project_id = ${current.project_id}
+						  AND project.user_id = ${actor.userId}
+						  AND project.archived_at IS NULL
+					)`
+			}
+		),
+		updateQuery
 	]);
-	return getSchedule(db, actor.userId, id);
+	if (results[1]?.meta.changes !== 1) {
+		const latestRow = await scheduleQuery(db, actor.userId)
+			.where(projectReadPredicate(actor, 'scheduled_task.project_id'))
+			.where('scheduled_task.id', '=', id)
+			.executeTakeFirst();
+		if (!latestRow) throw notFound();
+		const latest = serializeSchedule(latestRow);
+		await assertWritable(db, actor, scheduleProject(latest));
+		throw new ApiFail(
+			409,
+			'schedule_changed',
+			'Schedule changed while it was being edited. Reload the schedule and try again.'
+		);
+	}
+	return getScheduleForActor(db, actor, id);
 }
 
 export async function deleteSchedule(
@@ -735,49 +762,88 @@ export async function runScheduleNow(
 	effects: DispatchEffects,
 	id: string
 ): Promise<string> {
-	const schedule = await getScheduleExecRowForActor(db, actor, id);
+	const prepared = await getScheduleExecRowForActor(db, actor, id);
 	requireAccess(
 		actor,
-		[{ domain: 'project', access: 'write', projectId: schedule.project_id }],
+		[{ domain: 'project', access: 'write', projectId: prepared.project_id }],
 		'schedule.run',
-		{ projectId: schedule.project_id }
+		{ projectId: prepared.project_id }
 	);
-	await assertWritable(db, actor, {
-		id: schedule.project_id,
-		name: schedule.project_name,
-		archived_at: schedule.project_archived_at
-	});
-
-	if (schedule.require_all_closed) {
-		const blockers = await openInstancesQuery(db, schedule.id).execute();
-		if (blockers.length > 0) {
-			throw new ApiFail(
-				422,
-				'schedule_blocked',
-				`Schedule "${schedule.name}" requires all previous instances to be closed; ${blockers.length} still open: ${blockers
-					.map((b) => `${b.project_name}/${b.number} "${b.title}"`)
-					.join(', ')}`,
-				{
-					open_instances: blockers.map((b) => ({
-						issue_id: b.id,
-						project_id: b.project_id,
-						project_name: b.project_name,
-						number: b.number,
-						title: b.title
-					}))
+	let attemptSchedule = prepared;
+	const preparedStart = {
+		definition_revision: prepared.definition_revision,
+		workflow_id: prepared.workflow_id,
+		state_id: prepared.state_id,
+		start_state_id: prepared.start_state_id,
+		start_state_name: prepared.start_state_name,
+		start_state_category: prepared.start_state_category
+	};
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		await assertWritable(db, actor, {
+			id: attemptSchedule.project_id,
+			name: attemptSchedule.project_name,
+			archived_at: attemptSchedule.project_archived_at
+		});
+		const execution = buildScheduleExecution(db, attemptSchedule, {
+			now: Date.now(),
+			mode: { kind: 'manual', actor: { userId: actor.userId, apiKeyId: actor.apiKeyId } }
+		});
+		const results = await runAtomic(env, execution.queries);
+		const receipt = parseExecutionReceipt(results[execution.receiptIndex], execution);
+		switch (receipt.status) {
+			case 'created':
+				effects.signalDispatch();
+				return execution.issueId;
+			case 'blocked': {
+				const blockers = receipt.blocking;
+				throw new ApiFail(
+					422,
+					'schedule_blocked',
+					`Schedule "${attemptSchedule.name}" requires all previous instances to be closed; ${blockers.length} still open: ${blockers
+						.map((b) => `${b.project_name}/${b.number} "${b.title}"`)
+						.join(', ')}`,
+					{ open_instances: blockers }
+				);
+			}
+			case 'archived':
+				throw projectArchivedError({
+					id: attemptSchedule.project_id,
+					name: attemptSchedule.project_name,
+					archived_at: receipt.archived_at ?? Date.now()
+				});
+			case 'not_found':
+				throw notFound();
+			case 'count_changed': {
+				const refreshed = await getScheduleExecRowForActor(db, actor, id);
+				const startChanged =
+					refreshed.definition_revision !== preparedStart.definition_revision ||
+					refreshed.workflow_id !== preparedStart.workflow_id ||
+					refreshed.state_id !== preparedStart.state_id ||
+					refreshed.start_state_id !== preparedStart.start_state_id ||
+					refreshed.start_state_name !== preparedStart.start_state_name ||
+					refreshed.start_state_category !== preparedStart.start_state_category;
+				if (startChanged) {
+					throw new ApiFail(
+						409,
+						'schedule_changed',
+						'Schedule changed while Run now was being prepared. Reload the schedule and try again.'
+					);
 				}
-			);
+				attemptSchedule = refreshed;
+				continue;
+			}
+			case 'definition_changed':
+			case 'start_changed':
+				throw new ApiFail(
+					409,
+					'schedule_changed',
+					'Schedule changed while Run now was being prepared. Reload the schedule and try again.'
+				);
+			default:
+				throw new ApiFail(409, 'schedule_busy', 'Schedule is busy; try Run now again.');
 		}
 	}
-
-	const { issueId, queries } = instanceInserts(db, schedule, {
-		now: Date.now(),
-		manual: true,
-		actor: { userId: actor.userId, apiKeyId: actor.apiKeyId }
-	});
-	await runAtomic(env, queries);
-	effects.signalDispatch();
-	return issueId;
+	throw new ApiFail(409, 'schedule_busy', 'Schedule is busy; try Run now again.');
 }
 
 // ---------------------------------------------------------------------------
@@ -850,7 +916,13 @@ export async function assertStatesNotScheduled(
  */
 export function rearmScheduleQueries(
 	db: Kysely<Database>,
-	schedules: { id: string; cron: string; timezone: string }[],
+	schedules: {
+		id: string;
+		cron: string;
+		timezone: string;
+		next_run_at: number;
+		definition_revision: number;
+	}[],
 	now: number
 ): { queries: CompiledQuery[] } {
 	const queries: CompiledQuery[] = [];
@@ -868,6 +940,8 @@ export function rearmScheduleQueries(
 				.set({ next_run_at: nextRunAt, updated_at: now })
 				.where('id', '=', s.id)
 				.where('enabled', '=', 1)
+				.where('next_run_at', '=', s.next_run_at)
+				.where('definition_revision', '=', s.definition_revision)
 				.compile()
 		);
 	}

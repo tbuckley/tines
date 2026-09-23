@@ -471,7 +471,7 @@ export async function unarchiveProject(
 	// archived for a month must not fire a month of catch-up issues.
 	const schedules = await db
 		.selectFrom('scheduled_task')
-		.select(['id', 'cron', 'timezone'])
+		.select(['id', 'cron', 'timezone', 'next_run_at', 'definition_revision'])
 		.where('project_id', '=', id)
 		.where('enabled', '=', 1)
 		.execute();
