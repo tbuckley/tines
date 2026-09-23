@@ -217,6 +217,8 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	await page.getByRole('button', { name: 'Load more' }).click();
 	await expect(page.locator(`[data-event-id="evt_allowed_669_50_${project.id}"]`)).toBeVisible();
 	await page.getByLabel('Filter by event type').selectOption('issue.transitioned');
+	await expect(page).toHaveURL(/type=issue.transitioned/);
+	await page.waitForLoadState('networkidle');
 	await expect(page.locator(`[data-event-id="${decisionEvent}"]`)).toBeVisible();
 	await expect(page.locator(`[data-event-id="evt_allowed_669_0_${project.id}"]`)).toHaveCount(0);
 	await page.setViewportSize({ width: 1440, height: 900 });
@@ -403,7 +405,11 @@ test('owner create and transition show full first warning, then a shorter repeat
 		})
 	);
 	d1(`DELETE FROM personal_disclosure WHERE user_id=${sqlLiteral(ALICE.id)}`);
+	await page.setViewportSize({ width: 1440, height: 900 });
 	await gotoHydrated(page, `/issues/${project.id}/${reviewIssue.number}`);
+	await expect(page.getByRole('note', { name: 'First permission warning' })).toContainText(
+		'including after member execution is released'
+	);
 	await page.getByRole('button', { name: 'Start', exact: true }).click();
 	const transition = page.getByRole('dialog', { name: 'Start → Working' });
 	await expect(transition.getByRole('note', { name: 'First permission warning' })).toContainText(

@@ -307,7 +307,7 @@
 		{#if data.issue.history.length === 0}<p class="mt-3">No shared history yet.</p>{:else}<ul
 				class="mt-3 space-y-2"
 			>
-			{#each data.issue.history as event (event.id)}<li data-event-id={event.id}>
+				{#each data.issue.history as event (event.id)}<li data-event-id={event.id}>
 						{event.actor_name} · {event.type}
 						{event.type === 'issue.transitioned'
 							? ` · ${event.payload.from_state_name ?? ''} → ${event.payload.to_state_name ?? ''}`
