@@ -14,6 +14,7 @@ import {
 	DESKTOP,
 	gotoHydrated,
 	PHONE,
+	readSettled,
 	resetFocus,
 	runCleanupSteps,
 	signIn
@@ -1124,36 +1125,38 @@ test.describe.serial('project controls at every project count', () => {
 	}
 
 	async function projectMenuGeometry(page: Page) {
-		return page.getByRole('menu', { name: 'Project focus' }).evaluate((menu) => {
-			const choices = menu.querySelector<HTMLElement>('[data-testid="project-focus-choices"]');
-			const links = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
-			const content = menu.parentElement;
-			if (!choices || !content) throw new Error('Project focus layout is missing its regions');
-			const menuRect = menu.getBoundingClientRect();
-			const contentRect = content.getBoundingClientRect();
-			const linkRects = links.map((link) => {
-				const rect = link.getBoundingClientRect();
-				return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
-			});
-			return {
-				choicesClientHeight: choices.clientHeight,
-				choicesScrollHeight: choices.scrollHeight,
-				choicesScrollTop: choices.scrollTop,
-				menu: {
-					top: menuRect.top,
-					bottom: menuRect.bottom,
-					left: menuRect.left,
-					right: menuRect.right
-				},
-				content: {
-					top: contentRect.top,
-					bottom: contentRect.bottom,
-					left: contentRect.left,
-					right: contentRect.right
-				},
-				linkRects
-			};
-		});
+		return readSettled(() =>
+			page.getByRole('menu', { name: 'Project focus' }).evaluate((menu) => {
+				const choices = menu.querySelector<HTMLElement>('[data-testid="project-focus-choices"]');
+				const links = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+				const content = menu.parentElement;
+				if (!choices || !content) throw new Error('Project focus layout is missing its regions');
+				const menuRect = menu.getBoundingClientRect();
+				const contentRect = content.getBoundingClientRect();
+				const linkRects = links.map((link) => {
+					const rect = link.getBoundingClientRect();
+					return { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right };
+				});
+				return {
+					choicesClientHeight: choices.clientHeight,
+					choicesScrollHeight: choices.scrollHeight,
+					choicesScrollTop: choices.scrollTop,
+					menu: {
+						top: menuRect.top,
+						bottom: menuRect.bottom,
+						left: menuRect.left,
+						right: menuRect.right
+					},
+					content: {
+						top: contentRect.top,
+						bottom: contentRect.bottom,
+						left: contentRect.left,
+						right: contentRect.right
+					},
+					linkRects
+				};
+			})
+		);
 	}
 
 	test('keeps a long project menu footer visible while choices scroll', async ({
