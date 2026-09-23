@@ -26,6 +26,7 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
+	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
 	import FirstRunChecklist from '$lib/components/FirstRunChecklist.svelte';
 	import ArtifactsPanel from '$lib/components/ArtifactsPanel.svelte';
 	import Clamp from '$lib/components/Clamp.svelte';
@@ -1329,6 +1330,7 @@
 				<AgentActivityCard
 					issue={data.issue}
 					permission={data.permissionReceipt}
+					roster={data.permissionRoster}
 					{dispatch}
 					{runs}
 					{runners}
@@ -1491,6 +1493,7 @@
 					<p class="text-muted-foreground mt-1 text-xs">
 						Your agents may use your runner and account resources. This choice is yours alone.
 					</p>
+					{#if transitionAllowsAgents}<PersonalPermissionWarning />{/if}
 				</div>
 			{/if}
 			<div class="space-y-1.5">

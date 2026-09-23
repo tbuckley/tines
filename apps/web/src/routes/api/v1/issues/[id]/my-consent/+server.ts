@@ -1,12 +1,15 @@
 import { json } from '@sveltejs/kit';
 import type { IssueConsentRequest } from '@tines/shared';
-import { ApiFail, api, apiContext, readJson } from '$lib/server/api/core';
+import { ApiFail, api, apiContext, readJson, runKeyForbidden } from '$lib/server/api/core';
 import { readIssueConsent, writeIssueConsent } from '$lib/server/api/personal-consent';
 import type { RequestHandler } from './$types';
 import { sql } from 'kysely';
+import { resolveIssueAccess } from '$lib/server/api/project-access';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
+	if (actor.agentRunId) throw runKeyForbidden({ operation: 'issue.consent.read' });
+	await resolveIssueAccess(db, actor, event.params.id);
 	return json(await readIssueConsent(db, actor.userId, event.params.id));
 });
 

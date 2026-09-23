@@ -104,6 +104,7 @@ const SEEDED_PROJECT: Project = {
  */
 const layoutData: LayoutServerData = {
 	user,
+	disclosureAcknowledged: false,
 	sharedProjects: [],
 	archivedSharedProjects: [],
 	projects: [SEEDED_PROJECT],

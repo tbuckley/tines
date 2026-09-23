@@ -22,7 +22,7 @@ function event(
 		actor: ACTOR,
 		issue_id: 'iss_1',
 		project_id: 'prj_1',
-		issue_ref: { project_name: 'Tines', number: 49, title: 'A title' },
+		issue_ref: { project_id: 'prj_1', project_name: 'Tines', number: 49, title: 'A title' },
 		project_name: 'Tines',
 		payload,
 		created_at: 0,

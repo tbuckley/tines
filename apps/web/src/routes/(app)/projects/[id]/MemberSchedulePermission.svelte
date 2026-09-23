@@ -2,6 +2,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
 	import type { SharedScheduleSummary } from '@tines/shared';
+	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
 	let { schedule }: { schedule: SharedScheduleSummary } = $props();
 	let choice = $state<'on' | 'off'>('off');
 	let choiceDirty = $state(false);
@@ -20,7 +21,8 @@
 			await api.setScheduleConsent(schedule.id, {
 				value: choice,
 				expected_revision: schedule.my_future_permission.revision,
-				permission_epoch: schedule.my_future_permission.epoch
+				permission_epoch: schedule.my_future_permission.epoch,
+				...(choice === 'on' ? { disclosure_version: 1 } : {})
 			});
 			notice = 'Future permission saved. Member execution is not available in this release.';
 			choiceDirty = false;
@@ -54,6 +56,7 @@
 	>
 		<option value="off">Off</option><option value="on">On</option>
 	</select>
+	{#if choice === 'on'}<PersonalPermissionWarning future />{/if}
 	<button class="ml-2 min-h-11 rounded border px-4" onclick={save} disabled={saving}
 		>Save future permission</button
 	>

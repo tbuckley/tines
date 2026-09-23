@@ -28,10 +28,16 @@ export const load: LayoutServerLoad = async ({ locals, platform, depends, url })
 	depends('app:preferences');
 
 	const db = getDb(platform!.env);
-	const [all, shared, resolved] = await Promise.all([
+	const [all, shared, resolved, disclosure] = await Promise.all([
 		listProjects(db, sessionActor(locals.user), { archived: 'all' }),
 		listSharedProjects(db, sessionActor(locals.user), 'all'),
-		resolveFocus(db, locals.user.id)
+		resolveFocus(db, locals.user.id),
+		db
+			.selectFrom('personal_disclosure')
+			.select('version')
+			.where('user_id', '=', locals.user.id)
+			.orderBy('version desc')
+			.executeTakeFirst()
 	]);
 
 	if (resolved.staleFocusId) {
@@ -52,6 +58,7 @@ export const load: LayoutServerLoad = async ({ locals, platform, depends, url })
 	const { live: liveShared, archived: archivedShared } = partitionProjects(shared);
 	return {
 		user: locals.user,
+		disclosureAcknowledged: (disclosure?.version ?? 0) >= 1,
 		projects: live,
 		sharedProjects: liveShared,
 		archivedSharedProjects: archivedShared,

@@ -389,7 +389,7 @@ export async function apiContext(event: RequestEvent, { sessionOnly = false } = 
 					'Personal agent permission is managed in the browser. No issue or permission change was applied.'
 				);
 			if (
-				!/^\/api\/v1\/(?:projects\/[^/]+\/issues|issues\/[^/]+\/(?:transition|my-consent))$/.test(
+				!/^\/api\/v1\/(?:projects\/[^/]+\/issues|issues\/[^/]+\/(?:transition|my-consent)|schedules\/[^/]+\/my-consent)$/.test(
 					event.url.pathname
 				)
 			)

@@ -1239,7 +1239,11 @@ export async function createIssue(
 			field: 'disclosure_version'
 		});
 	}
-	if (body.disclosure_version !== undefined && body.allow_my_agents !== true) {
+	if (
+		body.disclosure_version !== undefined &&
+		body.allow_my_agents !== true &&
+		futureChoice !== true
+	) {
 		throw new ApiFail(
 			422,
 			'invalid_field',
@@ -1528,15 +1532,16 @@ export async function createIssue(
 				freshIssueGuard
 			)
 		);
-		if (body.disclosure_version !== undefined) {
-			queries.push(
-				db
-					.insertInto('personal_disclosure')
-					.values({ user_id: actor.userId, version: body.disclosure_version, acknowledged_at: now })
-					.onConflict((oc) => oc.columns(['user_id', 'version']).doNothing())
-					.compile()
-			);
-		}
+	}
+	if (body.disclosure_version !== undefined) {
+		queries.push(
+			sql`INSERT INTO personal_disclosure (user_id, version, acknowledged_at)
+			SELECT ${actor.userId}, ${body.disclosure_version}, ${now}
+			WHERE ${freshIssueGuard.predicate} AND (
+				EXISTS (SELECT 1 FROM issue_personal_choice WHERE issue_id = ${id} AND user_id = ${actor.userId} AND value = 'on')
+				OR EXISTS (SELECT 1 FROM schedule_personal_choice WHERE schedule_id = ${schedule?.id ?? ''} AND user_id = ${actor.userId} AND value = 'on')
+			) ON CONFLICT(user_id, version) DO NOTHING`.compile(db)
+		);
 	}
 	let linkBatch: ReturnType<typeof createIssueLinkQueries> | null = null;
 	let linkBatchOffset = 0;

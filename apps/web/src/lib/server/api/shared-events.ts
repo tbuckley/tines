@@ -160,6 +160,7 @@ export async function listSharedEvents(
 			issue_ref:
 				row.issue_id && row.issue_number != null
 					? {
+							project_id: row.current_project_id,
 							project_name: row.project_name,
 							number: row.issue_number,
 							title: row.issue_title ?? ''

@@ -13,6 +13,7 @@
 	import Modal from '$lib/components/Modal.svelte';
 	import IssueAttachmentPicker from '$lib/components/IssueAttachmentPicker.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
+	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
 	import RepeatFields from '$lib/components/RepeatFields.svelte';
 	import WorkflowGraph from '$lib/components/WorkflowGraph.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -150,7 +151,8 @@
 					? {
 							allow_my_agents: pickedState?.category !== 'done' ? allowMyAgents : false,
 							expected_sharing_revision: selectedProject.sharing_revision,
-							...(pickedState?.category !== 'done' && allowMyAgents
+							...((pickedState?.category !== 'done' && allowMyAgents) ||
+							(hasRepeat && allowFutureAgents)
 								? { disclosure_version: 1 }
 								: {})
 						}
@@ -313,6 +315,7 @@
 						If enabled, your agents may use your runner and account resources for this issue. You
 						can turn it off later. Other people's permission is separate.
 					</p>
+					{#if allowMyAgents}<PersonalPermissionWarning />{/if}
 				</div>
 			{/if}
 			<div class="rounded-md border">
@@ -348,6 +351,7 @@
 									issues inherit your permission until you turn it off or meaningfully change the
 									schedule. Your agents may use your resources as work evolves.
 								</p>
+								{#if allowFutureAgents}<PersonalPermissionWarning future />{/if}
 							</div>
 						{/if}
 					</div>

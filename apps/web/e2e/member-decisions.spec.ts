@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures';
 import type { APIRequestContext } from '@playwright/test';
-import { ALICE, BOB, BASE_URL } from './constants.mjs';
-import { apiClient, body, gotoHydrated, signIn, signedSessionCookie } from './helpers';
+import { ALICE, BOB, BASE_URL, DANA, RUNROW } from './constants.mjs';
+import { apiClient, body, clickToOpen, gotoHydrated, signIn, signedSessionCookie } from './helpers';
 import { d1, sqlLiteral } from './d1';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -22,10 +22,10 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	uniqueName
 }, testInfo) => {
 	const owner = apiClient(request, ALICE.apiKey);
-	const project = await body<{ id: string }>(
+	const project = await body<{ id: string; name: string }>(
 		await owner.post('/api/v1/projects', { name: uniqueName('member-decisions') })
 	);
-	const workflow = await body<{ id: string }>(
+	const workflow = await body<{ id: string; states: { id: string; name: string }[] }>(
 		await owner.post('/api/v1/workflows', {
 			name: uniqueName('member-workflow'),
 			initial_state: 'Working',
@@ -79,6 +79,75 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 			data: { token: sink.url.split('/').at(-1) }
 		})
 	);
+	const otherOwner = apiClient(request, DANA.apiKey);
+	const sameNameProject = await body<{ id: string }>(
+		await otherOwner.post('/api/v1/projects', { name: project.name })
+	);
+	const sameNameInvite = await body<{ id: string }>(
+		await otherOwner.post(`/api/v1/projects/${sameNameProject.id}/invitations`, {
+			email: BOB.email,
+			confirm_sharing: true,
+			expected_sharing_revision: 0
+		})
+	);
+	const sameNameSink = await body<{ url: string }>(
+		await request.get(`/api/v1/__e2e/invitation-email/${sameNameInvite.id}`)
+	);
+	await body(
+		await request.post('/api/v1/invitations/accept', {
+			headers: memberHeaders,
+			data: { token: sameNameSink.url.split('/').at(-1) }
+		})
+	);
+	const scoped = await body<{ key: string }>(
+		await request.post('/api/v1/api-keys', {
+			headers: { authorization: `Bearer ${BOB.apiKey}` },
+			data: {
+				name: uniqueName('zero-scope-consent'),
+				permissions: {
+					version: 1,
+					projects: { access: 'read', scope: [] },
+					workspace: 'none',
+					control_plane: 'none'
+				}
+			}
+		})
+	);
+	for (const path of [
+		`/api/v1/issues/${issue.id}/my-consent`,
+		`/api/v1/schedules/${scheduleIssue.schedule.id}/my-consent`
+	]) {
+		expect(
+			(await request.get(path, { headers: { authorization: `Bearer ${scoped.key}` } })).status()
+		).toBe(403);
+		expect(
+			(await request.get(path, { headers: { authorization: `Bearer ${RUNROW.runKey}` } })).status()
+		).toBe(403);
+		expect(
+			(await request.get(path, { headers: { authorization: `Bearer ${BOB.apiKey}` } })).status()
+		).toBe(200);
+	}
+	const hiddenTime = Date.now() + 10_000;
+	const hiddenEvents = Array.from(
+		{ length: 101 },
+		(_, index) =>
+			`('evt_hidden_669_${index}_${project.id}', ${sqlLiteral(ALICE.id)}, 'runner.updated', ${sqlLiteral(ALICE.id)}, ${sqlLiteral(issue.id)}, ${sqlLiteral(project.id)}, '{"private":"SECRET_HISTORY_CANARY"}', ${hiddenTime + index})`
+	);
+	d1(
+		`INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at) VALUES ${hiddenEvents.join(',')}`
+	);
+	const sharedHistory = await body<{
+		history: { id: string; type: string; actor_name: string; payload: unknown }[];
+	}>(await request.get(`/api/v1/issues/${issue.id}`, { headers: memberHeaders }));
+	expect(
+		sharedHistory.history.some(
+			(event) => event.type === 'issue.created' && event.actor_name === ALICE.name
+		)
+	).toBe(true);
+	expect(JSON.stringify(sharedHistory.history)).not.toContain('SECRET_HISTORY_CANARY');
+	d1(
+		`UPDATE event SET created_at=${Date.now() - 100_000} WHERE issue_id=${sqlLiteral(issue.id)} AND type='runner.updated' AND id LIKE 'evt_hidden_669_%'`
+	);
 	for (const value of ['on', 'off']) {
 		const refused = await request.put(`/api/v1/issues/${issue.id}/my-consent`, {
 			headers: { authorization: `Bearer ${BOB.apiKey}`, origin: BASE_URL },
@@ -108,10 +177,15 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	await page.getByRole('button', { name: 'Post comment' }).click();
 	await expect(page.getByText('Member note')).toBeVisible();
 	await page.getByLabel('My agents on this issue').selectOption('on');
+	await expect(page.getByRole('note', { name: 'First permission warning' })).toContainText(
+		'including after member execution is released'
+	);
 	await page.getByRole('button', { name: 'Save permission' }).click();
 	await expect(
 		page.getByText('Permission saved. Member execution is not available in this release.')
 	).toBeVisible();
+	await expect(page.getByRole('note', { name: 'First permission warning' })).toHaveCount(0);
+	await expect(page.getByText(/This evolving issue may use your agents/)).toBeVisible();
 	await page.screenshot({ path: testInfo.outputPath('member-phone.png'), fullPage: true });
 	await page.setViewportSize({ width: 390, height: 560 });
 	await expect(page.getByRole('button', { name: 'Save permission' })).toBeVisible();
@@ -119,17 +193,74 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	await page.getByLabel('Transition').selectOption({ label: 'Start' });
 	await page.getByRole('button', { name: 'Apply decision' }).click();
 	await expect(page.getByText(/#\d+ · Working/)).toBeVisible();
+	const decision = d1<{ id: string; created_at: number }>(
+		`SELECT id,created_at FROM event WHERE issue_id=${sqlLiteral(issue.id)} AND type='issue.transitioned' AND actor_user_id=${sqlLiteral(BOB.id)} ORDER BY created_at DESC LIMIT 1`
+	)[0];
+	const decisionEvent = decision.id;
+	await expect(page.locator(`[data-event-id="${decisionEvent}"]`)).toContainText(BOB.name);
+	const allowedEvents = Array.from(
+		{ length: 51 },
+		(_, index) =>
+			`('evt_allowed_669_${index}_${project.id}', ${sqlLiteral(ALICE.id)}, 'issue.updated', ${sqlLiteral(ALICE.id)}, ${sqlLiteral(issue.id)}, ${sqlLiteral(project.id)}, '{}', ${decision.created_at - 1_000 - index})`
+	);
+	d1(
+		`INSERT INTO event (id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at) VALUES ${allowedEvents.join(',')}`
+	);
+	await gotoHydrated(page, `/activity?project=${project.id}`);
+	await expect(page.locator(`[data-event-id="${decisionEvent}"]`)).toContainText(BOB.name);
+	await expect(
+		page.locator(
+			`[data-event-id="${decisionEvent}"] a[href="/issues/${project.id}/${issue.number}"]`
+		)
+	).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Load more' })).toBeVisible();
+	await page.getByRole('button', { name: 'Load more' }).click();
+	await expect(page.locator(`[data-event-id="evt_allowed_669_50_${project.id}"]`)).toBeVisible();
+	await page.getByLabel('Filter by event type').selectOption('issue.transitioned');
+	await expect(page.locator(`[data-event-id="${decisionEvent}"]`)).toBeVisible();
+	await expect(page.locator(`[data-event-id="evt_allowed_669_0_${project.id}"]`)).toHaveCount(0);
 	await page.setViewportSize({ width: 1440, height: 900 });
-	await page.reload();
+	await gotoHydrated(page, `/issues/${project.id}/${issue.number}`);
 	await expect(page.getByText('Latest run')).toBeVisible();
 	await expect(page.getByText('No run yet')).toBeVisible();
 	await page.screenshot({ path: testInfo.outputPath('member-desktop.png'), fullPage: true });
 	await gotoHydrated(page, `/projects/${project.id}`);
+	d1(`DELETE FROM personal_disclosure WHERE user_id=${sqlLiteral(BOB.id)}`);
+	await page.reload();
+	d1(`CREATE TRIGGER trg_669_ack_failure BEFORE INSERT ON personal_disclosure
+		WHEN NEW.user_id=${sqlLiteral(BOB.id)} BEGIN SELECT RAISE(ABORT, 'ack failure'); END`);
+	try {
+		const failed = await request.put(`/api/v1/schedules/${scheduleIssue.schedule.id}/my-consent`, {
+			headers: memberHeaders,
+			data: { value: 'on', expected_revision: 0, permission_epoch: 0, disclosure_version: 1 }
+		});
+		expect(failed.ok()).toBe(false);
+		expect(
+			d1<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM schedule_personal_choice WHERE schedule_id=${sqlLiteral(scheduleIssue.schedule.id)} AND user_id=${sqlLiteral(BOB.id)}`
+			)
+		).toEqual([{ n: 0 }]);
+		expect(
+			d1<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM personal_disclosure WHERE user_id=${sqlLiteral(BOB.id)}`
+			)
+		).toEqual([{ n: 0 }]);
+	} finally {
+		d1('DROP TRIGGER trg_669_ack_failure');
+	}
 	await page.getByLabel('My agents on future instances').selectOption('on');
+	await expect(page.getByRole('note', { name: 'First permission warning' })).toContainText(
+		'including after member execution is released'
+	);
 	await page.getByRole('button', { name: 'Save future permission' }).click();
 	await expect(
 		page.getByText('Future permission saved. Member execution is not available in this release.')
 	).toBeVisible();
+	expect(
+		d1<{ version: number }>(
+			`SELECT version FROM personal_disclosure WHERE user_id=${sqlLiteral(BOB.id)}`
+		)
+	).toEqual([{ version: 1 }]);
 	await page.screenshot({ path: testInfo.outputPath('member-schedule.png'), fullPage: true });
 	await gotoHydrated(page, '/agents');
 	await expect(page.getByRole('link', { name: /Member decision journey/ })).toHaveCount(0);
@@ -142,6 +273,11 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 		const ownerPage = await ownerContext.newPage();
 		await gotoHydrated(ownerPage, `/issues/${project.id}/${issue.number}`);
 		await expect(ownerPage.getByText('Member note')).toBeVisible();
+		await expect(ownerPage.getByLabel('Issue permission roster')).toContainText(ALICE.name);
+		await expect(ownerPage.getByLabel('Issue permission roster')).toContainText(
+			`${BOB.name} · member · on · member execution unavailable`
+		);
+		await expect(ownerPage.locator(`[data-event-id="${decisionEvent}"]`)).toContainText(BOB.name);
 		await ownerPage.screenshot({ path: testInfo.outputPath('owner-phone.png'), fullPage: true });
 		await ownerPage.setViewportSize({ width: 1440, height: 900 });
 		await ownerPage.reload();
@@ -173,6 +309,14 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 			expected_revision: roster.members.find((person) => person.id === BOB.id)!.revision
 		})
 	);
+	const otherRoster = await body<{ members: { id: string; revision: number }[] }>(
+		await otherOwner.get(`/api/v1/projects/${sameNameProject.id}/people`)
+	);
+	await body(
+		await otherOwner.delete(`/api/v1/projects/${sameNameProject.id}/members/${BOB.id}`, {
+			expected_revision: otherRoster.members.find((person) => person.id === BOB.id)!.revision
+		})
+	);
 	const eventCount = d1<{ n: number }>(
 		`SELECT COUNT(*) AS n FROM event WHERE issue_id=${sqlLiteral(issue.id)}`
 	)[0].n;
@@ -195,6 +339,76 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	expect(
 		d1<{ n: number }>(`SELECT COUNT(*) AS n FROM event WHERE issue_id=${sqlLiteral(issue.id)}`)
 	).toEqual([{ n: eventCount }]);
+});
+
+test('owner create and transition show full first warning, then a shorter repeat reminder', async ({
+	request,
+	page,
+	uniqueName
+}) => {
+	const owner = apiClient(request, ALICE.apiKey);
+	const project = await body<{ id: string; name: string }>(
+		await owner.post('/api/v1/projects', { name: uniqueName('disclosure-owner') })
+	);
+	const workflow = await body<{ id: string; states: { id: string; name: string }[] }>(
+		await owner.post('/api/v1/workflows', {
+			name: uniqueName('disclosure-flow'),
+			initial_state: 'Working',
+			states: [
+				{ name: 'Working', category: 'active' },
+				{ name: 'Review', category: 'awaiting_human' }
+			],
+			transitions: [
+				{ name: 'Review', from: 'Working', to: 'Review' },
+				{ name: 'Start', from: 'Review', to: 'Working' }
+			]
+		})
+	);
+	await body(
+		await owner.post(`/api/v1/projects/${project.id}/invitations`, {
+			email: BOB.email,
+			confirm_sharing: true,
+			expected_sharing_revision: 0
+		})
+	);
+	d1(`DELETE FROM personal_disclosure WHERE user_id=${sqlLiteral(ALICE.id)}`);
+	await signIn(page.context(), ALICE.sessionToken);
+	await page.setViewportSize({ width: 390, height: 844 });
+	await gotoHydrated(page, `/projects/${project.id}`);
+	const dialog = page.getByRole('dialog', { name: `New issue in ${project.name}` });
+	await clickToOpen(page.getByRole('button', { name: 'New issue' }), dialog);
+	await dialog.getByLabel('Workflow', { exact: true }).selectOption(workflow.id);
+	await dialog.getByLabel('Title', { exact: true }).fill('Owner disclosure');
+	await expect(dialog.getByRole('note', { name: 'First permission warning' })).toContainText(
+		'including after member execution is released'
+	);
+	await dialog.getByRole('button', { name: 'Create issue' }).click();
+	await expect(page).toHaveURL(/\/issues\/.*\/\d+$/);
+	expect(
+		d1<{ version: number }>(
+			`SELECT version FROM personal_disclosure WHERE user_id=${sqlLiteral(ALICE.id)}`
+		)
+	).toEqual([{ version: 1 }]);
+	await gotoHydrated(page, `/projects/${project.id}`);
+	await clickToOpen(page.getByRole('button', { name: 'New issue' }), dialog);
+	await expect(dialog.getByRole('note', { name: 'First permission warning' })).toHaveCount(0);
+	await expect(dialog.getByText(/This evolving issue may use your agents/)).toBeVisible();
+	await dialog.getByRole('button', { name: 'Close' }).click();
+	const reviewState = workflow.states.find((state) => state.name === 'Review')!;
+	const reviewIssue = await body<{ id: string; number: number }>(
+		await owner.post(`/api/v1/projects/${project.id}/issues`, {
+			title: 'Owner transition disclosure',
+			workflow_id: workflow.id,
+			state: reviewState.id
+		})
+	);
+	d1(`DELETE FROM personal_disclosure WHERE user_id=${sqlLiteral(ALICE.id)}`);
+	await gotoHydrated(page, `/issues/${project.id}/${reviewIssue.number}`);
+	await page.getByRole('button', { name: 'Start', exact: true }).click();
+	const transition = page.getByRole('dialog', { name: 'Start → Working' });
+	await expect(transition.getByRole('note', { name: 'First permission warning' })).toContainText(
+		'including after member execution is released'
+	);
 });
 
 test('native D1 removal wins after member choice preparation without a grant or event', async ({
@@ -231,9 +445,16 @@ test('native D1 removal wins after member choice preparation without a grant or 
 	const before = d1<{ n: number }>(
 		`SELECT COUNT(*) AS n FROM event WHERE issue_id=${sqlLiteral(issue.id)}`
 	)[0].n;
+	d1(`DELETE FROM personal_disclosure WHERE user_id=${sqlLiteral(BOB.id)}`);
 	const response = await request.put(`/api/v1/issues/${issue.id}/my-consent`, {
 		headers: { ...headers, 'x-tines-e2e-member-race': 'revoke-before-choice' },
-		data: { value: 'on', expected_revision: 0, issue_epoch: 0, decision_revision: 0 }
+		data: {
+			value: 'on',
+			expected_revision: 0,
+			issue_epoch: 0,
+			decision_revision: 0,
+			disclosure_version: 1
+		}
 	});
 	expect(response.status()).toBe(409);
 	expect(
@@ -245,6 +466,11 @@ test('native D1 removal wins after member choice preparation without a grant or 
 		d1<{ n: number }>(`SELECT COUNT(*) AS n FROM event WHERE issue_id=${sqlLiteral(issue.id)}`)
 	).toEqual([{ n: before }]);
 	expect((await request.get(`/api/v1/issues/${issue.id}`, { headers })).status()).toBe(404);
+	expect(
+		d1<{ n: number }>(
+			`SELECT COUNT(*) AS n FROM personal_disclosure WHERE user_id=${sqlLiteral(BOB.id)}`
+		)
+	).toEqual([{ n: 0 }]);
 });
 
 async function memberWriteFixture(request: APIRequestContext, name: string) {

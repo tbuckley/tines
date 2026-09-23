@@ -119,7 +119,7 @@
 {#snippet selfRef(ev: TinesEvent)}
 	{#if ev.issue_ref && showIssueLinks}
 		<a
-			href="/issues/{encodeURIComponent(ev.issue_ref.project_name)}/{ev.issue_ref.number}"
+			href="/issues/{encodeURIComponent(ev.issue_ref.project_id)}/{ev.issue_ref.number}"
 			class="font-medium hover:underline"
 		>
 			{showProject
@@ -140,6 +140,7 @@
 		{#each events as ev (ev.id)}
 			{@const { Icon, colorClass } = presentation(ev)}
 			<li
+				data-event-id={ev.id}
 				class="flex items-start gap-3 rounded-md px-2 py-2.5 text-sm"
 				in:slide={{ duration: dur() }}
 				out:fade={{ duration: dur() }}
@@ -164,7 +165,9 @@
 								{@render selfRef(ev)}
 							{:else if seg.kind === 'other-ref'}
 								<a
-									href="/issues/{encodeURIComponent(seg.project_name)}/{seg.number}"
+									href="/issues/{encodeURIComponent(
+										seg.project_id ?? seg.project_name
+									)}/{seg.number}"
 									class="font-medium hover:underline"
 								>
 									{seg.project_name}/#{seg.number}

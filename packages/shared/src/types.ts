@@ -875,6 +875,7 @@ export interface ScheduleConsentRequest {
 	value: 'on' | 'off';
 	expected_revision: number;
 	permission_epoch: number;
+	disclosure_version?: number;
 }
 
 export interface ScheduleConsentReceipt {
@@ -3314,7 +3315,7 @@ export interface TinesEvent {
 	issue_id: string | null;
 	project_id: string | null;
 	/** Denormalized for display; null when the referent is gone or absent. */
-	issue_ref: { project_name: string; number: number; title: string } | null;
+	issue_ref: { project_id: string; project_name: string; number: number; title: string } | null;
 	project_name: string | null;
 	payload: Record<string, unknown>;
 	created_at: number;

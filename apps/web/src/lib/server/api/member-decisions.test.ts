@@ -46,6 +46,46 @@ function setup() {
 }
 
 describe('attributed member decisions', () => {
+	it('bounds shared history after the SQL allowlist and retains the named decision actor', async () => {
+		const { t, issueId, member } = setup();
+		const insert = t.sqlite.prepare(`INSERT INTO event
+			(id,user_id,type,actor_user_id,issue_id,project_id,payload,created_at)
+			VALUES (?,?,?,?,?,?,?,?)`);
+		insert.run(
+			'evt_shared_old',
+			USER,
+			'issue.transitioned',
+			member.userId,
+			issueId,
+			PROJECT,
+			JSON.stringify({
+				action: 'Start',
+				from_state_name: 'Review',
+				to_state_name: 'Working',
+				private: 'secret'
+			}),
+			NOW
+		);
+		for (let index = 0; index < 101; index += 1)
+			insert.run(
+				`evt_private_${index}`,
+				USER,
+				'runner.updated',
+				USER,
+				issueId,
+				PROJECT,
+				JSON.stringify({ private: 'secret' }),
+				NOW + index + 1
+			);
+		const view = await readSharedIssue(t.db, member, { id: issueId });
+		expect(view.history).toEqual([
+			expect.objectContaining({
+				id: 'evt_shared_old',
+				actor_name: 'Bob',
+				payload: { action: 'Start', from_state_name: 'Review', to_state_name: 'Working' }
+			})
+		]);
+	});
 	it('keeps member issue reads and writes scoped to a current human or named key', async () => {
 		const { t, issueId, owner, member, outsider } = setup();
 		const namedKey = {

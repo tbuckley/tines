@@ -10,7 +10,7 @@ import {
 	resolveIssueAccess,
 	resolveProjectAccess
 } from '$lib/server/api/project-access';
-import { readIssueConsent } from '$lib/server/api/personal-consent';
+import { listIssuePermissionRoster, readIssueConsent } from '$lib/server/api/personal-consent';
 import { listLabelsInternal } from '$lib/server/api/labels';
 import { listRunners } from '$lib/server/api/runners';
 import { listRoutingRules } from '$lib/server/api/routing';
@@ -136,6 +136,8 @@ export const load: PageServerLoad = async ({
 		.executeTakeFirst();
 	const permissionReceipt =
 		sharing?.shared_at == null ? null : await readIssueConsent(db, userId, issue.id);
+	const permissionRoster =
+		sharing?.shared_at == null ? [] : await listIssuePermissionRoster(db, issue.id);
 	const canonicalPath = `/issues/${encodeURIComponent(issue.project_id)}/${issue.number}`;
 	if (!isDataRequest && url.pathname !== canonicalPath) {
 		// A native document redirect retains the browser fragment. Client data
@@ -196,6 +198,7 @@ export const load: PageServerLoad = async ({
 		mode: 'owner' as const,
 		issue: issueDetail,
 		permissionReceipt,
+		permissionRoster,
 		canonicalPath,
 		events,
 		workflows: await workflowsPromise,

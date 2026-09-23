@@ -30,7 +30,7 @@ export type EventSegment =
 	 */
 	| { kind: 'self-ref' }
 	/** The other end of an issue link; always a link on the web. */
-	| { kind: 'other-ref'; project_name: string; number: number }
+	| { kind: 'other-ref'; project_id?: string; project_name: string; number: number }
 	/**
 	 * An emphasised, quoted name — schedule/context/runner/key names and
 	 * transition actions. The *renderer* adds the quotes (curly on the web,
@@ -68,6 +68,7 @@ function action(type: string): string {
 function otherRef(p: Record<string, unknown>): EventSegment {
 	return {
 		kind: 'other-ref',
+		...(typeof p.other_project_id === 'string' ? { project_id: p.other_project_id } : {}),
 		project_name: str(p.other_project_name),
 		number: Number(p.other_number)
 	};
@@ -84,6 +85,8 @@ function otherRef(p: Record<string, unknown>): EventSegment {
  */
 function linkSegments(ev: TinesEvent, p: Record<string, unknown>): EventSegment[] {
 	const lead = ev.type === 'issue.link_added' ? 'marked' : 'unmarked';
+	if (!Number.isFinite(Number(p.other_number)))
+		return [text('changed an issue link on'), selfRef()];
 	const duplicate = p.kind === 'duplicate_of';
 	if (duplicate && p.role === 'target') {
 		return [text(lead), otherRef(p), text('as a duplicate of'), selfRef()];

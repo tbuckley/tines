@@ -323,6 +323,15 @@ export async function writeScheduleConsent(
 	if (body.value !== 'on' && body.value !== 'off')
 		throw new ApiFail(422, 'invalid_field', '"value" must be "on" or "off"', { field: 'value' });
 	if (
+		body.disclosure_version !== undefined &&
+		(!Number.isInteger(body.disclosure_version) ||
+			body.disclosure_version < 1 ||
+			body.value !== 'on')
+	)
+		throw new ApiFail(422, 'invalid_field', 'Disclosure version requires an on choice', {
+			field: 'disclosure_version'
+		});
+	if (
 		!Number.isInteger(body.expected_revision) ||
 		body.expected_revision < 0 ||
 		!Number.isInteger(body.permission_epoch) ||
@@ -385,6 +394,15 @@ export async function writeScheduleConsent(
 			last_request_token = excluded.last_request_token, updated_at = excluded.updated_at
 		WHERE schedule_personal_choice.revision = ${body.expected_revision}`.compile(db),
 		...(body.value === 'off' ? [release, revokeKeys, clear] : []),
+		...(body.value === 'on' && body.disclosure_version
+			? [
+					sql`INSERT INTO personal_disclosure (user_id, version, acknowledged_at)
+				SELECT ${actor.userId}, ${body.disclosure_version}, ${now}
+				WHERE EXISTS (SELECT 1 FROM schedule_personal_choice WHERE schedule_id = ${scheduleId}
+					AND user_id = ${actor.userId} AND last_request_token = ${token})
+				ON CONFLICT(user_id, version) DO NOTHING`.compile(db)
+				]
+			: []),
 		eventInsert(
 			db,
 			actor,

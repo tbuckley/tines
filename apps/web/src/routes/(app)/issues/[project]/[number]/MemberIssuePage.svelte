@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { goto, invalidate } from '$app/navigation';
+	import { goto, invalidate, invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
+	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
 	let { data } = $props();
 	let commentDraft = $state('');
 	let editingId = $state<string | null>(null);
@@ -45,7 +46,7 @@
 			});
 			notice = 'Permission saved. Member execution is not available in this release.';
 			choiceDirty = false;
-			await refresh();
+			await invalidateAll();
 		} catch (e) {
 			fail(e);
 		} finally {
@@ -113,7 +114,7 @@
 					: {})
 			});
 			decisionId = '';
-			await refresh();
+			await invalidateAll();
 		} catch (e) {
 			fail(e);
 		} finally {
@@ -174,11 +175,7 @@
 				>
 					<option value={true}>On</option><option value={false}>Off</option>
 				</select>
-				{#if transitionAllowsAgents}<p class="mt-2 text-sm">
-						Permission covers this evolving issue and your own allowance. Your agents may run later
-						when setup is ready, including after member execution is released. Turning permission
-						off cannot reverse external actions or recall downloaded content.
-					</p>{/if}
+				{#if transitionAllowsAgents}<PersonalPermissionWarning />{/if}
 			{/if}
 			<button
 				class="ml-2 min-h-11 rounded border px-4"
@@ -227,14 +224,7 @@
 				<button class="ml-2 min-h-11 rounded border px-4" onclick={saveChoice} disabled={saving}
 					>Save permission</button
 				>
-				<details class="mt-3">
-					<summary>What permission covers</summary>
-					<p class="mt-2 text-sm">
-						Permission covers this evolving issue and your own allowance. Your agents may run later
-						when setup is ready, including after member execution is released. Turning permission
-						off cannot reverse external actions or recall downloaded content.
-					</p>
-				</details>
+				{#if choice === 'on'}<PersonalPermissionWarning />{/if}
 			</div>
 		{/if}
 		<p class="mt-2">
@@ -317,8 +307,12 @@
 		{#if data.issue.history.length === 0}<p class="mt-3">No shared history yet.</p>{:else}<ul
 				class="mt-3 space-y-2"
 			>
-				{#each data.issue.history as event (event.id)}<li>
-						{event.type} · {new Date(event.created_at).toLocaleString()}
+			{#each data.issue.history as event (event.id)}<li data-event-id={event.id}>
+						{event.actor_name} · {event.type}
+						{event.type === 'issue.transitioned'
+							? ` · ${event.payload.from_state_name ?? ''} → ${event.payload.to_state_name ?? ''}`
+							: ''}
+						· {new Date(event.created_at).toLocaleString()}
 					</li>{/each}
 			</ul>{/if}
 	</section>

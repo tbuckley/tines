@@ -20,10 +20,12 @@
 	import { Select } from '$lib/components/ui/select/index.js';
 	import type { Snippet } from 'svelte';
 	import { prefersReducedMotion } from '$lib/format';
+	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
 
 	let {
 		issue,
 		permission = null,
+		roster = [],
 		dispatch,
 		runs,
 		runners,
@@ -33,6 +35,7 @@
 	}: {
 		issue: IssueDetail;
 		permission?: IssueConsentReceipt | null;
+		roster?: { user: { id: string; name: string }; role: 'owner' | 'member'; value: string }[];
 		dispatch: DispatchExplainer | null;
 		runs: AgentRun[];
 		runners: Runner[];
@@ -146,6 +149,7 @@
 				stops new work without changing this choice. An admitted run can finish after permission
 				turns off.
 			</p>
+			{#if permission.my_agents.value !== 'on'}<PersonalPermissionWarning />{/if}
 			<div class="flex flex-wrap gap-2">
 				{#if permission.issue_state.category !== 'done'}
 					<Button
@@ -170,6 +174,21 @@
 				{/if}
 			</div>
 			{#if permissionMessage}<p role="status" class="text-xs">{permissionMessage}</p>{/if}
+			{#if roster.length > 0}
+				<div class="mt-3 border-t pt-3">
+					<p class="font-medium">People and permission</p>
+					<ul class="mt-2 space-y-1" aria-label="Issue permission roster">
+						{#each roster as person (person.user.id)}
+							<li>
+								{person.user.name}{person.role === 'owner' ? ' (You)' : ''} · {person.role} · {person.value}{person.role ===
+								'member'
+									? ' · member execution unavailable'
+									: ''}
+							</li>
+						{/each}
+					</ul>
+				</div>
+			{/if}
 		</div>
 	{/if}
 

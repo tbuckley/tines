@@ -186,6 +186,9 @@ export function eventQuery(db: Kysely<Database>, userId: string) {
 				'actor_run_issue.project_id'
 			)
 			.leftJoin('issue', 'issue.id', 'event.issue_id')
+			.leftJoin('issue as peer_issue', (join) =>
+				join.on('peer_issue.id', '=', sql<string>`json_extract(event.payload, '$.other_issue_id')`)
+			)
 			// Event project is immutable historical attribution. The issue ref is
 			// independently canonical and follows the issue's current identity.
 			.leftJoin('project as event_project', 'event_project.id', 'event.project_id')
@@ -210,7 +213,9 @@ export function eventQuery(db: Kysely<Database>, userId: string) {
 				'issue.number as issue_number',
 				'issue.title as issue_title',
 				'event_project.name as project_name',
-				'issue_project.name as issue_project_name'
+				'issue_project.name as issue_project_name',
+				'issue_project.id as issue_project_id',
+				'peer_issue.project_id as other_project_id'
 			])
 			.where('event.user_id', '=', userId)
 	);
@@ -225,6 +230,8 @@ export function serializeEvent(row: EventRow): TinesEvent {
 	} catch {
 		// Leave the payload empty if it somehow isn't valid JSON.
 	}
+	if (row.other_project_id && typeof payload.other_issue_id === 'string')
+		payload.other_project_id = row.other_project_id;
 	return {
 		id: row.id,
 		type: row.type,
@@ -232,8 +239,9 @@ export function serializeEvent(row: EventRow): TinesEvent {
 		issue_id: row.issue_id,
 		project_id: row.project_id,
 		issue_ref:
-			row.issue_id && row.issue_number !== null && row.issue_project_name
+			row.issue_id && row.issue_number !== null && row.issue_project_name && row.issue_project_id
 				? {
+						project_id: row.issue_project_id,
 						project_name: row.issue_project_name,
 						number: row.issue_number,
 						title: row.issue_title ?? ''

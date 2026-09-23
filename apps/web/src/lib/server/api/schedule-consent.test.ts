@@ -50,6 +50,25 @@ function inherited(t: ReturnType<typeof fixture>, issueId: string) {
 }
 
 describe('future schedule permission', () => {
+	it('acknowledges a future-only on choice in the creation batch', async () => {
+		const t = fixture();
+		const first = await createIssue(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, 'prj_1', {
+			title: 'Future only {{count}}',
+			allow_my_agents: false,
+			disclosure_version: 1,
+			schedule: {
+				preset: { kind: 'daily', time: '09:00' },
+				allow_my_agents_on_future_instances: true
+			}
+		});
+		expect((await readIssueConsent(t.db, 'u1', first.id)).my_agents.value).toBe('off');
+		expect(
+			(await readScheduleConsent(t.db, 'u1', first.schedule!.id)).my_future_permission.value
+		).toBe('on');
+		expect(t.all('SELECT version FROM personal_disclosure WHERE user_id = ?', 'u1')).toEqual([
+			{ version: 1 }
+		]);
+	});
 	it('stores a member browser choice without enabling execution or key authority', async () => {
 		const t = fixture();
 		t.sqlite.exec(`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)

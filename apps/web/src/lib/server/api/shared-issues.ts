@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { getArtifactStore } from '$lib/server/artifact-store';
 import type { Artifact, ArtifactDetail, ArtifactVersion, ArtifactType } from '@tines/shared';
@@ -7,7 +7,7 @@ import { resolveIssueAccess, resolveProjectAccess } from './project-access';
 import { sharedEventPayload } from './shared-events';
 import { projectReadPredicate } from './permissions';
 
-const SAFE_EVENTS = new Set([
+const SAFE_EVENTS = [
 	'issue.created',
 	'issue.updated',
 	'issue.transitioned',
@@ -27,7 +27,7 @@ const SAFE_EVENTS = new Set([
 	'agent_run.ended',
 	'issue.parked',
 	'issue.resumed'
-]);
+];
 
 export async function readSharedIssue(
 	db: Kysely<Database>,
@@ -120,9 +120,22 @@ export async function readSharedIssue(
 		listSharedArtifacts(db, row.id, row.state_entered_at ?? row.created_at),
 		db
 			.selectFrom('event as e')
-			.select(['e.id', 'e.type', 'e.created_at', 'e.actor_user_id', 'e.payload'])
+			.leftJoin('user as event_actor', 'event_actor.id', 'e.actor_user_id')
+			.select([
+				'e.id',
+				'e.type',
+				'e.created_at',
+				'e.actor_user_id',
+				'event_actor.name as actor_name',
+				'e.payload'
+			])
 			.where('e.issue_id', '=', row.id)
+			.where('e.type', 'in', SAFE_EVENTS)
+			.where(
+				sql<boolean>`(e.type NOT IN ('context.created','context.updated','context.deleted') OR json_extract(e.payload, '$.kind') = 'artifact')`
+			)
 			.orderBy('e.created_at desc')
+			.orderBy('e.id desc')
 			.limit(100)
 			.execute(),
 		db
@@ -300,20 +313,14 @@ export async function readSharedIssue(
 				: null
 		})),
 		artifacts: artifactRows,
-		history: eventRows
-			.filter((event) => SAFE_EVENTS.has(event.type))
-			.filter(
-				(event) =>
-					!event.type.startsWith('context.') ||
-					JSON.parse(event.payload ?? '{}').kind === 'artifact'
-			)
-			.map((event) => ({
-				id: event.id,
-				type: event.type,
-				created_at: event.created_at,
-				actor_user_id: event.actor_user_id,
-				payload: sharedEventPayload(event.type, event.payload)
-			})),
+		history: eventRows.map((event) => ({
+			id: event.id,
+			type: event.type,
+			created_at: event.created_at,
+			actor_user_id: event.actor_user_id,
+			actor_name: event.actor_name ?? 'Former participant',
+			payload: sharedEventPayload(event.type, event.payload)
+		})),
 		roster: [
 			{
 				user: { id: row.owner_id, name: row.owner_name },

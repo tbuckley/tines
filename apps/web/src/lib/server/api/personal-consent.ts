@@ -197,6 +197,54 @@ export async function readIssueConsent(
 	};
 }
 
+/** Display-only roster. Owner is always first; another person's choice is never writable here. */
+export async function listIssuePermissionRoster(db: Kysely<Database>, issueId: string) {
+	const issue = await db
+		.selectFrom('issue as i')
+		.innerJoin('project as p', 'p.id', 'i.project_id')
+		.innerJoin('user as owner', 'owner.id', 'p.user_id')
+		.leftJoin('issue_personal_choice as c', (join) =>
+			join.onRef('c.issue_id', '=', 'i.id').onRef('c.user_id', '=', 'owner.id')
+		)
+		.select([
+			'i.project_id',
+			'i.consent_epoch',
+			'owner.id as owner_id',
+			'owner.name as owner_name',
+			'c.value as owner_value',
+			'c.issue_epoch as owner_epoch'
+		])
+		.where('i.id', '=', issueId)
+		.executeTakeFirstOrThrow();
+	const members = await db
+		.selectFrom('project_member as m')
+		.innerJoin('user as u', 'u.id', 'm.user_id')
+		.leftJoin('issue_personal_choice as c', (join) =>
+			join.on('c.issue_id', '=', issueId).onRef('c.user_id', '=', 'm.user_id')
+		)
+		.select(['u.id', 'u.name', 'm.revision', 'c.value', 'c.issue_epoch', 'c.membership_revision'])
+		.where('m.project_id', '=', issue.project_id)
+		.where('m.revoked_at', 'is', null)
+		.orderBy('u.name')
+		.orderBy('u.id')
+		.execute();
+	return [
+		{
+			user: { id: issue.owner_id, name: issue.owner_name },
+			role: 'owner' as const,
+			value: issue.owner_epoch === issue.consent_epoch ? (issue.owner_value ?? 'unset') : 'unset'
+		},
+		...members.map((person) => ({
+			user: { id: person.id, name: person.name },
+			role: 'member' as const,
+			value:
+				person.issue_epoch === issue.consent_epoch && person.membership_revision === person.revision
+					? (person.value ?? 'unset')
+					: 'unset'
+		}))
+	];
+}
+
 /**
  * Revisioned owner choice. The selected issue epoch and decision revision are
  * checked by the INSERT..SELECT, so a stale intent cannot recreate a grant
