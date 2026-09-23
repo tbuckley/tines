@@ -100,7 +100,9 @@ integration. Browser regressions exposed name-based URL expectations after
 the issue loader canonicalized project IDs; the affected error-page, issue
 creation, duplicate, and transfer specs were updated and rerun (24/24 for the
 first three; 24/24 for dialog
-and transfer after waiting for the entrance animation). CI runs all three
+and transfer after waiting for the entrance animation). The UI spec exposed
+one stale `(edited)` assertion after editor attribution was added; it now
+checks Alice's named edit and the focused case passes. CI runs all three
 Playwright shards on the final branch. Review still needs to decide whether
 the proposed execution contract is ready to become the reviewed 670/712
 dependency; this receipt does not make that claim.

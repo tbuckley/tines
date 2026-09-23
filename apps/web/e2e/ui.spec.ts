@@ -561,7 +561,7 @@ test('a comment can be edited and deleted from the issue page', async ({ page })
 
 	const edited = page.locator('article').filter({ hasText: 'Typo fixed' }).first();
 	await expect(edited).toBeVisible({ timeout: 10_000 });
-	await expect(edited.getByText('(edited)')).toBeVisible();
+	await expect(edited.getByText(`(edited by ${ALICE.name})`)).toBeVisible();
 	await expect(page.getByText('Typpo here')).toHaveCount(0);
 
 	// Delete goes through the shared confirm dialog.
