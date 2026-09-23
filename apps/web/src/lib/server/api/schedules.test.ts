@@ -95,6 +95,99 @@ function scopedActor(permissions: ApiKeyPermissions): ActorContext {
 }
 
 describe('scoped schedule permissions', () => {
+	it('requires project write to edit or run a visible schedule without side effects', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		t.sqlite.exec(`
+			INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+			VALUES ('key_scoped', 'u1', 'scoped', 'hash', 'prefix', ${NOW})
+		`);
+		const reader = scopedActor({
+			version: 1,
+			projects: { access: 'read', scope: ['prj_1'] },
+			workspace: 'read',
+			control_plane: 'none'
+		});
+		const effects = recordDispatchEffects();
+		const before = {
+			schedules: t.all('SELECT * FROM scheduled_task'),
+			issues: t.all('SELECT * FROM issue'),
+			events: t.all('SELECT * FROM event')
+		};
+
+		await expect(
+			updateSchedule(t.db, t.env, reader, schedule.id, { name: 'Unauthorized edit' })
+		).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions',
+			details: { operation: 'schedule.update', domain: 'project', access: 'write' }
+		});
+		expect(t.all('SELECT * FROM scheduled_task')).toEqual(before.schedules);
+		expect(t.all('SELECT * FROM issue')).toEqual(before.issues);
+		expect(t.all('SELECT * FROM event')).toEqual(before.events);
+		expect(effects.count()).toBe(0);
+
+		await expect(runScheduleNow(t.db, t.env, reader, effects, schedule.id)).rejects.toMatchObject({
+			status: 403,
+			code: 'insufficient_permissions',
+			details: { operation: 'schedule.run', domain: 'project', access: 'write' }
+		});
+		expect(t.all('SELECT * FROM scheduled_task')).toEqual(before.schedules);
+		expect(t.all('SELECT * FROM issue')).toEqual(before.issues);
+		expect(t.all('SELECT * FROM event')).toEqual(before.events);
+		expect(effects.count()).toBe(0);
+	});
+
+	it('requires workspace read only for workflow and state changes', async () => {
+		const t = createTestDb();
+		seed(t);
+		seedCustomWorkflow(t);
+		const schedule = await createSchedule(t);
+		t.sqlite.exec(`
+			INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, created_at)
+			VALUES ('key_scoped', 'u1', 'scoped', 'hash', 'prefix', ${NOW})
+		`);
+		const projectWriter = scopedActor({
+			version: 1,
+			projects: { access: 'write', scope: ['prj_1'] },
+			workspace: 'none',
+			control_plane: 'none'
+		});
+		await expect(
+			updateSchedule(t.db, t.env, projectWriter, schedule.id, { name: 'Allowed edit' })
+		).resolves.toMatchObject({ name: 'Allowed edit' });
+		const before = {
+			schedules: t.all('SELECT * FROM scheduled_task'),
+			issues: t.all('SELECT * FROM issue'),
+			events: t.all('SELECT * FROM event')
+		};
+
+		for (const change of [{ workflow_id: 'wf_2' }, { state: 'Human Review' }]) {
+			await expect(
+				updateSchedule(t.db, t.env, projectWriter, schedule.id, change)
+			).rejects.toMatchObject({
+				status: 403,
+				code: 'insufficient_permissions',
+				details: { operation: 'schedule.update', domain: 'workspace', access: 'read' }
+			});
+			expect(t.all('SELECT * FROM scheduled_task')).toEqual(before.schedules);
+			expect(t.all('SELECT * FROM issue')).toEqual(before.issues);
+			expect(t.all('SELECT * FROM event')).toEqual(before.events);
+		}
+
+		const workspaceReader = scopedActor({
+			...projectWriter.permissions!,
+			workspace: 'read'
+		});
+		await expect(
+			updateSchedule(t.db, t.env, workspaceReader, schedule.id, {
+				workflow_id: 'wf_2',
+				state: 'Doing'
+			})
+		).resolves.toMatchObject({ workflow_id: 'wf_2', state_id: 'wfs_c_doing' });
+	});
+
 	it('filters schedule pages and hides details outside selected projects', async () => {
 		const t = createTestDb();
 		seed(t);
