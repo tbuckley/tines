@@ -385,10 +385,10 @@ focusTest.describe.serial('project focus', () => {
 				await expect(page).toHaveURL('/activity');
 				await expect(page.getByRole('heading', { name: 'Activity', level: 1 })).toBeVisible();
 				await expect(
-					page.locator(`a[href="/issues/${encodeURIComponent(world.bName)}/1"]`).first()
+					page.locator(`a[href="/issues/${world.bId}/1"]`).first()
 				).toBeVisible();
 				await expect(
-					page.locator(`a[href="/issues/${encodeURIComponent(world.aName)}/1"]`)
+					page.locator(`a[href="/issues/${world.aId}/1"]`)
 				).toHaveCount(0);
 
 				// This fixture has no state context: the link remains available on an empty surface.
@@ -907,8 +907,8 @@ focusTest.describe.serial('project focus', () => {
 
 			await gotoHydrated(page, '/activity');
 			await chooseFocus(page, world.bName);
-			await expect(page.locator(`a[href="/issues/${world.bName}/2"]`)).toBeVisible();
-			await expect(page.locator(`a[href="/issues/${world.aName}/1"]`)).toHaveCount(0);
+			await expect(page.locator(`a[href="/issues/${world.bId}/2"]`)).toBeVisible();
+			await expect(page.locator(`a[href="/issues/${world.aId}/1"]`)).toHaveCount(0);
 
 			await gotoHydrated(page, '/workflows');
 			await chooseFocus(page, world.aName);

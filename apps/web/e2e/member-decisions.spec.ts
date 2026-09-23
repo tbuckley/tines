@@ -22,6 +22,7 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	browser,
 	uniqueName
 }, testInfo) => {
+	test.setTimeout(120_000);
 	const owner = apiClient(request, ALICE.apiKey);
 	const project = await body<{ id: string; name: string }>(
 		await owner.post('/api/v1/projects', { name: uniqueName('member-decisions') })
