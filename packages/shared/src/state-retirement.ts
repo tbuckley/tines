@@ -58,6 +58,8 @@ export interface StateRetirementWitnessV1 {
 export interface AcquireStateRetirementHoldRequest {
 	inventory_json: string;
 	confirmation: { inventory_digest: string };
+	/** Re-acquire a verification hold for a committed receipt after pointers are null. */
+	receipt_id?: string;
 }
 
 export interface StateRetirementHold {
@@ -72,6 +74,7 @@ export interface StateRetirementHold {
 		state_category: string;
 	}>;
 	active_runs: Array<{ id: string; state_id_at_start: string; status: string }>;
+	receipt_id?: string;
 }
 
 export interface StateRetirementScope {
@@ -268,6 +271,8 @@ export interface StateRetirementReceiptV1 {
 	id: string;
 	plan_id: string;
 	hold_id: string;
+	kind: 'preserve' | 'rollback';
+	rollback_of_receipt_id: string | null;
 	owner_id: string;
 	actor_key: string;
 	inventory_digest: string;
@@ -288,6 +293,67 @@ export interface StateRetirementReceiptV1 {
 	}>;
 	/** The immutable source snapshot used for rollback and operator review. */
 	source_inventory_digest: string;
+	/** Stored projected-after bundles used by the owner verification endpoint. */
+	verification: Array<{
+		target: StateRetirementTargetClass;
+		after: StateRetirementEffectiveBundle;
+		launch_after_text: string;
+		journal: StateRetirementEffectiveBundle['journal'];
+	}>;
+	/** Version/scope/file witness; it contains no plaintext env values. */
+	rollback_guard: {
+		items: Array<{
+			id: string;
+			version: number;
+			updated_at: number;
+			scope: StateRetirementScope;
+			payload_digest: string;
+		}>;
+		files: Array<{
+			id: string;
+			context_item_id: string;
+			updated_at: number;
+			content_digest: string;
+		}>;
+	};
+}
+
+export interface StateRetirementVerification {
+	receipt_id: string;
+	status: 'verified' | 'mismatch' | 'preview';
+	entries: Array<{
+		target: StateRetirementTargetClass;
+		mode: 'exact-issue' | 'stage-preview';
+		expected: StateRetirementEffectiveBundle;
+		current: StateRetirementEffectiveBundle | null;
+		journal: {
+			expected: StateRetirementEffectiveBundle['journal'];
+			current: StateRetirementEffectiveBundle['journal'] | null;
+		};
+		differences: string[];
+		issue_launch_preview: string | null;
+	}>;
+}
+
+export interface ReleaseStateRetirementHoldRequest {
+	confirmation: { hold_id: string; release: true };
+}
+
+export interface StateRetirementRollbackPrepareRequest {
+	receipt_id: string;
+}
+
+export interface StateRetirementRollbackPrepareResponse {
+	version: 1;
+	receipt_id: string;
+	hold_id: string;
+	expires_at: number;
+	rollback_token: string;
+}
+
+export interface StateRetirementRollbackApplyRequest {
+	rollback_token: string;
+	confirmation: { receipt_id: string; hold_id: string };
 }
 
 export interface StateRetirementPlannerOptions {

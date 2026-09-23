@@ -10,6 +10,8 @@ export const RETIREMENT_PLAN_TTL_MS = 15 * 60_000;
 export const RETIREMENT_TOKEN_MAX_BYTES = 512 * 1024;
 const DOMAIN = 'tines:state-retirement:v1';
 const PREFIX = 'srp1';
+const ROLLBACK_DOMAIN = 'tines:state-retirement-rollback:v1';
+const ROLLBACK_PREFIX = 'srr1';
 
 export interface RetirementPlanTokenPayload {
 	version: 1;
@@ -25,6 +27,16 @@ export interface RetirementPlanTokenPayload {
 	plan_digest: string;
 	held_states: string[];
 	allocations: StateRetirementAllocation[];
+}
+
+export interface RetirementRollbackTokenPayload {
+	version: 1;
+	receipt_id: string;
+	hold_id: string;
+	user_id: string;
+	actor_key: string;
+	issued_at: number;
+	expires_at: number;
 }
 
 const plain = (value: unknown): value is Record<string, unknown> =>
@@ -70,15 +82,85 @@ function decode(value: string): Uint8Array {
 	return bytes;
 }
 
-async function hmacKey(material: string): Promise<CryptoKey> {
+async function hmacKey(material: string, domain = DOMAIN): Promise<CryptoKey> {
 	const digestBytes = await crypto.subtle.digest(
 		'SHA-256',
-		new TextEncoder().encode(`${DOMAIN}:${material}`)
+		new TextEncoder().encode(`${domain}:${material}`)
 	);
 	return crypto.subtle.importKey('raw', digestBytes, { name: 'HMAC', hash: 'SHA-256' }, false, [
 		'sign',
 		'verify'
 	]);
+}
+
+const rollbackShape = (value: unknown): value is RetirementRollbackTokenPayload => {
+	if (!plain(value)) return false;
+	const p = value;
+	return (
+		exactKeys(p, [
+			'version',
+			'receipt_id',
+			'hold_id',
+			'user_id',
+			'actor_key',
+			'issued_at',
+			'expires_at'
+		]) &&
+		p.version === 1 &&
+		bounded(p.receipt_id, 150) &&
+		bounded(p.hold_id, 150) &&
+		bounded(p.user_id, 150) &&
+		bounded(p.actor_key, 250) &&
+		Number.isSafeInteger(p.issued_at) &&
+		Number.isSafeInteger(p.expires_at) &&
+		(p.expires_at as number) > (p.issued_at as number)
+	);
+};
+
+export async function signRetirementRollback(
+	payload: RetirementRollbackTokenPayload,
+	material: string
+): Promise<string> {
+	if (!rollbackShape(payload)) throw new ApiFail(422, 'invalid_rollback', 'Invalid rollback token');
+	const bytes = new TextEncoder().encode(canonicalizeLibraryValue(payload));
+	const body = `${ROLLBACK_PREFIX}.${encode(bytes)}`;
+	const signature = await crypto.subtle.sign(
+		'HMAC',
+		await hmacKey(material, ROLLBACK_DOMAIN),
+		new TextEncoder().encode(body)
+	);
+	return `${body}.${encode(new Uint8Array(signature))}`;
+}
+
+export async function verifyRetirementRollback(
+	token: unknown,
+	material: string
+): Promise<RetirementRollbackTokenPayload> {
+	const invalid = () =>
+		new ApiFail(422, 'invalid_rollback_token', 'Rollback token is invalid; prepare again');
+	if (typeof token !== 'string' || token.length > 4096) throw invalid();
+	const parts = token.split('.');
+	if (parts.length !== 3 || parts[0] !== ROLLBACK_PREFIX) throw invalid();
+	try {
+		const signature = decode(parts[2]);
+		if (
+			signature.length !== 32 ||
+			!(await crypto.subtle.verify(
+				'HMAC',
+				await hmacKey(material, ROLLBACK_DOMAIN),
+				signature as BufferSource,
+				new TextEncoder().encode(`${parts[0]}.${parts[1]}`)
+			))
+		)
+			throw invalid();
+		const value = JSON.parse(
+			new TextDecoder('utf-8', { fatal: true }).decode(decode(parts[1]))
+		) as unknown;
+		if (!rollbackShape(value)) throw invalid();
+		return value;
+	} catch {
+		throw invalid();
+	}
 }
 
 function allocationShape(value: unknown): value is StateRetirementAllocation[] {

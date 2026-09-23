@@ -25,6 +25,19 @@ interface ApplyOptions extends CommonOpts {
 
 interface ReceiptOptions extends CommonOpts {
 	receipt: string;
+	verify?: boolean;
+}
+
+interface ReleaseOptions extends CommonOpts {
+	hold: string;
+	confirm: string;
+}
+interface RollbackPrepareOptions extends CommonOpts {
+	receipt: string;
+	out: string;
+}
+interface RollbackApplyOptions extends CommonOpts {
+	plan: string;
 }
 
 export function register(program: Command): void {
@@ -117,13 +130,67 @@ export function register(program: Command): void {
 	});
 
 	withCommon(
-		retirement.command('receipt <receipt>').description('Read a durable state-retirement receipt')
+		retirement
+			.command('receipt <receipt>')
+			.description('Read a durable state-retirement receipt')
+			.option('--verify', 'verify exact current targets and journals')
 	).action(async (receipt: string, opts: ReceiptOptions) => {
-		const value = await client(opts).getStateRetirementReceipt(receipt);
+		if (opts.verify) {
+			const value = await client(opts).verifyStateRetirementReceipt(receipt);
+			if (opts.json) return printJson(value);
+			console.log(`Verification: ${value.status}`);
+			console.log(`${value.entries.length} target${value.entries.length === 1 ? '' : 's'} checked`);
+		} else {
+			const value = await client(opts).getStateRetirementReceipt(receipt);
+			if (opts.json) return printJson(value);
+			console.log(`Receipt: ${value.id}`);
+			console.log(
+				`${value.cleared_pointers.length} pointers cleared · ${value.copies.length} context copies`
+			);
+		}
+	});
+
+	withCommon(
+		retirement
+			.command('release <hold>')
+			.description('Explicitly release a verified or abandoned operator hold')
+			.requiredOption('--confirm <hold>', 'repeat the hold id as owner confirmation')
+	).action(async (hold: string, opts: ReleaseOptions) => {
+		const value = await client(opts).releaseStateRetirementHold(hold, {
+			confirmation: { hold_id: opts.confirm, release: true }
+		});
 		if (opts.json) return printJson(value);
-		console.log(`Receipt: ${value.id}`);
-		console.log(
-			`${value.cleared_pointers.length} pointers cleared · ${value.copies.length} context copies`
-		);
+		console.log(`Hold ${value.hold_id}: ${value.status}`);
+	});
+
+	withCommon(
+		retirement
+			.command('rollback-prepare <receipt>')
+			.description('Prepare a separately signed conditional rollback')
+			.requiredOption('--out <file>', 'write the rollback authorization')
+	).action(async (receipt: string, opts: RollbackPrepareOptions) => {
+		const value = await client(opts).prepareStateRetirementRollback({ receipt_id: receipt });
+		writeFileSync(opts.out, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
+		if (opts.json) return printJson(value);
+		console.log(`Rollback authorization written to ${opts.out}`);
+	});
+
+	withCommon(
+		retirement
+			.command('rollback-apply')
+			.description('Apply a signed conditional rollback once')
+			.requiredOption('--plan <file>', 'rollback authorization JSON')
+	).action(async (opts: RollbackApplyOptions) => {
+		const plan = JSON.parse(readFileSync(opts.plan, 'utf8')) as {
+			rollback_token: string;
+			receipt_id: string;
+			hold_id: string;
+		};
+		const value = await client(opts).applyStateRetirementRollback({
+			rollback_token: plan.rollback_token,
+			confirmation: { receipt_id: plan.receipt_id, hold_id: plan.hold_id }
+		});
+		if (opts.json) return printJson(value);
+		console.log(`Rollback receipt: ${value.id}`);
 	});
 }

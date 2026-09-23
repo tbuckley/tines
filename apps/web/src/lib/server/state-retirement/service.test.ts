@@ -5,7 +5,11 @@ import { createStateRetirementInventory } from './inventory';
 import {
 	acquireStateRetirementHold,
 	applyStateRetirement,
-	prepareStateRetirement
+	prepareStateRetirement,
+	verifyStateRetirementReceipt,
+	releaseStateRetirementHold,
+	prepareStateRetirementRollback,
+	applyStateRetirementRollback
 } from './service';
 
 const actor: ActorContext = {
@@ -181,5 +185,93 @@ describe('state retirement hold', () => {
 		const recovered = await applyStateRetirement(t.db, signingEnv, opActor, applyRequest, base + 4);
 		expect(recovered).toEqual(receipt);
 		expect(t.all('SELECT id FROM state_retirement_receipt')).toHaveLength(1);
+	});
+
+	it('verifies, releases, and conditionally rolls back untouched copies', async () => {
+		t.sqlite.exec("DELETE FROM agent_run WHERE id = 'hold-run'");
+		t.sqlite.exec(`
+			INSERT INTO context_item
+				(id,user_id,kind,name,description,project_id,workflow_state_id,label_id,issue_id,body,position,version,created_at,updated_at)
+			VALUES ('root-prompt','hold-u1','prompt','instructions','root','hold-project','hold-root',NULL,NULL,'exact root bytes',0,1,1,1)
+		`);
+		const opActor = { ...actor, apiKeyId: null, viaSession: true };
+		const base = Date.now();
+		const inventory = await createStateRetirementInventory(t.db, opActor, base);
+		const hold = await acquireStateRetirementHold(
+			t.db,
+			t.env,
+			opActor,
+			{
+				inventory_json: JSON.stringify(inventory),
+				confirmation: { inventory_digest: inventory.inventory_digest }
+			},
+			base + 1
+		);
+		const signingEnv = { ...t.env, BETTER_AUTH_SECRET: 'retirement-test-secret' };
+		const prepared = await prepareStateRetirement(
+			t.db,
+			signingEnv,
+			opActor,
+			{ hold_id: hold.id },
+			base + 2
+		);
+		const receipt = await applyStateRetirement(
+			t.db,
+			signingEnv,
+			opActor,
+			{
+				plan_token: prepared.plan_token!,
+				inventory_json: prepared.inventory_json,
+				confirmation: { plan_digest: prepared.plan_digest }
+			},
+			base + 3
+		);
+		const verification = await verifyStateRetirementReceipt(t.db, opActor, receipt.id);
+		expect(verification.entries.length).toBeGreaterThan(0);
+		const rollbackPlan = await prepareStateRetirementRollback(
+			t.db,
+			signingEnv,
+			opActor,
+			receipt.id,
+			base + 4
+		);
+		const rolledBack = await applyStateRetirementRollback(
+			t.db,
+			signingEnv,
+			opActor,
+			{
+				rollback_token: rollbackPlan.rollback_token,
+				confirmation: { receipt_id: receipt.id, hold_id: hold.id }
+			},
+			base + 5
+		);
+		expect(rolledBack).toMatchObject({ kind: 'rollback', rollback_of_receipt_id: receipt.id });
+		expect(
+			t.all("SELECT inherits_from_state_id FROM workflow_state WHERE id = 'hold-child'")
+		).toEqual([{ inherits_from_state_id: 'hold-root' }]);
+		expect(t.all("SELECT id FROM context_item WHERE id LIKE 'ctx_preserve_%'")).toEqual([]);
+	});
+
+	it('refuses release of a preserved hold after rollback until it is preserved again', async () => {
+		const { request } = await reviewedRequest();
+		const hold = await acquireStateRetirementHold(t.db, t.env, actor, request, 101);
+		const release = await releaseStateRetirementHold(
+			t.db,
+			t.env,
+			actor,
+			hold.id,
+			{ confirmation: { hold_id: hold.id, release: true } },
+			102
+		);
+		expect(release.status).toBe('released_abandoned');
+		const again = await releaseStateRetirementHold(
+			t.db,
+			t.env,
+			actor,
+			hold.id,
+			{ confirmation: { hold_id: hold.id, release: true } },
+			103
+		);
+		expect(again).toEqual(release);
 	});
 });
