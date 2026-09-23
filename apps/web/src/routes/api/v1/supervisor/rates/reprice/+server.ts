@@ -7,7 +7,5 @@ export const POST: RequestHandler = api(async (event) => {
 	const { db, env, actor } = await apiContext(event);
 	const body = await readJson<{ model?: unknown; cursor?: unknown }>(event);
 	const cursor = body.cursor == null ? null : requireString(body.cursor, 'cursor');
-	return json(
-		await repriceRate(db, env, actor.userId, requireString(body.model, 'model'), cursor)
-	);
+	return json(await repriceRate(db, env, actor.userId, requireString(body.model, 'model'), cursor));
 });
