@@ -42,6 +42,24 @@ function seedCustomWorkflow(t: TestDb) {
 	`);
 }
 
+function holdFirstBatch(t: TestDb) {
+	let enter!: () => void;
+	const entered = new Promise<void>((resolve) => (enter = resolve));
+	let release!: () => void;
+	const released = new Promise<void>((resolve) => (release = resolve));
+	const env = { ...t.env, DB: Object.create(t.env.DB) } as Env;
+	let held = true;
+	env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+		if (held) {
+			held = false;
+			enter();
+			await released;
+		}
+		return t.env.DB.batch<T>(statements);
+	};
+	return { env, entered, release };
+}
+
 async function createSchedule(
 	t: TestDb,
 	extra: { state?: string; requireAllClosed?: boolean } = {}
@@ -98,28 +116,54 @@ describe('schedule start state', () => {
 		]);
 	});
 
-	it('makes concurrent Run now calls share the commit-time all-closed gate', async () => {
-		const t = createTestDb();
-		seed(t);
-		const schedule = await createSchedule(t, { requireAllClosed: true });
-		t.sqlite
-			.prepare(`UPDATE issue SET state_id = 'wfs_std_closed' WHERE scheduled_task_id = ?`)
-			.run(schedule.id);
+	it('makes concurrent Run now calls share the commit-time all-closed gate in either winner order', async () => {
+		for (const winner of ['left', 'right'] as const) {
+			const t = createTestDb();
+			seed(t);
+			const schedule = await createSchedule(t, { requireAllClosed: true });
+			t.sqlite
+				.prepare(`UPDATE issue SET state_id = 'wfs_std_closed' WHERE scheduled_task_id = ?`)
+				.run(schedule.id);
+			const left = holdFirstBatch(t);
+			const right = holdFirstBatch(t);
+			const leftCall = runScheduleNow(
+				t.db,
+				left.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				schedule.id
+			);
+			const rightCall = runScheduleNow(
+				t.db,
+				right.env,
+				actor,
+				TEST_NOOP_DISPATCH_EFFECTS,
+				schedule.id
+			);
+			await Promise.all([left.entered, right.entered]);
 
-		const outcomes = await Promise.allSettled([
-			runScheduleNow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, schedule.id),
-			runScheduleNow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, schedule.id)
-		]);
-		expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
-		const rejected = outcomes.find((outcome) => outcome.status === 'rejected');
-		expect(rejected).toMatchObject({ reason: { code: 'schedule_blocked', status: 422 } });
-		expect(t.all(`SELECT id FROM issue WHERE scheduled_task_id = ?`, schedule.id)).toHaveLength(2);
-		expect(
-			t.all(`SELECT id FROM event WHERE type = 'issue.created' AND issue_id IS NOT NULL`)
-		).toHaveLength(2);
-		expect(t.all(`SELECT run_count FROM scheduled_task WHERE id = ?`, schedule.id)).toEqual([
-			{ run_count: 2 }
-		]);
+			const winningCall = winner === 'left' ? leftCall : rightCall;
+			const losingCall = winner === 'left' ? rightCall : leftCall;
+			const winningRelease = winner === 'left' ? left.release : right.release;
+			const losingRelease = winner === 'left' ? right.release : left.release;
+			winningRelease();
+			await expect(winningCall).resolves.toEqual(expect.any(String));
+			losingRelease();
+			await expect(losingCall).rejects.toMatchObject({
+				code: 'schedule_blocked',
+				status: 422
+			});
+
+			expect(t.all(`SELECT id FROM issue WHERE scheduled_task_id = ?`, schedule.id)).toHaveLength(
+				2
+			);
+			expect(
+				t.all(`SELECT id FROM event WHERE type = 'issue.created' AND issue_id IS NOT NULL`)
+			).toHaveLength(2);
+			expect(t.all(`SELECT run_count FROM scheduled_task WHERE id = ?`, schedule.id)).toEqual([
+				{ run_count: 2 }
+			]);
+		}
 	});
 
 	it('dispatch effects: runScheduleNow signals only after its instance batch commits', async () => {
@@ -148,6 +192,30 @@ describe('schedule start state', () => {
 		expect(effects.count()).toBe(1);
 		expect(t.all('SELECT id FROM issue')).toHaveLength(beforeIssues);
 		expect(t.all("SELECT id FROM event WHERE type = 'issue.created'")).toHaveLength(beforeEvents);
+	});
+
+	it('fails closed on a malformed committed receipt without dispatching', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		const effects = recordDispatchEffects();
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		t.env.DB.batch = async (statements) => {
+			const results = await realBatch(statements);
+			const receipt = results.at(-1)!;
+			const row = receipt.results?.[0] as Record<string, unknown>;
+			return [
+				...results.slice(0, -1),
+				{ ...receipt, results: [{ ...row, created_event_id: 'evt_corrupt' }] }
+			];
+		};
+
+		await expect(runScheduleNow(t.db, t.env, actor, effects, schedule.id)).rejects.toThrow(
+			'Malformed scheduled-task execution receipt'
+		);
+		expect(effects.count()).toBe(0);
+		expect(t.all(`SELECT id FROM issue WHERE scheduled_task_id = ?`, schedule.id)).toHaveLength(2);
+		expect(t.all(`SELECT id FROM event WHERE type = 'issue.created'`)).toHaveLength(2);
 	});
 
 	it('defaults to the workflow initial state, stored as NULL ("follow the workflow")', async () => {
@@ -277,6 +345,43 @@ describe('schedule start state', () => {
 		).toEqual([{ run_count: 1, next_run_at: due }]);
 	});
 
+	it('re-checks archive at the manual commit boundary', async () => {
+		const t = createTestDb();
+		seed(t);
+		const schedule = await createSchedule(t);
+		const beforeSchedule = t.all(
+			`SELECT run_count, last_run_at, next_run_at FROM scheduled_task WHERE id = ?`,
+			schedule.id
+		);
+		const realBatch = t.env.DB.batch.bind(t.env.DB);
+		let enter!: () => void;
+		const prepared = new Promise<void>((resolve) => (enter = resolve));
+		let release!: () => void;
+		const released = new Promise<void>((resolve) => (release = resolve));
+		const env = { ...t.env, DB: Object.create(t.env.DB) } as Env;
+		env.DB.batch = async <T = unknown>(statements: Parameters<Env['DB']['batch']>[0]) => {
+			enter();
+			await released;
+			return realBatch<T>(statements);
+		};
+
+		const pending = runScheduleNow(t.db, env, actor, TEST_NOOP_DISPATCH_EFFECTS, schedule.id);
+		await prepared;
+		t.sqlite.prepare(`UPDATE project SET archived_at = ? WHERE id = ?`).run(Date.now(), 'prj_1');
+		release();
+
+		await expect(pending).rejects.toMatchObject({ status: 422, code: 'project_archived' });
+		expect(t.all(`SELECT id FROM issue WHERE scheduled_task_id = ?`, schedule.id)).toHaveLength(1);
+		expect(t.all(`SELECT id FROM event WHERE type = 'issue.created'`)).toHaveLength(1);
+		expect(t.all(`SELECT id FROM event WHERE type = 'scheduled_task.skipped'`)).toEqual([]);
+		expect(
+			t.all(
+				`SELECT run_count, last_run_at, next_run_at FROM scheduled_task WHERE id = ?`,
+				schedule.id
+			)
+		).toEqual(beforeSchedule);
+	});
+
 	it('picking the initial state — or explicit null — resets to "follow the workflow"', async () => {
 		const t = createTestDb();
 		seed(t);
@@ -363,7 +468,15 @@ describe('schedule execution receipts', () => {
 		created_event_id: expected.createdEventId,
 		skipped_event_id: null,
 		archived_at: null,
-		blocking: '[]'
+		blocking: JSON.stringify([
+			{
+				issue_id: 'iss_2',
+				project_id: 'prj_2',
+				project_name: 'other project',
+				number: 7,
+				title: 'Open blocker'
+			}
+		])
 	};
 
 	it.each([
@@ -386,7 +499,77 @@ describe('schedule execution receipts', () => {
 			})()
 		],
 		['non-object blocker', { ...valid, blocking: '[1]' }],
-		['missing blocker field', { ...valid, blocking: '[{"issue_id":"iss_2"}]' }],
+		[
+			'missing issue_id',
+			{
+				...valid,
+				blocking: JSON.stringify([
+					{
+						project_id: 'prj_2',
+						project_name: 'other project',
+						number: 7,
+						title: 'Open blocker'
+					}
+				])
+			}
+		],
+		[
+			'missing project_id',
+			{
+				...valid,
+				blocking: JSON.stringify([
+					{
+						issue_id: 'iss_2',
+						project_name: 'other project',
+						number: 7,
+						title: 'Open blocker'
+					}
+				])
+			}
+		],
+		[
+			'missing project_name',
+			{
+				...valid,
+				blocking: JSON.stringify([
+					{
+						issue_id: 'iss_2',
+						project_id: 'prj_2',
+						number: 7,
+						title: 'Open blocker'
+					}
+				])
+			}
+		],
+		[
+			'non-integer number',
+			{
+				...valid,
+				blocking: JSON.stringify([
+					{
+						issue_id: 'iss_2',
+						project_id: 'prj_2',
+						project_name: 'other project',
+						number: 7.5,
+						title: 'Open blocker'
+					}
+				])
+			}
+		],
+		[
+			'missing title',
+			{
+				...valid,
+				blocking: JSON.stringify([
+					{
+						issue_id: 'iss_2',
+						project_id: 'prj_2',
+						project_name: 'other project',
+						number: 7
+					}
+				])
+			}
+		],
 		['invalid archive value', { ...valid, archived_at: 'not-a-number' }]
 	] as const)('fails closed for %s', (_name, row) => {
 		expect(() => parseExecutionReceipt({ results: [row] }, expected)).toThrow(

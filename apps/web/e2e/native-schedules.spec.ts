@@ -264,7 +264,7 @@ test.describe.serial('native D1 scheduled execution fences', () => {
 		}
 	});
 
-	test('native D1 rolls back a gated skip when skip event insertion fails', async ({
+	test('native D1 rolls back a gated skip after event insertion when cursor advancement fails', async ({
 		request,
 		uniqueName
 	}) => {
@@ -272,10 +272,10 @@ test.describe.serial('native D1 scheduled execution fences', () => {
 			gated: true
 		});
 		const occurrence = due(scheduleFixture.schedule.id);
-		const trigger = `reject_native_schedule_skip_${Date.now().toString(36)}`;
-		d1(`CREATE TRIGGER ${trigger} BEFORE INSERT ON event
-			WHEN NEW.type='scheduled_task.skipped' AND NEW.project_id=${sqlLiteral(scheduleFixture.project.id)}
-			BEGIN SELECT RAISE(ABORT, 'native schedule skip failure'); END`);
+		const trigger = `reject_native_schedule_skip_cursor_${Date.now().toString(36)}`;
+		d1(`CREATE TRIGGER ${trigger} BEFORE UPDATE OF next_run_at ON scheduled_task
+			WHEN NEW.id=${sqlLiteral(scheduleFixture.schedule.id)} AND NEW.next_run_at <> OLD.next_run_at
+			BEGIN SELECT RAISE(ABORT, 'native schedule skip cursor failure'); END`);
 		try {
 			const response = await request.get('/__scheduled?cron=*+*+*+*+*');
 			expect(response.ok()).toBe(true);
