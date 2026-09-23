@@ -114,6 +114,8 @@ test('resend replaces the old link and expiry blocks acceptance', async ({
 		data: { token: oldUrl.split('/').at(-1) }
 	});
 	expect(old.status()).toBe(404);
+	const oldLanding = await request.get(new URL(oldUrl).pathname);
+	expect(oldLanding.status()).toBe(404);
 	expect(currentUrl).not.toBe(oldUrl);
 	d1(`UPDATE project_invitation SET expires_at = 1 WHERE id = ${sqlLiteral(first.id)}`);
 	const expired = await request.post('/api/v1/invitations/accept', {
