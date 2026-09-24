@@ -1,12 +1,17 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { api } from '$lib/api';
+	import { navMemory } from '$lib/nav-memory.svelte';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import MemberSchedulePermission from './MemberSchedulePermission.svelte';
 	let { data } = $props();
+	$effect(() => {
+		navMemory.recordProject(data.project.id, page.url.search, data.project.name);
+	});
 	onMount(() => {
 		void api.updatePreferences({ focused_project_id: data.project.id }).catch(() => {});
 	});

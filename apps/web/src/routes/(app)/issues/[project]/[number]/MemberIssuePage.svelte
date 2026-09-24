@@ -11,8 +11,19 @@
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import { relativeTime } from '$lib/format';
+	import { issueBackTarget, navMemory } from '$lib/nav-memory.svelte';
 	import type { TinesEvent } from '@tines/shared';
 	let { data } = $props();
+	const backList = $derived.by(() => {
+		const previous = navMemory.lastList;
+		if (previous?.href.startsWith('/issues'))
+			return issueBackTarget(previous, data.issue.project.id, navMemory.issuesHref);
+		if (previous?.href.startsWith('/projects/')) {
+			const target = issueBackTarget(previous, data.issue.project.id, navMemory.issuesHref);
+			if (target.href === previous.href) return target;
+		}
+		return { href: `/projects/${data.issue.project.id}`, label: data.issue.project.name };
+	});
 	let commentDraft = $state('');
 	const historyEvents = $derived(
 		data.issue.history.map(
@@ -175,12 +186,11 @@
 <svelte:head><title>{data.issue.title} · Tines</title></svelte:head>
 <div class="mb-6">
 	<a
-		href={`/projects/${data.issue.project.id}`}
+		href={backList.href}
+		data-testid="member-issue-back"
 		class="text-muted-foreground hover:text-foreground mb-3 inline-flex max-w-full min-w-0 items-center gap-1 text-sm"
 	>
-		<IconChevronLeft size={16} class="shrink-0" /><span class="truncate"
-			>{data.issue.project.name}</span
-		>
+		<IconChevronLeft size={16} class="shrink-0" /><span class="truncate">{backList.label}</span>
 	</a>
 	<p class="text-muted-foreground text-sm">
 		{data.issue.project.name}/#{data.issue.number} · Shared by {data.issue.project.owner.name}

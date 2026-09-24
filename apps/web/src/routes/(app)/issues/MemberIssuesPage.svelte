@@ -1,11 +1,16 @@
 <script lang="ts">
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
+	import { page } from '$app/state';
+	import { navMemory } from '$lib/nav-memory.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import IssuePagination from '$lib/components/IssuePagination.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	let { data } = $props();
+	$effect(() => {
+		navMemory.recordIssues(page.url.search);
+	});
 </script>
 
 <svelte:head><title>Issues · {data.project.name} · Tines</title></svelte:head>

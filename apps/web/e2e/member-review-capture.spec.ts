@@ -137,6 +137,8 @@ test('shared project pages use the app UI at desktop, phone, and 320px', async (
 		await capture(memberPage, 'people-member-desktop');
 		await gotoHydrated(memberPage, '/issues');
 		await capture(memberPage, 'issues-member-desktop');
+		await memberPage.getByRole('link', { name: /Approve the release checklist/ }).click();
+		await expect(memberPage.getByTestId('member-issue-back')).toHaveAttribute('href', '/issues');
 		await gotoHydrated(memberPage, '/activity');
 		await expect(memberPage.getByText('allowed their agents on', { exact: false })).toBeVisible();
 		await capture(memberPage, 'activity-member-desktop');
