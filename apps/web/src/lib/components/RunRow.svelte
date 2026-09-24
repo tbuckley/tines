@@ -18,11 +18,14 @@
 	let {
 		run,
 		showIssueRef = false,
+		showLogs = true,
 		oncancel
 	}: {
 		run: AgentRun;
 		/** The Agents tab links out to the issue; an issue page already is the issue. */
 		showIssueRef?: boolean;
+		/** Run logs are the owner's: a shared project's members see status only. */
+		showLogs?: boolean;
 		/** Omitted → no Cancel button. */
 		oncancel?: (run: AgentRun) => void;
 	} = $props();
@@ -203,21 +206,23 @@
 	>
 		{relativeTime(run.created_at)}
 	</span>
-	<Button
-		size="sm"
-		variant="ghost"
-		class="h-7"
-		aria-expanded={expanded}
-		onclick={() => (expanded = !expanded)}
-	>
-		{expanded ? 'Hide logs' : 'Logs'}
-	</Button>
+	{#if showLogs}
+		<Button
+			size="sm"
+			variant="ghost"
+			class="h-7"
+			aria-expanded={expanded}
+			onclick={() => (expanded = !expanded)}
+		>
+			{expanded ? 'Hide logs' : 'Logs'}
+		</Button>
+	{/if}
 	{#if oncancel && isActiveRun(run.status)}
 		<Button size="sm" variant="ghost" class="text-destructive h-7" onclick={() => oncancel(run)}>
 			Cancel
 		</Button>
 	{/if}
-	{#if expanded}
+	{#if expanded && showLogs}
 		<div class="w-full" transition:slide={{ duration: dur() }}>
 			<RunLogViewer runId={run.id} runError={run.error} />
 		</div>

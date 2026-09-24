@@ -30,6 +30,8 @@
 		runs,
 		runners,
 		disabledReason = null,
+		ownerControls = true,
+		viewerId = null,
 		checklist,
 		onerror
 	}: {
@@ -42,6 +44,13 @@
 		/** When set, the pin controls render disabled with this as their tooltip. Cancel run stays live. */
 		disabledReason?: string | null;
 		/**
+		 * Off for a shared project's members: runner pins and run logs belong
+		 * to the owner's machines. Hold and cancel stay available.
+		 */
+		ownerControls?: boolean;
+		/** Marks "(You)" in the roster; without it the owner row is the viewer. */
+		viewerId?: string | null;
+		/**
 		 * The first-run checklist, before the account's first run. It replaces
 		 * both the verdict-and-checks and the Runs list — its last item *is* the
 		 * first run, and a second copy of that row would double the log fetches.
@@ -52,6 +61,7 @@
 	} = $props();
 
 	const readOnly = $derived(disabledReason != null);
+	const viewerRole = $derived(ownerControls ? 'owner' : 'member');
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -144,9 +154,9 @@
 	{#if permission}
 		<div class="mb-4 space-y-2 rounded-md border p-3 text-sm">
 			<p class="font-medium">
-				My agent permission: {personalPermissionLabel('owner', permission.my_agents.value)}
+				My agent permission: {personalPermissionLabel(viewerRole, permission.my_agents.value)}
 			</p>
-			<PersonalPermissionWarning role="owner">
+			<PersonalPermissionWarning role={viewerRole}>
 				<p>
 					Enabling lets your agents use your runner and account resources for this issue. Holding
 					stops new work without changing this choice. An admitted run can finish after permission
@@ -183,7 +193,11 @@
 					<ul class="mt-2 space-y-1" aria-label="Issue permission roster">
 						{#each roster as person (person.user.id)}
 							<li>
-								{person.user.name}{person.role === 'owner' ? ' (You)' : ''} · {person.role} · {personalPermissionLabel(
+								{person.user.name}{(
+									viewerId ? person.user.id === viewerId : person.role === 'owner'
+								)
+									? ' (You)'
+									: ''} · {person.role} · {personalPermissionLabel(
 									person.role,
 									person.value
 								)}{person.role === 'member' ? ' · member execution unavailable' : ''}
@@ -292,63 +306,63 @@
 	{/if}
 
 	<!-- pin control: replaces rule matching entirely for this issue -->
-	<div class="mt-4 border-t pt-3">
-		<p class="text-muted-foreground mb-1.5 flex items-center gap-1 text-xs font-medium">
-			<IconPin size={12} stroke={1.75} /> Pin to a runner
-		</p>
-		{#if runners.length === 0}
-			<p class="text-muted-foreground text-xs italic">No runners registered yet.</p>
-		{:else}
-			<p class="text-muted-foreground mb-1.5 text-xs">No pin uses routing rules.</p>
-			<div class="grid min-w-0 gap-1.5">
-				<Select
-					class="h-8 w-full min-w-0 text-xs"
-					bind:value={pinRunnerId}
-					aria-label="Pinned runner"
-				>
-					<option value="">No pin</option>
-					{#each runners as runner (runner.id)}
-						<option value={runner.id}
-							>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
-						>
-					{/each}
-				</Select>
-				<div class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5">
+	{#if ownerControls}<div class="mt-4 border-t pt-3">
+			<p class="text-muted-foreground mb-1.5 flex items-center gap-1 text-xs font-medium">
+				<IconPin size={12} stroke={1.75} /> Pin to a runner
+			</p>
+			{#if runners.length === 0}
+				<p class="text-muted-foreground text-xs italic">No runners registered yet.</p>
+			{:else}
+				<p class="text-muted-foreground mb-1.5 text-xs">No pin uses routing rules.</p>
+				<div class="grid min-w-0 gap-1.5">
 					<Select
 						class="h-8 w-full min-w-0 text-xs"
-						bind:value={pinTier}
-						aria-label="Pinned tier"
-						disabled={!pinRunnerId || readOnly}
-						title={disabledReason}
+						bind:value={pinRunnerId}
+						aria-label="Pinned runner"
 					>
-						<option value="">Default tier</option>
-						{#each MODEL_TIERS as tier (tier)}
-							<option value={tier}>{tier}</option>
+						<option value="">No pin</option>
+						{#each runners as runner (runner.id)}
+							<option value={runner.id}
+								>{runner.name}{runner.status === 'paused' ? ' (paused)' : ''}</option
+							>
 						{/each}
 					</Select>
-					<Button
-						size="sm"
-						variant="outline"
-						class="h-8"
-						disabled={!pinDirty || savingPin || readOnly}
-						title={disabledReason}
-						onclick={savePin}
-					>
-						{savingPin ? '…' : 'Save'}
-					</Button>
+					<div class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5">
+						<Select
+							class="h-8 w-full min-w-0 text-xs"
+							bind:value={pinTier}
+							aria-label="Pinned tier"
+							disabled={!pinRunnerId || readOnly}
+							title={disabledReason}
+						>
+							<option value="">Default tier</option>
+							{#each MODEL_TIERS as tier (tier)}
+								<option value={tier}>{tier}</option>
+							{/each}
+						</Select>
+						<Button
+							size="sm"
+							variant="outline"
+							class="h-8"
+							disabled={!pinDirty || savingPin || readOnly}
+							title={disabledReason}
+							onclick={savePin}
+						>
+							{savingPin ? '…' : 'Save'}
+						</Button>
+					</div>
 				</div>
-			</div>
-			{#if issue.pinned_runner_id}
-				<p
-					class="mt-1.5 text-xs text-amber-700 dark:text-amber-400"
-					transition:slide={{ duration: dur() }}
-				>
-					Pinned to {issue.pinned_runner_name}{issue.pinned_tier ? `:${issue.pinned_tier}` : ''} — only
-					this runner will take it.
-				</p>
+				{#if issue.pinned_runner_id}
+					<p
+						class="mt-1.5 text-xs text-amber-700 dark:text-amber-400"
+						transition:slide={{ duration: dur() }}
+					>
+						Pinned to {issue.pinned_runner_name}{issue.pinned_tier ? `:${issue.pinned_tier}` : ''} — only
+						this runner will take it.
+					</p>
+				{/if}
 			{/if}
-		{/if}
-	</div>
+		</div>{/if}
 
 	<!-- this issue's runs (the checklist's last item shows them instead) -->
 	{#if !checklist}
@@ -359,7 +373,11 @@
 			{:else}
 				<ul class="divide-y rounded-lg border">
 					{#each runs as run (run.id)}
-						<RunRow {run} oncancel={permission ? () => cancelRun(run.id) : undefined} />
+						<RunRow
+							{run}
+							showLogs={ownerControls}
+							oncancel={permission ? () => cancelRun(run.id) : undefined}
+						/>
 					{/each}
 				</ul>
 			{/if}

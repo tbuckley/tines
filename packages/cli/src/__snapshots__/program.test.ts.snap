@@ -347,7 +347,7 @@ Commands:
   create [options] <project>                            Create an issue in a project, optionally with a recurrence (a scheduled task)
   show [options] <ref>                                  Show an issue (<project>/<number>), including allowed transitions
   edit [options] <ref>                                  Edit an issue: title, description, workflow, or force-set state
-  move [options] <ref> <action>                         Take a current transition (members: awaiting-human only; no permission change)
+  move [options] <ref> <action>                         Take a current transition (members: no permission change)
   hold [options] <ref>                                  Hold an issue so approved agents cannot be admitted
   release [options] <ref>                               Release an issue hold; existing permission choices stay unchanged
   cancel-run [options] <ref> <run-id>                   Request cancellation of a run that belongs to this issue
@@ -714,7 +714,7 @@ Options:
 ",
   "tines issues move": "Usage: tines issues move [options] <ref> <action>
 
-Take a current transition (members: awaiting-human only; no permission change)
+Take a current transition (members: no permission change)
 
 Options:
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run

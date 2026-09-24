@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import { ARTIFACT_FILE_MAX_BYTES } from '@tines/shared';
 import { uploadArtifactFile } from '$lib/server/api/artifacts';
 import { api, apiContext, ApiFail } from '$lib/server/api/core';
+import { actorForIssue } from '$lib/server/api/project-access';
 import type { RequestHandler } from './$types';
 
 /**
@@ -9,7 +10,9 @@ import type { RequestHandler } from './$types';
  * Bytes in the body, MIME in Content-Type, display name in ?filename=….
  */
 export const PUT: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor: requester } = await apiContext(event);
+	// Members work on shared issues with the owner's scope (project-access.ts).
+	const actor = await actorForIssue(db, requester, event.params.id);
 	const filename = event.url.searchParams.get('filename');
 	const contentType = event.request.headers.get('content-type');
 	// `?filename=` is what makes this a file upload, so the JSON guard is

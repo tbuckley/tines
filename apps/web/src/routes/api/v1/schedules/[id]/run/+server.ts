@@ -3,11 +3,14 @@ import { api, apiContext } from '$lib/server/api/core';
 import { getIssueDetailForActor } from '$lib/server/api/issues';
 import { runScheduleNow } from '$lib/server/api/schedules';
 import { runE2eScheduleRaceMutation } from '$lib/server/api/schedule-e2e-race';
+import { actorForSchedule } from '$lib/server/api/project-access';
 import type { RequestHandler } from './$types';
 
 /** Run now: create an instance immediately (gate-respecting; 422 when blocked). */
 export const POST: RequestHandler = api(async (event) => {
-	const { db, env, actor, effects } = await apiContext(event);
+	const { db, env, actor: requester, effects } = await apiContext(event);
+	// Members work on shared projects with the owner's scope (project-access.ts).
+	const actor = await actorForSchedule(db, requester, event.params.id);
 	const issueId = await runScheduleNow(db, env, actor, effects, event.params.id, () =>
 		runE2eScheduleRaceMutation(event.request, db, env, actor, event.params.id)
 	);

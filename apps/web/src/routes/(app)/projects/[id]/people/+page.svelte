@@ -62,7 +62,8 @@
 	>
 	<h1 class="mt-5 text-2xl font-semibold">People</h1>
 	<p class="text-muted-foreground mt-2">
-		Members can read the project. Their agents cannot run here in this release.
+		Members work on everything in the project except adding or removing people. Their agents cannot
+		run here in this release.
 	</p>
 	{#if message}<p class="mt-4" role="status">{message}</p>{/if}
 	<section class="mt-6 rounded-lg border p-4" aria-labelledby="roster-heading">
@@ -131,16 +132,15 @@
 				<ul class="mt-3 space-y-4">
 					{#each data.invitations as invitation (invitation.id)}
 						<li class="flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-sm">
+							<!-- Only the link expires: an accepted member stays until removed. -->
 							<span
 								>{invitation.email} · {invitation.accepted_at
-									? 'Accepted'
+									? `Accepted · joined ${new Date(invitation.accepted_at).toLocaleDateString()}`
 									: invitation.canceled_at
 										? 'Canceled'
-										: invitation.delivery_status === 'failed'
-											? 'Delivery failed'
-											: 'Pending'} · expires {new Date(
-									invitation.expires_at
-								).toLocaleString()}</span
+										: `${
+												invitation.delivery_status === 'failed' ? 'Delivery failed' : 'Pending'
+											} · link expires ${new Date(invitation.expires_at).toLocaleString()}`}</span
 							>
 							{#if !invitation.accepted_at && !invitation.canceled_at}
 								<div class="flex gap-2">

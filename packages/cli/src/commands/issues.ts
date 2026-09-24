@@ -150,7 +150,7 @@ function printIssueDetail(issue: IssueDetail): void {
 				);
 		}
 		console.log(
-			'\nMembers may comment and take a current awaiting-human transition. Personal permission is chosen in the browser; member execution is unavailable.'
+			'\nMembers work on shared issues as the owner does, except adding or removing people. Personal permission is chosen in the browser; member execution is unavailable.'
 		);
 		return;
 	}
@@ -571,7 +571,7 @@ export function register(program: Command): void {
 	withCommon(
 		issues
 			.command('move <ref> <action>')
-			.description('Take a current transition (members: awaiting-human only; no permission change)')
+			.description('Take a current transition (members: no permission change)')
 	).action(async (ref: string, action: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);

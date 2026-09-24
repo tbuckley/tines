@@ -1,10 +1,13 @@
 import { json } from '@sveltejs/kit';
 import { api, apiContext, notFound, readOptionalJson } from '$lib/server/api/core';
 import { cancelRunForRequest } from '$lib/server/api/runs';
+import { actorForIssue } from '$lib/server/api/project-access';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = api(async (event) => {
-	const { db, env, actor, effects } = await apiContext(event);
+	const { db, env, actor: requester, effects } = await apiContext(event);
+	// Members work on shared issues with the owner's scope (project-access.ts).
+	const actor = await actorForIssue(db, requester, event.params.id);
 	await readOptionalJson(event);
 	const attached = await db
 		.selectFrom('agent_run as ar')

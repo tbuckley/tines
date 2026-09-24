@@ -78,13 +78,14 @@ export function assertCapability(
 	access: ProjectAccess,
 	operation: 'read' | 'people' | 'write' | 'invite' | 'leave'
 ): void {
-	if (operation === 'read' || operation === 'people') return;
+	// Members work on everything in the project; only people management is the owner's.
+	if (operation === 'read' || operation === 'people' || operation === 'write') return;
 	if (operation === 'leave' && access.role === 'member') return;
 	if (access.role !== 'owner')
 		throw new ApiFail(
 			403,
 			'member_read_only',
-			'Members can read this project; this action is available to its owner.'
+			'Only the project owner can invite or remove people.'
 		);
 }
 
@@ -171,4 +172,116 @@ export async function resolveAccessibleProjectRef(
 			}
 		);
 	return visible[0].id;
+}
+
+/**
+ * The actor to run a project-scoped operation as. The owner acts as
+ * themselves. A current member acts with the owner's scope — so the owner's
+ * project, issue, schedule and artifact services resolve the shared project —
+ * while `member` keeps who actually acted for attribution, personal
+ * permission and the membership check at write time. Routes that reach
+ * account-level resources (runners, routing, the workflow library, global
+ * context) must not call this.
+ */
+export async function actorForProject(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	projectId: string
+): Promise<ActorContext> {
+	if (actor.member) return actor;
+	const owned = await db
+		.selectFrom('project')
+		.select('user_id')
+		.where('id', '=', projectId)
+		.executeTakeFirst();
+	// Unknown projects and the actor's own fall through to the owner services,
+	// which keep their existing 404s and messages.
+	if (!owned || owned.user_id === actor.userId || actor.agentRunId) return actor;
+	const access = await resolveProjectAccess(db, actor, projectId);
+	if (access.role === 'owner') return actor;
+	const owner = await db
+		.selectFrom('user')
+		.select('name')
+		.where('id', '=', access.ownerId)
+		.executeTakeFirstOrThrow();
+	return {
+		...actor,
+		userId: access.ownerId,
+		userName: owner.name,
+		member: {
+			userId: actor.userId,
+			userName: actor.userName,
+			projectId,
+			membershipRevision: access.membershipRevision!
+		}
+	};
+}
+
+export async function actorForIssue(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	issueId: string
+): Promise<ActorContext> {
+	const row = await db
+		.selectFrom('issue')
+		.select('project_id')
+		.where('id', '=', issueId)
+		.executeTakeFirst();
+	return row ? actorForProject(db, actor, row.project_id) : actor;
+}
+
+export async function actorForSchedule(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	scheduleId: string
+): Promise<ActorContext> {
+	const row = await db
+		.selectFrom('scheduled_task')
+		.select('project_id')
+		.where('id', '=', scheduleId)
+		.executeTakeFirst();
+	return row ? actorForProject(db, actor, row.project_id) : actor;
+}
+
+/** The member acting as themselves again, for checks on their own access. */
+export function memberSelf(actor: ActorContext): ActorContext {
+	if (!actor.member) return actor;
+	return { ...actor, userId: actor.member.userId, userName: actor.member.userName, member: null };
+}
+
+/**
+ * A member's write still needs their membership at commit: removal between
+ * preflight and the write must not let it land. True for everyone else.
+ */
+export function memberStillCurrentPredicate(actor: ActorContext) {
+	return actor.member
+		? currentMemberPredicate(
+				actor.member.projectId,
+				actor.member.userId,
+				actor.member.membershipRevision
+			)
+		: sql<boolean>`1`;
+}
+
+/** Throws 404 when a delegated member was removed since their request began. */
+export async function assertMemberStillCurrent(
+	db: Kysely<Database>,
+	actor: ActorContext
+): Promise<void> {
+	if (!actor.member) return;
+	const row = await db
+		.selectFrom('project_member as m')
+		.innerJoin('project as p', 'p.id', 'm.project_id')
+		.select('m.revision')
+		.where('m.project_id', '=', actor.member.projectId)
+		.where('m.user_id', '=', actor.member.userId)
+		.where('m.revoked_at', 'is', null)
+		.where('p.shared_at', 'is not', null)
+		.executeTakeFirst();
+	if (row?.revision !== actor.member.membershipRevision) throw notFound();
+}
+
+/** Refuses a delegated member an account-level action that stays the owner's. */
+export function assertNotMember(actor: Pick<ActorContext, 'member'>, what: string): void {
+	if (actor.member) throw new ApiFail(403, 'owner_only', `${what} belongs to the project owner.`);
 }

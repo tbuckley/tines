@@ -5,7 +5,7 @@ import { notFound, type ActorContext } from './core';
 import { projectReadPredicate } from './permissions';
 
 /** Member history has an explicit type and field allowlist. Payloads are private by default. */
-const EVENT_TYPES = [
+export const SHARED_EVENT_TYPES = [
 	'issue.created',
 	'issue.updated',
 	'issue.transitioned',
@@ -109,7 +109,7 @@ export async function listSharedEvents(
 		.where('p.shared_at', 'is not', null)
 		.where(projectReadPredicate(actor, 'p.id'))
 		.where('p.user_id', '!=', actor.userId)
-		.where('e.type', 'in', EVENT_TYPES)
+		.where('e.type', 'in', SHARED_EVENT_TYPES)
 		.where(
 			sql<boolean>`(e.type NOT IN ('context.created','context.updated','context.deleted')
 			OR json_extract(e.payload, '$.kind') = 'artifact')`

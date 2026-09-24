@@ -41,6 +41,7 @@ import {
 	type ActorContext,
 	type Page
 } from './core';
+import { attributedUserId } from './core';
 import { assertWritable, issueProject } from './archive';
 import {
 	artifactTypeOf,
@@ -54,7 +55,11 @@ import {
 } from './artifacts';
 import { contextSummaryForIssue } from './context';
 import { actorOf, eventInsert, eventQuery, serializeEvent } from './events';
-import { resolveIssueAccess, currentProjectWriterPredicate } from './project-access';
+import {
+	assertNotMember,
+	resolveIssueAccess,
+	currentProjectWriterPredicate
+} from './project-access';
 import { readSharedIssue } from './shared-issues';
 import { deriveRound, deriveSinceLastRun } from './handoff';
 import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels';
@@ -1315,6 +1320,9 @@ export async function createIssue(
 		.select('decision_revision')
 		.where('id', '=', workflow.id)
 		.executeTakeFirstOrThrow();
+	// A member creates as themselves: their permission choice, not the owner's.
+	const creatorId = attributedUserId(actor);
+	const creatorMembershipRevision = actor.member?.membershipRevision ?? 0;
 	const initialChoice =
 		project.shared_at !== null &&
 		actor.viaSession &&
@@ -1456,11 +1464,21 @@ export async function createIssue(
 			queries.push(
 				sql`INSERT INTO schedule_personal_choice
 				(schedule_id, user_id, value, revision, permission_epoch, membership_revision, updated_at)
-				SELECT ${schedule.id}, ${actor.userId}, ${futureChoice ? 'on' : 'off'}, 1,
-					s.permission_epoch, 0, ${now}
+				SELECT ${schedule.id}, ${creatorId}, ${futureChoice ? 'on' : 'off'}, 1,
+					s.permission_epoch, ${creatorMembershipRevision}, ${now}
 				FROM scheduled_task s JOIN project p ON p.id = s.project_id
 				WHERE s.id = ${schedule.id} AND p.user_id = ${actor.userId}
 					AND p.shared_at IS NOT NULL AND ${freshIssueGuard.predicate}`.compile(db)
+			);
+		}
+		if (actor.member) {
+			// A member's schedule does not run on the owner's agents until the
+			// owner turns it on (their default-on applies only to their own work).
+			queries.push(
+				sql`INSERT INTO schedule_personal_choice
+				(schedule_id, user_id, value, revision, permission_epoch, membership_revision, updated_at)
+				SELECT ${schedule.id}, ${actor.userId}, 'off', 1, s.permission_epoch, 0, ${now}
+				FROM scheduled_task s WHERE s.id = ${schedule.id} AND ${freshIssueGuard.predicate}`.compile(db)
 			);
 		}
 	}
@@ -1510,12 +1528,22 @@ export async function createIssue(
 		}
 		if (linkPlan) await recheckCreateIssueLinkPlan(db, actor, linkPlan);
 	}
+	if (actor.member && project.shared_at !== null) {
+		// The owner's agents stay off a member's new issue until the owner
+		// allows them; an explicit off wins over the owner default.
+		queries.push(
+			sql`INSERT INTO issue_personal_choice
+				(issue_id, user_id, value, revision, issue_epoch, membership_revision, source_kind, updated_at)
+			SELECT ${id}, ${actor.userId}, 'off', 1, i.consent_epoch, 0, 'explicit_issue', ${now}
+			FROM issue i WHERE i.id = ${id} AND ${freshIssueGuard.predicate}`.compile(db)
+		);
+	}
 	if (initialChoice !== undefined) {
 		queries.push(
 			sql`INSERT INTO issue_personal_choice
 				(issue_id, user_id, value, revision, issue_epoch, membership_revision, source_kind, updated_at)
-			SELECT ${id}, ${actor.userId}, ${initialChoice ? 'on' : 'off'}, 1,
-				i.consent_epoch, 0, 'explicit_issue', ${now}
+			SELECT ${id}, ${creatorId}, ${initialChoice ? 'on' : 'off'}, 1,
+				i.consent_epoch, ${creatorMembershipRevision}, 'explicit_issue', ${now}
 			FROM issue i JOIN project p ON p.id = i.project_id
 			WHERE i.id = ${id} AND p.user_id = ${actor.userId}
 				AND p.shared_at IS NOT NULL AND p.sharing_revision = ${project.sharing_revision}
@@ -1536,10 +1564,10 @@ export async function createIssue(
 	if (body.disclosure_version !== undefined) {
 		queries.push(
 			sql`INSERT INTO personal_disclosure (user_id, version, acknowledged_at)
-			SELECT ${actor.userId}, ${body.disclosure_version}, ${now}
+			SELECT ${creatorId}, ${body.disclosure_version}, ${now}
 			WHERE ${freshIssueGuard.predicate} AND (
-				EXISTS (SELECT 1 FROM issue_personal_choice WHERE issue_id = ${id} AND user_id = ${actor.userId} AND value = 'on')
-				OR EXISTS (SELECT 1 FROM schedule_personal_choice WHERE schedule_id = ${schedule?.id ?? ''} AND user_id = ${actor.userId} AND value = 'on')
+				EXISTS (SELECT 1 FROM issue_personal_choice WHERE issue_id = ${id} AND user_id = ${creatorId} AND value = 'on')
+				OR EXISTS (SELECT 1 FROM schedule_personal_choice WHERE schedule_id = ${schedule?.id ?? ''} AND user_id = ${creatorId} AND value = 'on')
 			) ON CONFLICT(user_id, version) DO NOTHING`.compile(db)
 		);
 	}
@@ -1575,8 +1603,8 @@ export async function createIssue(
 		: issue;
 	if (project.shared_at !== null) {
 		response.permission_receipt = {
-			...(await readIssueConsent(db, actor.userId, id)),
-			actor: actor.viaSession ? 'owner' : 'key',
+			...(await readIssueConsent(db, creatorId, id)),
+			actor: !actor.viaSession ? 'key' : actor.member ? 'member' : 'owner',
 			...(actor.viaSession
 				? {}
 				: { message: 'Permission unchanged; manage your permission in the browser.' })
@@ -1642,6 +1670,8 @@ export async function updateIssue(
 		});
 	}
 	if (body.pinned_runner_id !== undefined || body.pinned_tier !== undefined) {
+		// Runners are the owner's machines.
+		assertNotMember(actor, 'Pinning an issue to a runner');
 		requireAccess(
 			actor,
 			[
@@ -1962,12 +1992,6 @@ async function transitionMemberIssue(
 	const issue = await readSharedIssue(db, actor, { id });
 	if (issue.project.archived_at !== null)
 		throw new ApiFail(422, 'archived', 'Archived issues cannot be transitioned');
-	if (issue.state.category !== 'awaiting_human')
-		throw new ApiFail(
-			403,
-			'member_decision_forbidden',
-			'Members can decide only from an awaiting-human state'
-		);
 	const target = issue.workflow.transitions.find((item) => item.id === body.transition_id);
 	if (!target || body.action || !body.transition_id)
 		throw new ApiFail(
@@ -2041,7 +2065,7 @@ async function transitionMemberIssue(
 		desired !== null &&
 		(issue.my_choice.value !== desired ||
 			(body.allow_my_agents !== undefined && issue.my_choice.source !== 'explicit_issue'));
-	const reset = destination.category === 'done';
+	const reset = destination.category === 'done' || issue.state.category === 'done';
 	const guard = currentProjectWriterPredicate(access.projectId, actor, access, id);
 	const writes: CompiledQuery[] = [
 		sql`UPDATE issue SET state_id = ${destination.id}, state_entered_at = ${now}, updated_at = ${now},
@@ -2050,8 +2074,6 @@ async function transitionMemberIssue(
 		WHERE id = ${id} AND project_id = ${access.projectId} AND state_id = ${issue.state.id}
 			AND decision_revision = ${issue.decision_revision} AND consent_epoch = ${issue.my_choice.epoch}
 			AND ${guard}
-			AND EXISTS (SELECT 1 FROM workflow_state current_state WHERE current_state.id = issue.state_id
-				AND current_state.category = 'awaiting_human')
 			AND EXISTS (SELECT 1 FROM workflow w WHERE w.id = issue.workflow_id
 				AND w.decision_revision = ${issue.workflow_revision})
 			AND EXISTS (SELECT 1 FROM workflow_transition wt WHERE wt.id = ${target.id}
@@ -2061,18 +2083,22 @@ async function transitionMemberIssue(
 				= ${issue.my_choice.revision}`.compile(db)
 	];
 	const landed = sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id} AND last_decision_token = ${token})`;
+	// Any decision releases owner work that was assigned but not yet admitted,
+	// exactly as the owner's own transitions do.
+	writes.push(
+		...releaseAssignedIssueQueries(db, {
+			issueId: id,
+			userId: issue.project.owner.id,
+			token,
+			eventId: newId('evt'),
+			now,
+			reason: reset
+				? 'Issue completed before admission'
+				: 'Issue decision changed before admission',
+			guard: landed
+		})
+	);
 	if (reset) {
-		writes.push(
-			...releaseAssignedIssueQueries(db, {
-				issueId: id,
-				userId: issue.project.owner.id,
-				token,
-				eventId: newId('evt'),
-				now,
-				reason: 'Issue completed before admission',
-				guard: landed
-			})
-		);
 		writes.push(
 			sql`UPDATE issue_personal_choice SET value = 'unset', revision = revision + 1,
 			issue_epoch = (SELECT consent_epoch FROM issue WHERE id = ${id}), source_kind = NULL,
@@ -2665,7 +2691,8 @@ async function requireComment(
 		.where('issue_id', '=', issueId)
 		.executeTakeFirst();
 	if (!row) throw notFound();
-	assertCommentActionAllowed(actor, row, access.role === 'owner');
+	// Members moderate the project's comments as the owner does.
+	assertCommentActionAllowed(actor, row, true);
 	return { access, row };
 }
 
@@ -2684,9 +2711,7 @@ export async function updateComment(
 	const guard = currentProjectWriterPredicate(access.projectId, actor, access, issueId);
 	const authorGuard = actor.agentRunId
 		? sql<boolean>`actor_api_key_id = ${actor.apiKeyId}`
-		: access.role === 'owner'
-			? sql<boolean>`1=1`
-			: sql<boolean>`actor_user_id = ${actor.userId} AND (actor_api_key_id IS NULL OR author_run_id IS NOT NULL)`;
+		: sql<boolean>`1=1`;
 	const results = await runAtomic(env, [
 		sql`UPDATE comment SET body = ${text}, updated_at = ${now}, edited_at = ${now}, last_edit_token = ${token},
 			editor_user_id = ${actor.userId}, editor_api_key_id = ${actor.apiKeyId}
@@ -2726,9 +2751,7 @@ export async function deleteComment(
 	const guard = currentProjectWriterPredicate(access.projectId, actor, access, issueId);
 	const authorGuard = actor.agentRunId
 		? sql<boolean>`actor_api_key_id = ${actor.apiKeyId}`
-		: access.role === 'owner'
-			? sql<boolean>`1=1`
-			: sql<boolean>`actor_user_id = ${actor.userId} AND (actor_api_key_id IS NULL OR author_run_id IS NOT NULL)`;
+		: sql<boolean>`1=1`;
 	const marker = newId('del');
 	const results = await runAtomic(env, [
 		sql`UPDATE comment SET editor_user_id = ${marker} WHERE id = ${commentId} AND issue_id = ${issueId} AND ${authorGuard} AND ${guard}`.compile(

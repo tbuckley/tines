@@ -1,12 +1,13 @@
 import { artifactContentResponseForActor } from '$lib/server/api/artifacts';
-import { sharedArtifactContent } from '$lib/server/api/shared-issues';
-import { resolveIssueAccess } from '$lib/server/api/project-access';
+import { actorForIssue } from '$lib/server/api/project-access';
 import { api, apiContext, ApiFail } from '$lib/server/api/core';
 import type { RequestHandler } from './$types';
 
 /** Bytes of a version (default: current). See "Serving content safely". */
 export const GET: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor: requester } = await apiContext(event);
+	// Members work on shared issues with the owner's scope (project-access.ts).
+	const actor = await actorForIssue(db, requester, event.params.id);
 	const rawVersion = event.url.searchParams.get('version');
 	let version: number | undefined;
 	if (rawVersion !== null) {
@@ -17,13 +18,17 @@ export const GET: RequestHandler = api(async (event) => {
 			});
 		}
 	}
-	const access = await resolveIssueAccess(db, actor, event.params.id);
 	const options = {
 		version,
 		inline: ['1', 'true'].includes(event.url.searchParams.get('inline') ?? ''),
 		path: event.url.searchParams.get('path') ?? undefined
 	};
-	return access.role === 'owner'
-		? artifactContentResponseForActor(db, env, actor, event.params.id, event.params.name, options)
-		: sharedArtifactContent(db, env, actor, event.params.id, event.params.name, options);
+	return artifactContentResponseForActor(
+		db,
+		env,
+		actor,
+		event.params.id,
+		event.params.name,
+		options
+	);
 });

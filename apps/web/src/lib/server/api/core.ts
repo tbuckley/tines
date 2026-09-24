@@ -227,6 +227,22 @@ export interface ActorContext {
 		projectId: string;
 		launchStateId: string;
 	} | null;
+	/**
+	 * Set when a project member acts on a shared project: `userId` is then the
+	 * project owner's (so owner-scoped queries resolve the project), and this
+	 * names the person who actually acted. See `actorForProject`.
+	 */
+	member?: {
+		userId: string;
+		userName: string;
+		projectId: string;
+		membershipRevision: number;
+	} | null;
+}
+
+/** The person an event, comment or artifact is attributed to. */
+export function attributedUserId(actor: Pick<ActorContext, 'userId' | 'member'>): string {
+	return actor.member?.userId ?? actor.userId;
 }
 
 /** Full owner authority for trusted browser-session entry points. */

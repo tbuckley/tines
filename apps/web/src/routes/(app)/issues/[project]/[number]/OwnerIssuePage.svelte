@@ -64,7 +64,7 @@
 	import { resolveClientFocus } from '$lib/focus';
 	import { planTransitions } from '$lib/transitions';
 
-	let { data }: { data: Extract<PageData, { mode: 'owner' }> } = $props();
+	let { data }: { data: PageData } = $props();
 
 	// Data requests cannot server-redirect without losing a fragment that only
 	// the browser knows. Replace the stale alias in place while retaining
@@ -92,6 +92,13 @@
 		}
 	}
 
+	/**
+	 * A shared project's member gets this same page. What stays the owner's —
+	 * runner pins, run logs, the launch prompt, account-wide context and
+	 * spend — is hidden here and refused by the API.
+	 */
+	const isMember = $derived(data.viewerRole === 'member');
+
 	/** An archived project's issues read normally and write nowhere. */
 	const archived = $derived(data.issue.project_archived_at !== null);
 	const reason = $derived(archived ? PROJECT_ARCHIVED_TOOLTIP : null);
@@ -104,7 +111,19 @@
 		issueBackTarget(navMemory.lastList, effectiveFocus?.id ?? null, navMemory.issuesHref)
 	);
 	const issueProject = $derived(
-		data.projects.find((project) => project.id === data.issue.project_id)
+		[...data.projects, ...data.sharedProjects].find(
+			(project) => project.id === data.issue.project_id
+		)
+	);
+	// A member can move a shared issue only into another project the same
+	// owner shares with them.
+	const transferProjects = $derived(
+		isMember
+			? data.sharedProjects.filter(
+					(project) =>
+						project.owner?.id === issueProject?.owner?.id && project.id !== data.issue.project_id
+				)
+			: data.projects
 	);
 	const canOfferFocus = $derived(!archived && effectiveFocus?.id !== data.issue.project_id);
 	let focusing = $state(false);
@@ -778,6 +797,7 @@
 <div class="mb-6">
 	<a
 		href={backList.href}
+		data-testid="issue-back"
 		class="text-muted-foreground hover:text-foreground mb-3 inline-flex max-w-full min-w-0 items-center gap-1 text-sm"
 	>
 		<IconChevronLeft size={16} class="shrink-0" />
@@ -917,7 +937,7 @@
 					class="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-400"
 					title="{data.issue.active_run.runner_name} is on it ({data.issue.active_run
 						.status}) — view its logs"
-					onclick={() => (logsOpen = true)}
+					onclick={() => (logsOpen = !isMember)}
 					transition:fade={{ duration: dur() }}
 				>
 					<span class="size-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"></span>
@@ -1029,7 +1049,7 @@
 	item={editingContextItem}
 	defaults={contextEditorDefaults}
 	defaultKind={contextEditorKind}
-	projects={data.projects}
+	projects={isMember && issueProject ? [issueProject] : data.projects}
 	workflows={data.workflows}
 	onsaved={refresh}
 />
@@ -1255,15 +1275,17 @@
 						{/if}
 					</h2>
 					<div class="flex flex-wrap items-center gap-2">
-						<a
-							href="/context"
-							class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 rounded-sm text-xs outline-none focus-visible:ring-[3px]"
-						>
-							View all context
-						</a>
-						<Button size="sm" variant="outline" onclick={() => (promptDialogOpen = true)}>
-							<IconRocket size={14} /> View launch prompt
-						</Button>
+						{#if !isMember}
+							<a
+								href="/context"
+								class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 rounded-sm text-xs outline-none focus-visible:ring-[3px]"
+							>
+								View all context
+							</a>
+							<Button size="sm" variant="outline" onclick={() => (promptDialogOpen = true)}>
+								<IconRocket size={14} /> View launch prompt
+							</Button>
+						{/if}
 						<Button
 							size="sm"
 							variant="ghost"
@@ -1292,26 +1314,26 @@
 							{@render loadFailed("this issue's context")}
 						{/if}
 					</div>
-					<details class="group border-t pt-3">
-						<summary
-							class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none"
-						>
-							Effective context
-							<span class="text-xs">
-								— everything that applies while in
-								<span class="font-medium">{currentState.name}</span> (changes as the issue transitions)
-							</span>
-						</summary>
-						<div class="mt-3">
-							{#if effectiveContextPanel.current.status === 'pending'}
-								<Skeleton class="h-24 w-full" />
-							{:else if effectiveContextPanel.current.status === 'loaded'}
-								<EffectiveContextView context={effectiveContextPanel.current.value} />
-							{:else}
-								{@render loadFailed('the effective context')}
-							{/if}
-						</div>
-					</details>
+					{#if !isMember}<details class="group border-t pt-3">
+							<summary
+								class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none"
+							>
+								Effective context
+								<span class="text-xs">
+									— everything that applies while in
+									<span class="font-medium">{currentState.name}</span> (changes as the issue transitions)
+								</span>
+							</summary>
+							<div class="mt-3">
+								{#if effectiveContextPanel.current.status === 'pending'}
+									<Skeleton class="h-24 w-full" />
+								{:else if effectiveContextPanel.current.status === 'loaded' && effectiveContextPanel.current.value}
+									<EffectiveContextView context={effectiveContextPanel.current.value} />
+								{:else}
+									{@render loadFailed('the effective context')}
+								{/if}
+							</div>
+						</details>{/if}
 				</div>
 			</section>
 		</PhoneFold>
@@ -1335,12 +1357,16 @@
 					{runs}
 					{runners}
 					disabledReason={reason}
+					ownerControls={!isMember}
+					viewerId={data.viewerId}
 					onerror={showError}
 					checklist={checklistInputs ? firstRunChecklist : undefined}
 				/>
-				{#if usagePanel.current.status === 'pending'}
+				{#if isMember}
+					<!-- spend is the owner's account -->
+				{:else if usagePanel.current.status === 'pending'}
 					<Skeleton class="mt-4 h-24 w-full" />
-				{:else if usagePanel.current.status === 'loaded'}
+				{:else if usagePanel.current.status === 'loaded' && usagePanel.current.value}
 					<IssueUsage initial={usagePanel.current.value} />
 				{:else}
 					<p class="text-destructive mt-3 text-sm">Lifetime usage unavailable.</p>
@@ -1370,6 +1396,10 @@
 				disabledReason={reason}
 				onerror={showError}
 			/>
+			{#if 'blocked_by_private_issue' in data.issue && data.issue.blocked_by_private_issue}
+				<!-- a member does not see the owner's other projects, only that one blocks this -->
+				<p class="text-muted-foreground mt-2 text-xs">Blocked by another issue.</p>
+			{/if}
 		</PhoneFold>
 
 		<!-- this issue's slice of the activity log -->
@@ -1450,7 +1480,7 @@
 	bind:open={transferOpen}
 	issueId={data.issue.id}
 	currentProjectId={data.issue.project_id}
-	projects={data.projects}
+	projects={transferProjects}
 	oncompleted={transferCompleted}
 />
 
@@ -1459,7 +1489,7 @@
 </Modal>
 
 <!-- the active run's log tail, one tap from the header at any width -->
-{#if data.issue.active_run}
+{#if data.issue.active_run && !isMember}
 	<Modal bind:open={logsOpen} title="Logs · {data.issue.active_run.runner_name}" size="xl">
 		<RunLogViewer runId={data.issue.active_run.run_id} />
 	</Modal>

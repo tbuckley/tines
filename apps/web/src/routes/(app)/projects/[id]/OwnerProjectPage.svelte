@@ -33,7 +33,13 @@
 	import { navMemory } from '$lib/nav-memory.svelte';
 	import { eligibleStarterIssue, type StarterLandingMarker } from '$lib/starter-landing';
 
-	let { data }: { data: Extract<PageData, { mode: 'owner' }> } = $props();
+	let { data }: { data: PageData } = $props();
+	/**
+	 * A shared project's member gets this page too. Routing, archiving,
+	 * deleting and account-wide context stay the owner's, so their controls
+	 * are hidden here and refused by the API.
+	 */
+	const isMember = $derived(data.viewerRole === 'member');
 
 	let starterLanding = $state<StarterLandingMarker | undefined>();
 	afterNavigate(() => {
@@ -279,12 +285,16 @@
 		{#if data.project.description}
 			<p class="text-muted-foreground mt-1 max-w-xl text-sm">{data.project.description}</p>
 		{/if}
-		<a
-			href="/activity"
-			class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mt-2 inline-block rounded-sm text-xs outline-none focus-visible:ring-[3px]"
-		>
-			View all activity
-		</a>
+		{#if isMember && data.owner}
+			<p class="text-muted-foreground mt-1 text-sm">Shared by {data.owner.name}</p>
+		{:else}
+			<a
+				href="/activity"
+				class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mt-2 inline-block rounded-sm text-xs outline-none focus-visible:ring-[3px]"
+			>
+				View all activity
+			</a>
+		{/if}
 	</div>
 	<div class="flex gap-2">
 		<a
@@ -309,16 +319,18 @@
 	>
 		<IconArchive size={16} />
 		<span>Archived {formatDate(data.project.archived_at!)}</span>
-		<span aria-hidden="true">·</span>
-		<PendingButton
-			size="sm"
-			variant="outline"
-			pending={unarchiving}
-			pendingLabel="Unarchiving…"
-			onclick={unarchive}
-		>
-			Unarchive
-		</PendingButton>
+		{#if !isMember}
+			<span aria-hidden="true">·</span>
+			<PendingButton
+				size="sm"
+				variant="outline"
+				pending={unarchiving}
+				pendingLabel="Unarchiving…"
+				onclick={unarchive}
+			>
+				Unarchive
+			</PendingButton>
+		{/if}
 	</div>
 {/if}
 
@@ -405,33 +417,36 @@
 			workflows={data.workflows}
 			highlightId={page.url.searchParams.get('schedule')}
 			disabledReason={reason}
+			memberView={isMember}
 			onerror={showError}
 		/>
 	</div>
 {/if}
 
-<AgentRoutingCard
-	rules={data.routingRules}
-	{activeStateIds}
-	editable={!archived}
-	emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
-	emptyAction={{
-		label: 'Edit routing',
-		href: `/agents?new=rule&project=${encodeURIComponent(data.project.id)}#routing`
-	}}
-	editAction={{
-		label: 'Edit routing',
-		href: `/agents?new=rule&project=${encodeURIComponent(data.project.id)}#routing`
-	}}
-/>
+{#if !isMember}<AgentRoutingCard
+		rules={data.routingRules}
+		{activeStateIds}
+		editable={!archived}
+		emptyMessage="No routing rule covers this project — its issues will not dispatch to agents."
+		emptyAction={{
+			label: 'Edit routing',
+			href: `/agents?new=rule&project=${encodeURIComponent(data.project.id)}#routing`
+		}}
+		editAction={{
+			label: 'Edit routing',
+			href: `/agents?new=rule&project=${encodeURIComponent(data.project.id)}#routing`
+		}}
+	/>{/if}
 
 <div class="mb-8">
 	<div class="mb-3 flex items-center justify-between">
 		<h2 class="text-sm font-semibold">Context</h2>
 		<div class="flex items-center gap-3">
-			<a href="/context" class="text-muted-foreground hover:text-foreground text-xs">
-				View all context
-			</a>
+			{#if !isMember}
+				<a href="/context" class="text-muted-foreground hover:text-foreground text-xs">
+					View all context
+				</a>
+			{/if}
 			{#if !archived}
 				<Button
 					size="sm"
@@ -564,7 +579,9 @@
 		</div>
 		<div class="flex items-center justify-between gap-2 pt-2">
 			<div class="flex flex-wrap gap-2">
-				{#if archived}
+				{#if isMember}
+					<!-- archiving and deleting stay the owner's -->
+				{:else if archived}
 					<PendingButton
 						type="button"
 						variant="outline"
@@ -577,17 +594,19 @@
 				{:else}
 					<Button type="button" variant="outline" onclick={archive}>Archive project</Button>
 				{/if}
-				<Button
-					type="button"
-					variant="destructive"
-					disabled={data.project.issue_count > 0}
-					title={data.project.issue_count > 0
-						? 'Projects with issues cannot be deleted'
-						: undefined}
-					onclick={deleteProject}
-				>
-					Delete project
-				</Button>
+				{#if !isMember}
+					<Button
+						type="button"
+						variant="destructive"
+						disabled={data.project.issue_count > 0}
+						title={data.project.issue_count > 0
+							? 'Projects with issues cannot be deleted'
+							: undefined}
+						onclick={deleteProject}
+					>
+						Delete project
+					</Button>
+				{/if}
 			</div>
 			<div class="flex flex-wrap gap-2">
 				<Button

@@ -372,7 +372,7 @@ export async function readSharedIssue(
 		capabilities: {
 			read: true,
 			comment: true,
-			decide: row.state_category === 'awaiting_human' && row.project_archived_at === null,
+			decide: row.project_archived_at === null,
 			personal_permission: row.state_category !== 'done',
 			execute: false
 		}

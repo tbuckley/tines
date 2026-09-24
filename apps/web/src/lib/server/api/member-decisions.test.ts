@@ -199,12 +199,13 @@ describe('attributed member decisions', () => {
 		await deleteComment(t.db, t.env, member, issueId, created.id);
 	});
 
-	it('refuses foreign repair and removed access, including a stale choice', async () => {
+	it('lets members moderate, and refuses outsiders and removed access, including a stale choice', async () => {
 		const { t, issueId, owner, member, outsider } = setup();
 		const byOwner = await createComment(t.db, t.env, owner, issueId, { body: 'owner' });
+		// Members moderate the project's comments as the owner does; the editor is named.
 		await expect(
-			updateComment(t.db, t.env, member, issueId, byOwner.id, { body: 'foreign' })
-		).rejects.toMatchObject({ status: 403 });
+			updateComment(t.db, t.env, member, issueId, byOwner.id, { body: 'moderated' })
+		).resolves.toMatchObject({ body: 'moderated', editor: { user_id: 'u2' } });
 		await expect(
 			createComment(t.db, t.env, outsider, issueId, { body: 'outsider' })
 		).rejects.toMatchObject({ status: 404 });
@@ -233,7 +234,7 @@ describe('attributed member decisions', () => {
 		).rejects.toMatchObject({ status: 404 });
 	});
 
-	it('accepts only an exact awaiting-human decision and never admits member execution', async () => {
+	it('accepts only an exact decision and never admits member execution', async () => {
 		const { t, issueId, member } = setup();
 		const before = await (
 			await import('./shared-issues')
@@ -261,6 +262,21 @@ describe('attributed member decisions', () => {
 				expected_consent_epoch: before.my_choice.epoch,
 				expected_workflow_revision: before.workflow_revision
 			})
-		).rejects.toMatchObject({ status: 403 });
+		).rejects.toMatchObject({ status: 409, code: 'decision_refresh_required' });
+		// Out of an active state too: members are no longer limited to awaiting-human.
+		const working = await readSharedIssue(t.db, member, { id: issueId });
+		const next = working.workflow.transitions[0];
+		expect(working.state.id).toBe(OPEN);
+		expect(next).toBeDefined();
+		await expect(
+			transitionIssue(t.db, t.env, member, TEST_NOOP_DISPATCH_EFFECTS, issueId, {
+				transition_id: next.id,
+				expected_state_id: working.state.id,
+				expected_decision_revision: working.decision_revision,
+				expected_consent_revision: working.my_choice.revision,
+				expected_consent_epoch: working.my_choice.epoch,
+				expected_workflow_revision: working.workflow_revision
+			})
+		).resolves.toMatchObject({ state: { id: next.to_state_id } });
 	});
 });

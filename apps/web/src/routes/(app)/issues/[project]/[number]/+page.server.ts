@@ -4,8 +4,14 @@ import { truncate } from '$lib/format';
 import { effectiveContextForIssue, listContextItems } from '$lib/server/api/context';
 import { eventQuery, serializeEvent } from '$lib/server/api/events';
 import { getIssueDetail, loadIssue } from '$lib/server/api/issues';
-import { readSharedIssue } from '$lib/server/api/shared-issues';
 import {
+	memberScopeAllowed,
+	redactForMember,
+	scopeIssueLinksForMember
+} from '$lib/server/api/member-context';
+import { SHARED_EVENT_TYPES, sharedEventPayload } from '$lib/server/api/shared-events';
+import {
+	actorForProject,
 	resolveAccessibleProjectRef,
 	resolveIssueAccess,
 	resolveProjectAccess
@@ -46,7 +52,7 @@ export const load: PageServerLoad = async ({
 	isDataRequest
 }) => {
 	const db = getDb(platform!.env);
-	const userId = locals.user!.id;
+	const viewerId = locals.user!.id;
 	const actor = sessionActor(locals.user!);
 
 	// Mutations and the live poll refresh this page alone (see +page.svelte);
@@ -97,16 +103,12 @@ export const load: PageServerLoad = async ({
 			if (e instanceof ApiFail) error(e.status, e.message);
 			throw e;
 		});
-	if (access.role === 'member') {
-		const issue = await readSharedIssue(db, actor, { id: addressed.issue_id }).catch((e) => {
-			if (e instanceof ApiFail) error(e.status, e.message);
-			throw e;
-		});
-		const canonicalPath = `/issues/${encodeURIComponent(issue.project.id)}/${issue.number}`;
-		if (!isDataRequest && url.pathname !== canonicalPath)
-			redirect(307, `${canonicalPath}${url.search}`);
-		return { mode: 'member' as const, issue, canonicalPath };
-	}
+	// A member sees the owner's page for a shared issue, loaded with the
+	// owner's scope. What stays the owner's (runners, routing, run logs, the
+	// launch prompt, account-wide context and spend) is left out below.
+	const isMember = access.role === 'member';
+	const scopeActor = isMember ? await actorForProject(db, actor, access.projectId) : actor;
+	const userId = scopeActor.userId;
 
 	// Wave 1: the issue row (URLs address projects by name, joined here so the
 	// project resolve is not a round trip of its own) alongside the two lists
@@ -135,7 +137,7 @@ export const load: PageServerLoad = async ({
 		.where('user_id', '=', userId)
 		.executeTakeFirst();
 	const permissionReceipt =
-		sharing?.shared_at == null ? null : await readIssueConsent(db, userId, issue.id);
+		sharing?.shared_at == null ? null : await readIssueConsent(db, viewerId, issue.id);
 	const permissionRoster =
 		sharing?.shared_at == null ? [] : await listIssuePermissionRoster(db, issue.id);
 	const canonicalPath = `/issues/${encodeURIComponent(issue.project_id)}/${issue.number}`;
@@ -167,12 +169,25 @@ export const load: PageServerLoad = async ({
 
 	// The artifacts ride along on the detail (fetched in the same wave); expose
 	// them under exactly one name so nothing can read a stale second copy.
-	const { artifacts, ...issueDetail } = detail;
+	const { artifacts, ...ownerDetail } = detail;
+	const issueDetail = await scopeIssueLinksForMember(db, scopeActor, ownerDetail);
+	// A member's history is the shared allowlist: payloads that could name the
+	// owner's other projects or private fields stay out.
+	const visibleEvents = isMember
+		? events
+				.filter((event) => SHARED_EVENT_TYPES.includes(event.type))
+				.map((event) => ({
+					...event,
+					payload: sharedEventPayload(event.type, JSON.stringify(event.payload))
+				}))
+		: events;
 
 	// Awaited by two deferred entries; created once so the check is not made twice.
 	const hasAnyRunPromise = hasAnyRun(db, userId);
 	hasAnyRunPromise.catch(() => {});
 	const usagePromise = (async () => {
+		// Spend is the owner's account, not the project's.
+		if (isMember) return null;
 		const cutoff = Date.now();
 		const report = await getIssueUsage(db, userId, issue.id, cutoff, cutoff);
 		if (!report) throw new Error('Issue usage unavailable');
@@ -194,13 +209,16 @@ export const load: PageServerLoad = async ({
 	})();
 	usagePromise.catch(() => {});
 
+	const ownerOnly = <T>(value: T) => Promise.resolve(value);
 	return {
 		mode: 'owner' as const,
+		viewerRole: access.role,
+		viewerId,
 		issue: issueDetail,
 		permissionReceipt,
 		permissionRoster,
 		canonicalPath,
-		events,
+		events: visibleEvents,
 		workflows: await workflowsPromise,
 		// `projects` comes from the app layout.
 		artifacts: artifacts ?? [],
@@ -213,24 +231,40 @@ export const load: PageServerLoad = async ({
 			// Artifacts have their own panel; the context list shows the rest.
 			contextItems: listContextItems(
 				db,
-				actor,
+				scopeActor,
 				{ issue: issue.id },
 				{ cursor: null, limit: 100 }
-			).then((page) => page.items.filter((i) => i.kind !== 'artifact')),
+			).then(async (page) => {
+				const items = page.items.filter((i) => i.kind !== 'artifact');
+				if (!isMember) return items;
+				const allowed = await Promise.all(
+					items.map((item) => memberScopeAllowed(db, scopeActor, item.scope))
+				);
+				return items
+					.filter((_, index) => allowed[index])
+					.map((item) => redactForMember(scopeActor, item));
+			}),
 			// Display-only bundle: the panel shows skill file counts, never their
 			// contents, which can run to 100KB per skill on every page load.
-			effectiveContext: effectiveContextForIssue(db, userId, issue.id, { skillFiles: false }),
-			dispatch: explainDispatch(db, userId, issue.id, Date.now(), issue),
+			effectiveContext: isMember
+				? ownerOnly(null)
+				: effectiveContextForIssue(db, userId, issue.id, { skillFiles: false }),
+			// Routing and runner verdicts describe the owner's machines.
+			dispatch: isMember
+				? ownerOnly(null)
+				: explainDispatch(db, userId, issue.id, Date.now(), issue),
 			issueRuns: listRuns(db, userId, { issue: issue.id }, { cursor: null, limit: 20 }).then(
 				(page) => page.items
 			),
 			usage: usagePromise,
-			runners: listRunners(db, userId),
+			runners: isMember ? ownerOnly([]) : listRunners(db, userId),
 			// The first-run checklist: shown only while the account has never had
 			// a run, so the rules it needs are fetched only for that population —
 			// a steady-state page pays one existence check and nothing else.
-			hasAnyRun: hasAnyRunPromise,
-			rules: hasAnyRunPromise.then((has) => (has ? [] : listRoutingRules(db, userId)))
+			hasAnyRun: isMember ? ownerOnly(true) : hasAnyRunPromise,
+			rules: isMember
+				? ownerOnly([])
+				: hasAnyRunPromise.then((has) => (has ? [] : listRoutingRules(db, userId)))
 		}
 	};
 };

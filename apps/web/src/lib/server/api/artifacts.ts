@@ -53,7 +53,14 @@ import {
 } from '$lib/server/artifact-site';
 import { idChunks, newId, type Database } from '$lib/server/db';
 import { assertWritable } from './archive';
-import { ApiFail, notFound, optionalString, runAtomic, type ActorContext } from './core';
+import {
+	ApiFail,
+	attributedUserId,
+	notFound,
+	optionalString,
+	runAtomic,
+	type ActorContext
+} from './core';
 import { actorOf, eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
 import { projectReadPredicate, requireAccess } from './permissions';
@@ -870,7 +877,7 @@ function appendVersionQueries(
 				version,
 				...input.payload,
 				reaffirmed_from: input.reaffirmedFrom ?? null,
-				actor_user_id: actor.userId,
+				actor_user_id: attributedUserId(actor),
 				actor_api_key_id: actor.apiKeyId,
 				created_at: now
 			})
@@ -956,7 +963,7 @@ function createArtifactQueries(
 				version: 1,
 				...input.payload,
 				reaffirmed_from: null,
-				actor_user_id: actor.userId,
+				actor_user_id: attributedUserId(actor),
 				actor_api_key_id: actor.apiKeyId,
 				created_at: now
 			},

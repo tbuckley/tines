@@ -57,7 +57,9 @@ function printScheduleDetail(s: Schedule): void {
 		console.log(`\ntitle template: ${shared.title_template}`);
 		if (shared.description_template)
 			console.log(`description template:\n${shared.description_template}`);
-		console.log('\nThis shared schedule is read only in the current release.');
+		console.log(
+			'\nMembers edit, pause, run and delete shared schedules with `tines schedules` as the owner does.'
+		);
 		return;
 	}
 	console.log(`${scheduleRef(s)}  [${s.id}]${s.enabled ? '' : '  (paused)'}`);
