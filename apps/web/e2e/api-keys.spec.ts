@@ -1,7 +1,8 @@
+import type { ContextItem, EffectiveContext, LaunchPromptResponse, Project } from '@tines/shared';
 import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE, RUNROW, RUNROW_FAILED } from './constants.mjs';
-import { gotoHydrated, signIn } from './helpers';
+import { gotoHydrated, runId, signIn } from './helpers';
 
 /**
  * The API keys page folds run keys — one is minted per agent run and never
@@ -262,5 +263,154 @@ test.describe.serial('API keys page', () => {
 		});
 		expect(deniedLink.status()).toBe(403);
 		expect((await deniedLink.json()).error.code).toBe('run_key_forbidden');
+	});
+
+	test('a run key reads its issue context and prompts but not another project', async ({
+		page
+	}) => {
+		const ownerHeaders = { authorization: `Bearer ${ALICE.apiKey}` };
+		const runHeaders = { authorization: `Bearer ${RUNROW.runKey}` };
+		const body = `Run context read marker ${runId}`;
+		const created = await page.request.post('/api/v1/context', {
+			headers: ownerHeaders,
+			data: { kind: 'prompt', name: `run-read-${runId}`, body, issue_id: RUNROW.runKeyIssueId }
+		});
+		expect(created.status()).toBe(201);
+
+		const context = await page.request.get(`/api/v1/issues/${RUNROW.runKeyIssueId}/context`, {
+			headers: runHeaders
+		});
+		expect(context.status()).toBe(200);
+		expect(((await context.json()) as EffectiveContext).prompt.text).toContain(body);
+		for (const suffix of ['', '?resume=1']) {
+			const prompt = await page.request.get(
+				`/api/v1/issues/${RUNROW.runKeyIssueId}/prompt${suffix}`,
+				{
+					headers: runHeaders
+				}
+			);
+			expect(prompt.status()).toBe(200);
+			const text = ((await prompt.json()) as LaunchPromptResponse).text;
+			expect(text).toContain(`${RUNROW.projectName}/${RUNROW.runKeyIssueNumber}`);
+			expect(text.length).toBeGreaterThan(100);
+			if (!suffix) expect(text).toContain(body);
+		}
+
+		const projectResponse = await page.request.post('/api/v1/projects', {
+			headers: ownerHeaders,
+			data: { name: `run-read-outside-${runId}` }
+		});
+		expect(projectResponse.status()).toBe(201);
+		const project = (await projectResponse.json()) as Project;
+		const issueResponse = await page.request.post(`/api/v1/projects/${project.id}/issues`, {
+			headers: ownerHeaders,
+			data: { title: `Run read outside project ${runId}` }
+		});
+		expect(issueResponse.status()).toBe(201);
+		const issue = (await issueResponse.json()) as { id: string };
+		for (const endpoint of ['context', 'prompt']) {
+			const denied = await page.request.get(`/api/v1/issues/${issue.id}/${endpoint}`, {
+				headers: runHeaders
+			});
+			expect(denied.status()).toBe(403);
+			expect((await denied.json()).error).toMatchObject({
+				code: 'run_key_forbidden',
+				details: { reason: 'outside_run_project' }
+			});
+		}
+	});
+
+	test('issue context and prompts require their stored read domains', async ({ page }) => {
+		const ownerHeaders = { authorization: `Bearer ${ALICE.apiKey}` };
+		const createdKeyIds: string[] = [];
+		const createRestrictedKey = async (
+			workspace: 'none' | 'read',
+			controlPlane: 'none' | 'read'
+		) => {
+			const response = await page.request.post('/api/v1/api-keys', {
+				headers: ownerHeaders,
+				data: {
+					name: `issue-read-${workspace}-${controlPlane}-${runId}`,
+					permissions: {
+						version: 1,
+						projects: { access: 'read', scope: [RUNROW.projectId] },
+						workspace,
+						control_plane: controlPlane
+					}
+				}
+			});
+			expect(response.status()).toBe(201);
+			const key = (await response.json()) as { id: string; key: string };
+			createdKeyIds.push(key.id);
+			return { authorization: `Bearer ${key.key}` };
+		};
+		const issuePath = `/api/v1/issues/${RUNROW.runKeyIssueId}`;
+		try {
+			const noWorkspace = await createRestrictedKey('none', 'read');
+			const deniedContext = await page.request.get(`${issuePath}/context`, {
+				headers: noWorkspace
+			});
+			expect(deniedContext.status()).toBe(403);
+			expect((await deniedContext.json()).error).toMatchObject({
+				code: 'insufficient_permissions',
+				details: { domain: 'workspace' }
+			});
+
+			const noControlPlane = await createRestrictedKey('read', 'none');
+			for (const suffix of ['', '?resume=1']) {
+				const deniedPrompt = await page.request.get(`${issuePath}/prompt${suffix}`, {
+					headers: noControlPlane
+				});
+				expect(deniedPrompt.status(), suffix || 'launch prompt').toBe(403);
+				expect((await deniedPrompt.json()).error).toMatchObject({
+					code: 'insufficient_permissions',
+					details: { domain: 'control_plane' }
+				});
+			}
+
+			const allowed = await createRestrictedKey('read', 'read');
+			for (const path of ['context', 'prompt', 'prompt?resume=1']) {
+				const response = await page.request.get(`${issuePath}/${path}`, { headers: allowed });
+				expect(response.status(), path).toBe(200);
+			}
+		} finally {
+			for (const id of createdKeyIds) {
+				await page.request.delete(`/api/v1/api-keys/${id}`, { headers: ownerHeaders });
+			}
+		}
+	});
+
+	test('a run key cannot re-scope shared context to its issue', async ({ page }) => {
+		const ownerHeaders = { authorization: `Bearer ${ALICE.apiKey}` };
+		const runHeaders = { authorization: `Bearer ${RUNROW.runKey}` };
+		const originalBody = `Shared prompt ${runId}`;
+		const created = await page.request.post('/api/v1/context', {
+			headers: ownerHeaders,
+			data: {
+				kind: 'prompt',
+				name: `run-rescope-${runId}`,
+				body: originalBody,
+				project_id: RUNROW.projectId
+			}
+		});
+		expect(created.status()).toBe(201);
+		const original = (await created.json()) as ContextItem;
+		const denied = await page.request.patch(`/api/v1/context/${original.id}`, {
+			headers: runHeaders,
+			data: { issue_id: RUNROW.runKeyIssueId, body: 'should never land' }
+		});
+		expect(denied.status()).toBe(403);
+		expect((await denied.json()).error).toMatchObject({
+			code: 'run_key_forbidden',
+			details: { reason: 'context_not_issue_scoped' }
+		});
+		const unchanged = await page.request.get(`/api/v1/context/${original.id}`, {
+			headers: ownerHeaders
+		});
+		expect(unchanged.status()).toBe(200);
+		const item = (await unchanged.json()) as ContextItem;
+		expect(item.scope).toEqual(original.scope);
+		expect(item.body).toBe(originalBody);
+		expect(item.version).toBe(original.version);
 	});
 });

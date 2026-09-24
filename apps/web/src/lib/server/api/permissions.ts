@@ -75,6 +75,13 @@ const RUN_OPERATIONS = new Set([
 	'library.export'
 ]);
 
+const CONTEXT_MUTATIONS = new Set([
+	'context.create',
+	'context.update',
+	'context.append',
+	'context.delete'
+]);
+
 function requireRunOperation(
 	actor: ActorContext,
 	operation: string,
@@ -109,11 +116,7 @@ function requireRunOperation(
 	if (boundIssueWrite.has(operation) && target.issueId !== run.issueId) {
 		throw runKeyForbidden({ operation, reason: 'outside_run_issue' });
 	}
-	if (
-		operation.startsWith('context.') &&
-		!operation.startsWith('journal.') &&
-		target.issueScoped !== true
-	) {
+	if (CONTEXT_MUTATIONS.has(operation) && target.issueScoped !== true) {
 		throw runKeyForbidden({ operation, reason: 'context_not_issue_scoped' });
 	}
 	if (operation.startsWith('journal.') && !target.boundJournal) {
