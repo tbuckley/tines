@@ -42,7 +42,7 @@ test('shared project pages use the app UI at desktop, phone, and 320px', async (
 	);
 	await body(
 		await owner.post(`/api/v1/issues/${issue.id}/comments`, {
-			body: 'The checklist is ready for review.'
+			body: '**The checklist** is ready for review.'
 		})
 	);
 	await body(await owner.post(`/api/v1/issues/${issue.id}/transition`, { action: 'Review' }));
@@ -101,6 +101,7 @@ test('shared project pages use the app UI at desktop, phone, and 320px', async (
 		).toBeVisible();
 		await memberPage.reload();
 		await expect(memberPage.getByText('The checklist is ready for review.')).toBeVisible();
+		await expect(memberPage.locator('.markdown strong').getByText('The checklist')).toBeVisible();
 		await expect(
 			memberPage.locator('[data-event-id]').filter({ hasText: 'allowed their agents' })
 		).toHaveCount(1);

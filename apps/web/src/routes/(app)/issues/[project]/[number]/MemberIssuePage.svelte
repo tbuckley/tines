@@ -204,8 +204,41 @@
 		Blocked by another issue.
 	</p>{/if}
 
-<div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-	<div class="min-w-0 space-y-6">
+<div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-[auto_1fr]">
+	{#if data.issue.capabilities.decide}<section
+			class="rounded-lg border p-4 lg:col-start-2 lg:row-start-1"
+			aria-labelledby="decision-heading"
+		>
+			<h2 id="decision-heading" class="text-sm font-semibold">Decide this issue</h2>
+			<label for="member-transition" class="mt-3 block text-sm">Transition</label>
+			<Select
+				id="member-transition"
+				aria-label="Transition"
+				class="mt-1 min-h-11"
+				bind:value={decisionId}
+				onchange={() => (transitionAllowsAgents = data.issue.my_choice.value !== 'off')}
+				disabled={saving}
+			>
+				<option value="">Choose a transition</option
+				>{#each data.issue.workflow.transitions as transition (transition.id)}<option
+						value={transition.id}>{transition.name}</option
+					>{/each}
+			</Select>
+			{#if chosenDestination?.category === 'active'}<label
+					class="mt-3 block text-sm"
+					for="transition-permission">My agents after this decision</label
+				><Select
+					id="transition-permission"
+					class="mt-1 min-h-11"
+					bind:value={transitionAllowsAgents}
+					disabled={saving}
+					><option value={true}>On</option><option value={false}>Off</option></Select
+				>{#if transitionAllowsAgents}<PersonalPermissionWarning role="member" />{/if}{/if}
+			<Button class="mt-3 w-full" onclick={decide} disabled={saving || !decisionId}
+				>Apply decision</Button
+			>
+		</section>{/if}
+	<div class="min-w-0 space-y-6 lg:col-start-1 lg:row-span-2 lg:row-start-1">
 		<section class="rounded-lg border" aria-labelledby="description-heading">
 			<header class="border-b px-4 py-2.5">
 				<h2 id="description-heading" class="text-sm font-semibold">Description</h2>
@@ -298,40 +331,11 @@
 			</div>
 		</section>
 	</div>
-	<aside class="min-w-0 space-y-6">
-		{#if data.issue.capabilities.decide}<section
-				class="rounded-lg border p-4"
-				aria-labelledby="decision-heading"
-			>
-				<h2 id="decision-heading" class="text-sm font-semibold">Decide this issue</h2>
-				<label for="member-transition" class="mt-3 block text-sm">Transition</label>
-				<Select
-					id="member-transition"
-					aria-label="Transition"
-					class="mt-1 min-h-11"
-					bind:value={decisionId}
-					onchange={() => (transitionAllowsAgents = data.issue.my_choice.value !== 'off')}
-					disabled={saving}
-				>
-					<option value="">Choose a transition</option
-					>{#each data.issue.workflow.transitions as transition (transition.id)}<option
-							value={transition.id}>{transition.name}</option
-						>{/each}
-				</Select>
-				{#if chosenDestination?.category === 'active'}<label
-						class="mt-3 block text-sm"
-						for="transition-permission">My agents after this decision</label
-					><Select
-						id="transition-permission"
-						class="mt-1 min-h-11"
-						bind:value={transitionAllowsAgents}
-						disabled={saving}
-						><option value={true}>On</option><option value={false}>Off</option></Select
-					>{#if transitionAllowsAgents}<PersonalPermissionWarning role="member" />{/if}{/if}
-				<Button class="mt-3 w-full" onclick={decide} disabled={saving || !decisionId}
-					>Apply decision</Button
-				>
-			</section>{/if}
+	<aside
+		class="min-w-0 space-y-6 lg:col-start-2 {data.issue.capabilities.decide
+			? 'lg:row-start-2'
+			: 'lg:row-start-1'}"
+	>
 		<section class="rounded-lg border p-4" aria-labelledby="people-heading">
 			<h2 id="people-heading" class="text-sm font-semibold">People and permission</h2>
 			<ul class="mt-3 divide-y text-sm">
