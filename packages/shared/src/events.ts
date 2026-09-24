@@ -142,6 +142,14 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 		});
 		return segs;
 	},
+	'issue.personal_permission_changed': (_ev, p) => [
+		text(`${p.value === 'on' ? 'allowed' : 'stopped'} their agents on`),
+		selfRef()
+	],
+	'issue.agent_hold_changed': (_ev, p) => [
+		text(p.held ? 'held agents on' : 'released the agent hold on'),
+		selfRef()
+	],
 	'issue.commented': () => [text('commented on'), selfRef()],
 	'issue.comment_edited': () => [text('edited a comment on'), selfRef()],
 	'issue.comment_deleted': () => [text('deleted a comment on'), selfRef()],
@@ -163,6 +171,9 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'project.deleted': (ev, p) => projectSegments(ev, p),
 	'project.archived': (ev, p) => projectSegments(ev, p),
 	'project.unarchived': (ev, p) => projectSegments(ev, p),
+	'project.sharing_started': () => [text('started sharing this project')],
+	'project.member_joined': () => [text('joined this project')],
+	'project.member_removed': () => [text('removed a member from this project')],
 	'workflow.created': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
 	'workflow.updated': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
 	'workflow.deleted': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],

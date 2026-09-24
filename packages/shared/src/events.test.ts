@@ -54,6 +54,8 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 		from_state_name: 'Backlog',
 		to_state_name: 'Design'
 	},
+	'issue.personal_permission_changed': { value: 'on', revision: 2 },
+	'issue.agent_hold_changed': { held: true },
 	'issue.commented': { comment_id: 'cmt_1' },
 	'issue.comment_edited': { comment_id: 'cmt_1', changed: ['body'] },
 	'issue.comment_deleted': { comment_id: 'cmt_1', body_length: 42 },
@@ -90,6 +92,9 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 		issues_read_only: 91
 	},
 	'project.unarchived': { name: 'Tines', schedules_resumed: 2 },
+	'project.sharing_started': {},
+	'project.member_joined': {},
+	'project.member_removed': {},
 	'workflow.created': { name: 'Engineering' },
 	'workflow.updated': { name: 'Engineering' },
 	'workflow.deleted': { name: 'Engineering' },
@@ -152,6 +157,14 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 };
 
 describe('describeEvent / eventSummary', () => {
+	it('names an issue permission change without exposing the raw event type', () => {
+		expect(eventSummary(event('issue.personal_permission_changed', { value: 'on' }))).toBe(
+			'allowed their agents on Tines/#49'
+		);
+		expect(eventSummary(event('issue.personal_permission_changed', { value: 'off' }))).toBe(
+			'stopped their agents on Tines/#49'
+		);
+	});
 	// The regression this whole module exists for: two hand-maintained switches
 	// drifted, and `issue.link_added` fell through to the bare type string in the
 	// CLI. Nothing may fall through again.

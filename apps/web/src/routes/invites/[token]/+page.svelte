@@ -2,6 +2,7 @@
 	import { goto, invalidateAll } from '$app/navigation';
 	import { authClient } from '$lib/auth-client';
 	import MarketingSignIn from '$lib/components/marketing/MarketingSignIn.svelte';
+	import { Button } from '$lib/components/ui/button/index.js';
 	let { data } = $props();
 	let signIn = $state<MarketingSignIn>();
 	let pending = $state(false);
@@ -34,7 +35,7 @@
 </script>
 
 <main class="mx-auto flex min-h-screen max-w-xl items-center px-5 py-12">
-	<section class="w-full rounded-xl border p-6">
+	<section class="bg-card w-full rounded-xl border p-6 shadow-sm">
 		<h1 class="text-2xl font-semibold">Join {data.invitation.project.name}</h1>
 		<p class="mt-3">
 			{data.invitation.project.owner} invited you to the whole project. Members can read its issues and
@@ -46,28 +47,25 @@
 		{#if data.invitation.status === 'expired'}
 			<p class="mt-5" role="status">This invitation expired. Ask the owner to resend it.</p>
 		{:else if !data.invitation.signed_in}
-			<button
-				class="mt-5 rounded-md border px-4 py-3"
-				onclick={(event) => signIn?.open(event.currentTarget)}>Sign in to continue</button
+			<Button class="mt-5" onclick={(event) => signIn?.open(event.currentTarget)}
+				>Sign in to continue</Button
 			>
 		{:else if !data.invitation.matching_account}
 			<p class="mt-5" role="status">
 				Switch to the verified account that received this invitation.
 			</p>
-			<button class="mt-3 rounded-md border px-4 py-3" onclick={switchAccount}
-				>Switch account</button
-			>
+			<Button class="mt-3" onclick={switchAccount}>Switch account</Button>
 		{:else}
 			<p class="mt-5">Signed in as {data.invitation.email}.</p>
-			<button class="mt-3 rounded-md border px-4 py-3" disabled={pending} onclick={accept}
+			<Button class="mt-3" disabled={pending} onclick={accept}
 				>{data.invitation.status === 'accepted'
 					? 'Open project'
 					: pending
 						? 'Joining…'
-						: 'Join project'}</button
+						: 'Join project'}</Button
 			>
 		{/if}
-		{#if error}<p class="mt-3 text-red-600" role="alert">{error}</p>{/if}
+		{#if error}<p class="text-destructive mt-3" role="alert">{error}</p>{/if}
 	</section>
 </main>
 {#if !data.invitation.signed_in}<MarketingSignIn bind:this={signIn} {returnTo} />{/if}

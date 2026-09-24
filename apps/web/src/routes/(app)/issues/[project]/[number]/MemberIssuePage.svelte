@@ -3,8 +3,49 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
+	import EventList from '$lib/components/EventList.svelte';
+	import Markdown from '$lib/components/Markdown.svelte';
+	import StateBadge from '$lib/components/StateBadge.svelte';
+	import { Button } from '$lib/components/ui/button/index.js';
+	import { Select } from '$lib/components/ui/select/index.js';
+	import { Textarea } from '$lib/components/ui/textarea/index.js';
+	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
+	import { relativeTime } from '$lib/format';
+	import type { TinesEvent } from '@tines/shared';
 	let { data } = $props();
 	let commentDraft = $state('');
+	const historyEvents = $derived(
+		data.issue.history.map(
+			(event: {
+				id: string;
+				type: string;
+				created_at: number;
+				actor_user_id: string;
+				actor_name: string;
+				payload: Record<string, unknown>;
+			}): TinesEvent => ({
+				id: event.id,
+				type: event.type,
+				created_at: event.created_at,
+				actor: {
+					user_id: event.actor_user_id,
+					user_name: event.actor_name,
+					api_key_id: null,
+					api_key_name: null
+				},
+				issue_id: data.issue.id,
+				project_id: data.issue.project.id,
+				issue_ref: {
+					project_id: data.issue.project.id,
+					project_name: data.issue.project.name,
+					number: data.issue.number,
+					title: data.issue.title
+				},
+				project_name: data.issue.project.name,
+				payload: event.payload
+			})
+		)
+	);
 	let editingId = $state<string | null>(null);
 	let editingDraft = $state('');
 	let saving = $state(false);
@@ -132,188 +173,238 @@
 </script>
 
 <svelte:head><title>{data.issue.title} · Tines</title></svelte:head>
-<main class="mx-auto max-w-4xl px-4 py-6">
-	<a class="text-sm underline" href={`/projects/${data.issue.project.id}`}
-		>← {data.issue.project.name}</a
+<div class="mb-6">
+	<a
+		href={`/projects/${data.issue.project.id}`}
+		class="text-muted-foreground hover:text-foreground mb-3 inline-flex max-w-full min-w-0 items-center gap-1 text-sm"
 	>
-	<p class="text-muted-foreground mt-5 text-sm">
-		#{data.issue.number} · {data.issue.state.name} · Shared by {data.issue.project.owner.name}
+		<IconChevronLeft size={16} class="shrink-0" /><span class="truncate"
+			>{data.issue.project.name}</span
+		>
+	</a>
+	<p class="text-muted-foreground text-sm">
+		{data.issue.project.name}/#{data.issue.number} · Shared by {data.issue.project.owner.name}
 	</p>
-	<h1 class="mt-2 text-2xl font-semibold">{data.issue.title}</h1>
-	{#if error}<p role="alert" class="text-destructive mt-3">
-			{error} Refresh before trying a stale decision again.
-		</p>{/if}
-	{#if notice}<p role="status" class="mt-3">{notice}</p>{/if}
-	{#if data.issue.description}<div class="mt-5 whitespace-pre-wrap">
-			{data.issue.description}
-		</div>{/if}
-	{#if data.issue.blocked_by_private_issue}<p class="mt-5" role="status">
-			Blocked by another issue.
-		</p>{/if}
-	{#if data.issue.capabilities.decide}
-		<section class="mt-6 rounded-lg border p-4" aria-labelledby="decision-heading">
-			<h2 id="decision-heading" class="font-semibold">Decide this issue</h2>
-			<select
-				aria-label="Transition"
-				class="mt-3 min-h-11 rounded border p-2"
-				bind:value={decisionId}
-				onchange={() => (transitionAllowsAgents = data.issue.my_choice.value !== 'off')}
-				disabled={saving}
-			>
-				<option value="">Choose a transition</option>
-				{#each data.issue.workflow.transitions as transition (transition.id)}
-					<option value={transition.id}>{transition.name}</option>
-				{/each}
-			</select>
-			{#if chosenDestination?.category === 'active'}
-				<label class="mt-3 block" for="transition-permission">My agents after this decision</label>
-				<select
-					id="transition-permission"
-					class="mt-2 min-h-11 rounded border p-2"
-					bind:value={transitionAllowsAgents}
-					disabled={saving}
-				>
-					<option value={true}>On</option><option value={false}>Off</option>
-				</select>
-				{#if transitionAllowsAgents}<PersonalPermissionWarning role="member" />{/if}
-			{/if}
-			<button
-				class="ml-2 min-h-11 rounded border px-4"
-				onclick={decide}
-				disabled={saving || !decisionId}>Apply decision</button
-			>
-		</section>
-	{/if}
-	{#if data.issue.links.length > 0}
-		<section class="mt-6" aria-labelledby="links-heading">
-			<h2 id="links-heading" class="font-semibold">Linked issues</h2>
-			<ul class="mt-2 space-y-2">
-				{#each data.issue.links as link (link.id)}
-					<li>
-						{link.relation} ·
-						<a
-							class="underline"
-							href={`/issues/${encodeURIComponent(link.project_id)}/${link.number}`}
-							>{link.project_name}/#{link.number} · {link.title}</a
-						>
-					</li>
-				{/each}
-			</ul>
-		</section>
-	{/if}
-	<section class="mt-8" aria-labelledby="people-heading">
-		<h2 id="people-heading" class="text-lg font-semibold">People and permission</h2>
-		<ul class="mt-3 space-y-2">
-			{#each data.issue.roster as person (person.user.id)}<li class="rounded border p-3">
-					{person.user.name}{person.user.id === data.issue.viewer_id ? ' (You)' : ''} · {person.role}
-					· {person.value}
-				</li>{/each}
-		</ul>
-		{#if data.issue.capabilities.personal_permission}
-			<div class="mt-4 rounded border p-3">
-				<label for="my-issue-permission" class="block font-medium">My agents on this issue</label>
-				<select
-					id="my-issue-permission"
-					class="mt-2 min-h-11 rounded border p-2"
-					bind:value={choice}
-					onchange={() => (choiceDirty = true)}
-					disabled={saving}
-				>
-					<option value="off">Off</option><option value="on">On</option>
-				</select>
-				<button class="ml-2 min-h-11 rounded border px-4" onclick={saveChoice} disabled={saving}
-					>Save permission</button
-				>
-				{#if choice === 'on'}<PersonalPermissionWarning role="member" />{/if}
+	<div class="mt-2 flex flex-wrap items-center gap-3">
+		<h1 class="min-w-0 text-2xl font-semibold tracking-tight wrap-anywhere">{data.issue.title}</h1>
+		<StateBadge state={data.issue.state} />
+	</div>
+</div>
+{#if error}<p
+		role="alert"
+		class="border-destructive/40 bg-destructive/10 text-destructive mb-4 rounded-md border p-3 text-sm"
+	>
+		{error} Refresh before trying a stale decision again.
+	</p>{/if}
+{#if notice}<p role="status" class="bg-muted mb-4 rounded-md p-3 text-sm">{notice}</p>{/if}
+{#if data.issue.blocked_by_private_issue}<p
+		class="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
+		role="status"
+	>
+		Blocked by another issue.
+	</p>{/if}
+
+<div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+	<div class="min-w-0 space-y-6">
+		<section class="rounded-lg border" aria-labelledby="description-heading">
+			<header class="border-b px-4 py-2.5">
+				<h2 id="description-heading" class="text-sm font-semibold">Description</h2>
+			</header>
+			<div class="p-4">
+				{#if data.issue.description}<Markdown source={data.issue.description} />{:else}<p
+						class="text-muted-foreground text-sm italic"
+					>
+						No description.
+					</p>{/if}
 			</div>
-		{/if}
-		<p class="mt-2">
-			Your agents cannot run on this project in this release. Uses this project's guidance and
-			workflows. Execution guidance will be available with member execution.
-		</p>
-		<a class="mt-2 inline-block underline" href={`/projects/${data.issue.project.id}/people`}
-			>View people</a
-		>
-	</section>
-	<section class="mt-8" aria-labelledby="run-heading">
-		<h2 id="run-heading" class="text-lg font-semibold">Latest run</h2>
-		<p class="mt-2">{data.issue.latest_run?.status ?? 'No run yet'}</p>
-	</section>
-	<section class="mt-8" aria-labelledby="comments-heading">
-		<h2 id="comments-heading" class="text-lg font-semibold">Comments</h2>
-		{#if data.issue.comments.length === 0}<p class="mt-3">No comments yet.</p>{:else}<ul
-				class="mt-3 space-y-4"
-			>
-				{#each data.issue.comments as comment (comment.id)}<li class="rounded-lg border p-4">
-						<p class="text-sm font-medium">
-							{comment.author.name}{comment.author.run ? ` · via ${comment.author.run.name}` : ''}
-						</p>
-						<p class="mt-2 whitespace-pre-wrap">{comment.body}</p>
-						{#if comment.editor}<p class="text-muted-foreground mt-2 text-xs">
-								Edited by {comment.editor.name}
-							</p>{/if}
-						{#if comment.author.id === data.issue.viewer_id}
-							{#if editingId === comment.id}
-								<textarea
-									aria-label="Edit comment"
-									class="mt-3 w-full rounded border p-2"
-									bind:value={editingDraft}></textarea>
-								<button
-									class="min-h-11 rounded border px-3"
-									onclick={() => editComment(comment.id)}
-									disabled={saving}>Save edit</button
+		</section>
+		<section aria-labelledby="comments-heading">
+			<h2 id="comments-heading" class="mb-3 text-sm font-semibold">Comments</h2>
+			{#if data.issue.comments.length === 0}<p
+					class="text-muted-foreground rounded-lg border border-dashed p-6 text-center text-sm"
+				>
+					No comments yet.
+				</p>{:else}
+				<ul class="space-y-3">
+					{#each data.issue.comments as comment (comment.id)}<li class="rounded-lg border p-4">
+							<div class="flex flex-wrap items-center justify-between gap-2">
+								<p class="text-sm font-medium">
+									{comment.author.name}{comment.author.run
+										? ` · via ${comment.author.run.name}`
+										: ''}
+								</p>
+								<time
+									class="text-muted-foreground text-xs"
+									datetime={new Date(comment.created_at).toISOString()}
+									>{relativeTime(comment.created_at)}</time
 								>
-							{:else}<button
-									class="mt-2 min-h-11 underline"
-									onclick={() => {
-										editingId = comment.id;
-										editingDraft = comment.body;
-									}}>Edit</button
-								>{/if}
-							<button
-								class="ml-3 min-h-11 underline"
-								onclick={() => removeComment(comment.id)}
-								disabled={saving}>Delete</button
-							>
-						{/if}
-					</li>{/each}
-			</ul>{/if}
-		<textarea
-			aria-label="New comment"
-			class="mt-4 min-h-24 w-full rounded border p-2"
-			bind:value={commentDraft}></textarea>
-		<button
-			class="mt-2 min-h-11 rounded border px-4"
-			onclick={addComment}
-			disabled={saving || !commentDraft.trim()}>Post comment</button
-		>
-	</section>
-	<section class="mt-8" aria-labelledby="artifacts-heading">
-		<h2 id="artifacts-heading" class="text-lg font-semibold">Artifacts</h2>
-		{#if data.issue.artifacts.length === 0}<p class="mt-3">No artifacts yet.</p>{:else}<ul
-				class="mt-3 space-y-2"
+							</div>
+							<div class="mt-2"><Markdown source={comment.body} /></div>
+							{#if comment.editor}<p class="text-muted-foreground mt-2 text-xs">
+									Edited by {comment.editor.name}
+								</p>{/if}
+							{#if comment.author.id === data.issue.viewer_id}
+								<div class="mt-2 flex flex-wrap items-center gap-2">
+									{#if editingId === comment.id}<Textarea
+											aria-label="Edit comment"
+											class="min-h-24 w-full"
+											bind:value={editingDraft}
+										/><Button size="sm" onclick={() => editComment(comment.id)} disabled={saving}
+											>Save edit</Button
+										><Button size="sm" variant="ghost" onclick={() => (editingId = null)}
+											>Cancel</Button
+										>
+									{:else}<Button
+											size="sm"
+											variant="ghost"
+											onclick={() => {
+												editingId = comment.id;
+												editingDraft = comment.body;
+											}}>Edit</Button
+										>{/if}
+									<Button
+										size="sm"
+										variant="ghost"
+										onclick={() => removeComment(comment.id)}
+										disabled={saving}>Delete</Button
+									>
+								</div>
+							{/if}
+						</li>{/each}
+				</ul>
+			{/if}
+			<div class="mt-4 space-y-2">
+				<label class="text-sm font-medium" for="member-new-comment">Add a comment</label><Textarea
+					id="member-new-comment"
+					aria-label="New comment"
+					class="min-h-24"
+					bind:value={commentDraft}
+					placeholder="Write a comment in Markdown…"
+				/><Button onclick={addComment} disabled={saving || !commentDraft.trim()}
+					>Post comment</Button
+				>
+			</div>
+		</section>
+		<section class="rounded-lg border" aria-labelledby="history-heading">
+			<header class="border-b px-4 py-2.5">
+				<h2 id="history-heading" class="text-sm font-semibold">History</h2>
+			</header>
+			<div class="p-3">
+				<EventList
+					events={historyEvents}
+					showIssueLinks={false}
+					emptyMessage="No shared history yet."
+				/>
+			</div>
+		</section>
+	</div>
+	<aside class="min-w-0 space-y-6">
+		{#if data.issue.capabilities.decide}<section
+				class="rounded-lg border p-4"
+				aria-labelledby="decision-heading"
 			>
-				{#each data.issue.artifacts as artifact (artifact.id)}<li>
-						<a
-							class="underline"
-							href={`/api/v1/issues/${data.issue.id}/artifacts/${encodeURIComponent(artifact.name)}/content`}
-							>{artifact.name}</a
+				<h2 id="decision-heading" class="text-sm font-semibold">Decide this issue</h2>
+				<label for="member-transition" class="mt-3 block text-sm">Transition</label>
+				<Select
+					id="member-transition"
+					aria-label="Transition"
+					class="mt-1 min-h-11"
+					bind:value={decisionId}
+					onchange={() => (transitionAllowsAgents = data.issue.my_choice.value !== 'off')}
+					disabled={saving}
+				>
+					<option value="">Choose a transition</option
+					>{#each data.issue.workflow.transitions as transition (transition.id)}<option
+							value={transition.id}>{transition.name}</option
+						>{/each}
+				</Select>
+				{#if chosenDestination?.category === 'active'}<label
+						class="mt-3 block text-sm"
+						for="transition-permission">My agents after this decision</label
+					><Select
+						id="transition-permission"
+						class="mt-1 min-h-11"
+						bind:value={transitionAllowsAgents}
+						disabled={saving}
+						><option value={true}>On</option><option value={false}>Off</option></Select
+					>{#if transitionAllowsAgents}<PersonalPermissionWarning role="member" />{/if}{/if}
+				<Button class="mt-3 w-full" onclick={decide} disabled={saving || !decisionId}
+					>Apply decision</Button
+				>
+			</section>{/if}
+		<section class="rounded-lg border p-4" aria-labelledby="people-heading">
+			<h2 id="people-heading" class="text-sm font-semibold">People and permission</h2>
+			<ul class="mt-3 divide-y text-sm">
+				{#each data.issue.roster as person (person.user.id)}<li
+						class="flex flex-wrap items-center justify-between gap-2 py-2"
+					>
+						<span
+							>{person.user.name}{person.user.id === data.issue.viewer_id ? ' (You)' : ''}<span
+								class="text-muted-foreground"
+							>
+								· {person.role}</span
+							></span
+						><span class="bg-muted rounded-full px-2 py-0.5 text-xs capitalize">{person.value}</span
 						>
 					</li>{/each}
-			</ul>{/if}
-	</section>
-	<section class="mt-8" aria-labelledby="history-heading">
-		<h2 id="history-heading" class="text-lg font-semibold">History</h2>
-		{#if data.issue.history.length === 0}<p class="mt-3">No shared history yet.</p>{:else}<ul
-				class="mt-3 space-y-2"
+			</ul>
+			{#if data.issue.capabilities.personal_permission}<div class="mt-4 border-t pt-4">
+					<label for="my-issue-permission" class="text-sm font-medium"
+						>My agents on this issue</label
+					><Select
+						id="my-issue-permission"
+						class="mt-2 min-h-11"
+						bind:value={choice}
+						onchange={() => (choiceDirty = true)}
+						disabled={saving}><option value="off">Off</option><option value="on">On</option></Select
+					><Button class="mt-2 w-full" onclick={saveChoice} disabled={saving}
+						>Save permission</Button
+					>{#if choice === 'on'}<PersonalPermissionWarning role="member" />{/if}
+				</div>{/if}
+			<p class="text-muted-foreground mt-3 text-xs">
+				Your agents cannot run on this project in this release. Execution guidance will be available
+				with member execution.
+			</p>
+			<a
+				class="text-primary mt-3 inline-block text-sm hover:underline"
+				href={`/projects/${data.issue.project.id}/people`}>View people</a
 			>
-				{#each data.issue.history as event (event.id)}<li data-event-id={event.id}>
-						{event.actor_name} · {event.type}
-						{event.type === 'issue.transitioned'
-							? ` · ${event.payload.from_state_name ?? ''} → ${event.payload.to_state_name ?? ''}`
-							: ''}
-						· {new Date(event.created_at).toLocaleString()}
-					</li>{/each}
-			</ul>{/if}
-	</section>
-</main>
+		</section>
+		<section class="rounded-lg border p-4" aria-labelledby="run-heading">
+			<h2 id="run-heading" class="text-sm font-semibold">Latest run</h2>
+			<p class="text-muted-foreground mt-2 text-sm">
+				{data.issue.latest_run?.status ?? 'No run yet'}
+			</p>
+		</section>
+		{#if data.issue.links.length > 0}<section
+				class="rounded-lg border p-4"
+				aria-labelledby="links-heading"
+			>
+				<h2 id="links-heading" class="text-sm font-semibold">Linked issues</h2>
+				<ul class="mt-2 space-y-2 text-sm">
+					{#each data.issue.links as link (link.id)}<li>
+							{link.relation} ·
+							<a
+								class="text-primary hover:underline"
+								href={`/issues/${encodeURIComponent(link.project_id)}/${link.number}`}
+								>{link.project_name}/#{link.number} · {link.title}</a
+							>
+						</li>{/each}
+				</ul>
+			</section>{/if}
+		<section class="rounded-lg border p-4" aria-labelledby="artifacts-heading">
+			<h2 id="artifacts-heading" class="text-sm font-semibold">Artifacts</h2>
+			{#if data.issue.artifacts.length === 0}<p class="text-muted-foreground mt-2 text-sm">
+					No artifacts yet.
+				</p>{:else}<ul class="mt-2 space-y-2 text-sm">
+					{#each data.issue.artifacts as artifact (artifact.id)}<li>
+							<a
+								class="text-primary hover:underline"
+								href={`/api/v1/issues/${data.issue.id}/artifacts/${encodeURIComponent(artifact.name)}/content`}
+								>{artifact.name}</a
+							>
+						</li>{/each}
+				</ul>{/if}
+		</section>
+	</aside>
+</div>
