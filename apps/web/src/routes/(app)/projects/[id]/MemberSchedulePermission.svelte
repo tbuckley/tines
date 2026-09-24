@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
-	import type { SharedScheduleSummary } from '@tines/shared';
+	import { personalPermissionLabel, type SharedScheduleSummary } from '@tines/shared';
 	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
@@ -42,13 +42,13 @@
 		{#each schedule.roster as person (person.user.id)}
 			<li class="flex flex-wrap items-center justify-between gap-2 py-2">
 				<span
-					>{person.user.name}{person.user.id === schedule.viewer_id ? ' (You)' : ''}<span
-						class="text-muted-foreground"
-					>
-						· {person.role}</span
+					>{person.user.name}{person.user.id === schedule.viewer_id ? ' (You)' : ''}{' '}<span
+						class="text-muted-foreground">· {person.role}</span
 					></span
 				>
-				<span class="bg-muted rounded-full px-2 py-0.5 text-xs capitalize">{person.value}</span>
+				<span class="bg-muted rounded-full px-2 py-0.5 text-xs first-letter:uppercase"
+					>{personalPermissionLabel(person.role, person.value)}</span
+				>
 			</li>
 		{/each}
 	</ul>

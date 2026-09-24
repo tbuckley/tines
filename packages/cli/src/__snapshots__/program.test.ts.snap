@@ -1072,8 +1072,8 @@ Invite someone to the whole project
 
 Options:
   --issue <ref>      issue to open after acceptance
-  --confirm-sharing  acknowledge first sharing resets personal permission and
-                     waits assigned work
+  --confirm-sharing  acknowledge that first sharing gives members the whole
+                     project and restarts assigned work
   -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
                      \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)

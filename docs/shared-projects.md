@@ -37,6 +37,12 @@ different decision after a conflict.
 
 ## Admission, holds, and cancellation
 
+The owner's permission defaults on (decision recorded in
+`specs/projects/SHARING_OWNER_DEFAULT_2026-09-24.md`): an owner with no choice
+at the issue's current epoch is admitted, as in a project that was never
+shared, and only an explicit off keeps the owner's agents away. Rosters and CLI
+output show that as "on (owner default)". Members stay opt-in.
+
 The dispatch claim and delivery boundary both check the owner's current issue
 choice. Delivery also compares the claim's sharing revision, choice revision,
 and issue epoch. A change after claim therefore cannot deliver the stale
@@ -105,7 +111,7 @@ verification has its own receipt below.
 
 In consent-mode projects, the browser's New issue form offers two separate
 choices when Repeat is selected. The initial issue follows ordinary creator
-permission; future issues are **off by default**. The schedule's own browser
+permission; future issues are **on by default** for the owner. The schedule's own browser
 control saves an on/off choice with an expected revision and semantic
 permission epoch. A key may read the safe schedule summary, but explicit
 permission input from an API key or run key is refused before creating or
@@ -122,11 +128,13 @@ permission by itself. Personal runner routing, pins, environment and
 credentials are never copied from the schedule.
 
 Turning future permission off revokes unlaunched, still-inherited instance
-choices. A person's explicit choice on an individual issue remains
-independent. Turning the future choice on again affects only issues created
-afterward. Deleting a schedule or changing its templates, workflow, effective
-start, recurrence, timezone, or gate clears future permission and inherited
-unlaunched permission. Renaming and pause/resume preserve it. A workflow
+choices; for the owner they become an explicit off, and instances created
+while it is off inherit that off. A person's explicit choice on an individual
+issue remains independent. Turning the future choice on again affects only
+issues created afterward. Deleting a schedule or changing its templates,
+workflow, effective start, recurrence, timezone, or gate clears members' future
+permission and inherited on grants; the owner keeps their future choice, and an
+inherited owner off survives. Renaming and pause/resume preserve it. A workflow
 initial-state change resets schedules that follow that initial state; a
 starting state's category change also resets affected schedules. Issue
 completion, transfer, and workflow replacement still clear that issue's

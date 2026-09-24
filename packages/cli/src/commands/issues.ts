@@ -64,6 +64,7 @@ import {
 	ApiError,
 	ARTIFACT_SITE_INDEX,
 	lintHtmlArtifact,
+	personalPermissionLabel,
 	siteEntry,
 	type Artifact,
 	type CreateScheduleInput,
@@ -131,7 +132,13 @@ function printIssueDetail(issue: IssueDetail): void {
 		}
 		if (shared.roster?.length) {
 			console.log('\npeople and permission:');
-			table(shared.roster.map((person) => [person.user.name, person.role, person.value]));
+			table(
+				shared.roster.map((person) => [
+					person.user.name,
+					person.role,
+					personalPermissionLabel(person.role, person.value)
+				])
+			);
 		}
 		console.log(`your issue permission: ${shared.my_choice?.value ?? 'unset'} (browser control)`);
 		console.log(`latest run: ${shared.latest_run?.status ?? 'none'}`);

@@ -26,7 +26,8 @@ uses it.
 ## Admission and cancellation
 
 - Claim and delivery share one current authorization predicate. In 669 it
-  admits only the project's current owner with an on choice. Delivery repeats
+  admits only the project's current owner, whose choice defaults on: only an
+  explicit off at the current issue epoch refuses (decision of 2026-09-24). Delivery repeats
   the claim witness, records admission evidence, and crosses the durable
   `assigned → launching` boundary. One live run remains enforced. An on member
   choice is deliberately ineligible in every path, including resume.

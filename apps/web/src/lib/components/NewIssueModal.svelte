@@ -67,7 +67,9 @@
 	} | null>(null);
 	let attachmentValid = $state(true);
 	let allowMyAgents = $state(true);
-	let allowFutureAgents = $state(false);
+	// The owner's permission defaults on, future issues included; unticking
+	// stores an explicit off.
+	let allowFutureAgents = $state(true);
 	let attachments = $state<{ id: string; file: File; name: string; editing: boolean }[]>([]);
 	let form = $state<HTMLFormElement | null>(null);
 
@@ -101,7 +103,7 @@
 			attachmentServerError = null;
 			attachments = [];
 			allowMyAgents = true;
-			allowFutureAgents = false;
+			allowFutureAgents = true;
 			// No `projects[0]` fallback: under "All projects" with no last project
 			// the select starts empty and required, so nothing is filed by accident.
 			projectId = project?.id ?? defaultProjectId ?? '';
@@ -353,8 +355,8 @@
 								{#if allowFutureAgents}
 									<PersonalPermissionWarning future role={viewerRole}>
 										<p>
-											This is separate from permission on the first issue. Future issues inherit
-											your permission until you turn it off or meaningfully change the schedule.
+											This is separate from permission on the first issue. Future issues keep your
+											permission until you turn it off on the schedule.
 										</p>
 									</PersonalPermissionWarning>
 								{/if}

@@ -135,7 +135,7 @@ export async function createInvitation(
 		throw new ApiFail(
 			409,
 			'confirm_sharing_required',
-			'Confirm that existing issues and schedules will start with personal permission off and assigned work will wait.',
+			'Confirm that sharing gives members the whole project. Your agents keep working on its issues and schedules unless you turn them off; members need their own permission. Assigned work is restarted.',
 			{ committed: false, issue_and_schedule_permissions_reset: true }
 		);
 	const active = await db

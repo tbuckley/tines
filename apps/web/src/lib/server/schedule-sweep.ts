@@ -221,17 +221,20 @@ export function buildScheduleExecution(
 		WHERE EXISTS (SELECT 1 FROM issue WHERE id = ${issueId})
 			AND EXISTS (SELECT 1 FROM event WHERE id = ${createdEventId})`.compile(db);
 	// Read the grant inside the guarded D1 batch. Run now's actor never supplies consent.
+	// An owner's explicit off is inherited too: the owner's permission defaults
+	// on, so without an off row the new issue would be admitted anyway.
 	const inheritChoices = sql`INSERT INTO issue_personal_choice
 		(issue_id, user_id, value, revision, issue_epoch, membership_revision, source_kind,
 		 source_schedule_id, source_grant_revision, source_permission_epoch, updated_at)
-		SELECT ${issueId}, grant.user_id, 'on', 1, i.consent_epoch, grant.membership_revision,
+		SELECT ${issueId}, grant.user_id, grant.value, 1, i.consent_epoch, grant.membership_revision,
 			'schedule', ${schedule.id}, grant.revision, grant.permission_epoch, ${opts.now}
 		FROM schedule_personal_choice grant
 		JOIN scheduled_task s ON s.id = grant.schedule_id
 		JOIN project p ON p.id = s.project_id
 		JOIN issue i ON i.id = ${issueId}
 		WHERE s.id = ${schedule.id} AND i.project_id = s.project_id
-			AND p.shared_at IS NOT NULL AND grant.value = 'on'
+			AND p.shared_at IS NOT NULL
+			AND (grant.value = 'on' OR (grant.value = 'off' AND grant.user_id = p.user_id))
 			AND grant.permission_epoch = s.permission_epoch
 			AND s.permission_epoch = ${schedule.permission_epoch}
 			AND ( (grant.user_id = p.user_id AND grant.membership_revision = 0)

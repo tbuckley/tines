@@ -22,7 +22,7 @@ export const PUT: RequestHandler = api(async (event) => {
 			'Personal permission changes require this browser origin'
 		);
 	}
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<IssueConsentRequest>(event);
 	const beforeCommit =
 		import.meta.env.VITE_TINES_E2E === '1' &&
@@ -33,5 +33,9 @@ export const PUT: RequestHandler = api(async (event) => {
 				AND user_id = ${actor.userId} AND revoked_at IS NULL`.execute(db);
 				}
 			: undefined;
-	return json(await writeIssueConsent(db, env, actor, event.params.id, body, beforeCommit));
+	const receipt = await writeIssueConsent(db, env, actor, event.params.id, body, beforeCommit);
+	// An owner's on may have released assigned work (see writeIssueConsent);
+	// dispatch again rather than wait for the sweep.
+	if (body.value === 'on') effects.signalDispatch();
+	return json(receipt);
 });

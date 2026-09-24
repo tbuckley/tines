@@ -216,8 +216,8 @@ export async function readIssueConsent(
 				: row.agent_hold
 					? 'held'
 					: row.state_category === 'active' &&
-						  row.choice_value === 'on' &&
-						  row.choice_epoch === row.consent_epoch &&
+						  // The owner's unset is on (ownerIssueConsentPredicate).
+						  !(row.choice_value === 'off' && row.choice_epoch === row.consent_epoch) &&
 						  !row.needs_attention &&
 						  row.archived_at === null
 						? 'eligible'
@@ -397,18 +397,26 @@ export async function writeIssueConsent(
 	}
 	const now = Date.now();
 	const token = newId('dcn');
+	// Off releases assigned work before it is delivered. An owner's on does too:
+	// work claimed while the owner's choice was unset (which admits the owner)
+	// carries the old choice revision, so it could never pass the delivery
+	// guard and would sit assigned until the stall sweep. Released, it is simply
+	// claimed again under the new revision.
 	const releaseQueries =
-		body.value === 'off'
+		body.value === 'off' || current.owner_id === actor.userId
 			? releaseAssignedIssueQueries(db, {
 					issueId,
 					userId: actor.userId,
 					token,
 					eventId: newId('evt'),
 					now,
-					reason: 'Issue permission was turned off before admission',
+					reason:
+						body.value === 'off'
+							? 'Issue permission was turned off before admission'
+							: 'Issue permission changed before admission; the issue is dispatched again',
 					guard: sql<boolean>`EXISTS (SELECT 1 FROM issue_personal_choice
 					WHERE issue_id = ${issueId} AND user_id = ${actor.userId}
-						AND last_request_token = ${token} AND value = 'off')`
+						AND last_request_token = ${token} AND value = ${body.value})`
 				})
 			: [];
 	await beforeCommit?.();

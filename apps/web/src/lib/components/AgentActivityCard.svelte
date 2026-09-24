@@ -7,7 +7,7 @@
 		ModelTier,
 		Runner
 	} from '@tines/shared';
-	import { MODEL_TIERS } from '@tines/shared';
+	import { MODEL_TIERS, personalPermissionLabel } from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
 	import IconPin from '@tabler/icons-svelte/icons/pin';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
@@ -143,7 +143,9 @@
 	</h2>
 	{#if permission}
 		<div class="mb-4 space-y-2 rounded-md border p-3 text-sm">
-			<p class="font-medium">My agent permission: {permission.my_agents.value}</p>
+			<p class="font-medium">
+				My agent permission: {personalPermissionLabel('owner', permission.my_agents.value)}
+			</p>
 			<PersonalPermissionWarning role="owner">
 				<p>
 					Enabling lets your agents use your runner and account resources for this issue. Holding
@@ -181,10 +183,10 @@
 					<ul class="mt-2 space-y-1" aria-label="Issue permission roster">
 						{#each roster as person (person.user.id)}
 							<li>
-								{person.user.name}{person.role === 'owner' ? ' (You)' : ''} · {person.role} · {person.value}{person.role ===
-								'member'
-									? ' · member execution unavailable'
-									: ''}
+								{person.user.name}{person.role === 'owner' ? ' (You)' : ''} · {person.role} · {personalPermissionLabel(
+									person.role,
+									person.value
+								)}{person.role === 'member' ? ' · member execution unavailable' : ''}
 							</li>
 						{/each}
 					</ul>

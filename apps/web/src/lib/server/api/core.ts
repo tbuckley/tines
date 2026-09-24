@@ -15,6 +15,8 @@ import type { DispatchEffects } from '$lib/server/dispatch-effects';
 interface DispatchCollector {
 	ownerId?: string;
 	pending: boolean;
+	/** Other accounts to dispatch for (see DispatchEffects.signalDispatchFor). */
+	others?: Set<string>;
 	closed: boolean;
 	effects?: DispatchEffects;
 }
@@ -34,6 +36,11 @@ export function requestDispatchEffects(
 	return (collector.effects ??= {
 		signalDispatch() {
 			if (!collector.closed) collector.pending = true;
+		},
+		signalDispatchFor(userId: string) {
+			if (collector.closed) return;
+			if (userId === collector.ownerId) collector.pending = true;
+			else (collector.others ??= new Set()).add(userId);
 		}
 	});
 }
@@ -44,10 +51,14 @@ async function drainDispatchEffects(
 ): Promise<void> {
 	collector.closed = true;
 	dispatchCollectors.delete(event);
-	if (!collector.pending || !collector.ownerId) return;
+	const owners = [
+		...(collector.pending && collector.ownerId ? [collector.ownerId] : []),
+		...(collector.others ?? [])
+	];
+	if (owners.length === 0) return;
 	try {
 		const { queueDispatchPass } = await import('$lib/server/supervisor/engine');
-		queueDispatchPass(event.platform, collector.ownerId);
+		for (const owner of owners) queueDispatchPass(event.platform, owner);
 	} catch (error) {
 		console.error('Failed to schedule dispatch pass:', error);
 	}

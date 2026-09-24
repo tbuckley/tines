@@ -410,21 +410,23 @@ describe('the guarded claim', () => {
 		...over
 	});
 
-	it('requires an explicit owner choice in consent mode and stores an admission witness', async () => {
+	it('admits the owner by default in consent mode, refuses a current off, and stores an admission witness', async () => {
 		const t = world();
 		const runner = addRunner(t);
 		const issue = addIssue(t);
 		t.sqlite
 			.prepare('UPDATE project SET shared_at = ?, sharing_revision = 1 WHERE id = ?')
 			.run(NOW, PROJECT);
-		expect(await claimRun(t.db, t.env, claimInput(t, issue, runner))).toBe(false);
 		t.sqlite
 			.prepare(
 				`INSERT INTO issue_personal_choice
 				(issue_id, user_id, value, revision, issue_epoch, source_kind, updated_at)
-				VALUES (?, ?, 'on', 1, 0, 'explicit_issue', ?)`
+				VALUES (?, ?, 'off', 1, 0, 'explicit_issue', ?)`
 			)
 			.run(issue, USER, NOW);
+		expect(await claimRun(t.db, t.env, claimInput(t, issue, runner))).toBe(false);
+		// An off from an earlier epoch is no current choice: the owner default applies.
+		t.sqlite.prepare('UPDATE issue SET consent_epoch = 1 WHERE id = ?').run(issue);
 		const input = claimInput(t, issue, runner);
 		expect(await claimRun(t.db, t.env, input)).toBe(true);
 		const minted = await mintRunKeyAndFlip(t.db, t.env, {
@@ -445,9 +447,28 @@ describe('the guarded claim', () => {
 			version: 1,
 			project_owner_id: USER,
 			sharing_revision: 1,
-			issue_epoch: 0,
+			issue_epoch: 1,
 			choice_revision: 1
 		});
+	});
+
+	it('admits an owner with no choice row in consent mode', async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		t.sqlite
+			.prepare('UPDATE project SET shared_at = ?, sharing_revision = 1 WHERE id = ?')
+			.run(NOW, PROJECT);
+		const input = claimInput(t, issue, runner);
+		expect(await claimRun(t.db, t.env, input)).toBe(true);
+		expect(
+			await mintRunKeyAndFlip(t.db, t.env, {
+				runId: input.runId,
+				userId: USER,
+				maxRunMinutes: 30,
+				now: NOW
+			})
+		).not.toBeNull();
 	});
 
 	it('off after claim releases only assigned work; stale delivery cannot mint a key', async () => {
@@ -483,6 +504,36 @@ describe('the guarded claim', () => {
 			})
 		).toBeNull();
 		expect(keyForRun(t, input.runId)?.revoked_at).toBe(NOW);
+	});
+
+	it("the owner's explicit on releases work claimed under the default so it is claimed again", async () => {
+		const t = world();
+		const runner = addRunner(t);
+		const issue = addIssue(t);
+		t.sqlite
+			.prepare('UPDATE project SET shared_at = ?, sharing_revision = 1 WHERE id = ?')
+			.run(NOW, PROJECT);
+		const input = claimInput(t, issue, runner);
+		expect(await claimRun(t.db, t.env, input)).toBe(true);
+		await writeIssueConsent(t.db, t.env, sessionActor, issue, {
+			value: 'on',
+			expected_revision: 0,
+			issue_epoch: 0,
+			decision_revision: 0
+		});
+		// The claim carries choice revision 0, which could never pass delivery now.
+		expect(runById(t, input.runId)).toMatchObject({ status: 'canceled', outcome: null });
+		expect(issueById(t, issue).attempt_count).toBe(0);
+		const again = claimInput(t, issue, runner);
+		expect(await claimRun(t.db, t.env, again)).toBe(true);
+		expect(
+			await mintRunKeyAndFlip(t.db, t.env, {
+				runId: again.runId,
+				userId: USER,
+				maxRunMinutes: 30,
+				now: NOW
+			})
+		).not.toBeNull();
 	});
 
 	it('refuses an issue whose project was archived between the queue read and the claim', async () => {

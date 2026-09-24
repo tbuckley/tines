@@ -20,6 +20,7 @@ import { buildRecurrence, type RecurrenceOpts } from '../recurrence-flags.js';
 import { parseScheduleRef } from '../refs.js';
 import {
 	listAll,
+	personalPermissionLabel,
 	type ApiClient,
 	type Schedule,
 	type SchedulePreset,
@@ -69,7 +70,7 @@ function printScheduleDetail(s: Schedule): void {
 	);
 	if (s.my_future_permission)
 		console.log(
-			`my agents on future issues: ${s.my_future_permission.value === 'on' ? 'on' : 'off (default)'}  permission epoch: ${s.my_future_permission.epoch}  (change in the browser)`
+			`my agents on future issues: ${personalPermissionLabel('owner', s.my_future_permission.value)}  permission epoch: ${s.my_future_permission.epoch}  (change in the browser)`
 		);
 	console.log(`\ntitle template: ${s.title_template}`);
 	if (s.description_template) {
@@ -124,9 +125,7 @@ export function register(program: Command): void {
 								s.last_run_at ? timestamp(s.last_run_at) : 'never',
 								String(s.open_instances),
 								s.my_future_permission
-									? s.my_future_permission.value === 'on'
-										? 'on'
-										: 'off'
+									? personalPermissionLabel('owner', s.my_future_permission.value)
 									: '—',
 								s.enabled ? '' : '(paused)'
 							];

@@ -142,7 +142,8 @@
 		futureError[s.id] = undefined;
 		try {
 			await api.setScheduleConsent(s.id, {
-				value: choice.value === 'on' ? 'off' : 'on',
+				// Only the owner sees this list, and the owner's unset is on.
+				value: choice.value === 'off' ? 'on' : 'off',
 				expected_revision: choice.revision,
 				permission_epoch: choice.epoch
 			});
@@ -275,26 +276,6 @@
 				require_all_closed: recurrence.require_all_closed,
 				...(recurrence.preset ? { preset: recurrence.preset } : { cron: recurrence.cron })
 			};
-			const meaningChanged =
-				editTitle !== editing.title_template ||
-				editDescription !== editing.description_template ||
-				editWorkflowId !== editing.workflow_id ||
-				(editStateId || null) !==
-					(editing.state_id ??
-						workflows.find((w) => w.id === editWorkflowId)?.initial_state_id ??
-						null) ||
-				recurrence.timezone !== editing.timezone ||
-				recurrence.require_all_closed !== editing.require_all_closed ||
-				JSON.stringify(recurrence.preset ?? null) !== JSON.stringify(editing.preset) ||
-				(recurrence.cron ?? null) !== (editing.preset ? null : editing.cron);
-			if (meaningChanged && editing.my_future_permission?.value === 'on') {
-				const ok = await confirmDialog({
-					title: 'Reset future permission?',
-					body: 'Changing the schedule’s work or starting state turns off future permission and revokes inherited permission on unlaunched issues. You can choose again afterward.',
-					confirmLabel: 'Save and reset permission'
-				});
-				if (!ok) return;
-			}
 			await api.updateSchedule(editing.id, body);
 			editOpen = false;
 			await invalidateAll();
@@ -338,16 +319,16 @@
 							type="checkbox"
 							role="switch"
 							aria-label="Allow my agents on future issues from {s.name}"
-							checked={s.my_future_permission.value === 'on'}
+							checked={s.my_future_permission.value !== 'off'}
 							disabled={busyId !== null}
 							onchange={() => setFuturePermission(s)}
 						/>
 						My agents on future issues
 					</label>
 					<p class="text-muted-foreground text-xs">
-						Off by default. New issues inherit only your current explicit permission; existing
-						issues keep independent choices. Changing the schedule's work or start state clears this
-						permission. Pause and rename preserve it.
+						On by default for you as the owner. Turn it off to keep your agents away from the issues
+						this schedule creates from now on; existing issues keep their own choices. Members'
+						agents always need their own permission.
 					</p>
 					{#if futureSaved === s.id}<p role="status">Future permission saved.</p>{/if}
 					{#if futureError[s.id]}<p class="text-destructive" role="alert">

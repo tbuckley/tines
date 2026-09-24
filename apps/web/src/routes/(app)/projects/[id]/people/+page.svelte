@@ -3,6 +3,7 @@
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
+	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
 	let { data } = $props();
 	let email = $state('');
 	let issueId = $state('');
@@ -113,10 +114,13 @@
 							bind:checked={confirmSharing}
 							required
 						/><span
-							>I understand this shares the whole project. Existing issue and schedule permissions
-							start off, assigned agent work waits, and work already running may finish.</span
+							>I understand this shares the whole project. My agents keep working on its issues and
+							schedules unless I turn them off; members' agents need their own permission and cannot
+							run in this release. Assigned agent work is restarted, and work already running may
+							finish.</span
 						></label
 					>
+					<PersonalPermissionWarning role="owner" />
 				{/if}
 				<Button type="submit" disabled={busy}>Send invitation</Button>
 			</form>

@@ -299,7 +299,8 @@ test.describe.serial('native D1 future schedule permission ordering', () => {
 		await dialog.locator('#issue-repeat-kind').selectOption('daily');
 		await expect(dialog.getByLabel('Allow my agents on this issue')).toBeChecked();
 		const future = dialog.getByLabel('Allow my agents on future issues from this schedule');
-		await expect(future).not.toBeChecked();
+		// The owner's future permission defaults on (owner default, 2026-09-24).
+		await expect(future).toBeChecked();
 		await dialog.getByRole('button', { name: 'Create issue + schedule' }).click();
 		await expect(dialog).toBeHidden();
 		await expect(page.getByTestId('schedule-origin')).toContainText('Phone recurring {{count}}');
@@ -310,14 +311,17 @@ test.describe.serial('native D1 future schedule permission ordering', () => {
 		const toggle = page.getByRole('switch', {
 			name: 'Allow my agents on future issues from Phone recurring {{count}}'
 		});
-		await expect(toggle).not.toBeChecked();
-		await toggle.check();
 		await expect(toggle).toBeChecked();
+		// A click rather than uncheck(): the switch shows the saved value, so it
+		// reads checked again while the save is in flight.
+		await toggle.click();
+		await expect(toggle).not.toBeChecked();
+		await expect(toggle).toBeEnabled();
 		expect(
 			d1<{ value: string }>(
 				`SELECT value FROM schedule_personal_choice WHERE schedule_id=${sqlLiteral(row.id)}`
 			)
-		).toEqual([{ value: 'on' }]);
+		).toEqual([{ value: 'off' }]);
 	});
 
 	test('creation first inherits a live grant; later off revokes only inherited issues', async ({
@@ -339,7 +343,8 @@ test.describe.serial('native D1 future schedule permission ordering', () => {
 			data: { value: 'off', expected_revision: 1, permission_epoch: 0 }
 		});
 		expect(off.ok()).toBe(true);
-		expect(instanceChoice(next.id)).toMatchObject({ value: 'unset', source_kind: null });
+		// The owner's inherited on becomes an explicit off; unset would mean the owner default.
+		expect(instanceChoice(next.id)).toMatchObject({ value: 'off', source_kind: null });
 		expect(instanceChoice(f.initial.id)).toMatchObject({
 			value: 'off',
 			source_kind: 'explicit_issue'
@@ -373,7 +378,10 @@ test.describe.serial('native D1 future schedule permission ordering', () => {
 		due();
 		await fireSweep(request);
 		expect(instances()).toHaveLength(3);
-		expect(instanceChoice(instances()[2].id)).toBeUndefined();
+		expect(instanceChoice(instances()[2].id)).toMatchObject({
+			value: 'off',
+			source_kind: 'schedule'
+		});
 	});
 
 	test('source off releases only assigned inherited work without a strike', async ({
@@ -432,7 +440,7 @@ test.describe.serial('native D1 future schedule permission ordering', () => {
 		});
 		expect(off.ok()).toBe(true);
 		const created = await body<IssueDetail>(await running);
-		expect(instanceChoice(created.id)).toBeUndefined();
+		expect(instanceChoice(created.id)).toMatchObject({ value: 'off', source_kind: 'schedule' });
 		expect(
 			d1<{ schedule_id: string }>(
 				`SELECT schedule_id FROM issue_schedule_origin WHERE issue_id=${sqlLiteral(created.id)}`

@@ -215,22 +215,36 @@ export async function readScheduleConsent(
 	};
 }
 
-/** Revokes only still-inherited instances; an independent issue choice survives. */
+/**
+ * Revokes only still-inherited grants; an independent issue choice survives.
+ *
+ * An inherited on becomes unset, which for the owner is still on (the owner's
+ * permission defaults on) — except when the owner has just turned the
+ * schedule's future permission off (`ownerTurnedOff`), which turns the owner's
+ * inherited grants off too. An inherited owner off is never cleared here: an
+ * explicit off outlives the schedule's deletion or a definition change.
+ */
 export function revokeInheritedScheduleQueries(
 	db: Kysely<Database>,
 	scheduleId: string,
 	now: number,
 	guard: RawBuilder<boolean>,
-	userId?: string
+	userId?: string,
+	ownerTurnedOff = false
 ): CompiledQuery[] {
 	const subject = userId ? sql`AND ipc.user_id = ${userId}` : sql``;
 	const releaseToken = newId('rel');
+	const cleared = ownerTurnedOff
+		? sql`CASE WHEN ipc.user_id = (SELECT p.user_id FROM scheduled_task s
+				JOIN project p ON p.id = s.project_id WHERE s.id = ${scheduleId})
+			THEN 'off' ELSE 'unset' END`
+		: sql`'unset'`;
 	return [
-		sql`UPDATE issue_personal_choice AS ipc SET value = 'unset', revision = revision + 1,
+		sql`UPDATE issue_personal_choice AS ipc SET value = ${cleared}, revision = revision + 1,
 			source_kind = NULL, source_schedule_id = NULL, source_grant_revision = NULL,
 			source_permission_epoch = NULL, updated_at = ${now}
 		WHERE ipc.source_kind = 'schedule' AND ipc.source_schedule_id = ${scheduleId}
-			${subject} AND ${guard}`.compile(db),
+			AND ipc.value = 'on' ${subject} AND ${guard}`.compile(db),
 		sql`UPDATE agent_run SET status = 'canceled', outcome = NULL, ended_at = ${now},
 			error = 'Inherited schedule permission ended before admission',
 			assignment_release_token = ${releaseToken}
@@ -260,7 +274,13 @@ export function invalidateSchedulePermissionQueries(
 		release,
 		revokeKeys,
 		clear,
-		sql`UPDATE schedule_personal_choice SET value = 'off', revision = revision + 1,
+		// Members start over at off. The owner keeps their choice under the new
+		// epoch: on is the owner's default anyway, and an explicit off must not
+		// turn back on because the schedule changed.
+		sql`UPDATE schedule_personal_choice SET value = CASE WHEN user_id = (
+				SELECT p.user_id FROM scheduled_task s JOIN project p ON p.id = s.project_id
+				WHERE s.id = ${scheduleId}) THEN value ELSE 'off' END,
+			revision = revision + 1,
 			permission_epoch = (SELECT permission_epoch FROM scheduled_task WHERE id = ${scheduleId}),
 			updated_at = ${now}
 		WHERE schedule_id = ${scheduleId} AND ${guard}`.compile(db)
@@ -290,8 +310,14 @@ export function invalidateWorkflowSchedulePermissionQueries(
 		sql`UPDATE issue_personal_choice SET value = 'unset', revision = revision + 1,
 			source_kind = NULL, source_schedule_id = NULL, source_grant_revision = NULL,
 			source_permission_epoch = NULL, updated_at = ${now}
-		WHERE source_kind = 'schedule' AND source_schedule_id IN (${affected})`.compile(db),
-		sql`UPDATE schedule_personal_choice SET value = 'off', revision = revision + 1,
+		WHERE source_kind = 'schedule' AND source_schedule_id IN (${affected})
+			AND value = 'on'`.compile(db),
+		// As invalidateSchedulePermissionQueries: members start over at off, the
+		// owner keeps their choice.
+		sql`UPDATE schedule_personal_choice SET value = CASE WHEN user_id = (
+				SELECT p.user_id FROM scheduled_task s JOIN project p ON p.id = s.project_id
+				WHERE s.id = schedule_personal_choice.schedule_id) THEN value ELSE 'off' END,
+			revision = revision + 1,
 			permission_epoch = (SELECT permission_epoch FROM scheduled_task
 				WHERE id = schedule_personal_choice.schedule_id), updated_at = ${now}
 		WHERE schedule_id IN (${affected})`.compile(db)
@@ -372,7 +398,8 @@ export async function writeScheduleConsent(
 		scheduleId,
 		now,
 		guard,
-		actor.userId
+		actor.userId,
+		member.owner_id === actor.userId
 	);
 	const results = await runAtomic(env, [
 		sql`INSERT INTO schedule_personal_choice

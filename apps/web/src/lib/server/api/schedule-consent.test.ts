@@ -156,13 +156,14 @@ describe('future schedule permission', () => {
 			permission_epoch: 0
 		});
 		expect(saved.my_future_permission).toMatchObject({ value: 'off', revision: 2 });
-		expect(inherited(t, second)[0]).toMatchObject({ value: 'unset', source_kind: null });
+		// The owner's inherited on becomes an explicit off: unset would be the owner default, on.
+		expect(inherited(t, second)[0]).toMatchObject({ value: 'off', source_kind: null });
 		await writeScheduleConsent(t.db, t.env, session, scheduleId, {
 			value: 'on',
 			expected_revision: 2,
 			permission_epoch: 0
 		});
-		expect(inherited(t, second)[0].value).toBe('unset');
+		expect(inherited(t, second)[0].value).toBe('off');
 		const third = await runScheduleNow(
 			t.db,
 			t.env,
@@ -173,7 +174,7 @@ describe('future schedule permission', () => {
 		expect(inherited(t, third)[0]).toMatchObject({ value: 'on', source_grant_revision: 3 });
 	});
 
-	it('keeps permission on pause and rename, but resets it for work changes', async () => {
+	it('keeps permission on pause and rename, and moves it to a new epoch for work changes', async () => {
 		const t = fixture();
 		const first = await initial(t, true);
 		const id = first.schedule!.id;
@@ -185,8 +186,9 @@ describe('future schedule permission', () => {
 		});
 		const second = await runScheduleNow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, id);
 		await updateSchedule(t.db, t.env, session, id, { title_template: 'Different {{count}}' });
+		// The owner keeps their choice under the new epoch; members start over at off.
 		expect((await readScheduleConsent(t.db, 'u1', id)).my_future_permission).toMatchObject({
-			value: 'off',
+			value: 'on',
 			epoch: 1
 		});
 		expect(inherited(t, second)[0].value).toBe('unset');
@@ -219,7 +221,7 @@ describe('future schedule permission', () => {
 			await updateSchedule(t.db, t.env, session, first.schedule!.id, edit);
 			expect(
 				(await readScheduleConsent(t.db, 'u1', first.schedule!.id)).my_future_permission
-			).toMatchObject({ value: 'off', epoch: 1 });
+			).toMatchObject({ value: 'on', epoch: 1 });
 			expect(inherited(t, second)[0].value).toBe('unset');
 		});
 	}
@@ -292,7 +294,62 @@ describe('future schedule permission', () => {
 			TEST_NOOP_DISPATCH_EFFECTS,
 			first.schedule!.id
 		);
-		expect(inherited(t, third)).toEqual([]);
+		// The owner's future off is inherited, so the default does not admit the instance.
+		expect(inherited(t, third)).toMatchObject([{ value: 'off', source_kind: 'schedule' }]);
+	});
+
+	it("an owner's inherited off survives a definition change and deletion; members reset to off", async () => {
+		const t = fixture();
+		t.sqlite.exec(`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+			VALUES ('u2', 'member', 'member@example.test', 1, ${now}, ${now});
+			INSERT INTO project_member (project_id, user_id, revision, joined_at, updated_at)
+			VALUES ('prj_1', 'u2', 1, ${now}, ${now});`);
+		const first = await initial(t, false);
+		const id = first.schedule!.id;
+		const member = { ...session, userId: 'u2', userName: 'member' };
+		await writeScheduleConsent(t.db, t.env, member, id, {
+			value: 'on',
+			expected_revision: 0,
+			permission_epoch: 0
+		});
+		const second = await runScheduleNow(t.db, t.env, session, TEST_NOOP_DISPATCH_EFFECTS, id);
+		expect(
+			t.all(
+				`SELECT user_id, value FROM issue_personal_choice WHERE issue_id = ? ORDER BY user_id`,
+				second
+			)
+		).toEqual([
+			{ user_id: 'u1', value: 'off' },
+			{ user_id: 'u2', value: 'on' }
+		]);
+		await updateSchedule(t.db, t.env, session, id, { title_template: 'Different {{count}}' });
+		expect((await readScheduleConsent(t.db, 'u1', id)).my_future_permission).toMatchObject({
+			value: 'off',
+			epoch: 1
+		});
+		expect((await readScheduleConsent(t.db, 'u2', id)).my_future_permission).toMatchObject({
+			value: 'off',
+			epoch: 1
+		});
+		expect(
+			t.all(
+				`SELECT user_id, value FROM issue_personal_choice WHERE issue_id = ? ORDER BY user_id`,
+				second
+			)
+		).toEqual([
+			{ user_id: 'u1', value: 'off' },
+			{ user_id: 'u2', value: 'unset' }
+		]);
+		await deleteSchedule(t.db, t.env, session, id);
+		expect(
+			t.all(
+				`SELECT user_id, value FROM issue_personal_choice WHERE issue_id = ? ORDER BY user_id`,
+				second
+			)
+		).toEqual([
+			{ user_id: 'u1', value: 'off' },
+			{ user_id: 'u2', value: 'unset' }
+		]);
 	});
 
 	it('workflow initial-state changes reset following schedule permission atomically', async () => {
@@ -326,7 +383,7 @@ describe('future schedule permission', () => {
 		});
 		expect(
 			(await readScheduleConsent(t.db, 'u1', first.schedule!.id)).my_future_permission
-		).toMatchObject({ value: 'off', epoch: 1 });
+		).toMatchObject({ value: 'on', epoch: 1 });
 		expect(inherited(t, second)[0].value).toBe('unset');
 	});
 
@@ -361,7 +418,7 @@ describe('future schedule permission', () => {
 		});
 		expect(
 			(await readScheduleConsent(t.db, 'u1', first.schedule!.id)).my_future_permission
-		).toMatchObject({ value: 'off', epoch: 1 });
+		).toMatchObject({ value: 'on', epoch: 1 });
 		expect(inherited(t, second)[0].value).toBe('unset');
 	});
 
@@ -383,7 +440,7 @@ describe('future schedule permission', () => {
 		await updateSchedule(t.db, t.env, session, first.schedule!.id, { workflow_id: 'wf_other' });
 		expect(
 			(await readScheduleConsent(t.db, 'u1', first.schedule!.id)).my_future_permission
-		).toMatchObject({ value: 'off', epoch: 1 });
+		).toMatchObject({ value: 'on', epoch: 1 });
 		expect(inherited(t, second)[0].value).toBe('unset');
 	});
 

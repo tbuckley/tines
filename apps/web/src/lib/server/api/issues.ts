@@ -2147,7 +2147,9 @@ async function transitionMemberIssue(
 		throw new ApiFail(409, 'decision_refresh_required', 'Issue changed; refresh and choose again', {
 			committed: false
 		});
+	// The member's own fleet can never be admitted here; the owner's can.
 	effects.signalDispatch();
+	effects.signalDispatchFor?.(access.ownerId);
 	return readSharedIssue(db, actor, { id });
 }
 

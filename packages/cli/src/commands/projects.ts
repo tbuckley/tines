@@ -46,7 +46,7 @@ export function register(program: Command): void {
 			.option('--issue <ref>', 'issue to open after acceptance')
 			.option(
 				'--confirm-sharing',
-				'acknowledge first sharing resets personal permission and waits assigned work'
+				'acknowledge that first sharing gives members the whole project and restarts assigned work'
 			)
 	).action(
 		async (
@@ -58,7 +58,7 @@ export function register(program: Command): void {
 				project = await resolveProject(api, ref);
 			if (project.shared_at == null && !opts.confirmSharing)
 				die(
-					'First sharing gives access to the whole project. Existing issue and schedule permissions start off; assigned work waits and admitted work may finish. Rerun with --confirm-sharing to send the invite.'
+					'First sharing gives access to the whole project. Your agents keep working on its issues and schedules unless you turn them off in the browser; members need their own permission. Assigned work is restarted and admitted work may finish. Rerun with --confirm-sharing to send the invite.'
 				);
 			const issue = opts.issue ? await resolveIssue(api, opts.issue) : null;
 			if (issue && issue.project_id !== project.id)

@@ -17,11 +17,12 @@
 	import { relativeTime } from '$lib/format';
 	import { issueBackTarget, navMemory } from '$lib/nav-memory.svelte';
 	import { planTransitions } from '$lib/transitions';
-	import type {
-		AllowedTransition,
-		ArtifactRequirementCheck,
-		TinesEvent,
-		WorkflowState
+	import {
+		personalPermissionLabel,
+		type AllowedTransition,
+		type ArtifactRequirementCheck,
+		type TinesEvent,
+		type WorkflowState
 	} from '@tines/shared';
 	let { data } = $props();
 	const backList = $derived.by(() => {
@@ -385,12 +386,11 @@
 						class="flex flex-wrap items-center justify-between gap-2 py-2"
 					>
 						<span
-							>{person.user.name}{person.user.id === data.issue.viewer_id ? ' (You)' : ''}<span
-								class="text-muted-foreground"
-							>
-								· {person.role}</span
+							>{person.user.name}{person.user.id === data.issue.viewer_id ? ' (You)' : ''}{' '}<span
+								class="text-muted-foreground">· {person.role}</span
 							></span
-						><span class="bg-muted rounded-full px-2 py-0.5 text-xs capitalize">{person.value}</span
+						><span class="bg-muted rounded-full px-2 py-0.5 text-xs first-letter:uppercase"
+							>{personalPermissionLabel(person.role, person.value)}</span
 						>
 					</li>{/each}
 			</ul>
