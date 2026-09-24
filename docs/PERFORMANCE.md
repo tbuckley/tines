@@ -60,7 +60,7 @@ gained work since, so compare against the current table below, not this one:
 | `/projects` | 4 | 4.5 | 2.3 |
 | `/activity` | 2 | 2.2 | 1.2 |
 
-## Current, 2026-09-15 (Tines/563)
+## Current, 2026-09-23 (Tines/703)
 
 Two local runs of `pnpm --filter web perf:nav` on the current tree. Query
 counts are the stable comparison; waves are derived from
@@ -68,16 +68,15 @@ wall-clock and move by a tenth or two between machines:
 
 | Page | Queries | Waves |
 |---|---|---|
-| `/issues/[project]/[number]` | 11 blocking, 28 total | 3.4–3.5 to first paint, 7.6–7.7 to fully settled |
-| `/agents` | 18 | 2.3 |
-| `/issues` | 7 | 3.4 |
-| `/context` | 7 | 3.4 |
-| `/projects` | 3 | 2.2 |
-| `/activity` | 2 | 2.2 |
+| `/issues/[project]/[number]` | 11 blocking, 28 total | 3.4–3.7 to first paint, 7.5–8.0 to fully settled |
+| `/agents` | 20 | 2.3–2.4 |
+| `/issues` | 7 | 3.7 |
+| `/context` | 7 | 3.3–3.4 |
+| `/projects` | 3 | 2.3 |
+| `/activity` | 2 | 2.2–2.3 |
 
-The counts moved because the loaders did — `/agents`, for instance, gained the
-fleet queue (2026-09-06) and the first-run checklist (2026-09-09) — not because
-a wave was added: every multi-query page still fans out in one or two waves.
+The counts moved because the loaders changed between snapshots, not because a
+wave was added: every multi-query page still fans out in one or two waves.
 
 ## What a page load may await
 
@@ -96,8 +95,8 @@ anything it streams is not. The issue page is the worked example:
   while a replacement is in flight, instead of `{#await}` collapsing the
   panel back to a skeleton on every resync.
 
-Result (`pnpm --filter web perf:nav`, 2026-09-15): 11 statements and ~3.4–3.5 waves
-to first paint, 28 statements and ~7.6–7.7 waves to fully settled — from 26
+Result (`pnpm --filter web perf:nav`, 2026-09-23): 11 statements and ~3.4–3.7 waves
+to first paint, 28 statements and ~7.5–8.0 waves to fully settled — from 26
 statements and 29.1 waves before Tines/32.
 
 Two rules follow, and the probe asserts the first:
