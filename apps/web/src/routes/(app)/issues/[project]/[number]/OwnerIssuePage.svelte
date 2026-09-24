@@ -1490,10 +1490,7 @@
 						<input type="checkbox" bind:checked={transitionAllowsAgents} /> Allow my agents after this
 						move
 					</label>
-					<p class="text-muted-foreground mt-1 text-xs">
-						Your agents may use your runner and account resources. This choice is yours alone.
-					</p>
-					{#if transitionAllowsAgents}<PersonalPermissionWarning />{/if}
+					{#if transitionAllowsAgents}<PersonalPermissionWarning role="owner" />{/if}
 				</div>
 			{/if}
 			<div class="space-y-1.5">

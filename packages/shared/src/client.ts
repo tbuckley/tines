@@ -693,6 +693,8 @@ export function createApiClient(options: ApiClientOptions) {
 		getPreferences: () => get<UserPreferences>('/api/v1/preferences'),
 		updatePreferences: (body: UpdatePreferencesRequest) =>
 			request<UserPreferences>('PATCH', '/api/v1/preferences', body),
+		acknowledgePermissionNotice: (version: number) =>
+			request<{ version: number }>('PUT', '/api/v1/preferences/disclosure', { version }),
 		getSupervisorSettings: () => get<SupervisorSettings>('/api/v1/supervisor/settings'),
 		getSupervisorQueue: (q: { project?: string } = {}) =>
 			get<FleetQueue>(`/api/v1/supervisor/queue${query(q)}`),

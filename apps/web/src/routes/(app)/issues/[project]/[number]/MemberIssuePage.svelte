@@ -175,7 +175,7 @@
 				>
 					<option value={true}>On</option><option value={false}>Off</option>
 				</select>
-				{#if transitionAllowsAgents}<PersonalPermissionWarning />{/if}
+				{#if transitionAllowsAgents}<PersonalPermissionWarning role="member" />{/if}
 			{/if}
 			<button
 				class="ml-2 min-h-11 rounded border px-4"
@@ -224,7 +224,7 @@
 				<button class="ml-2 min-h-11 rounded border px-4" onclick={saveChoice} disabled={saving}
 					>Save permission</button
 				>
-				{#if choice === 'on'}<PersonalPermissionWarning />{/if}
+				{#if choice === 'on'}<PersonalPermissionWarning role="member" />{/if}
 			</div>
 		{/if}
 		<p class="mt-2">

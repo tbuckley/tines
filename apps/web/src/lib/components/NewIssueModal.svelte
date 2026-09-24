@@ -81,6 +81,7 @@
 	const pickedWorkflow = $derived(workflows.find((w) => w.id === workflowId));
 	const pickedState = $derived(pickedWorkflow?.states.find((state) => state.id === stateId));
 	const consentMode = $derived(selectedProject?.shared_at != null);
+	const viewerRole = $derived(selectedProject?.viewer_role ?? 'owner');
 	const outgoingTransitions = $derived(
 		pickedWorkflow?.transitions.filter((transition) => transition.from_state_id === stateId) ?? []
 	);
@@ -311,11 +312,14 @@
 					<label class="flex min-h-11 items-center gap-2 font-medium">
 						<input type="checkbox" bind:checked={allowMyAgents} /> Allow my agents on this issue
 					</label>
-					<p class="text-muted-foreground mt-1 text-xs">
-						If enabled, your agents may use your runner and account resources for this issue. You
-						can turn it off later. Other people's permission is separate.
-					</p>
-					{#if allowMyAgents}<PersonalPermissionWarning />{/if}
+					{#if allowMyAgents}
+						<PersonalPermissionWarning role={viewerRole}>
+							<p>
+								If enabled, your agents may use your runner and account resources for this issue.
+								You can turn it off later. Other people's permission is separate.
+							</p>
+						</PersonalPermissionWarning>
+					{/if}
 				</div>
 			{/if}
 			<div class="rounded-md border">
@@ -346,12 +350,14 @@
 									<input type="checkbox" bind:checked={allowFutureAgents} />
 									Allow my agents on future issues from this schedule
 								</label>
-								<p class="text-muted-foreground mt-1 text-xs">
-									Off by default. This is separate from permission on the first issue. If on, future
-									issues inherit your permission until you turn it off or meaningfully change the
-									schedule. Your agents may use your resources as work evolves.
-								</p>
-								{#if allowFutureAgents}<PersonalPermissionWarning future />{/if}
+								{#if allowFutureAgents}
+									<PersonalPermissionWarning future role={viewerRole}>
+										<p>
+											This is separate from permission on the first issue. Future issues inherit
+											your permission until you turn it off or meaningfully change the schedule.
+										</p>
+									</PersonalPermissionWarning>
+								{/if}
 							</div>
 						{/if}
 					</div>

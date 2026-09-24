@@ -144,12 +144,13 @@
 	{#if permission}
 		<div class="mb-4 space-y-2 rounded-md border p-3 text-sm">
 			<p class="font-medium">My agent permission: {permission.my_agents.value}</p>
-			<p class="text-muted-foreground text-xs">
-				Enabling lets your agents use your runner and account resources for this issue. Holding
-				stops new work without changing this choice. An admitted run can finish after permission
-				turns off.
-			</p>
-			{#if permission.my_agents.value !== 'on'}<PersonalPermissionWarning />{/if}
+			<PersonalPermissionWarning role="owner">
+				<p>
+					Enabling lets your agents use your runner and account resources for this issue. Holding
+					stops new work without changing this choice. An admitted run can finish after permission
+					turns off.
+				</p>
+			</PersonalPermissionWarning>
 			<div class="flex flex-wrap gap-2">
 				{#if permission.issue_state.category !== 'done'}
 					<Button

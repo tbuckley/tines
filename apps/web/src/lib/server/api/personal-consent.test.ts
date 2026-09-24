@@ -13,6 +13,7 @@ import {
 import { ApiFail, type ActorContext } from './core';
 import { createTestDb } from './test-db';
 import {
+	acknowledgeDisclosure,
 	assertConsentFieldsSupported,
 	readIssueConsent,
 	rejectKeyConsentInput,
@@ -191,5 +192,38 @@ describe('owner issue permission', () => {
 		await expect(
 			writeIssueHold(db, t.env, session, issueId, { held: true, expected_revision: 1 })
 		).rejects.toMatchObject({ status: 409, code: 'conflict' });
+	});
+});
+
+describe('personal permission notice acknowledgement', () => {
+	it('records the current notice once for a browser session and grants nothing', async () => {
+		const { t, issueId } = sharedIssue();
+		const db = (await import('$lib/server/db')).getDb(t.env);
+		expect(await acknowledgeDisclosure(db, session, { version: 1 })).toEqual({ version: 1 });
+		expect(await acknowledgeDisclosure(db, session, { version: 1 })).toEqual({ version: 1 });
+		expect(t.all('SELECT version FROM personal_disclosure WHERE user_id = ?', USER)).toEqual([
+			{ version: 1 }
+		]);
+		expect(t.all('SELECT * FROM issue_personal_choice WHERE issue_id = ?', issueId)).toEqual([]);
+	});
+
+	it('refuses API keys and versions the browser does not show', async () => {
+		const { t } = sharedIssue();
+		const db = (await import('$lib/server/db')).getDb(t.env);
+		const key = { ...session, apiKeyId: 'key_named', apiKeyName: 'automation', viaSession: false };
+		await expect(acknowledgeDisclosure(db, key, { version: 1 })).rejects.toMatchObject({
+			status: 403,
+			code: 'consent_browser_required'
+		});
+		await expect(
+			acknowledgeDisclosure(db, { ...session, bearerPresent: true }, { version: 1 })
+		).rejects.toMatchObject({ status: 403, code: 'consent_browser_required' });
+		for (const version of [2, 0, '1', undefined]) {
+			await expect(acknowledgeDisclosure(db, session, { version })).rejects.toMatchObject({
+				status: 422,
+				code: 'invalid_field'
+			});
+		}
+		expect(t.all('SELECT * FROM personal_disclosure WHERE user_id = ?', USER)).toEqual([]);
 	});
 });

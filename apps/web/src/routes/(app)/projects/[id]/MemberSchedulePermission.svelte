@@ -56,7 +56,7 @@
 	>
 		<option value="off">Off</option><option value="on">On</option>
 	</select>
-	{#if choice === 'on'}<PersonalPermissionWarning future />{/if}
+	{#if choice === 'on'}<PersonalPermissionWarning future role="member" />{/if}
 	<button class="ml-2 min-h-11 rounded border px-4" onclick={save} disabled={saving}
 		>Save future permission</button
 	>

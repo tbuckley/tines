@@ -203,7 +203,7 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 		page.getByText('Permission saved. Member execution is not available in this release.')
 	).toBeVisible();
 	await expect(page.getByRole('note', { name: 'First permission warning' })).toHaveCount(0);
-	await expect(page.getByText(/This evolving issue may use your agents/)).toBeVisible();
+	await expect(page.getByText('What this means')).toBeVisible();
 	await page.screenshot({ path: testInfo.outputPath('member-phone.png'), fullPage: true });
 	await page.setViewportSize({ width: 390, height: 560 });
 	await expect(page.getByRole('button', { name: 'Save permission' })).toBeVisible();
@@ -399,9 +399,9 @@ test('owner create and transition show full first warning, then a shorter repeat
 	await clickToOpen(page.getByRole('button', { name: 'New issue' }), dialog);
 	await dialog.getByLabel('Workflow', { exact: true }).selectOption(workflow.id);
 	await dialog.getByLabel('Title', { exact: true }).fill('Owner disclosure');
-	await expect(dialog.getByRole('note', { name: 'First permission warning' })).toContainText(
-		'including after member execution is released'
-	);
+	const ownerWarning = dialog.getByRole('note', { name: 'First permission warning' });
+	await expect(ownerWarning).toContainText('Your agents may start as soon as it is eligible');
+	await expect(ownerWarning).not.toContainText('member execution');
 	await dialog.getByRole('button', { name: 'Create issue' }).click();
 	await expect(page).toHaveURL(/\/issues\/.*\/\d+$/);
 	expect(
@@ -412,7 +412,11 @@ test('owner create and transition show full first warning, then a shorter repeat
 	await gotoHydrated(page, `/projects/${project.id}`);
 	await clickToOpen(page.getByRole('button', { name: 'New issue' }), dialog);
 	await expect(dialog.getByRole('note', { name: 'First permission warning' })).toHaveCount(0);
-	await expect(dialog.getByText(/This evolving issue may use your agents/)).toBeVisible();
+	const details = dialog.getByText('What this means');
+	await expect(details).toBeVisible();
+	await expect(dialog.getByText(/This issue can change as people add work/)).toBeHidden();
+	await details.click();
+	await expect(dialog.getByText(/This issue can change as people add work/)).toBeVisible();
 	await dialog.getByRole('button', { name: 'Close' }).click();
 	const reviewState = workflow.states.find((state) => state.name === 'Review')!;
 	const reviewIssue = await body<{ id: string; number: number }>(
@@ -426,13 +430,27 @@ test('owner create and transition show full first warning, then a shorter repeat
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await gotoHydrated(page, `/issues/${project.id}/${reviewIssue.number}`);
 	await expect(page.getByRole('note', { name: 'First permission warning' })).toContainText(
-		'including after member execution is released'
+		'Your agents may start as soon as it is eligible'
 	);
 	await page.getByRole('button', { name: 'Start Working' }).click();
 	const transition = page.getByRole('dialog', { name: 'Start → Working' });
-	await expect(transition.getByRole('note', { name: 'First permission warning' })).toContainText(
-		'including after member execution is released'
-	);
+	const transitionWarning = transition.getByRole('note', { name: 'First permission warning' });
+	await expect(transitionWarning).toContainText('Your agents may start as soon as it is eligible');
+	// "Got it" records the acknowledgement without choosing anything, and every
+	// notice on the page collapses at once.
+	await transitionWarning.getByRole('button', { name: 'Got it' }).click();
+	await expect(page.getByRole('note', { name: 'First permission warning' })).toHaveCount(0);
+	await expect(transition.getByText('What this means')).toBeVisible();
+	expect(
+		d1<{ version: number }>(
+			`SELECT version FROM personal_disclosure WHERE user_id=${sqlLiteral(ALICE.id)}`
+		)
+	).toEqual([{ version: 1 }]);
+	expect(
+		d1<{ n: number }>(
+			`SELECT COUNT(*) AS n FROM issue_personal_choice WHERE issue_id=${sqlLiteral(reviewIssue.id)}`
+		)
+	).toEqual([{ n: 0 }]);
 });
 
 test('native D1 removal wins after member choice preparation without a grant or event', async ({

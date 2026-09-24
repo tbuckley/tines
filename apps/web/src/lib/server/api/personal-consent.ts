@@ -54,6 +54,42 @@ export function rejectKeyConsentInput(actor: ActorContext, body: object): void {
 	}
 }
 
+/** The personal-permission notice text the browser currently shows. */
+export const PERSONAL_DISCLOSURE_VERSION = 1;
+
+/**
+ * Records that the signed-in person read the personal-permission notice, so
+ * later forms show it collapsed. It grants nothing: permission is still chosen
+ * per issue or schedule. Browser-only, like every other consent write.
+ */
+export async function acknowledgeDisclosure(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	body: { version?: unknown }
+): Promise<{ version: number }> {
+	if (!actor.viaSession || actor.bearerPresent) {
+		throw new ApiFail(
+			403,
+			'consent_browser_required',
+			'The personal permission notice can only be acknowledged in an authenticated browser session.'
+		);
+	}
+	if (body.version !== PERSONAL_DISCLOSURE_VERSION) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			`"version" must be ${PERSONAL_DISCLOSURE_VERSION}, the notice this release shows`,
+			{ field: 'version' }
+		);
+	}
+	await db
+		.insertInto('personal_disclosure')
+		.values({ user_id: actor.userId, version: body.version, acknowledged_at: Date.now() })
+		.onConflict((oc) => oc.columns(['user_id', 'version']).doNothing())
+		.execute();
+	return { version: body.version };
+}
+
 /** Reject choice fields that are not part of this endpoint's request contract. */
 export function assertConsentFieldsSupported(
 	actor: ActorContext,
