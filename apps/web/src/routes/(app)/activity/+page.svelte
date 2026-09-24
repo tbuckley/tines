@@ -25,6 +25,7 @@
 		'issue.agent_hold_changed',
 		'issue.personal_permission_changed',
 		'project.sharing_started',
+		'project.invitation_created',
 		'project.member_joined',
 		'project.member_removed',
 		'scheduled_task.created',
