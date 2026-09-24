@@ -22,6 +22,16 @@
 		'issue.commented',
 		'issue.comment_edited',
 		'issue.comment_deleted',
+		'issue.agent_hold_changed',
+		'issue.personal_permission_changed',
+		'project.sharing_started',
+		'project.invitation_created',
+		'project.member_joined',
+		'project.member_removed',
+		'scheduled_task.created',
+		'scheduled_task.updated',
+		'scheduled_task.deleted',
+		'scheduled_task.personal_permission_changed',
 		'project.created',
 		'project.updated',
 		'project.deleted',
@@ -33,7 +43,8 @@
 	];
 
 	// Server-loaded page plus any client-fetched continuation pages.
-	let extra = $state<TinesEvent[]>([]);
+	let extra = $state<{ key: string; items: TinesEvent[] }>({ key: '', items: [] });
+	const filterKey = $derived(JSON.stringify({ focusId: data.focusId, filters: data.filters }));
 	let nextCursor = $state<string | null>(null);
 	let loadingMore = $state(false);
 	let loadError = $state<string | null>(null);
@@ -41,14 +52,14 @@
 	$effect(() => {
 		// New server data (filter change) resets the continuation.
 		void data.events;
-		extra = [];
+		extra = { key: filterKey, items: [] };
 		nextCursor = data.nextCursor;
 		generation += 1;
 		loadingMore = false;
 		loadError = null;
 	});
 
-	const events = $derived([...data.events, ...extra]);
+	const events = $derived([...data.events, ...(extra.key === filterKey ? extra.items : [])]);
 
 	async function loadMore() {
 		if (!nextCursor || loadingMore) return;
@@ -66,7 +77,10 @@
 				limit: 50
 			});
 			if (generation === requestGeneration) {
-				extra = [...extra, ...res.items];
+				extra = {
+					key: filterKey,
+					items: [...(extra.key === filterKey ? extra.items : []), ...res.items]
+				};
 				nextCursor = res.next_cursor;
 			}
 		} catch {

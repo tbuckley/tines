@@ -15,6 +15,8 @@ import type { DispatchEffects } from '$lib/server/dispatch-effects';
 interface DispatchCollector {
 	ownerId?: string;
 	pending: boolean;
+	/** Other accounts to dispatch for (see DispatchEffects.signalDispatchFor). */
+	others?: Set<string>;
 	closed: boolean;
 	effects?: DispatchEffects;
 }
@@ -34,6 +36,11 @@ export function requestDispatchEffects(
 	return (collector.effects ??= {
 		signalDispatch() {
 			if (!collector.closed) collector.pending = true;
+		},
+		signalDispatchFor(userId: string) {
+			if (collector.closed) return;
+			if (userId === collector.ownerId) collector.pending = true;
+			else (collector.others ??= new Set()).add(userId);
 		}
 	});
 }
@@ -44,10 +51,14 @@ async function drainDispatchEffects(
 ): Promise<void> {
 	collector.closed = true;
 	dispatchCollectors.delete(event);
-	if (!collector.pending || !collector.ownerId) return;
+	const owners = [
+		...(collector.pending && collector.ownerId ? [collector.ownerId] : []),
+		...(collector.others ?? [])
+	];
+	if (owners.length === 0) return;
 	try {
 		const { queueDispatchPass } = await import('$lib/server/supervisor/engine');
-		queueDispatchPass(event.platform, collector.ownerId);
+		for (const owner of owners) queueDispatchPass(event.platform, owner);
 	} catch (error) {
 		console.error('Failed to schedule dispatch pass:', error);
 	}
@@ -203,6 +214,8 @@ export interface ActorContext {
 	apiKeyId: string | null;
 	apiKeyName: string | null;
 	viaSession: boolean;
+	/** A Bearer header must never borrow a coincident browser session's consent authority. */
+	bearerPresent?: boolean;
 	/** Set when the key is a run key (bound to an agent run). */
 	agentRunId?: string | null;
 	/** Required on request actors. Optional only for legacy session test fixtures. */
@@ -351,9 +364,53 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 export { sha256Hex };
 
 /** Everything a route handler needs: scoped db, env, and the acting user. */
-export async function apiContext(event: RequestEvent) {
+export async function apiContext(event: RequestEvent, { sessionOnly = false } = {}) {
 	if (!event.platform) throw new ApiFail(500, 'no_platform', 'Platform bindings unavailable');
 	const actor = await requireActor(event);
+	if (sessionOnly && !actor.viaSession)
+		throw new ApiFail(403, 'session_required', 'Sign in with your browser to continue');
+	if (
+		!['GET', 'HEAD'].includes(event.request.method) &&
+		(event.request.headers.get('content-type') ?? '').includes('application/json')
+	) {
+		const payload = await event.request
+			.clone()
+			.json()
+			.catch(() => null);
+		const forbidden = new Set([
+			'allow_my_agents',
+			'allow_my_agents_future',
+			'initial_allow_my_agents',
+			'future_allow_my_agents',
+			'my_agents',
+			'personal_consent',
+			'disclosure_version'
+		]);
+		const hasConsent = (value: unknown): boolean =>
+			Array.isArray(value)
+				? value.some(hasConsent)
+				: value !== null &&
+					typeof value === 'object' &&
+					Object.entries(value).some(([field, child]) => forbidden.has(field) || hasConsent(child));
+		if (hasConsent(payload)) {
+			if (!actor.viaSession || actor.bearerPresent)
+				throw new ApiFail(
+					403,
+					'consent_browser_required',
+					'Personal agent permission is managed in the browser. No issue or permission change was applied.'
+				);
+			if (
+				!/^\/api\/v1\/(?:projects\/[^/]+\/issues|issues\/[^/]+\/(?:transition|my-consent)|schedules\/[^/]+\/my-consent)$/.test(
+					event.url.pathname
+				)
+			)
+				throw new ApiFail(
+					422,
+					'invalid_field',
+					'Personal permission is not accepted by this endpoint; use the issue permission control.'
+				);
+		}
+	}
 	return {
 		db: getDb(event.platform.env),
 		env: event.platform.env,

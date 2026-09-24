@@ -182,6 +182,30 @@ function validateOwnedRuns(body: RunnerPollRequest): string[] {
 	return owned;
 }
 
+function validateCancellationAcks(
+	acks: RunnerPollRequest['cancellation_acks']
+): { run_id: string; token: string }[] {
+	if (acks === undefined) return [];
+	if (
+		!Array.isArray(acks) ||
+		acks.length > 100 ||
+		acks.some(
+			(ack) =>
+				!ack ||
+				typeof ack.run_id !== 'string' ||
+				ack.run_id.length > 100 ||
+				typeof ack.token !== 'string' ||
+				ack.token.length < 8 ||
+				ack.token.length > 100
+		)
+	) {
+		throw new ApiFail(422, 'invalid_field', '"cancellation_acks" must contain run ids and tokens', {
+			field: 'cancellation_acks'
+		});
+	}
+	return acks;
+}
+
 function validateInstanceId(body: RunnerPollRequest): string | undefined {
 	const instanceId = body.instance_id;
 	if (instanceId === undefined) return undefined;
@@ -359,6 +383,7 @@ export async function pollRunner(
 	const effortCapabilities = validateEffortCapabilities(body.effort_capabilities, instanceId);
 	const concurrencyReport = validateConcurrencyPoll(body.concurrency_control, instanceId);
 	const declinedAssignments = validateDeclinedAssignments(body.declined_assignments);
+	const cancellationAcks = validateCancellationAcks(body.cancellation_acks);
 	const requestedCap =
 		body.max_concurrent === undefined
 			? undefined
@@ -574,6 +599,43 @@ export async function pollRunner(
 		() => effects.signalDispatch()
 	);
 
+	const acceptedAcks: { run_id: string; token: string }[] = [];
+	for (const ack of cancellationAcks) {
+		const row = await db
+			.selectFrom('agent_run')
+			.select([
+				'id',
+				'status',
+				'cancellation_token',
+				'cancel_requested_at',
+				'admitted_daemon_instance_id'
+			])
+			.where('id', '=', ack.run_id)
+			.where('runner_id', '=', runner.id)
+			.where('cancellation_token', '=', ack.token)
+			.executeTakeFirst();
+		if (!row || row.cancellation_token !== ack.token || row.cancel_requested_at === null) continue;
+		let accepted =
+			row.status === 'canceled' || !ACTIVE.includes(row.status as (typeof ACTIVE)[number]);
+		if (
+			!accepted &&
+			(row.status === 'launching' || row.status === 'running') &&
+			row.admitted_daemon_instance_id === instanceId
+		) {
+			const endable = await loadEndableRun(db, runner.user_id, row.id);
+			if (endable) {
+				const ended = await endRun(db, env, endable, {
+					status: 'canceled',
+					error: 'canceled by owner',
+					now
+				});
+				accepted = ended.ended;
+				if (accepted) effects.signalDispatch();
+			}
+		}
+		if (accepted) acceptedAcks.push(ack);
+	}
+
 	const active = await db
 		.selectFrom('agent_run')
 		.selectAll()
@@ -591,6 +653,7 @@ export async function pollRunner(
 	let reconciled = false;
 	for (const run of active) {
 		if (run.status !== 'running' || owned.has(run.id)) continue;
+		if (run.cancel_requested_at !== null) continue;
 		const endable = await loadEndableRun(db, run.user_id, run.id);
 		if (!endable || endable.status !== 'running') continue;
 		// The daemon lost the run, the agent did not fail it: `interrupted`,
@@ -625,7 +688,13 @@ export async function pollRunner(
 	const live = new Set(
 		active.filter((r) => r.status === 'launching' || r.status === 'running').map((r) => r.id)
 	);
-	const cancels = [...owned].filter((id) => !live.has(id));
+	const cancelRequests = active
+		.filter(
+			(run) => (run.status === 'launching' || run.status === 'running') && run.cancellation_token
+		)
+		.map((run) => ({ run_id: run.id, token: run.cancellation_token! }));
+	const requestedIds = new Set(cancelRequests.map((request) => request.run_id));
+	const cancels = [...owned].filter((id) => !live.has(id) || requestedIds.has(id));
 
 	// A draining runner still receives runs it already claimed: they hold
 	// their claim and key, and the daemon finishes them before it exits.
@@ -645,6 +714,8 @@ export async function pollRunner(
 		response: {
 			assignments,
 			cancels,
+			...(cancelRequests.length > 0 ? { cancel_requests: cancelRequests } : {}),
+			...(acceptedAcks.length > 0 ? { cancellation_acks: acceptedAcks } : {}),
 			...(concurrencyReport ? { concurrency_control: concurrencyInstruction(runner) } : {}),
 			...(releasedAssignments.length > 0 ? { released_assignments: releasedAssignments } : {})
 		},

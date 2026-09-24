@@ -87,6 +87,12 @@ export const PROJECT_NAME_MAX = 200;
 
 export interface Project {
 	id: string;
+	/** Present in shared project projections. */
+	owner?: { id: string; name: string };
+	viewer_role?: 'owner' | 'member';
+	/** Null until the project first enters permanent consent mode. */
+	shared_at?: number | null;
+	sharing_revision?: number;
 	name: string;
 	description: string;
 	default_workflow_id: string | null;
@@ -515,6 +521,23 @@ export interface Issue {
 	/** The schedule keeps its original project when an instance moves. */
 	scheduled_task_project_id: string | null;
 	scheduled_task_project_name: string | null;
+	/** Durable creation provenance; it remains after a schedule is edited or deleted. */
+	schedule_origin?: {
+		schedule_id: string;
+		schedule_name: string;
+		permission_epoch: number;
+		definition_revision: number;
+		snapshot: {
+			title_template: string;
+			description_template: string;
+			workflow_id: string;
+			state_id: string | null;
+			resolved_start_state_id: string;
+			cron: string;
+			timezone: string;
+			require_all_closed: boolean;
+		};
+	} | null;
 	/** Pin: replaces routing-rule matching entirely for this issue. */
 	pinned_runner_id: string | null;
 	pinned_runner_name: string | null;
@@ -643,6 +666,7 @@ export interface IssueDetail extends Issue {
 	since_last_run?: SinceLastRun | null;
 	/** Prompt-only metadata, emitted when launch comment selection is requested. */
 	launch_comments?: { latest_completed_run_comment_id: string | null };
+	permission_receipt?: IssueConsentReceipt;
 	/** Independent domains omitted from this composite response. */
 	redacted?: ('workspace' | 'control_plane' | 'project_links')[];
 }
@@ -767,6 +791,10 @@ export interface CreateIssueRequest {
 	blocks?: string[];
 	/** Existing canonical issue id that the new issue duplicates. */
 	duplicate_of?: string;
+	/** Browser-session-only initial personal permission in a shared project. */
+	allow_my_agents?: boolean;
+	expected_sharing_revision?: number;
+	disclosure_version?: number;
 }
 
 /** One file entry in the multipart issue-create metadata manifest. */
@@ -792,6 +820,8 @@ export interface CreateScheduleInput {
 	timezone?: string;
 	/** Only create a new instance when all previous instances are closed. */
 	require_all_closed?: boolean;
+	/** Browser-session-only choice for future instances; independent of the initial issue. */
+	allow_my_agents_on_future_instances?: boolean;
 }
 
 /** Create-issue response; `schedule` present when a recurrence was set. */
@@ -833,8 +863,57 @@ export interface Schedule {
 	run_count: number;
 	/** Linked issues currently in a non-done state (drives the gate). */
 	open_instances: number;
+	/** Semantic authorization lifetime, independent of execution definition changes. */
+	permission_epoch?: number;
+	/** Absent or off means future instances receive no inherited personal permission. */
+	my_future_permission?: { value: 'on' | 'off' | 'unset'; revision: number; epoch: number };
 	created_at: number;
 	updated_at: number;
+}
+
+export interface ScheduleConsentRequest {
+	value: 'on' | 'off';
+	expected_revision: number;
+	permission_epoch: number;
+	disclosure_version?: number;
+}
+
+export interface ScheduleConsentReceipt {
+	schedule_id: string;
+	project_id: string;
+	my_future_permission: { value: 'on' | 'off' | 'unset'; revision: number; epoch: number };
+	readiness: 'saved' | 'paused' | 'archived';
+	message: string;
+}
+
+/** Allowlisted member projection; no owner library, runner or credential fields. */
+export interface SharedScheduleSummary {
+	id: string;
+	viewer_id: string;
+	project: {
+		id: string;
+		name: string;
+		owner: { id: string; name: string };
+		archived_at: number | null;
+	};
+	name: string;
+	title_template: string;
+	description_template: string;
+	workflow: { id: string; name: string; start_state_id: string; start_state_name: string };
+	recurrence: {
+		cron: string;
+		preset: SchedulePreset | null;
+		timezone: string;
+		require_all_closed: boolean;
+		enabled: boolean;
+	};
+	permission_epoch: number;
+	my_future_permission: { value: 'on' | 'off' | 'unset'; revision: number; epoch: number };
+	roster: {
+		user: { id: string; name: string };
+		role: 'owner' | 'member';
+		value: 'on' | 'off' | 'unset';
+	}[];
 }
 
 /**
@@ -897,6 +976,62 @@ export interface TransitionIssueRequest {
 	/** Action name, matched case-insensitively among the allowed transitions. */
 	action?: string;
 	transition_id?: string;
+	/** Optimistic decision/permission witnesses used by shared projects. */
+	expected_state_id?: string;
+	expected_decision_revision?: number;
+	expected_consent_revision?: number;
+	expected_consent_epoch?: number;
+	expected_workflow_revision?: number;
+	allow_my_agents?: boolean;
+	disclosure_version?: number;
+}
+
+/** Session-only personal issue permission write; the subject is always the actor. */
+export interface IssueConsentRequest {
+	value: 'on' | 'off';
+	expected_revision: number;
+	issue_epoch: number;
+	decision_revision: number;
+	disclosure_version?: number;
+}
+
+export interface IssueConsentReceipt {
+	actor: 'owner' | 'member' | 'key';
+	project: { id: string; sharing_revision: number };
+	issue_state: {
+		id: string;
+		category: StateCategory;
+		decision_revision: number;
+		workflow_revision: number;
+	};
+	agent_hold: { held: boolean; revision: number };
+	my_agents: {
+		value: 'on' | 'off' | 'unset';
+		source: 'explicit_issue' | 'schedule' | null;
+		revision: number;
+		epoch: number;
+	};
+	readiness: 'held' | 'unavailable' | 'eligible';
+	admitted_run: string | null;
+	committed_atomically: boolean;
+	message?: string;
+}
+
+export interface AgentHoldRequest {
+	held: boolean;
+	expected_revision: number;
+}
+
+export interface AgentHoldReceipt {
+	issue_id: string;
+	held: boolean;
+	revision: number;
+	released_assigned: number;
+	message: string;
+}
+
+export interface CancelRunRequest {
+	reason?: string;
 }
 
 export interface IssueFilters {
@@ -2133,6 +2268,8 @@ export interface RunnerPollRequest {
 	instance_id?: string;
 	/** Run ids the daemon is actually executing right now. */
 	owned_runs: string[];
+	/** Optional acknowledgements sent only after local process/workspace cleanup. */
+	cancellation_acks?: { run_id: string; token: string }[];
 	/**
 	 * The daemon's `--max-concurrent`. When present the server adopts it as
 	 * the runner's cap, so restarting the daemon with a new flag value takes
@@ -2243,6 +2380,10 @@ export interface RunnerPollResponse {
 	 * settled these (cancel, timeout, the offline sweep).
 	 */
 	cancels: string[];
+	/** Consent-mode requests stay live until an acknowledgement or timeout. */
+	cancel_requests?: { run_id: string; token: string }[];
+	/** Acknowledgements accepted on this poll; safe to forget locally. */
+	cancellation_acks?: { run_id: string; token: string }[];
 }
 
 /** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */
@@ -3088,6 +3229,8 @@ export interface Comment {
 	created_at: number;
 	/** Null when the comment has never been edited. */
 	updated_at: number | null;
+	/** The original author is immutable; edit attribution is separate. */
+	editor?: { user_id: string; user_name: string; api_key_id: string | null } | null;
 }
 
 export interface CreateCommentRequest {
@@ -3113,6 +3256,8 @@ export const EVENT_TYPES = [
 	'issue.updated',
 	'issue.transferred',
 	'issue.transitioned',
+	'issue.personal_permission_changed',
+	'issue.agent_hold_changed',
 	'issue.commented',
 	'issue.comment_edited',
 	'issue.comment_deleted',
@@ -3128,6 +3273,10 @@ export const EVENT_TYPES = [
 	'project.deleted',
 	'project.archived',
 	'project.unarchived',
+	'project.sharing_started',
+	'project.invitation_created',
+	'project.member_joined',
+	'project.member_removed',
 	'workflow.created',
 	'workflow.updated',
 	'workflow.deleted',
@@ -3135,6 +3284,7 @@ export const EVENT_TYPES = [
 	'api_key.permissions_updated',
 	'api_key.revoked',
 	'scheduled_task.created',
+	'scheduled_task.personal_permission_changed',
 	'scheduled_task.updated',
 	'scheduled_task.deleted',
 	'scheduled_task.skipped',
@@ -3171,7 +3321,7 @@ export interface TinesEvent {
 	issue_id: string | null;
 	project_id: string | null;
 	/** Denormalized for display; null when the referent is gone or absent. */
-	issue_ref: { project_name: string; number: number; title: string } | null;
+	issue_ref: { project_id: string; project_name: string; number: number; title: string } | null;
 	project_name: string | null;
 	payload: Record<string, unknown>;
 	created_at: number;

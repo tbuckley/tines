@@ -30,6 +30,8 @@ import {
 import { insertValues, type QueryGuard } from './query-guard';
 import { eventInsert } from './events';
 import { assertStatesNotScheduled, assertWorkflowNotScheduled } from './schedules';
+import { releaseAssignedIssueQueries } from '../supervisor/consent-admission';
+import { invalidateWorkflowSchedulePermissionQueries } from './schedule-consent';
 import { projectReadPredicate, requireAccess } from './permissions';
 
 interface ResolvedState {
@@ -1204,6 +1206,36 @@ export async function updateWorkflow(
 			(s) => !s.isNew && currentById.get(s.id) && currentById.get(s.id)!.category !== s.category
 		)
 		.map((s) => ({ state: s.name, from: currentById.get(s.id)!.category, to: s.category }));
+	const semanticChanged =
+		statesAdded.length > 0 ||
+		statesRemoved.length > 0 ||
+		categoriesChanged.length > 0 ||
+		def.initialStateId !== current.initial_state_id ||
+		transitionDiff.added > 0 ||
+		transitionDiff.removed > 0 ||
+		transitionDiff.renamed.length > 0 ||
+		transitionDiff.requirementsChanged ||
+		def.transitions.some((next) =>
+			current.transitions.some(
+				(before) =>
+					before.from_state_id === next.from_state_id &&
+					before.name.toLowerCase() === next.name.toLowerCase() &&
+					before.to_state_id !== next.to_state_id
+			)
+		);
+	const doneStateIds = def.states
+		.filter((state) => currentById.get(state.id)?.category !== 'done' && state.category === 'done')
+		.map((state) => state.id);
+	const doneIssueIds = doneStateIds.length
+		? await db
+				.selectFrom('issue as i')
+				.innerJoin('project as p', 'p.id', 'i.project_id')
+				.select(['i.id', 'p.user_id'])
+				.where('i.state_id', 'in', doneStateIds)
+				.where('p.shared_at', 'is not', null)
+				.execute()
+		: [];
+
 	const payload: Record<string, unknown> = { workflow_id: id, name };
 	if (name !== current.name) payload.renamed = { from: current.name, to: name };
 	if (description !== current.description) payload.description_changed = true;
@@ -1240,7 +1272,8 @@ export async function updateWorkflow(
 	// Old transitions next: they hold foreign keys onto states about to be
 	// deleted. Transition ids are not referenced elsewhere, so the set is
 	// replaced wholesale.
-	queries.push(db.deleteFrom('workflow_transition').where('workflow_id', '=', id).compile());
+	if (semanticChanged)
+		queries.push(db.deleteFrom('workflow_transition').where('workflow_id', '=', id).compile());
 	// Every pointer onto a state about to vanish is nulled first: the FK has
 	// no ON DELETE action on purpose, so a dangling pointer would fail the
 	// batch rather than silently rewrite another workflow's prompts. This one
@@ -1282,20 +1315,22 @@ export async function updateWorkflow(
 			);
 		}
 	}
-	for (const t of def.transitions) {
-		queries.push(
-			db
-				.insertInto('workflow_transition')
-				.values({
-					id: t.id,
-					workflow_id: id,
-					name: t.name,
-					from_state_id: t.from_state_id,
-					to_state_id: t.to_state_id,
-					requirements: t.requires ? JSON.stringify(t.requires) : null
-				})
-				.compile()
-		);
+	if (semanticChanged) {
+		for (const t of def.transitions) {
+			queries.push(
+				db
+					.insertInto('workflow_transition')
+					.values({
+						id: t.id,
+						workflow_id: id,
+						name: t.name,
+						from_state_id: t.from_state_id,
+						to_state_id: t.to_state_id,
+						requirements: t.requires ? JSON.stringify(t.requires) : null
+					})
+					.compile()
+			);
+		}
 	}
 	// Initial stage instructions for newly added states.
 	for (const s of def.states) {
@@ -1324,11 +1359,71 @@ export async function updateWorkflow(
 	queries.push(
 		db
 			.updateTable('workflow')
-			.set({ name, description, initial_state_id: def.initialStateId, updated_at: now })
+			.set({
+				name,
+				description,
+				initial_state_id: def.initialStateId,
+				updated_at: now,
+				...(semanticChanged ? { decision_revision: sql<number>`decision_revision + 1` } : {})
+			})
 			.where('id', '=', id)
 			.compile(),
 		eventInsert(db, actor, { type: 'workflow.updated', payload })
 	);
+	const initialChanged = def.initialStateId !== current.initial_state_id;
+	const changedCategoryIds = def.states
+		.filter(
+			(state) => currentById.get(state.id)?.category !== state.category && currentById.has(state.id)
+		)
+		.map((state) => state.id);
+	if (initialChanged || changedCategoryIds.length > 0) {
+		const token = newId('dcn');
+		queries.push(
+			sql`UPDATE scheduled_task SET permission_epoch = permission_epoch + 1,
+			last_update_token = ${token}
+		WHERE workflow_id = ${id}
+			AND EXISTS (SELECT 1 FROM project p WHERE p.id = scheduled_task.project_id
+				AND p.shared_at IS NOT NULL)
+			AND (${initialChanged ? sql`state_id IS NULL` : sql`0`}
+				${changedCategoryIds.length ? sql`OR state_id IN (${sql.join(changedCategoryIds)})` : sql``})`.compile(
+				db
+			)
+		);
+		queries.push(...invalidateWorkflowSchedulePermissionQueries(db, token, now));
+	}
+	if (doneStateIds.length) {
+		queries.push(
+			sql`UPDATE issue SET decision_revision = decision_revision + 1,
+			consent_epoch = consent_epoch + 1, last_decision_token = ${newId('dcn')}
+			WHERE workflow_id = ${id} AND state_id IN (${sql.join(doneStateIds)})
+			AND EXISTS (SELECT 1 FROM project p WHERE p.id = issue.project_id AND p.shared_at IS NOT NULL)`.compile(
+				db
+			)
+		);
+		queries.push(
+			sql`UPDATE issue_personal_choice SET value = 'unset', revision = revision + 1,
+			issue_epoch = (SELECT consent_epoch FROM issue WHERE issue.id = issue_id),
+			source_kind = NULL, source_schedule_id = NULL, source_grant_revision = NULL,
+			source_permission_epoch = NULL, updated_at = ${now}
+			WHERE issue_id IN (SELECT i.id FROM issue i JOIN project p ON p.id = i.project_id
+				WHERE i.workflow_id = ${id} AND i.state_id IN (${sql.join(doneStateIds)})
+				AND p.shared_at IS NOT NULL)`.compile(db)
+		);
+		for (const issue of doneIssueIds) {
+			queries.push(
+				...releaseAssignedIssueQueries(db, {
+					issueId: issue.id,
+					userId: issue.user_id,
+					token: newId('rel'),
+					eventId: newId('evt'),
+					now,
+					reason: 'Workflow state became done before admission',
+					guard: sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${issue.id}
+					AND workflow_id = ${id} AND state_id IN (${sql.join(doneStateIds)}))`
+				})
+			);
+		}
+	}
 	await runAtomic(env, queries);
 	if (categoriesChanged.some((change) => change.to === 'active')) effects.signalDispatch();
 	const updated = await loadWorkflow(db, actor.userId, id);

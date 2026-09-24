@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { getDb } from '$lib/server/db';
-import { USER, addIssue, seedBase } from '../supervisor/test-fixtures';
+import {
+	USER,
+	PROJECT,
+	NOW,
+	addIssue,
+	addRun,
+	addRunner,
+	seedBase
+} from '../supervisor/test-fixtures';
 import type {
 	ArtifactRequirement,
 	CreateWorkflowRequest,
@@ -247,6 +255,56 @@ describe('resolveDef', () => {
 });
 
 describe('workflow state order persistence', () => {
+	it('category Done resets owner choices and releases assigned work in one batch', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const workflow = await createWorkflow(t.db, t.env, actor, {
+			name: 'Category reset',
+			initial_state: 'Work',
+			states: [
+				{ name: 'Work', category: 'active' },
+				{ name: 'Review', category: 'active' }
+			],
+			transitions: []
+		});
+		const reviewId = workflow.states.find((state) => state.name === 'Review')!.id;
+		const issueId = addIssue(t, { workflow: workflow.id, state: reviewId });
+		const runner = addRunner(t);
+		const runId = addRun(t, { issueId, runnerId: runner });
+		t.sqlite
+			.prepare('UPDATE project SET shared_at = ?, sharing_revision = 1 WHERE id = ?')
+			.run(NOW, PROJECT);
+		t.sqlite
+			.prepare(
+				`INSERT INTO issue_personal_choice
+			(issue_id,user_id,value,revision,issue_epoch,source_kind,updated_at)
+			VALUES (?,?,'on',1,0,'explicit_issue',?)`
+			)
+			.run(issueId, USER, NOW);
+		await updateWorkflow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, workflow.id, {
+			states: [
+				{ id: workflow.initial_state_id, name: 'Work', category: 'active' },
+				{ id: reviewId, name: 'Review', category: 'done' }
+			],
+			transitions: []
+		});
+		expect(
+			t.all('SELECT decision_revision, consent_epoch FROM issue WHERE id = ?', issueId)[0]
+		).toMatchObject({ decision_revision: 1, consent_epoch: 1 });
+		expect(
+			t.all(
+				'SELECT value, revision, issue_epoch FROM issue_personal_choice WHERE issue_id = ?',
+				issueId
+			)[0]
+		).toMatchObject({ value: 'unset', revision: 2, issue_epoch: 1 });
+		expect(t.all('SELECT status, outcome FROM agent_run WHERE id = ?', runId)[0]).toMatchObject({
+			status: 'canceled',
+			outcome: null
+		});
+		expect(
+			t.all('SELECT decision_revision FROM workflow WHERE id = ?', workflow.id)[0]
+		).toMatchObject({ decision_revision: 1 });
+	});
 	it('rewrites contiguous positions without changing references or an occupied state', async () => {
 		const t = createTestDb();
 		seedBase(t);

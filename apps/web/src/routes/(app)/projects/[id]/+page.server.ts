@@ -5,6 +5,10 @@ import { ApiFail, sessionActor } from '$lib/server/api/core';
 import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
 import { listLabelsInternal } from '$lib/server/api/labels';
 import { getProject } from '$lib/server/api/projects';
+import { resolveProjectAccess } from '$lib/server/api/project-access';
+import { readSharedProject } from '$lib/server/api/shared-projects';
+import { listSharedIssues } from '$lib/server/api/shared-issues';
+import { readSharedScheduleSummary } from '$lib/server/api/schedule-consent';
 import { listRoutingRules } from '$lib/server/api/routing';
 import { listSchedules } from '$lib/server/api/schedules';
 import { loadWorkflows } from '$lib/server/api/workflows';
@@ -15,7 +19,47 @@ import type { PageServerLoad } from './$types';
 export const load: PageServerLoad = async ({ locals, platform, params, url }) => {
 	const db = getDb(platform!.env);
 	const userId = locals.user!.id;
-	const actor = sessionActor(locals.user!);
+	const actor = {
+		userId,
+		userName: locals.user!.name,
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	};
+	const access = await resolveProjectAccess(db, actor, params.id).catch((e) => {
+		if (e instanceof ApiFail && e.status === 404)
+			error(404, `No project has the ID “${truncate(params.id)}”.`);
+		if (e instanceof ApiFail) error(e.status, e.message);
+		throw e;
+	});
+	if (access.role === 'member') {
+		const project = await readSharedProject(db, actor, params.id).catch((e) => {
+			if (e instanceof ApiFail) error(e.status, e.message);
+			throw e;
+		});
+		const issues = await listSharedIssues(db, actor, params.id, {
+			q: url.searchParams.get('q') ?? undefined
+		});
+		const schedules = await db
+			.selectFrom('scheduled_task')
+			.select('id')
+			.where('project_id', '=', params.id)
+			.execute();
+		const summaries = await Promise.all(
+			schedules.map((s) => readSharedScheduleSummary(db, actor, s.id))
+		);
+		const current = await resolveProjectAccess(db, actor, params.id).catch(() =>
+			error(404, 'Project unavailable')
+		);
+		if (current.membershipRevision !== access.membershipRevision) error(404, 'Project unavailable');
+		return {
+			mode: 'member' as const,
+			project,
+			issues: issues.items,
+			hasMore: issues.hasMore,
+			schedules: summaries
+		};
+	}
 	let page;
 	try {
 		page = readIssuePage(url);
@@ -83,6 +127,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		(r) => r.scope.project_id === null && r.scope.workflow_state_id === null
 	);
 	return {
+		mode: 'owner' as const,
 		routingRules: projectRules.length > 0 ? projectRules : fallbackRules,
 		project,
 		issues,

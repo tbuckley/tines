@@ -1015,6 +1015,7 @@ resource attributes and suppresses malformed image/media/embed nodes defensively
 library behavior compatible while public admission and display remain text-only; see
 [`specs/library/PUBLICATIONS.md`](../library/PUBLICATIONS.md).
 
+> 2026-09-23 project-sharing decision: [SHARING_2026-09-23.md](../projects/SHARING_2026-09-23.md) supersedes this spec’s single-owner assumptions for shared projects. This historical spec remains unchanged otherwise.
 # Explicit API-key authority (2026-09-21, Tines/648)
 
 Artifact access now follows the project containing the issue rather than a

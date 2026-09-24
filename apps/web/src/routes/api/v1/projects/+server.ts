@@ -2,14 +2,17 @@ import { json } from '@sveltejs/kit';
 import type { CreateProjectRequest, ListResponse, Project } from '@tines/shared';
 import { api, apiContext, readArchived, readJson } from '$lib/server/api/core';
 import { createProject, listProjects } from '$lib/server/api/projects';
+import { listSharedProjects } from '$lib/server/api/shared-projects';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	const items = await listProjects(db, actor, {
-		archived: readArchived(event.url.searchParams)
-	});
-	const body: ListResponse<Project> = { items, next_cursor: null };
+	const archived = readArchived(event.url.searchParams);
+	const [owned, shared] = await Promise.all([
+		listProjects(db, actor, { archived }),
+		listSharedProjects(db, actor, archived)
+	]);
+	const body = { items: [...owned, ...shared], next_cursor: null };
 	return json(body);
 });
 

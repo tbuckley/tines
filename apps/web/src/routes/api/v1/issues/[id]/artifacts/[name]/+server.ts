@@ -5,12 +5,19 @@ import {
 	getArtifactDetailForActor,
 	upsertArtifact
 } from '$lib/server/api/artifacts';
+import { readSharedArtifact } from '$lib/server/api/shared-issues';
+import { resolveIssueAccess } from '$lib/server/api/project-access';
 import { api, apiContext, readJson } from '$lib/server/api/core';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
-	return json(await getArtifactDetailForActor(db, actor, event.params.id, event.params.name));
+	const access = await resolveIssueAccess(db, actor, event.params.id);
+	return json(
+		access.role === 'owner'
+			? await getArtifactDetailForActor(db, actor, event.params.id, event.params.name)
+			: await readSharedArtifact(db, actor, event.params.id, event.params.name)
+	);
 });
 
 /** JSON upsert for text/link/pr: creates the artifact or appends a version. */

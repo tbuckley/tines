@@ -6,6 +6,8 @@ import {
 	type CreateIssueRequest
 } from '@tines/shared';
 import { ApiFail } from './core';
+import type { ActorContext } from './core';
+import { assertConsentFieldsSupported } from './personal-consent';
 import type { InitialIssueFile } from './artifacts';
 
 export interface ParsedIssueCreate {
@@ -18,7 +20,10 @@ function invalid(message: string, details?: Record<string, unknown>): never {
 }
 
 /** Parse the bounded multipart representation used only by issue creation. */
-export async function readIssueCreateMultipart(request: Request): Promise<ParsedIssueCreate> {
+export async function readIssueCreateMultipart(
+	request: Request,
+	actor?: ActorContext
+): Promise<ParsedIssueCreate> {
 	const header = request.headers.get('content-length');
 	const declared = header === null ? NaN : Number(header);
 	if (!Number.isSafeInteger(declared) || declared < 0) {
@@ -98,6 +103,19 @@ export async function readIssueCreateMultipart(request: Request): Promise<Parsed
 	if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata))
 		invalid('Invalid metadata');
 	const candidate = metadata as Partial<CreateIssueMultipartMetadata>;
+	if (actor)
+		assertConsentFieldsSupported(actor, candidate, [
+			'allow_my_agents',
+			'disclosure_version',
+			'allow_my_agents_on_future_instances'
+		]);
+	for (const field of [
+		'allow_my_agents',
+		'disclosure_version',
+		'allow_my_agents_on_future_instances'
+	])
+		if (field in candidate)
+			invalid('Personal permission belongs inside "metadata.issue"', { field });
 	if (!candidate.issue || typeof candidate.issue !== 'object' || Array.isArray(candidate.issue)) {
 		invalid('"metadata.issue" must be an object', { field: 'metadata.issue' });
 	}

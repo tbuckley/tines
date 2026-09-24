@@ -22,14 +22,21 @@ const baseRow = {
 	issue_number: 7,
 	issue_title: 'Fix it',
 	project_name: 'api',
-	issue_project_name: 'api'
+	issue_project_name: 'api',
+	issue_project_id: 'prj_1',
+	other_project_id: null
 };
 
 describe('serializeEvent', () => {
 	it('parses the payload and denormalizes the issue ref', () => {
 		const ev = serializeEvent(baseRow);
 		expect(ev.payload).toEqual({ title: 'Fix it' });
-		expect(ev.issue_ref).toEqual({ project_name: 'api', number: 7, title: 'Fix it' });
+		expect(ev.issue_ref).toEqual({
+			project_id: 'prj_1',
+			project_name: 'api',
+			number: 7,
+			title: 'Fix it'
+		});
 		expect(ev.actor).toEqual({
 			user_id: 'usr_1',
 			user_name: 'alice',
@@ -61,7 +68,12 @@ describe('serializeEvent', () => {
 			issue_number: 12
 		});
 		expect(ev.project_name).toBe('source');
-		expect(ev.issue_ref).toEqual({ project_name: 'destination', number: 12, title: 'Fix it' });
+		expect(ev.issue_ref).toEqual({
+			project_id: 'prj_1',
+			project_name: 'destination',
+			number: 12,
+			title: 'Fix it'
+		});
 	});
 });
 

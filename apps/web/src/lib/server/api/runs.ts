@@ -641,7 +641,9 @@ export async function getFullRunLog(
 }
 
 /** Maps the engine's cancel result onto API semantics. */
-export function assertCancelable(kind: 'not_found' | 'already_ended' | 'canceled'): void {
+export function assertCancelable(
+	kind: 'not_found' | 'already_ended' | 'canceled' | 'requested'
+): void {
 	if (kind === 'not_found') throw notFound();
 	if (kind === 'already_ended') {
 		throw new ApiFail(422, 'run_already_ended', 'This run has already ended; nothing to cancel');

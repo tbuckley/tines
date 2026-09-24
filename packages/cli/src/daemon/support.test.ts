@@ -413,6 +413,7 @@ describe('RunTable', () => {
 			judgment?: RunJudgment;
 		}[] = [];
 		const released: { runId: string; keep: boolean; outcome: RunOutcome }[] = [];
+		const cancellationAcks: { runId: string; token: string; released: boolean }[] = [];
 		const notes: string[] = [];
 		const logs: string[] = [];
 		let persists = 0;
@@ -424,6 +425,13 @@ describe('RunTable', () => {
 					finishes.push({ runId: run.runId, status, error, judgment });
 				},
 				release: (run, { keep, outcome }) => released.push({ runId: run.runId, keep, outcome }),
+				acknowledgeCancellation: async (run) => {
+					cancellationAcks.push({
+						runId: run.runId,
+						token: run.cancellationToken!,
+						released: released.some((item) => item.runId === run.runId)
+					});
+				},
 				noteKept: (run) => notes.push(run.runId),
 				persist: () => (persists += 1),
 				log: (m) => logs.push(m)
@@ -442,6 +450,7 @@ describe('RunTable', () => {
 			run,
 			finishes,
 			released,
+			cancellationAcks,
 			releasedIds: () => released.map((r) => r.runId),
 			notes,
 			logs,
@@ -592,6 +601,22 @@ describe('RunTable', () => {
 		expect(h.finishes).toEqual([]);
 		expect(h.notes).toEqual([]);
 		expect(h.released).toEqual([{ runId: 'arun_1', keep: true, outcome: 'failed' }]);
+		expect(h.cancellationAcks).toEqual([]); // Older server: no request token.
+	});
+
+	it('acknowledges a token only after local cancellation cleanup', async () => {
+		const h = harness();
+		const run = h.run('arun_1');
+		h.table.track(run);
+		h.table.noteCancellationRequest(run.runId, 'can_request_1');
+		expect(h.cancellationAcks).toEqual([]);
+		h.table.markCanceled(run.runId);
+		expect(h.cancellationAcks).toEqual([]);
+		await h.table.finishAndCleanup(run, 'failed', 'killed');
+		expect(h.cancellationAcks).toEqual([
+			{ runId: run.runId, token: 'can_request_1', released: true }
+		]);
+		expect(h.finishes).toEqual([]);
 	});
 
 	it('a bare cleanup defaults to the failed outcome', () => {

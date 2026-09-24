@@ -1,5 +1,5 @@
 import type { UpdatePreferencesRequest, UserPreferences } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { ApiFail, requireString, runAtomic, type ActorContext } from './core';
 import { accessAllowed, requireAccess } from './permissions';
@@ -73,7 +73,11 @@ async function requireLiveProject(
 		.selectFrom('project')
 		.select('id')
 		.where('id', '=', id)
-		.where('user_id', '=', actor.userId)
+		.where(
+			field === 'focused_project_id'
+				? sql<boolean>`(user_id = ${actor.userId} OR (shared_at IS NOT NULL AND EXISTS (SELECT 1 FROM project_member m WHERE m.project_id = project.id AND m.user_id = ${actor.userId} AND m.revoked_at IS NULL)))`
+				: sql<boolean>`user_id = ${actor.userId}`
+		)
 		.where('archived_at', 'is', null)
 		.executeTakeFirst();
 	if (!row) {
@@ -106,7 +110,16 @@ export async function updatePreferences(
 			body.last_project_id === null
 				? null
 				: await requireLiveProject(db, actor, body.last_project_id, 'last_project_id');
-	} else if (focused !== null && focused !== current.focused_project_id) {
+	} else if (
+		focused !== null &&
+		focused !== current.focused_project_id &&
+		(await db
+			.selectFrom('project')
+			.select('id')
+			.where('id', '=', focused)
+			.where('user_id', '=', actor.userId)
+			.executeTakeFirst())
+	) {
 		// Focusing a project also makes it the New-issue fallback, which is what
 		// keeps "last focused" alive after a switch back to All projects.
 		last = focused;
@@ -172,7 +185,9 @@ export async function resolveFocus(db: Kysely<Database>, userId: string): Promis
 		.leftJoin('project', (join) =>
 			join
 				.onRef('project.id', '=', 'user_preference.focused_project_id')
-				.on('project.user_id', '=', userId)
+				.on(
+					sql<boolean>`(project.user_id = ${userId} OR (project.shared_at IS NOT NULL AND EXISTS (SELECT 1 FROM project_member m WHERE m.project_id = project.id AND m.user_id = ${userId} AND m.revoked_at IS NULL)))`
+				)
 				.on('project.archived_at', 'is', null)
 		)
 		.select([

@@ -25,6 +25,8 @@ export interface ScheduleExecRow {
 	next_run_at: number;
 	run_count: number;
 	definition_revision: number;
+	permission_epoch: number;
+	project_shared_at: number | null;
 	user_id: string;
 	start_state_id: string;
 	start_state_name: string;
@@ -64,7 +66,9 @@ export function scheduleExecQuery(db: Kysely<Database>) {
 			'scheduled_task.next_run_at',
 			'scheduled_task.run_count',
 			'scheduled_task.definition_revision',
+			'scheduled_task.permission_epoch',
 			'project.user_id as user_id',
+			'project.shared_at as project_shared_at',
 			'project.name as project_name',
 			'project.archived_at as project_archived_at',
 			'start_state.id as start_state_id',
@@ -198,6 +202,47 @@ export function buildScheduleExecution(
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${createdEventId}, ${schedule.user_id}, 'issue.created', ${actorUserId}, ${actorApiKeyId}, ${issueId}, ${schedule.project_id}, ${eventPayload}, ${opts.now}
 		WHERE EXISTS (SELECT 1 FROM issue WHERE id = ${issueId})`.compile(db);
+	const originSnapshot = JSON.stringify({
+		title_template: schedule.title_template,
+		description_template: schedule.description_template,
+		workflow_id: schedule.workflow_id,
+		state_id: schedule.state_id,
+		resolved_start_state_id: schedule.start_state_id,
+		resolved_start_state_name: schedule.start_state_name,
+		resolved_start_category: schedule.start_state_category,
+		cron: schedule.cron,
+		timezone: schedule.timezone,
+		require_all_closed: Boolean(schedule.require_all_closed)
+	});
+	const originInsert = sql`INSERT INTO issue_schedule_origin
+		(issue_id, schedule_id, schedule_name, permission_epoch, definition_revision, snapshot, created_at)
+		SELECT ${issueId}, ${schedule.id}, ${schedule.name}, ${schedule.permission_epoch},
+			${schedule.definition_revision}, ${originSnapshot}, ${opts.now}
+		WHERE EXISTS (SELECT 1 FROM issue WHERE id = ${issueId})
+			AND EXISTS (SELECT 1 FROM event WHERE id = ${createdEventId})`.compile(db);
+	// Read the grant inside the guarded D1 batch. Run now's actor never supplies consent.
+	// An owner's explicit off is inherited too: the owner's permission defaults
+	// on, so without an off row the new issue would be admitted anyway.
+	const inheritChoices = sql`INSERT INTO issue_personal_choice
+		(issue_id, user_id, value, revision, issue_epoch, membership_revision, source_kind,
+		 source_schedule_id, source_grant_revision, source_permission_epoch, updated_at)
+		SELECT ${issueId}, grant.user_id, grant.value, 1, i.consent_epoch, grant.membership_revision,
+			'schedule', ${schedule.id}, grant.revision, grant.permission_epoch, ${opts.now}
+		FROM schedule_personal_choice grant
+		JOIN scheduled_task s ON s.id = grant.schedule_id
+		JOIN project p ON p.id = s.project_id
+		JOIN issue i ON i.id = ${issueId}
+		WHERE s.id = ${schedule.id} AND i.project_id = s.project_id
+			AND p.shared_at IS NOT NULL
+			AND (grant.value = 'on' OR (grant.value = 'off' AND grant.user_id = p.user_id))
+			AND grant.permission_epoch = s.permission_epoch
+			AND s.permission_epoch = ${schedule.permission_epoch}
+			AND ( (grant.user_id = p.user_id AND grant.membership_revision = 0)
+				OR EXISTS (SELECT 1 FROM project_member m WHERE m.project_id = p.id
+					AND m.user_id = grant.user_id AND m.revoked_at IS NULL
+					AND m.revision = grant.membership_revision) )
+			AND ${schedule.start_state_category} <> 'done'
+			AND EXISTS (SELECT 1 FROM event WHERE id = ${createdEventId})`.compile(db);
 
 	const skipPayload = sql`json_object(
 		'schedule_id', ${schedule.id}, 'name', ${schedule.name}, 'occurrence', ${due},
@@ -258,6 +303,8 @@ export function buildScheduleExecution(
 	const queries = [
 		issueInsert,
 		createdEvent,
+		originInsert,
+		inheritChoices,
 		...(skippedEvent ? [skippedEvent] : []),
 		successUpdate,
 		...(skipUpdate ? [skipUpdate] : []),

@@ -30,7 +30,7 @@ export type EventSegment =
 	 */
 	| { kind: 'self-ref' }
 	/** The other end of an issue link; always a link on the web. */
-	| { kind: 'other-ref'; project_name: string; number: number }
+	| { kind: 'other-ref'; project_id?: string; project_name: string; number: number }
 	/**
 	 * An emphasised, quoted name — schedule/context/runner/key names and
 	 * transition actions. The *renderer* adds the quotes (curly on the web,
@@ -68,6 +68,7 @@ function action(type: string): string {
 function otherRef(p: Record<string, unknown>): EventSegment {
 	return {
 		kind: 'other-ref',
+		...(typeof p.other_project_id === 'string' ? { project_id: p.other_project_id } : {}),
 		project_name: str(p.other_project_name),
 		number: Number(p.other_number)
 	};
@@ -84,6 +85,8 @@ function otherRef(p: Record<string, unknown>): EventSegment {
  */
 function linkSegments(ev: TinesEvent, p: Record<string, unknown>): EventSegment[] {
 	const lead = ev.type === 'issue.link_added' ? 'marked' : 'unmarked';
+	if (!Number.isFinite(Number(p.other_number)))
+		return [text('changed an issue link on'), selfRef()];
 	const duplicate = p.kind === 'duplicate_of';
 	if (duplicate && p.role === 'target') {
 		return [text(lead), otherRef(p), text('as a duplicate of'), selfRef()];
@@ -139,6 +142,14 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 		});
 		return segs;
 	},
+	'issue.personal_permission_changed': (_ev, p) => [
+		text(`${p.value === 'on' ? 'allowed' : 'stopped'} their agents on`),
+		selfRef()
+	],
+	'issue.agent_hold_changed': (_ev, p) => [
+		text(p.held ? 'held agents on' : 'released the agent hold on'),
+		selfRef()
+	],
 	'issue.commented': () => [text('commented on'), selfRef()],
 	'issue.comment_edited': () => [text('edited a comment on'), selfRef()],
 	'issue.comment_deleted': () => [text('deleted a comment on'), selfRef()],
@@ -160,6 +171,10 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'project.deleted': (ev, p) => projectSegments(ev, p),
 	'project.archived': (ev, p) => projectSegments(ev, p),
 	'project.unarchived': (ev, p) => projectSegments(ev, p),
+	'project.sharing_started': () => [text('started sharing this project')],
+	'project.invitation_created': () => [text('created a project invitation')],
+	'project.member_joined': () => [text('joined this project')],
+	'project.member_removed': () => [text('changed membership in this project')],
 	'workflow.created': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
 	'workflow.updated': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
 	'workflow.deleted': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
@@ -170,6 +185,11 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	],
 	'api_key.revoked': (_ev, p) => [text('revoked API key'), name(p.name)],
 	'scheduled_task.created': (ev, p) => [text(`${action(ev.type)} schedule`), name(p.name)],
+	'scheduled_task.personal_permission_changed': (_ev, p) => [
+		text(
+			`${p.value === 'on' ? 'allowed' : 'stopped'} their agents on future issues from a schedule`
+		)
+	],
 	'scheduled_task.updated': (ev, p) => [text(`${action(ev.type)} schedule`), name(p.name)],
 	'scheduled_task.deleted': (ev, p) => [text(`${action(ev.type)} schedule`), name(p.name)],
 	'scheduled_task.skipped': (_ev, p) => {

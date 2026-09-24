@@ -102,7 +102,7 @@ test('API and global list hide duplicates by default and the filter restores the
 	await expect(page).toHaveURL(new RegExp(`q=${encodeURIComponent(prefix)}`));
 
 	await duplicateRow.click();
-	await expect(page).toHaveURL(issuePath(mixedProject.name, duplicate.number));
+	await expect(page).toHaveURL(issuePath(mixedProject.id, duplicate.number));
 	await expect(page.getByText('Duplicate of', { exact: true })).toBeVisible();
 	const duplicateBanner = page.getByRole('button', { name: 'Not a duplicate?' }).locator('..');
 	await expect(

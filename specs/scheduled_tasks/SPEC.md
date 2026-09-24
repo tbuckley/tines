@@ -1,5 +1,9 @@
 # Tines — Scheduled Tasks Spec
 
+For the later shared-project permission decision, see
+[SHARING_2026-09-23](../projects/SHARING_2026-09-23.md). This historical spec
+predates per-person future-instance permission.
+
 Some work recurs: check the error dashboard every morning, rotate credentials monthly, triage the inbox every Friday. **Scheduled tasks** make the tracker create these issues on a schedule instead of relying on a human to remember. A scheduled task is a template plus a recurrence: at each occurrence, Tines renders the template into a normal issue in the task's project. The created issues are ordinary issues in every way — same workflows, transitions, comments, and events — so agents pick them up exactly as they pick up human-created work.
 
 Creating one is part of the normal issue-creation flow: set an optional recurrence when creating an issue, and that first issue is created immediately while a schedule takes over from there.

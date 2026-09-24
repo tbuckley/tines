@@ -32,6 +32,11 @@ import { assertWritable, projectArchivedError } from './archive';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
+import {
+	invalidateSchedulePermissionQueries,
+	revokeInheritedScheduleQueries
+} from './schedule-consent';
+import { assertConsentFieldsSupported } from './personal-consent';
 import { projectReadPredicate, requireAccess } from './permissions';
 
 // ---------------------------------------------------------------------------
@@ -195,12 +200,21 @@ export function scheduleQuery(db: Kysely<Database>, userId: string) {
 		.innerJoin('project', 'project.id', 'scheduled_task.project_id')
 		.innerJoin('workflow', 'workflow.id', 'scheduled_task.workflow_id')
 		.leftJoin('workflow_state as start_state', 'start_state.id', 'scheduled_task.state_id')
+		.leftJoin('schedule_personal_choice as my_choice', (join) =>
+			join
+				.onRef('my_choice.schedule_id', '=', 'scheduled_task.id')
+				.on('my_choice.user_id', '=', userId)
+		)
 		.selectAll('scheduled_task')
 		.select([
 			'project.name as project_name',
 			'project.archived_at as project_archived_at',
+			'project.shared_at as project_shared_at',
 			'workflow.name as workflow_name',
-			'start_state.name as state_name'
+			'start_state.name as state_name',
+			'my_choice.value as my_choice_value',
+			'my_choice.revision as my_choice_revision',
+			'my_choice.permission_epoch as my_choice_epoch'
 		])
 		.select((eb) =>
 			eb
@@ -246,6 +260,19 @@ export function serializeSchedule(row: ScheduleRow): Schedule {
 		last_run_at: row.last_run_at,
 		run_count: row.run_count,
 		open_instances: Number(row.open_instances ?? 0),
+		permission_epoch: row.permission_epoch,
+		...(row.project_shared_at !== null
+			? {
+					my_future_permission: {
+						value:
+							row.my_choice_epoch === row.permission_epoch
+								? (row.my_choice_value ?? 'unset')
+								: 'unset',
+						revision: row.my_choice_revision ?? 0,
+						epoch: row.permission_epoch
+					}
+				}
+			: {}),
 		created_at: row.created_at,
 		updated_at: row.updated_at
 	};
@@ -492,6 +519,8 @@ export function scheduleInsertQueries(
 				last_run_at: initial ? now : null,
 				run_count: initial ? 1 : 0,
 				definition_revision: 1,
+				permission_epoch: 0,
+				last_update_token: null,
 				created_at: now,
 				updated_at: now
 			},
@@ -532,6 +561,7 @@ export async function updateSchedule(
 	id: string,
 	body: UpdateScheduleRequest
 ): Promise<Schedule> {
+	assertConsentFieldsSupported(actor, body);
 	const currentRow = await scheduleQuery(db, actor.userId)
 		.where(projectReadPredicate(actor, 'scheduled_task.project_id'))
 		.where('scheduled_task.id', '=', id)
@@ -649,6 +679,16 @@ export async function updateSchedule(
 
 	const changed = Object.keys(payload).length > 2;
 	if (!changed && nextRunAt === current.next_run_at) return current;
+	const permissionChanged =
+		titleTemplate !== current.title_template ||
+		descriptionTemplate !== current.description_template ||
+		workflowId !== current.workflow_id ||
+		stateId !== current.state_id ||
+		recurrence.cron !== current.cron ||
+		recurrence.presetJson !== currentRow.preset ||
+		timezone !== current.timezone ||
+		requireAllClosed !== current.require_all_closed;
+	const updateToken = newId('dcn');
 	const eventId = newId('evt');
 	const updateQuery = db
 		.updateTable('scheduled_task')
@@ -667,6 +707,8 @@ export async function updateSchedule(
 				? { next_run_at: nextRunAt }
 				: {}),
 			definition_revision: sql<number>`definition_revision + 1`,
+			last_update_token: updateToken,
+			...(permissionChanged ? { permission_epoch: sql<number>`permission_epoch + 1` } : {}),
 			updated_at: now
 		})
 		.where('id', '=', id)
@@ -679,28 +721,24 @@ export async function updateSchedule(
 				  AND project.archived_at IS NULL
 			)`
 		)
-		.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`)
 		.compile();
 	const results = await runAtomic(env, [
+		updateQuery,
 		eventInsert(
 			db,
 			actor,
 			{ id: eventId, type: 'scheduled_task.updated', projectId: current.project_id, payload },
 			{
-				predicate: sql<boolean>`EXISTS (
-						SELECT 1 FROM scheduled_task
-						JOIN project ON project.id = scheduled_task.project_id
-						WHERE scheduled_task.id = ${id}
-						  AND scheduled_task.definition_revision = ${revision}
-						  AND scheduled_task.project_id = ${current.project_id}
-						  AND project.user_id = ${actor.userId}
-						  AND project.archived_at IS NULL
-					)`
+				predicate: sql<boolean>`EXISTS (SELECT 1 FROM scheduled_task
+					WHERE id = ${id} AND last_update_token = ${updateToken})`
 			}
 		),
-		updateQuery
+		...(permissionChanged ? invalidateSchedulePermissionQueries(db, id, updateToken, now) : []),
+		sql`SELECT id FROM scheduled_task WHERE id = ${id}
+			AND last_update_token = ${updateToken}
+			AND EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`.compile(db)
 	]);
-	if (results[1]?.meta.changes !== 1) {
+	if (results.at(-1)?.results?.length !== 1) {
 		const latestRow = await scheduleQuery(db, actor.userId)
 			.where(projectReadPredicate(actor, 'scheduled_task.project_id'))
 			.where('scheduled_task.id', '=', id)
@@ -731,21 +769,51 @@ export async function deleteSchedule(
 		{ projectId: current.project_id }
 	);
 	await assertWritable(db, actor, scheduleProject(current));
-	await runAtomic(env, [
+	const now = Date.now();
+	const eventId = newId('evt');
+	const guard = sql<boolean>`EXISTS (SELECT 1 FROM scheduled_task s
+		JOIN project p ON p.id = s.project_id
+		WHERE s.id = ${id} AND p.user_id = ${actor.userId}
+			AND p.archived_at IS NULL)`;
+	const results = await runAtomic(env, [
+		eventInsert(
+			db,
+			actor,
+			{
+				id: eventId,
+				type: 'scheduled_task.deleted',
+				projectId: current.project_id,
+				payload: { schedule_id: id, name: current.name }
+			},
+			{ predicate: guard }
+		),
+		...(() => {
+			const committed = sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`;
+			const [clear, release, revokeKeys] = revokeInheritedScheduleQueries(db, id, now, committed);
+			return [release, revokeKeys, clear];
+		})(),
 		// Explicitly unlink issues (the FK's SET NULL is the backstop); their
 		// issue.created events keep the schedule's identity for history.
 		db
 			.updateTable('issue')
 			.set({ scheduled_task_id: null })
 			.where('scheduled_task_id', '=', id)
+			.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`)
 			.compile(),
-		db.deleteFrom('scheduled_task').where('id', '=', id).compile(),
-		eventInsert(db, actor, {
-			type: 'scheduled_task.deleted',
-			projectId: current.project_id,
-			payload: { schedule_id: id, name: current.name }
-		})
+		db
+			.deleteFrom('scheduled_task')
+			.where('id', '=', id)
+			.where(sql<boolean>`EXISTS (SELECT 1 FROM event WHERE id = ${eventId})`)
+			.compile(),
+		sql`SELECT id FROM event WHERE id = ${eventId}
+			AND NOT EXISTS (SELECT 1 FROM scheduled_task WHERE id = ${id})`.compile(db)
 	]);
+	if (results.at(-1)?.results?.length !== 1)
+		throw new ApiFail(
+			409,
+			'schedule_changed',
+			'Schedule changed while it was being deleted. Reload and try again.'
+		);
 }
 
 /**
@@ -760,7 +828,8 @@ export async function runScheduleNow(
 	env: Env,
 	actor: ActorContext,
 	effects: DispatchEffects,
-	id: string
+	id: string,
+	beforeCommit?: () => Promise<void>
 ): Promise<string> {
 	const prepared = await getScheduleExecRowForActor(db, actor, id);
 	requireAccess(
@@ -788,6 +857,7 @@ export async function runScheduleNow(
 			now: Date.now(),
 			mode: { kind: 'manual', actor: { userId: actor.userId, apiKeyId: actor.apiKeyId } }
 		});
+		if (beforeCommit) await beforeCommit();
 		const results = await runAtomic(env, execution.queries);
 		const receipt = parseExecutionReceipt(results[execution.receiptIndex], execution);
 		switch (receipt.status) {

@@ -6,12 +6,35 @@ import { readIssueCreateMultipart } from '$lib/server/api/issue-create-files';
 import { addIssueLink } from '$lib/server/api/issue-links';
 import { getProject } from '$lib/server/api/projects';
 import { assertWritable } from '$lib/server/api/archive';
+import { resolveProjectAccess } from '$lib/server/api/project-access';
+import { listSharedIssues } from '$lib/server/api/shared-issues';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor } = await apiContext(event);
 	// 404 for a project the user doesn't own, before filtering by it.
-	await getProject(db, actor, event.params.id);
+	const access = await resolveProjectAccess(db, actor, event.params.id);
+	if (access.role === 'member') {
+		const page = readPage(event),
+			params = event.url.searchParams;
+		const list = await listSharedIssues(db, actor, event.params.id, {
+			limit: page.limit,
+			cursor: page.cursor ? { created_at: page.cursor.createdAt, id: page.cursor.id } : undefined,
+			q: params.get('q') ?? undefined,
+			state: params.get('state') ?? undefined,
+			workflow: params.get('workflow') ?? undefined,
+			category: params.get('category') ?? undefined,
+			hideDone: ['1', 'true'].includes(params.get('hide_done') ?? ''),
+			hideDuplicates: !['false', '0'].includes(params.get('hide_duplicates') ?? ''),
+			ready: ['1', 'true'].includes(params.get('ready') ?? ''),
+			labels: params.getAll('label')
+		});
+		const last = list.items.at(-1);
+		return json({
+			items: list.items,
+			next_cursor: list.hasMore && last ? encodeCursor(last.created_at, last.id) : null
+		});
+	}
 	const page = readPage(event);
 	const params = event.url.searchParams;
 	const { items, hasMore } = await listIssuesForActor(
@@ -51,7 +74,7 @@ export const POST: RequestHandler = api(async (event) => {
 		// Reject foreign/archived projects before consuming a potentially large body.
 		const project = await getProject(db, actor, event.params.id);
 		await assertWritable(db, actor, project);
-		const parsed = await readIssueCreateMultipart(event.request);
+		const parsed = await readIssueCreateMultipart(event.request, actor);
 		const race =
 			import.meta.env.VITE_TINES_E2E === '1'
 				? event.request.headers.get('x-tines-e2e-linked-create-close')

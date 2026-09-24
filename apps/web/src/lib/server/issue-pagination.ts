@@ -32,13 +32,14 @@ export function readIssuePage(url: URL): WebIssuePage {
 export function issuePagination(
 	url: URL,
 	page: WebIssuePage,
-	items: IssueListItem[],
+	items: Pick<IssueListItem, 'id' | 'created_at'>[],
 	hasMore: boolean,
 	scope?: string
 ): IssuePagination {
 	const bounded = page.cursor !== null;
 	const firstHref = issuePageHref(url);
-	const cursorFor = (item: IssueListItem) => encodeCursor(item.created_at, item.id);
+	const cursorFor = (item: Pick<IssueListItem, 'id' | 'created_at'>) =>
+		encodeCursor(item.created_at, item.id);
 	let previousHref: string | null = null;
 	let nextHref: string | null = null;
 	if (items.length) {

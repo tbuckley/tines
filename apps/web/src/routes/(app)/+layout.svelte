@@ -22,7 +22,9 @@
 	// where it goes — the Issues tab carries the filters you last used, so the
 	// list comes back as you left it. Derived so it tracks the store: the
 	// layout outlives every navigation.
-	const focus = $derived(resolveClientFocus(focusHint.project, data.focus, data.projects));
+	const focus = $derived(
+		resolveClientFocus(focusHint.project, data.focus, [...data.projects, ...data.sharedProjects])
+	);
 
 	const tabs = $derived([
 		{ path: '/issues', href: navMemory.issuesHref, label: 'Issues', icon: IconListDetails },
@@ -42,7 +44,9 @@
 			// child data until a later layout refresh replaces the hint.
 			if (navigating.to) {
 				focusHint.set(
-					data.projects.find((project: { id: string }) => project.id === projectId) ?? null
+					[...data.projects, ...data.sharedProjects].find(
+						(project: { id: string }) => project.id === projectId
+					) ?? null
 				);
 			} else {
 				focusHint.clear();
@@ -130,7 +134,11 @@
 				</span>
 				Tines
 			</a>
-			<ProjectSwitcher projects={data.projects} {focus} onchoose={chooseFocus} />
+			<ProjectSwitcher
+				projects={[...data.projects, ...data.sharedProjects]}
+				{focus}
+				onchoose={chooseFocus}
+			/>
 			<!-- Below md the tabs live in the bottom bar instead. -->
 			<nav class="hidden h-full items-center gap-1 md:flex">
 				{#each tabs as tab (tab.path)}

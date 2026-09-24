@@ -144,7 +144,7 @@ test('an issue can be created from the issues list, picking project and starting
 	await dialog.getByRole('button', { name: 'Create issue' }).click();
 
 	// Lands on the new issue's detail page, already in the chosen state.
-	await expect(page).toHaveURL(new RegExp(`/issues/${projectName}/\\d+$`));
+	await expect(page).toHaveURL(new RegExp(`/issues/${project.id}/\\d+$`));
 	await expect(page.getByRole('heading', { name: `From the list ${runId}` })).toBeVisible();
 	await expect(stateBadge(page)).toHaveText(/Human Review/);
 });
@@ -449,6 +449,7 @@ test('the app chrome stays inside both responsive breakpoint boundaries', async 
 			(await focusMenu.boundingBox())!.x + (await focusMenu.boundingBox())!.width
 		).toBeLessThanOrEqual(width);
 		await page.keyboard.press('Escape');
+		await expect(focusMenu).toBeHidden();
 
 		const accountMenu = page
 			.getByRole('menu')
@@ -458,7 +459,9 @@ test('the app chrome stays inside both responsive breakpoint boundaries', async 
 		const accountMenuBox = (await accountMenu.boundingBox())!;
 		expect(accountMenuBox.x).toBeGreaterThanOrEqual(0);
 		expect(accountMenuBox.x + accountMenuBox.width).toBeLessThanOrEqual(width);
-		await page.keyboard.press('Escape');
+		// This menu closes by toggling its trigger; Escape belongs to the focus popover.
+		await account.click();
+		await expect(accountMenu).toBeHidden();
 	}
 });
 
@@ -561,7 +564,7 @@ test('a comment can be edited and deleted from the issue page', async ({ page })
 
 	const edited = page.locator('article').filter({ hasText: 'Typo fixed' }).first();
 	await expect(edited).toBeVisible({ timeout: 10_000 });
-	await expect(edited.getByText('(edited)')).toBeVisible();
+	await expect(edited.getByText(`(edited by ${ALICE.name})`)).toBeVisible();
 	await expect(page.getByText('Typpo here')).toHaveCount(0);
 
 	// Delete goes through the shared confirm dialog.
@@ -632,7 +635,7 @@ test('the Issues tab and an issue back link keep the list filters', async ({ pag
 	);
 
 	await page.getByRole('link', { name: new RegExp(issueTitle) }).click();
-	await expect(page).toHaveURL(new RegExp(`/issues/${projectName}/${issue.number}$`));
+	await expect(page).toHaveURL(new RegExp(`/issues/${project.id}/${issue.number}$`));
 
 	// Back to the filtered list, not to a bare one.
 	await expect(backLink(page)).toHaveText('Issues');
@@ -641,7 +644,7 @@ test('the Issues tab and an issue back link keep the list filters', async ({ pag
 
 	// The nav tab restores them too, from wherever you are.
 	await page.getByRole('link', { name: new RegExp(issueTitle) }).click();
-	await expect(page).toHaveURL(new RegExp(`/issues/${projectName}/${issue.number}$`));
+	await expect(page).toHaveURL(new RegExp(`/issues/${project.id}/${issue.number}$`));
 	await page.locator('header').getByRole('link', { name: 'Issues' }).click();
 	await expect(page).toHaveURL(new RegExp(`q=UI(%20|\\+)smoke(%20|\\+)${runId}`));
 	await expect(page.getByRole('link', { name: new RegExp(issueTitle) })).toBeVisible();
@@ -668,7 +671,7 @@ test('an issue reached from a project page goes back to that project', async ({ 
 	await page.keyboard.press('Escape');
 
 	await page.getByRole('link', { name: new RegExp(issueTitle) }).click();
-	await expect(page).toHaveURL(new RegExp(`/issues/${projectName}/${issue.number}$`));
+	await expect(page).toHaveURL(new RegExp(`/issues/${project.id}/${issue.number}$`));
 
 	// The back link names the project, and returns to it still filtered.
 	await expect(backLink(page)).toHaveText(projectName);

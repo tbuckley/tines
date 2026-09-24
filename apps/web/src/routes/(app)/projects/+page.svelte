@@ -15,7 +15,14 @@
 	$effect(() => navMemory.recordProjects(page.url.search));
 
 	const cards = $derived(
-		data.showArchived ? [...data.projects, ...data.archivedProjects] : data.projects
+		data.showArchived
+			? [
+					...data.projects,
+					...data.sharedProjects,
+					...data.archivedProjects,
+					...data.archivedSharedProjects
+				]
+			: [...data.projects, ...data.sharedProjects]
 	);
 
 	let createOpen = $state(false);
@@ -53,11 +60,11 @@
 <div class="mb-6 flex items-center justify-between">
 	<h1 class="text-2xl font-semibold tracking-tight">Projects</h1>
 	<div class="flex items-center gap-4">
-		{#if data.archivedProjects.length > 0}
+		{#if data.archivedProjects.length + data.archivedSharedProjects.length > 0}
 			<CheckboxField
 				class="text-muted-foreground text-sm"
 				checked={data.showArchived}
-				label="Show archived ({data.archivedProjects.length})"
+				label="Show archived ({data.archivedProjects.length + data.archivedSharedProjects.length})"
 				onCheckedChange={toggleArchived}
 			/>
 		{/if}
@@ -83,6 +90,9 @@
 			>
 				<h2 class="flex items-center gap-2 font-semibold">
 					{project.name}
+					{#if project.viewer_role === 'member'}<span class="text-muted-foreground text-xs"
+							>Shared by {project.owner?.name}</span
+						>{/if}
 					{#if project.archived_at !== null}
 						<span
 							class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs font-medium"
@@ -96,7 +106,9 @@
 				{/if}
 				<p class="text-muted-foreground mt-3 text-xs">
 					{project.issue_count} issue{project.issue_count === 1 ? '' : 's'}
-					· workflow: {workflowName(project.default_workflow_id)}
+					{#if project.viewer_role !== 'member'}· workflow: {workflowName(
+							project.default_workflow_id
+						)}{/if}
 					· {project.archived_at !== null
 						? `archived ${formatDate(project.archived_at)}`
 						: `updated ${relativeTime(project.updated_at)}`}

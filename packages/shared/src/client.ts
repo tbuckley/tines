@@ -3,6 +3,8 @@ import type {
 	AddIssueLinkRequest,
 	AgentRun,
 	AgentRunDetail,
+	AgentHoldRequest,
+	AgentHoldReceipt,
 	ApiErrorBody,
 	CreateLabelRequest,
 	DeleteLabelRequest,
@@ -60,6 +62,8 @@ import type {
 	StatsQuery,
 	LaunchPromptResponse,
 	IssueDetail,
+	IssueConsentRequest,
+	IssueConsentReceipt,
 	IssueFilters,
 	IssueJournalResponse,
 	IssueLink,
@@ -77,6 +81,8 @@ import type {
 	UsagePendingRun,
 	Runner,
 	Schedule,
+	ScheduleConsentRequest,
+	ScheduleConsentReceipt,
 	ScheduleFilters,
 	StateCategory,
 	SupervisorSettings,
@@ -299,6 +305,63 @@ export function createApiClient(options: ApiClientOptions) {
 			request<CreateProjectResponse>('POST', '/api/v1/projects', body),
 		listStarters: () => get<ListStartersResponse>('/api/v1/projects/starters'),
 		getProject: (id: string) => get<Project>(`/api/v1/projects/${id}`),
+		getProjectPeople: (id: string) =>
+			get<{
+				owner: { id: string; name: string };
+				members: { id: string; name: string; revision: number; joined_at: number }[];
+				shared_at: number | null;
+				viewer_id: string;
+			}>(`/api/v1/projects/${id}/people`),
+		listProjectInvitations: (id: string) =>
+			get<
+				ListResponse<{
+					id: string;
+					email: string;
+					generation: number;
+					expires_at: number;
+					accepted_at: number | null;
+					canceled_at: number | null;
+					delivery_status: string;
+				}>
+			>(`/api/v1/projects/${id}/invitations`),
+		inviteProjectPerson: (
+			id: string,
+			body: {
+				email: string;
+				landing_issue_id?: string;
+				confirm_sharing?: boolean;
+				expected_sharing_revision: number;
+			}
+		) =>
+			request<{
+				id: string;
+				email: string;
+				generation: number;
+				expires_at: number;
+				delivery_status: string;
+			}>('POST', `/api/v1/projects/${id}/invitations`, body),
+		resendProjectInvitation: (id: string, inviteId: string, expectedGeneration: number) =>
+			request<{ id: string; generation: number; delivery_status: string }>(
+				'POST',
+				`/api/v1/projects/${id}/invitations/${inviteId}/resend`,
+				{ expected_generation: expectedGeneration }
+			),
+		cancelProjectInvitation: (id: string, inviteId: string, expectedGeneration: number) =>
+			request<void>('DELETE', `/api/v1/projects/${id}/invitations/${inviteId}`, {
+				expected_generation: expectedGeneration
+			}),
+		removeProjectMember: (id: string, userId: string, expectedRevision: number) =>
+			request<{ project_id: string; user_id: string; revision: number }>(
+				'DELETE',
+				`/api/v1/projects/${id}/members/${userId}`,
+				{ expected_revision: expectedRevision }
+			),
+		leaveProject: (id: string, expectedRevision: number) =>
+			request<{ project_id: string; user_id: string; revision: number }>(
+				'POST',
+				`/api/v1/projects/${id}/leave`,
+				{ expected_revision: expectedRevision }
+			),
 		updateProject: (id: string, body: UpdateProjectRequest) =>
 			request<Project>('PATCH', `/api/v1/projects/${id}`, body),
 		deleteProject: (id: string, body?: DeleteAnchorRequest) =>
@@ -373,6 +436,13 @@ export function createApiClient(options: ApiClientOptions) {
 		getIssue: (id: string) => get<IssueDetail>(`/api/v1/issues/${id}`),
 		getIssueByNumber: (projectId: string, number: number) =>
 			get<IssueDetail>(`/api/v1/projects/${projectId}/issues/${number}`),
+		getIssueConsent: (id: string) => get<IssueConsentReceipt>(`/api/v1/issues/${id}/my-consent`),
+		setIssueConsent: (id: string, body: IssueConsentRequest) =>
+			request<IssueConsentReceipt>('PUT', `/api/v1/issues/${id}/my-consent`, body),
+		setIssueHold: (id: string, body: AgentHoldRequest) =>
+			request<AgentHoldReceipt>('PUT', `/api/v1/issues/${id}/agent-hold`, body),
+		cancelIssueRun: (issueId: string, runId: string) =>
+			request<AgentRunDetail>('POST', `/api/v1/issues/${issueId}/runs/${runId}/cancel`, {}),
 		updateIssue: (id: string, body: UpdateIssueRequest) =>
 			request<IssueDetail>('PATCH', `/api/v1/issues/${id}`, body),
 		transitionIssue: (id: string, body: TransitionIssueRequest) =>
@@ -404,6 +474,10 @@ export function createApiClient(options: ApiClientOptions) {
 		listProjectSchedules: (projectId: string, page: PageParams = {}) =>
 			get<ListResponse<Schedule>>(`/api/v1/projects/${projectId}/schedules${query(page)}`),
 		getSchedule: (id: string) => get<Schedule>(`/api/v1/schedules/${id}`),
+		getScheduleConsent: (id: string) =>
+			get<ScheduleConsentReceipt>(`/api/v1/schedules/${id}/my-consent`),
+		setScheduleConsent: (id: string, body: ScheduleConsentRequest) =>
+			request<ScheduleConsentReceipt>('PUT', `/api/v1/schedules/${id}/my-consent`, body),
 		updateSchedule: (id: string, body: UpdateScheduleRequest) =>
 			request<Schedule>('PATCH', `/api/v1/schedules/${id}`, body),
 		deleteSchedule: (id: string) => request<void>('DELETE', `/api/v1/schedules/${id}`),
@@ -619,6 +693,8 @@ export function createApiClient(options: ApiClientOptions) {
 		getPreferences: () => get<UserPreferences>('/api/v1/preferences'),
 		updatePreferences: (body: UpdatePreferencesRequest) =>
 			request<UserPreferences>('PATCH', '/api/v1/preferences', body),
+		acknowledgePermissionNotice: (version: number) =>
+			request<{ version: number }>('PUT', '/api/v1/preferences/disclosure', { version }),
 		getSupervisorSettings: () => get<SupervisorSettings>('/api/v1/supervisor/settings'),
 		getSupervisorQueue: (q: { project?: string } = {}) =>
 			get<FleetQueue>(`/api/v1/supervisor/queue${query(q)}`),

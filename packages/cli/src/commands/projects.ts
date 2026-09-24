@@ -8,6 +8,7 @@ import {
 	printList,
 	resolveUrl,
 	resolveProject,
+	resolveIssue,
 	resolveWorkflow,
 	table,
 	withCommon,
@@ -26,6 +27,108 @@ import type { Command } from 'commander';
 
 export function register(program: Command): void {
 	const projects = program.command('projects').description('Manage projects');
+
+	withCommon(
+		projects.command('people <project>').description('List the owner and active members')
+	).action(async (ref: string, opts: CommonOpts) => {
+		const api = client(opts),
+			project = await resolveProject(api, ref),
+			people = await api.getProjectPeople(project.id);
+		if (opts.json) return printJson(people);
+		console.log(`${people.owner.name} [${people.owner.id}] — owner`);
+		for (const person of people.members)
+			console.log(`${person.name} [${person.id}] — member (revision ${person.revision})`);
+	});
+	withCommon(
+		projects
+			.command('invite <project> <email>')
+			.description('Invite someone to the whole project')
+			.option('--issue <ref>', 'issue to open after acceptance')
+			.option(
+				'--confirm-sharing',
+				'acknowledge that first sharing gives members the whole project and restarts assigned work'
+			)
+	).action(
+		async (
+			ref: string,
+			email: string,
+			opts: CommonOpts & { issue?: string; confirmSharing?: boolean }
+		) => {
+			const api = client(opts),
+				project = await resolveProject(api, ref);
+			if (project.shared_at == null && !opts.confirmSharing)
+				die(
+					'First sharing gives access to the whole project. Your agents keep working on its issues and schedules unless you turn them off in the browser; members need their own permission. Assigned work is restarted and admitted work may finish. Rerun with --confirm-sharing to send the invite.'
+				);
+			const issue = opts.issue ? await resolveIssue(api, opts.issue) : null;
+			if (issue && issue.project_id !== project.id)
+				die('--issue must name an issue in the invited project');
+			const result = await api.inviteProjectPerson(project.id, {
+				email,
+				...(issue ? { landing_issue_id: issue.id } : {}),
+				confirm_sharing: opts.confirmSharing,
+				expected_sharing_revision: project.sharing_revision ?? 0
+			});
+			if (opts.json) return printJson(result);
+			console.log(
+				`${result.delivery_status === 'sent' ? 'Invited' : 'Invitation saved; delivery failed for'} ${result.email} [${result.id}]`
+			);
+		}
+	);
+	withCommon(
+		projects
+			.command('invite-resend <project> <invite-id>')
+			.description('Rotate and resend an invitation')
+	).action(async (ref: string, inviteId: string, opts: CommonOpts) => {
+		const api = client(opts),
+			project = await resolveProject(api, ref);
+		const invite = (await api.listProjectInvitations(project.id)).items.find(
+			(item) => item.id === inviteId
+		);
+		if (!invite) die('No such invitation in this project');
+		const result = await api.resendProjectInvitation(project.id, inviteId, invite.generation);
+		if (opts.json) return printJson(result);
+		console.log(`Invitation ${inviteId} rotated; delivery ${result.delivery_status}`);
+	});
+	withCommon(
+		projects.command('invite-cancel <project> <invite-id>').description('Cancel an invitation')
+	).action(async (ref: string, inviteId: string, opts: CommonOpts) => {
+		const api = client(opts),
+			project = await resolveProject(api, ref);
+		const invite = (await api.listProjectInvitations(project.id)).items.find(
+			(item) => item.id === inviteId
+		);
+		if (!invite) die('No such invitation in this project');
+		await api.cancelProjectInvitation(project.id, inviteId, invite.generation);
+		if (opts.json) return printJson({ canceled: true, id: inviteId });
+		console.log(`Canceled invitation ${inviteId}`);
+	});
+	withCommon(
+		projects.command('remove-member <project> <user-id>').description('Remove a project member')
+	).action(async (ref: string, userId: string, opts: CommonOpts) => {
+		const api = client(opts),
+			project = await resolveProject(api, ref);
+		const member = (await api.getProjectPeople(project.id)).members.find(
+			(person) => person.id === userId
+		);
+		if (!member) die('No active member has that user ID');
+		const result = await api.removeProjectMember(project.id, userId, member.revision);
+		if (opts.json) return printJson(result);
+		console.log(`Removed ${member.name} from ${project.name}`);
+	});
+	withCommon(projects.command('leave <project>').description('Leave a shared project')).action(
+		async (ref: string, opts: CommonOpts) => {
+			const api = client(opts),
+				project = await resolveProject(api, ref);
+			const people = await api.getProjectPeople(project.id);
+			// The server enforces the actor identity; the CLI only needs the current revision.
+			const revision = people.members.find((person) => person.id === people.viewer_id)?.revision;
+			if (!revision) die('No active membership to leave');
+			const result = await api.leaveProject(project.id, revision);
+			if (opts.json) return printJson(result);
+			console.log(`Left ${project.name}`);
+		}
+	);
 
 	withCommon(
 		projects.command('starters').description('List built-in project starters and their inputs')
@@ -215,11 +318,16 @@ export function register(program: Command): void {
 			const project = await resolveProject(api, ref);
 			if (opts.json) return printJson(project);
 			console.log(`${project.name}  [${project.id}]`);
+			if (project.viewer_role === 'member')
+				console.log(`shared by ${project.owner?.name ?? 'project owner'} — read only`);
 			if (project.description) console.log(project.description);
-			const defaultWorkflow = project.default_workflow_id
-				? (await api.getWorkflow(project.default_workflow_id)).name
-				: '(standard)';
-			console.log(`\ndefault workflow: ${defaultWorkflow}`);
+			const defaultWorkflow =
+				project.viewer_role === 'member'
+					? null
+					: project.default_workflow_id
+						? (await api.getWorkflow(project.default_workflow_id)).name
+						: '(standard)';
+			if (defaultWorkflow) console.log(`\ndefault workflow: ${defaultWorkflow}`);
 			console.log(
 				`issues: ${project.issue_count}  created: ${timestamp(project.created_at)}  updated: ${timestamp(project.updated_at)}`
 			);

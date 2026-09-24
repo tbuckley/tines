@@ -1,5 +1,9 @@
 # Tines — Projects Spec
 
+For the later shared-project permission decision, see
+[SHARING_2026-09-23](SHARING_2026-09-23.md). This historical spec predates
+browser-only personal permission and recurring-source lifetimes.
+
 Two subsystems share this file because they share one rule set about which
 projects exist and which one you are looking at: **Archival** (Tines/195) and
 **Project focus** (Tines/196).

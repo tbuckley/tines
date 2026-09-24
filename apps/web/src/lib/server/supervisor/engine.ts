@@ -43,6 +43,7 @@ import {
 import { loadSealableRun, sealRunLog, spillEvicted, sweepRunLogs } from './run-log';
 import { effectiveAutomationEnabled } from './settings';
 import { mergeEffortEvidence, type EffortMilestone } from './effort-evidence';
+import { ownerIssueConsentPredicate } from './consent-admission';
 
 const ACTIVE = [...ACTIVE_RUN_STATUSES];
 
@@ -386,11 +387,16 @@ export async function claimRun(
 	const claim = sql`
 		INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, model,
 			requested_effort, resolved_effort, effort_source, effort_application_status,
-			state_id_at_start, log, log_bytes_dropped, created_at, project_assignment_token)
+			state_id_at_start, log, log_bytes_dropped, created_at, project_assignment_token,
+			claim_owner_id, claim_sharing_revision, claim_consent_epoch, claim_consent_revision)
 		SELECT ${input.runId}, ${input.userId}, issue.id, ${input.runnerId}, 'assigned',
 			${input.tier}, ${input.model}, ${input.requestedEffort ?? null}, ${input.resolvedEffort ?? null},
 			${input.effortSource ? JSON.stringify(input.effortSource) : null}, ${input.effortDeliveryMode === 'legacy_tier' ? 'legacy_not_applied' : input.resolvedEffort ? 'pending' : 'not_requested'},
-			issue.state_id, '', 0, ${input.now}, ${assignmentToken}
+			issue.state_id, '', 0, ${input.now}, ${assignmentToken},
+			CASE WHEN project.shared_at IS NULL THEN NULL ELSE project.user_id END,
+			project.sharing_revision, issue.consent_epoch,
+			COALESCE((SELECT ipc.revision FROM issue_personal_choice ipc
+				WHERE ipc.issue_id = issue.id AND ipc.user_id = project.user_id), 0)
 		FROM issue
 		JOIN project ON project.id = issue.project_id
 		JOIN workflow_state st ON st.id = issue.state_id
@@ -398,11 +404,13 @@ export async function claimRun(
 			AND issue.project_id = ${input.projectId}
 			AND issue.state_id = ${input.stateId}
 			AND issue.project_assignment_token = ${assignmentToken}
+			AND EXISTS (SELECT 1 FROM runner r WHERE r.id = ${input.runnerId} AND r.user_id = ${input.userId})
 			-- Race guard: the project may have been archived between the pass
 			-- reading the queue and this claim.
 			AND project.archived_at IS NULL
 			AND st.category = 'active'
 			AND issue.needs_attention = 0
+			AND ${ownerIssueConsentPredicate(input.userId)}
 			AND NOT EXISTS (
 				SELECT 1 FROM agent_run
 				WHERE issue_id = issue.id AND status IN (${sql.join(ACTIVE)})
@@ -512,9 +520,55 @@ export async function mintRunKeyAndFlip(
 			.compile(),
 		db
 			.updateTable('agent_run')
-			.set({ status: 'launching', api_key_id: keyId })
+			.set({
+				status: 'launching',
+				api_key_id: keyId,
+				admitted_at: input.now,
+				admitted_project_owner_id: sql<string | null>`(
+					SELECT p.user_id FROM issue i JOIN project p ON p.id = i.project_id
+					WHERE i.id = agent_run.issue_id
+				)`,
+				admitted_project_id: sql<string | null>`(
+					SELECT i.project_id FROM issue i WHERE i.id = agent_run.issue_id
+				)`,
+				admitted_daemon_instance_id: input.localAdmission?.instanceId ?? null,
+				admission_evidence: sql<string>`json_object(
+					'version', 1,
+					'project_owner_id', (SELECT p.user_id FROM issue i JOIN project p ON p.id = i.project_id WHERE i.id = agent_run.issue_id),
+					'project_id', (SELECT i.project_id FROM issue i WHERE i.id = agent_run.issue_id),
+					'sharing_revision', (SELECT p.sharing_revision FROM issue i JOIN project p ON p.id = i.project_id WHERE i.id = agent_run.issue_id),
+					'issue_epoch', (SELECT i.consent_epoch FROM issue i WHERE i.id = agent_run.issue_id),
+					'choice_revision', (SELECT COALESCE(c.revision, 0) FROM issue i
+						LEFT JOIN issue_personal_choice c ON c.issue_id = i.id AND c.user_id = agent_run.user_id
+						WHERE i.id = agent_run.issue_id)
+				)`
+			})
 			.where('id', '=', input.runId)
 			.where('status', '=', 'assigned')
+			.where(
+				sql<boolean>`EXISTS (
+				SELECT 1 FROM issue AS issue
+				JOIN project AS project ON project.id = issue.project_id
+				JOIN workflow_state AS st ON st.id = issue.state_id
+				JOIN runner AS runner ON runner.id = agent_run.runner_id
+				WHERE issue.id = agent_run.issue_id
+					AND (project.shared_at IS NULL OR (
+						runner.user_id = agent_run.user_id AND runner.status = 'active'
+						AND issue.state_id = agent_run.state_id_at_start
+						AND issue.project_assignment_token = agent_run.project_assignment_token
+						AND issue.needs_attention = 0 AND issue.agent_hold = 0
+						AND project.archived_at IS NULL AND st.category = 'active'
+						AND ${ownerIssueConsentPredicate(input.userId)}
+						AND agent_run.claim_owner_id = project.user_id
+						AND agent_run.claim_sharing_revision = project.sharing_revision
+						AND agent_run.claim_consent_epoch = issue.consent_epoch
+						AND agent_run.claim_consent_revision = COALESCE((
+							SELECT c.revision FROM issue_personal_choice c
+							WHERE c.issue_id = issue.id AND c.user_id = project.user_id
+						), 0)
+					))
+			)`
+			)
 			.$if(input.localAdmission !== undefined, (query) => {
 				const admission = input.localAdmission!;
 				return query.where(sql<boolean>`EXISTS (
@@ -833,6 +887,24 @@ export async function launchClaimedRun(
 				startedGuard
 			)
 		]);
+		const cancellation = await db
+			.selectFrom('agent_run')
+			.select('cancel_requested_at')
+			.where('id', '=', ctx.runId)
+			.executeTakeFirst();
+		if (
+			cancellation?.cancel_requested_at !== null &&
+			cancellation?.cancel_requested_at !== undefined
+		) {
+			await adapter
+				.cancel({
+					id: ctx.runId,
+					runner_id: runner.id,
+					provider_session_id: launched.provider_session_id ?? null,
+					provider_meta: launched.provider_meta ?? null
+				})
+				.catch((error) => console.error(`adapter cancel for run ${ctx.runId} failed:`, error));
+		}
 		return 'launched';
 	} catch (e) {
 		const message = e instanceof Error ? e.message : String(e);
@@ -1467,7 +1539,7 @@ export async function loadEndableRun(
 }
 
 export type CancelRunResult =
-	{ kind: 'not_found' } | { kind: 'already_ended' } | { kind: 'canceled' };
+	{ kind: 'not_found' } | { kind: 'already_ended' } | { kind: 'canceled' } | { kind: 'requested' };
 
 /**
  * Cancels a run: best-effort adapter kill, then an ordinary end judged like
@@ -1485,6 +1557,54 @@ export async function cancelRun(
 	const run = await loadEndableRun(db, userId, runId);
 	if (!run) return { kind: 'not_found' };
 	if (!(ACTIVE as string[]).includes(run.status)) return { kind: 'already_ended' };
+	const sharing = await db
+		.selectFrom('agent_run as ar')
+		.innerJoin('issue as i', 'i.id', 'ar.issue_id')
+		.innerJoin('project as p', 'p.id', 'i.project_id')
+		.select(['p.shared_at', 'p.user_id as owner_id', 'i.project_id'])
+		.where('ar.id', '=', run.id)
+		.where('ar.user_id', '=', userId)
+		.executeTakeFirst();
+	if (sharing?.shared_at !== null && sharing?.shared_at !== undefined) {
+		if (sharing.owner_id !== userId) return { kind: 'not_found' };
+		if (run.status === 'assigned') {
+			const token = newId('rel');
+			const now = Date.now();
+			const [released] = await runBatch(env, [
+				sql`UPDATE agent_run SET status = 'canceled', ended_at = ${now}, outcome = NULL,
+					error = 'canceled before admission', assignment_release_token = ${token}
+					WHERE id = ${run.id} AND user_id = ${userId} AND status = 'assigned'`.compile(db),
+				db
+					.updateTable('api_key')
+					.set({ revoked_at: now })
+					.where('agent_run_id', '=', run.id)
+					.where(
+						sql<boolean>`EXISTS (SELECT 1 FROM agent_run WHERE id = ${run.id}
+						AND assignment_release_token = ${token})`
+					)
+					.compile(),
+				supervisorEvent(
+					db,
+					userId,
+					{
+						type: 'agent_run.ended',
+						issueId: run.issue_id,
+						projectId: sharing.project_id,
+						payload: { run_id: run.id, runner_id: run.runner_id, status: 'canceled' }
+					},
+					now,
+					sql<boolean>`EXISTS (SELECT 1 FROM agent_run WHERE id = ${run.id}
+						AND assignment_release_token = ${token})`
+				)
+			]);
+			if ((released?.meta.changes ?? 0) === 1) return { kind: 'canceled' };
+			const fresh = await loadEndableRun(db, userId, run.id);
+			if (!fresh || !(ACTIVE as string[]).includes(fresh.status)) return { kind: 'already_ended' };
+			if (fresh.status !== 'assigned') return requestSharedRunCancellation(db, env, userId, fresh);
+			return { kind: 'already_ended' };
+		}
+		return requestSharedRunCancellation(db, env, userId, run);
+	}
 
 	const runner = await db
 		.selectFrom('runner')
@@ -1506,6 +1626,59 @@ export async function cancelRun(
 	}
 	const outcome = await endRun(db, env, run, { status: 'canceled' });
 	return outcome.ended ? { kind: 'canceled' } : { kind: 'already_ended' };
+}
+
+async function requestSharedRunCancellation(
+	db: Kysely<Database>,
+	env: Env,
+	userId: string,
+	run: EndableRun
+): Promise<CancelRunResult> {
+	const current = await db
+		.selectFrom('agent_run')
+		.select(['cancel_requested_at', 'cancellation_token', 'status'])
+		.where('id', '=', run.id)
+		.where('user_id', '=', userId)
+		.executeTakeFirst();
+	if (!current || !(ACTIVE as string[]).includes(current.status)) return { kind: 'already_ended' };
+	if (current.cancel_requested_at !== null && current.cancel_requested_at !== undefined) {
+		return { kind: 'requested' };
+	}
+	const now = Date.now();
+	const token = newId('can');
+	const guard = sql<boolean>`EXISTS (SELECT 1 FROM agent_run WHERE id = ${run.id}
+		AND cancellation_token = ${token} AND cancel_requested_at = ${now})`;
+	const [request] = await runBatch(env, [
+		sql`UPDATE agent_run SET cancel_requested_at = ${now}, cancel_requested_by_user_id = ${userId},
+			cancel_reason = 'owner requested cancellation', cancellation_token = ${token}
+		WHERE id = ${run.id} AND user_id = ${userId} AND status IN ('launching', 'running')
+			AND cancel_requested_at IS NULL
+			AND EXISTS (SELECT 1 FROM issue i JOIN project p ON p.id = i.project_id
+				WHERE i.id = agent_run.issue_id AND p.user_id = ${userId} AND p.shared_at IS NOT NULL)`.compile(db),
+		db
+			.updateTable('api_key')
+			.set({ revoked_at: now })
+			.where('agent_run_id', '=', run.id)
+			.where('revoked_at', 'is', null)
+			.where(guard)
+			.compile(),
+		supervisorEvent(
+			db,
+			userId,
+			{
+				type: 'agent_run.cancel_requested',
+				issueId: run.issue_id,
+				payload: {
+					run_id: run.id,
+					runner_id: run.runner_id,
+					reason: 'owner requested cancellation'
+				}
+			},
+			now,
+			guard
+		)
+	]);
+	return (request?.meta.changes ?? 0) === 1 ? { kind: 'requested' } : { kind: 'already_ended' };
 }
 
 /**
@@ -1636,6 +1809,18 @@ export async function pollManagedRuns(
 				.where('id', '=', row.id)
 				.executeTakeFirst();
 			if (!run || run.status !== 'running') continue;
+			if (run.cancel_requested_at !== null) {
+				// Adapter acceptance is not terminal proof; keep the live slot until
+				// poll reports a final provider status or timeout reconciliation wins.
+				await adapter
+					.cancel({
+						id: run.id,
+						runner_id: run.runner_id,
+						provider_session_id: run.provider_session_id,
+						provider_meta: run.provider_meta
+					})
+					.catch((e) => console.error(`adapter cancel for run ${run.id} failed:`, e));
+			}
 			const polled = await adapter.poll({
 				id: run.id,
 				runner_id: run.runner_id,

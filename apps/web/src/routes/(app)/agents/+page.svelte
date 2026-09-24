@@ -1325,6 +1325,28 @@
 		onresume={resumeParked}
 		onenable={() => setEnabled(true)}
 	/>
+	{#if data.sharedAwaiting.length > 0}
+		<section class="mb-8 rounded-lg border p-4" aria-labelledby="shared-awaiting-heading">
+			<h2 id="shared-awaiting-heading" class="font-semibold">
+				Shared issues awaiting your decision
+			</h2>
+			<p class="text-muted-foreground mt-1 text-sm">
+				Your agents cannot run on member projects in this release.
+			</p>
+			<ul class="mt-3 space-y-2">
+				{#each data.sharedAwaiting as issue (issue.id)}
+					<li>
+						<a
+							class="underline"
+							href={`/issues/${encodeURIComponent(issue.project_id)}/${issue.number}`}
+						>
+							{issue.project_name}/#{issue.number} · {issue.title}
+						</a>
+					</li>
+				{/each}
+			</ul>
+		</section>
+	{/if}
 
 	<!-- Runners -->
 	<div class="mb-10 scroll-mt-24" id="runners">

@@ -460,6 +460,7 @@ receipt, the service raises the request dispatch effect. The API boundary queues
 the coalesced pass; scheduling failure cannot turn an already committed move into
 a refusal, and the periodic sweep remains authoritative.
 
+> 2026-09-23 project-sharing decision: [SHARING_2026-09-23.md](../projects/SHARING_2026-09-23.md) supersedes this spec’s single-owner assumptions for shared projects. This historical spec remains unchanged otherwise.
 ### Explicit API-key authority (2026-09-21, Tines/648)
 
 This decision supersedes the phase-one full-owner named-key model and the

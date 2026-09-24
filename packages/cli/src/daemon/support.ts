@@ -251,6 +251,8 @@ export interface ManagedRun {
 	 * marker. Set by whoever settles it; the finish paths use their error text.
 	 */
 	endNote?: string;
+	/** Persisted request token; acknowledged only after local cleanup completes. */
+	cancellationToken?: string;
 	/** Drains pending log chunks before a finish report. */
 	flush?: () => Promise<void>;
 	/**
@@ -300,6 +302,7 @@ export interface RunTableEffects<T extends ManagedRun> {
 	/** Persist the run → pid state file (membership or pid changed). */
 	persist(): void;
 	log(message: string): void;
+	acknowledgeCancellation?(run: T): Promise<void>;
 }
 
 export class RunTable<T extends ManagedRun> {
@@ -356,6 +359,14 @@ export class RunTable<T extends ManagedRun> {
 		this.runs.delete(run.runId);
 		this.effects.persist();
 		this.effects.release(run, { keep: this.keep(outcome, run), outcome });
+		if (run.cancellationToken) {
+			const acknowledgement = this.effects.acknowledgeCancellation?.(run);
+			if (acknowledgement) {
+				void acknowledgement.catch((error) =>
+					this.effects.log(`cancellation acknowledgement for ${run.runId} failed: ${String(error)}`)
+				);
+			}
+		}
 	}
 
 	/**
@@ -419,6 +430,11 @@ export class RunTable<T extends ManagedRun> {
 		run.canceled = true;
 		run.settled = true;
 		return run;
+	}
+
+	noteCancellationRequest(runId: string, token: string): void {
+		const run = this.runs.get(runId);
+		if (run) run.cancellationToken = token;
 	}
 }
 

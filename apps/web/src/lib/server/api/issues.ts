@@ -14,6 +14,7 @@ import {
 	type CreateIssueResponse,
 	type Issue,
 	type IssueDetail,
+	type IssueConsentReceipt,
 	type IssueLabel,
 	type IssueLinks,
 	type IssueListItem,
@@ -53,6 +54,8 @@ import {
 } from './artifacts';
 import { contextSummaryForIssue } from './context';
 import { actorOf, eventInsert, eventQuery, serializeEvent } from './events';
+import { resolveIssueAccess, currentProjectWriterPredicate } from './project-access';
+import { readSharedIssue } from './shared-issues';
 import { deriveRound, deriveSinceLastRun } from './handoff';
 import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels';
 import { runQuery, serializeRun } from './runs';
@@ -71,6 +74,12 @@ import {
 import { substringMatch } from './search';
 import { loadWorkflow, loadWorkflows } from './workflows';
 import { nextIssueNumber } from '../issue-address';
+import {
+	assertConsentFieldsSupported,
+	createProjectWriteGuard,
+	readIssueConsent
+} from './personal-consent';
+import { releaseAssignedIssueQueries } from '../supervisor/consent-admission';
 
 /**
  * SQL for the effective category of the blocker on a `blocks` edge into
@@ -143,6 +152,7 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 			.leftJoin('issue as eff_issue', 'eff_issue.id', 'effective.effective_issue_id')
 			.leftJoin('workflow_state as eff_state', 'eff_state.id', 'eff_issue.state_id')
 			.leftJoin('scheduled_task', 'scheduled_task.id', 'issue.scheduled_task_id')
+			.leftJoin('issue_schedule_origin as origin', 'origin.issue_id', 'issue.id')
 			.leftJoin(
 				'project as scheduled_task_project',
 				'scheduled_task_project.id',
@@ -158,6 +168,11 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				'state.position as state_position',
 				'state.inherits_from_state_id as state_inherits_from',
 				'scheduled_task.name as scheduled_task_name',
+				'origin.schedule_id as origin_schedule_id',
+				'origin.schedule_name as origin_schedule_name',
+				'origin.permission_epoch as origin_permission_epoch',
+				'origin.definition_revision as origin_definition_revision',
+				'origin.snapshot as origin_snapshot',
 				'scheduled_task_project.id as scheduled_task_project_id',
 				'scheduled_task_project.name as scheduled_task_project_name',
 				'pin_runner.name as pinned_runner_name'
@@ -292,6 +307,15 @@ export function serializeIssue(row: IssueRow): Issue {
 		scheduled_task_name: row.scheduled_task_name,
 		scheduled_task_project_id: row.scheduled_task_project_id,
 		scheduled_task_project_name: row.scheduled_task_project_name,
+		schedule_origin: row.origin_schedule_id
+			? {
+					schedule_id: row.origin_schedule_id,
+					schedule_name: row.origin_schedule_name!,
+					permission_epoch: row.origin_permission_epoch!,
+					definition_revision: row.origin_definition_revision!,
+					snapshot: JSON.parse(row.origin_snapshot!)
+				}
+			: null,
 		pinned_runner_id: row.pinned_runner_id,
 		pinned_runner_name: row.pinned_runner_name,
 		pinned_tier: row.pinned_tier as ModelTier | null,
@@ -677,6 +701,7 @@ async function loadCommentHistory(db: Kysely<Database>, issueId: string) {
 		.leftJoin('runner as actor_runner', 'actor_runner.id', 'actor_run.runner_id')
 		.leftJoin('issue as actor_run_issue', 'actor_run_issue.id', 'actor_run.issue_id')
 		.leftJoin('project as actor_run_project', 'actor_run_project.id', 'actor_run_issue.project_id')
+		.leftJoin('user as editor_user', 'editor_user.id', 'comment.editor_user_id')
 		.selectAll('comment')
 		.select([
 			'actor_user.name as actor_user_name',
@@ -689,7 +714,8 @@ async function loadCommentHistory(db: Kysely<Database>, issueId: string) {
 			'actor_run_issue.number as actor_run_issue_number',
 			'actor_run.issue_id as actor_run_issue_id',
 			'actor_run.status as actor_run_status',
-			'actor_run.created_at as actor_run_created_at'
+			'actor_run.created_at as actor_run_created_at',
+			'editor_user.name as editor_user_name'
 		])
 		.where('comment.issue_id', '=', issueId)
 		.orderBy('comment.created_at asc')
@@ -699,9 +725,28 @@ async function loadCommentHistory(db: Kysely<Database>, issueId: string) {
 		id: row.id,
 		issue_id: row.issue_id,
 		body: row.body,
-		actor: actorOf(row),
+		actor: {
+			...actorOf(row),
+			...(row.author_run_id && !row.actor_run_id
+				? {
+						run: {
+							run_id: row.author_run_id,
+							runner_name: row.author_run_name ?? 'Former runner',
+							stage: null,
+							issue_ref: null
+						}
+					}
+				: {})
+		},
 		created_at: row.created_at,
-		updated_at: row.updated_at
+		updated_at: row.updated_at,
+		editor: row.editor_user_id
+			? {
+					user_id: row.editor_user_id,
+					user_name: row.editor_user_name ?? 'Former participant',
+					api_key_id: row.editor_api_key_id
+				}
+			: null
 	}));
 	let selectedRun: { id: string; createdAt: number } | null = null;
 	for (const row of rows) {
@@ -1165,6 +1210,49 @@ export async function createIssue(
 	initialFiles: InitialIssueFile[] = [],
 	beforeCommit?: () => Promise<void>
 ): Promise<CreateIssueResponse> {
+	assertConsentFieldsSupported(actor, body, [
+		'allow_my_agents',
+		'disclosure_version',
+		'allow_my_agents_on_future_instances'
+	]);
+	if ('allow_my_agents_on_future_instances' in body)
+		throw new ApiFail(422, 'invalid_field', 'Future permission belongs inside "schedule"', {
+			field: 'schedule.allow_my_agents_on_future_instances'
+		});
+	if (body.schedule && 'allow_my_agents' in body.schedule)
+		throw new ApiFail(422, 'invalid_field', 'Initial issue permission belongs at the top level', {
+			field: 'allow_my_agents'
+		});
+	const futureChoice = body.schedule?.allow_my_agents_on_future_instances;
+	if (futureChoice !== undefined && typeof futureChoice !== 'boolean')
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'"schedule.allow_my_agents_on_future_instances" must be a boolean',
+			{ field: 'schedule.allow_my_agents_on_future_instances' }
+		);
+	if (
+		body.disclosure_version !== undefined &&
+		(!Number.isInteger(body.disclosure_version) || body.disclosure_version < 1)
+	) {
+		throw new ApiFail(422, 'invalid_field', '"disclosure_version" must be a positive integer', {
+			field: 'disclosure_version'
+		});
+	}
+	if (
+		body.disclosure_version !== undefined &&
+		body.allow_my_agents !== true &&
+		futureChoice !== true
+	) {
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'Disclosure is acknowledged only with an explicit permission choice',
+			{
+				field: 'disclosure_version'
+			}
+		);
+	}
 	const project = await db
 		.selectFrom('project')
 		.selectAll()
@@ -1178,19 +1266,37 @@ export async function createIssue(
 	requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'issue.create', {
 		projectId
 	});
-	if (body.schedule !== undefined) {
+	if (body.schedule !== undefined)
 		requireAccess(actor, [{ domain: 'project', access: 'write', projectId }], 'schedule.create', {
 			projectId
 		});
-	}
-	if ((body.labels?.length ?? 0) > 0) {
+	if ((body.labels?.length ?? 0) > 0)
 		requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'label.assign', {
 			projectId
 		});
-	}
+	if (futureChoice !== undefined && project.shared_at === null)
+		throw new ApiFail(
+			409,
+			'consent_mode_required',
+			'Future permission is available after project sharing begins'
+		);
 	// Creating issues (and the schedules that ride along) is a project-level
 	// write: no draining run is exempt from it.
 	await assertWritable(db, actor, project);
+	if (
+		body.expected_sharing_revision !== undefined &&
+		body.expected_sharing_revision !== project.sharing_revision
+	) {
+		throw new ApiFail(
+			409,
+			'conflict',
+			'Project sharing changed; refresh before creating the issue',
+			{
+				committed: false,
+				current_sharing_revision: project.sharing_revision
+			}
+		);
+	}
 
 	const title = requireString(body.title, 'title', { max: 500 }).trim();
 	const description = optionalString(body.description, 'description') ?? '';
@@ -1204,6 +1310,41 @@ export async function createIssue(
 	const initialState = body.state
 		? resolveStateRef(workflow, requireString(body.state, 'state', { max: 100 }).trim())
 		: resolveStateRef(workflow, workflow.initial_state_id);
+	const workflowWitness = await db
+		.selectFrom('workflow')
+		.select('decision_revision')
+		.where('id', '=', workflow.id)
+		.executeTakeFirstOrThrow();
+	const initialChoice =
+		project.shared_at !== null &&
+		actor.viaSession &&
+		!actor.bearerPresent &&
+		initialState.category !== 'done'
+			? (body.allow_my_agents ?? true)
+			: undefined;
+	if (body.allow_my_agents !== undefined) {
+		if (!actor.viaSession) {
+			throw new ApiFail(
+				403,
+				'consent_browser_required',
+				'Personal permission must be chosen in the browser'
+			);
+		}
+		if (project.shared_at === null) {
+			throw new ApiFail(
+				422,
+				'consent_mode_required',
+				'Personal permission is available after project sharing begins'
+			);
+		}
+		if (body.allow_my_agents && initialState.category === 'done') {
+			throw new ApiFail(
+				422,
+				'permission_state_invalid',
+				'A done issue cannot store personal agent permission'
+			);
+		}
+	}
 
 	// Resolved before anything is inserted, so a run key's unknown label 422s
 	// without leaving a half-created issue behind.
@@ -1243,10 +1384,19 @@ export async function createIssue(
 	const scheduleStateId = initialState.id === workflow.initial_state_id ? null : initialState.id;
 
 	const queries: CompiledQuery[] = [];
-	const admissionGuard = linkPlan ? createIssueLinkAdmissionGuard(actor, linkPlan) : undefined;
-	const freshIssueGuard: QueryGuard | undefined = linkPlan
-		? { predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id})` }
-		: undefined;
+	const projectGuard = createProjectWriteGuard(actor, projectId, project.sharing_revision);
+	const linkGuard = linkPlan ? createIssueLinkAdmissionGuard(actor, linkPlan) : undefined;
+	const admissionGuard: QueryGuard = {
+		predicate: sql<boolean>`${projectGuard.predicate} AND ${linkGuard?.predicate ?? sql<boolean>`1`}
+			AND EXISTS (SELECT 1 FROM workflow w JOIN workflow_state s ON s.workflow_id = w.id
+				WHERE w.id = ${workflow.id} AND w.decision_revision = ${workflowWitness.decision_revision}
+				AND s.id = ${initialState.id} AND s.category = ${initialState.category}
+				${body.state ? sql`` : sql`AND w.initial_state_id = ${initialState.id}`})`
+	};
+	const freshIssueGuard: QueryGuard = {
+		predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id} AND project_id = ${projectId})
+			AND ${projectGuard.predicate}`
+	};
 	const scheduleQueries = schedule
 		? scheduleInsertQueries(db, actor, {
 				schedule,
@@ -1281,6 +1431,39 @@ export async function createIssue(
 		})
 	);
 	if (scheduleQueries) queries.push(scheduleQueries[1]);
+	if (schedule) {
+		const snapshot = JSON.stringify({
+			title_template: title,
+			description_template: description,
+			workflow_id: workflow.id,
+			state_id: scheduleStateId,
+			resolved_start_state_id: initialState.id,
+			resolved_start_state_name: initialState.name,
+			resolved_start_category: initialState.category,
+			cron: schedule.recurrence.cron,
+			preset: schedule.recurrence.preset,
+			timezone: schedule.timezone,
+			require_all_closed: schedule.requireAllClosed
+		});
+		queries.push(
+			sql`INSERT INTO issue_schedule_origin
+			(issue_id, schedule_id, schedule_name, permission_epoch, definition_revision, snapshot, created_at)
+			SELECT ${id}, ${schedule.id}, ${schedule.name}, 0, 1, ${snapshot}, ${now}
+			WHERE EXISTS (SELECT 1 FROM issue WHERE id = ${id})
+				AND EXISTS (SELECT 1 FROM scheduled_task WHERE id = ${schedule.id})`.compile(db)
+		);
+		if (futureChoice !== undefined) {
+			queries.push(
+				sql`INSERT INTO schedule_personal_choice
+				(schedule_id, user_id, value, revision, permission_epoch, membership_revision, updated_at)
+				SELECT ${schedule.id}, ${actor.userId}, ${futureChoice ? 'on' : 'off'}, 1,
+					s.permission_epoch, 0, ${now}
+				FROM scheduled_task s JOIN project p ON p.id = s.project_id
+				WHERE s.id = ${schedule.id} AND p.user_id = ${actor.userId}
+					AND p.shared_at IS NOT NULL AND ${freshIssueGuard.predicate}`.compile(db)
+			);
+		}
+	}
 	if (resolvedLabels) {
 		queries.push(
 			...labelInserts(db, actor, resolvedLabels.toCreate, freshIssueGuard),
@@ -1314,7 +1497,51 @@ export async function createIssue(
 			.executeTakeFirst();
 		if (!currentProject) throw notFound();
 		await assertWritable(db, actor, currentProject);
+		if (currentProject.sharing_revision !== project.sharing_revision) {
+			throw new ApiFail(
+				409,
+				'conflict',
+				'Project sharing changed while files were staged; refresh and retry',
+				{
+					committed: false,
+					current_sharing_revision: currentProject.sharing_revision
+				}
+			);
+		}
 		if (linkPlan) await recheckCreateIssueLinkPlan(db, actor, linkPlan);
+	}
+	if (initialChoice !== undefined) {
+		queries.push(
+			sql`INSERT INTO issue_personal_choice
+				(issue_id, user_id, value, revision, issue_epoch, membership_revision, source_kind, updated_at)
+			SELECT ${id}, ${actor.userId}, ${initialChoice ? 'on' : 'off'}, 1,
+				i.consent_epoch, 0, 'explicit_issue', ${now}
+			FROM issue i JOIN project p ON p.id = i.project_id
+			WHERE i.id = ${id} AND p.user_id = ${actor.userId}
+				AND p.shared_at IS NOT NULL AND p.sharing_revision = ${project.sharing_revision}
+				AND ${freshIssueGuard.predicate}`.compile(db),
+			eventInsert(
+				db,
+				actor,
+				{
+					type: 'issue.personal_permission_changed',
+					issueId: id,
+					projectId,
+					payload: { value: initialChoice ? 'on' : 'off', revision: 1 }
+				},
+				freshIssueGuard
+			)
+		);
+	}
+	if (body.disclosure_version !== undefined) {
+		queries.push(
+			sql`INSERT INTO personal_disclosure (user_id, version, acknowledged_at)
+			SELECT ${actor.userId}, ${body.disclosure_version}, ${now}
+			WHERE ${freshIssueGuard.predicate} AND (
+				EXISTS (SELECT 1 FROM issue_personal_choice WHERE issue_id = ${id} AND user_id = ${actor.userId} AND value = 'on')
+				OR EXISTS (SELECT 1 FROM schedule_personal_choice WHERE schedule_id = ${schedule?.id ?? ''} AND user_id = ${actor.userId} AND value = 'on')
+			) ON CONFLICT(user_id, version) DO NOTHING`.compile(db)
+		);
 	}
 	let linkBatch: ReturnType<typeof createIssueLinkQueries> | null = null;
 	let linkBatchOffset = 0;
@@ -1324,15 +1551,38 @@ export async function createIssue(
 		queries.push(...linkBatch.queries);
 	}
 	if (beforeCommit) await beforeCommit();
+	queries.push(
+		sql`SELECT id FROM issue WHERE id = ${id} AND project_id = ${projectId}
+		AND ${projectGuard.predicate}`.compile(db)
+	);
 	const results = await runAtomic(env, queries);
 	if (linkPlan && linkBatch) {
 		assertCreateIssueLinksCommitted(linkPlan, results, linkBatch, linkBatchOffset);
 	}
+	if (results.at(-1)?.results?.length !== 1) {
+		throw new ApiFail(
+			409,
+			'conflict',
+			'Project sharing or issue admission changed; refresh and try again',
+			{ committed: false }
+		);
+	}
 	effects.signalDispatch();
 
 	const issue = await getIssueDetail(db, actor.userId, { id });
-	if (!schedule) return issue;
-	return { ...issue, schedule: await getSchedule(db, actor.userId, schedule.id) };
+	const response: CreateIssueResponse = schedule
+		? { ...issue, schedule: await getSchedule(db, actor.userId, schedule.id) }
+		: issue;
+	if (project.shared_at !== null) {
+		response.permission_receipt = {
+			...(await readIssueConsent(db, actor.userId, id)),
+			actor: actor.viaSession ? 'owner' : 'key',
+			...(actor.viaSession
+				? {}
+				: { message: 'Permission unchanged; manage your permission in the browser.' })
+		};
+	}
+	return response;
 }
 
 /**
@@ -1370,6 +1620,7 @@ export async function updateIssue(
 	id: string,
 	body: UpdateIssueRequest
 ): Promise<IssueDetail> {
+	assertConsentFieldsSupported(actor, body);
 	assertPinFieldsAllowed(actor, body);
 	const current = await getIssueDetail(db, actor.userId, { id });
 	requireAccess(
@@ -1488,6 +1739,33 @@ export async function updateIssue(
 	// guarded on the same write landing.
 	const now = Date.now();
 	const guarded = stateChanged || workflowChanged;
+	const structural = stateChanged || workflowChanged;
+	const resetConsent =
+		structural &&
+		(workflowChanged || nextState.category === 'done' || current.state.category === 'done');
+	const decisionToken = structural ? newId('dcn') : null;
+	const structuralWitness = structural
+		? await db
+				.selectFrom('issue as i')
+				.innerJoin('project as p', 'p.id', 'i.project_id')
+				.select([
+					'i.decision_revision',
+					'i.project_assignment_token',
+					'p.sharing_revision',
+					'p.shared_at'
+				])
+				.where('i.id', '=', id)
+				.where('p.user_id', '=', actor.userId)
+				.executeTakeFirst()
+		: null;
+	if (structural && !structuralWitness) throw notFound();
+	const targetWorkflowWitness = structural
+		? await db
+				.selectFrom('workflow')
+				.select('decision_revision')
+				.where('id', '=', workflow.id)
+				.executeTakeFirstOrThrow()
+		: null;
 	let update = db
 		.updateTable('issue')
 		.set({
@@ -1504,15 +1782,57 @@ export async function updateIssue(
 			// timestamp artifact freshness is measured against. A workflow
 			// change re-seats the state, so it stamps too.
 			...(stateChanged || workflowChanged ? { state_entered_at: now } : {}),
+			...(structural
+				? {
+						decision_revision: sql<number>`decision_revision + 1`,
+						last_decision_token: decisionToken,
+						...(resetConsent ? { consent_epoch: sql<number>`consent_epoch + 1` } : {})
+					}
+				: {}),
 			// Any non-run-key state move is a "manual" transition: it un-parks
 			// the issue and restarts the attempt budget.
 			...(stateChanged && !actor.agentRunId ? { needs_attention: 0, attempt_count: 0 } : {})
 		})
 		.where('id', '=', id);
 	if (guarded) update = update.where('state_id', '=', current.state.id);
-	const guard = guarded ? { issueId: id, stateId: nextState.id, updatedAt: now } : undefined;
+	if (structural && structuralWitness)
+		update = update
+			.where('decision_revision', '=', structuralWitness.decision_revision)
+			.where('project_assignment_token', '=', structuralWitness.project_assignment_token)
+			.where(sql<boolean>`EXISTS (SELECT 1 FROM project p WHERE p.id = issue.project_id
+			AND p.user_id = ${actor.userId} AND p.sharing_revision = ${structuralWitness.sharing_revision})`)
+			.where(sql<boolean>`EXISTS (SELECT 1 FROM workflow w JOIN workflow_state s ON s.workflow_id = w.id
+			WHERE w.id = ${workflow.id} AND w.decision_revision = ${targetWorkflowWitness!.decision_revision}
+			AND s.id = ${nextState.id} AND s.category = ${nextState.category})`);
+	const guard = structural
+		? {
+				predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id}
+		AND last_decision_token = ${decisionToken})`
+			}
+		: undefined;
 
 	const queries: CompiledQuery[] = [update.compile()];
+	if (structural && structuralWitness?.shared_at !== null) {
+		queries.push(
+			...releaseAssignedIssueQueries(db, {
+				issueId: id,
+				userId: actor.userId,
+				token: decisionToken!,
+				eventId: newId('evt'),
+				now,
+				reason: 'Issue decision changed before admission',
+				guard: guard!.predicate
+			})
+		);
+		if (resetConsent)
+			queries.push(
+				sql`UPDATE issue_personal_choice SET value = 'unset',
+			revision = revision + 1, issue_epoch = (SELECT consent_epoch FROM issue WHERE id = ${id}),
+			source_kind = NULL, source_schedule_id = NULL, source_grant_revision = NULL,
+			source_permission_epoch = NULL, updated_at = ${now}
+			WHERE issue_id = ${id} AND ${guard!.predicate}`.compile(db)
+			);
+	}
 	if (changed.length > 0) {
 		const payload: Record<string, unknown> = { changed, title };
 		if (pinChanged) {
@@ -1628,14 +1948,245 @@ function unmetRequirements(
 	);
 }
 
+async function transitionMemberIssue(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	effects: DispatchEffects,
+	id: string,
+	body: TransitionIssueRequest,
+	access: Awaited<ReturnType<typeof resolveIssueAccess>>,
+	beforeCommit?: () => Promise<void>
+) {
+	if (actor.agentRunId) throw notFound();
+	const issue = await readSharedIssue(db, actor, { id });
+	if (issue.project.archived_at !== null)
+		throw new ApiFail(422, 'archived', 'Archived issues cannot be transitioned');
+	if (issue.state.category !== 'awaiting_human')
+		throw new ApiFail(
+			403,
+			'member_decision_forbidden',
+			'Members can decide only from an awaiting-human state'
+		);
+	const target = issue.workflow.transitions.find((item) => item.id === body.transition_id);
+	if (!target || body.action || !body.transition_id)
+		throw new ApiFail(
+			409,
+			'decision_refresh_required',
+			'Refresh the issue and choose an exact transition',
+			{ committed: false }
+		);
+	if (
+		body.expected_state_id !== issue.state.id ||
+		body.expected_decision_revision !== issue.decision_revision ||
+		body.expected_consent_revision !== issue.my_choice.revision ||
+		body.expected_consent_epoch !== issue.my_choice.epoch ||
+		body.expected_workflow_revision !== issue.workflow_revision
+	)
+		throw new ApiFail(
+			409,
+			'decision_refresh_required',
+			'Issue or permission changed; refresh and choose again',
+			{ committed: false }
+		);
+	if (body.allow_my_agents !== undefined && (!actor.viaSession || actor.bearerPresent))
+		throw new ApiFail(
+			403,
+			'consent_browser_required',
+			'Personal permission must be chosen in the browser'
+		);
+	const destination = issue.workflow.states.find((state) => state.id === target.to_state_id);
+	if (!destination)
+		throw new ApiFail(
+			409,
+			'decision_refresh_required',
+			'Workflow changed; refresh and choose again',
+			{ committed: false }
+		);
+	if (body.allow_my_agents !== undefined && destination.category !== 'active')
+		throw new ApiFail(
+			422,
+			'permission_state_invalid',
+			'Use the issue permission control outside an active transition'
+		);
+	const unmet = target.requires.filter((r: any) => {
+		const artifact = issue.artifacts.find((a) => a.name === r.artifact);
+		return (
+			!artifact ||
+			!artifact.fresh ||
+			(r.type && artifact.artifact_type !== r.type) ||
+			(r.content_type && !artifact.current_version.content_type?.startsWith(r.content_type))
+		);
+	});
+	if (unmet.length)
+		throw new ApiFail(
+			422,
+			'transition_requirements_unmet',
+			'Required artifact is missing or stale',
+			{ committed: false }
+		);
+	const token = newId('dcn');
+	const now = Date.now();
+	const desired =
+		destination.category === 'active'
+			? body.allow_my_agents === undefined
+				? actor.viaSession && !actor.bearerPresent && issue.my_choice.value === 'unset'
+					? 'on'
+					: null
+				: body.allow_my_agents
+					? 'on'
+					: 'off'
+			: null;
+	const choiceChanged =
+		desired !== null &&
+		(issue.my_choice.value !== desired ||
+			(body.allow_my_agents !== undefined && issue.my_choice.source !== 'explicit_issue'));
+	const reset = destination.category === 'done';
+	const guard = currentProjectWriterPredicate(access.projectId, actor, access, id);
+	const writes: CompiledQuery[] = [
+		sql`UPDATE issue SET state_id = ${destination.id}, state_entered_at = ${now}, updated_at = ${now},
+			decision_revision = decision_revision + 1, consent_epoch = consent_epoch + ${reset ? 1 : 0},
+			last_decision_token = ${token}, needs_attention = 0, attempt_count = 0
+		WHERE id = ${id} AND project_id = ${access.projectId} AND state_id = ${issue.state.id}
+			AND decision_revision = ${issue.decision_revision} AND consent_epoch = ${issue.my_choice.epoch}
+			AND ${guard}
+			AND EXISTS (SELECT 1 FROM workflow_state current_state WHERE current_state.id = issue.state_id
+				AND current_state.category = 'awaiting_human')
+			AND EXISTS (SELECT 1 FROM workflow w WHERE w.id = issue.workflow_id
+				AND w.decision_revision = ${issue.workflow_revision})
+			AND EXISTS (SELECT 1 FROM workflow_transition wt WHERE wt.id = ${target.id}
+				AND wt.workflow_id = issue.workflow_id AND wt.from_state_id = ${issue.state.id}
+				AND wt.to_state_id = ${destination.id})
+			AND COALESCE((SELECT revision FROM issue_personal_choice WHERE issue_id = issue.id AND user_id = ${actor.userId}), 0)
+				= ${issue.my_choice.revision}`.compile(db)
+	];
+	const landed = sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id} AND last_decision_token = ${token})`;
+	if (reset) {
+		writes.push(
+			...releaseAssignedIssueQueries(db, {
+				issueId: id,
+				userId: issue.project.owner.id,
+				token,
+				eventId: newId('evt'),
+				now,
+				reason: 'Issue completed before admission',
+				guard: landed
+			})
+		);
+		writes.push(
+			sql`UPDATE issue_personal_choice SET value = 'unset', revision = revision + 1,
+			issue_epoch = (SELECT consent_epoch FROM issue WHERE id = ${id}), source_kind = NULL,
+			source_schedule_id = NULL, source_grant_revision = NULL, source_permission_epoch = NULL, updated_at = ${now}
+		WHERE issue_id = ${id} AND ${landed}`.compile(db)
+		);
+	} else if (choiceChanged) {
+		writes.push(
+			sql`INSERT INTO issue_personal_choice
+			(issue_id, user_id, value, revision, issue_epoch, membership_revision, source_kind, updated_at, last_request_token)
+		SELECT ${id}, ${actor.userId}, ${desired}, ${issue.my_choice.revision + 1}, consent_epoch,
+			${access.membershipRevision}, 'explicit_issue', ${now}, ${token} FROM issue
+		WHERE id = ${id} AND last_decision_token = ${token}
+		ON CONFLICT(issue_id, user_id) DO UPDATE SET value = excluded.value,
+			revision = issue_personal_choice.revision + 1, issue_epoch = excluded.issue_epoch,
+			membership_revision = excluded.membership_revision, source_kind = 'explicit_issue',
+			source_schedule_id = NULL, source_grant_revision = NULL, source_permission_epoch = NULL,
+			updated_at = excluded.updated_at, last_request_token = excluded.last_request_token
+		WHERE issue_personal_choice.revision = ${issue.my_choice.revision}`.compile(db)
+		);
+	}
+	writes.push(
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.transitioned',
+				issueId: id,
+				payload: {
+					state_entry_version: 1,
+					transition_id: target.id,
+					action: target.name,
+					workflow_id: issue.workflow.id,
+					workflow_name: issue.workflow.name,
+					from_state_id: issue.state.id,
+					from_state_name: issue.state.name,
+					to_state_id: destination.id,
+					to_state_name: destination.name,
+					to_state_category: destination.category
+				}
+			},
+			{ predicate: landed }
+		)
+	);
+	if (choiceChanged)
+		writes.push(
+			eventInsert(
+				db,
+				actor,
+				{
+					type: 'issue.personal_permission_changed',
+					issueId: id,
+					payload: { value: desired, revision: issue.my_choice.revision + 1 }
+				},
+				{
+					predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue_personal_choice WHERE issue_id = ${id}
+			AND user_id = ${actor.userId} AND last_request_token = ${token})`
+				}
+			)
+		);
+	if (choiceChanged && desired === 'on' && body.disclosure_version)
+		writes.push(
+			sql`INSERT INTO personal_disclosure (user_id, version, acknowledged_at)
+			SELECT ${actor.userId}, ${body.disclosure_version}, ${now}
+			WHERE EXISTS (SELECT 1 FROM issue_personal_choice WHERE issue_id = ${id}
+				AND user_id = ${actor.userId} AND last_request_token = ${token})
+			ON CONFLICT(user_id, version) DO NOTHING`.compile(db)
+		);
+	await beforeCommit?.();
+	const results = await runAtomic(env, writes);
+	if (!results[0]?.meta.changes)
+		throw new ApiFail(409, 'decision_refresh_required', 'Issue changed; refresh and choose again', {
+			committed: false
+		});
+	// The member's own fleet can never be admitted here; the owner's can.
+	effects.signalDispatch();
+	effects.signalDispatchFor?.(access.ownerId);
+	return readSharedIssue(db, actor, { id });
+}
+
 export async function transitionIssue(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
 	effects: DispatchEffects,
 	id: string,
-	body: TransitionIssueRequest
-): Promise<IssueDetail> {
+	body: TransitionIssueRequest,
+	beforeMemberCommit?: () => Promise<void>
+): Promise<IssueDetail | Awaited<ReturnType<typeof readSharedIssue>>> {
+	assertConsentFieldsSupported(actor, body, [
+		'allow_my_agents',
+		'disclosure_version',
+		'expected_consent_revision',
+		'expected_consent_epoch',
+		'expected_decision_revision'
+	]);
+	if (
+		body.disclosure_version !== undefined &&
+		(!Number.isInteger(body.disclosure_version) || body.disclosure_version < 1)
+	) {
+		throw new ApiFail(422, 'invalid_field', '"disclosure_version" must be a positive integer', {
+			field: 'disclosure_version'
+		});
+	}
+	const access = await resolveIssueAccess(db, actor, id);
+	if (access.role === 'member') {
+		requireAccess(
+			actor,
+			[{ domain: 'project', access: 'write', projectId: access.projectId }],
+			'issue.transition',
+			{ projectId: access.projectId, issueId: id }
+		);
+		return transitionMemberIssue(db, env, actor, effects, id, body, access, beforeMemberCommit);
+	}
 	const current = await getIssueDetail(db, actor.userId, { id });
 	requireAccess(
 		actor,
@@ -1644,9 +2195,75 @@ export async function transitionIssue(
 		{ projectId: current.project_id, issueId: current.id }
 	);
 	await assertWritable(db, actor, issueProject(current), { issueId: current.id });
+	const decision = await db
+		.selectFrom('issue as i')
+		.innerJoin('project as p', 'p.id', 'i.project_id')
+		.innerJoin('workflow as w', 'w.id', 'i.workflow_id')
+		.leftJoin('issue_personal_choice as c', (join) =>
+			join.onRef('c.issue_id', '=', 'i.id').on('c.user_id', '=', actor.userId)
+		)
+		.select([
+			'i.project_id',
+			'i.workflow_id',
+			'i.project_assignment_token',
+			'i.decision_revision',
+			'i.consent_epoch',
+			'p.shared_at',
+			'p.sharing_revision',
+			'w.decision_revision as workflow_revision',
+			'c.value as consent_value',
+			'c.revision as consent_revision',
+			'c.source_kind as consent_source'
+		])
+		.where('i.id', '=', id)
+		.where('p.user_id', '=', actor.userId)
+		.executeTakeFirst();
+	if (!decision) throw notFound();
+	const consentMode = decision.shared_at !== null;
+	const choiceRevision = decision.consent_revision ?? 0;
 
 	const action = body.action?.trim();
 	const transitionId = body.transition_id?.trim();
+	if (consentMode) {
+		if (!transitionId || action) {
+			throw new ApiFail(
+				409,
+				'decision_refresh_required',
+				'Refresh the issue and choose an exact transition',
+				{
+					committed: false,
+					remedy: 'refresh_issue'
+				}
+			);
+		}
+		if (
+			body.expected_state_id !== current.state.id ||
+			body.expected_decision_revision !== decision.decision_revision ||
+			body.expected_consent_revision !== choiceRevision ||
+			body.expected_consent_epoch !== decision.consent_epoch ||
+			body.expected_workflow_revision !== decision.workflow_revision
+		) {
+			throw new ApiFail(
+				409,
+				'decision_refresh_required',
+				'Issue permission or workflow changed; refresh and choose again',
+				{
+					committed: false,
+					current_state_id: current.state.id,
+					current_decision_revision: decision.decision_revision,
+					current_consent_revision: choiceRevision,
+					current_consent_epoch: decision.consent_epoch,
+					current_workflow_revision: decision.workflow_revision,
+					remedy: 'refresh_issue'
+				}
+			);
+		}
+	}
+	if (body.allow_my_agents !== undefined && typeof body.allow_my_agents !== 'boolean') {
+		throw new ApiFail(422, 'invalid_field', '"allow_my_agents" must be a boolean', {
+			field: 'allow_my_agents'
+		});
+	}
 	if ((action ? 1 : 0) + (transitionId ? 1 : 0) !== 1) {
 		throw new ApiFail(
 			422,
@@ -1675,6 +2292,23 @@ export async function transitionIssue(
 			}
 		);
 	}
+	if (consentMode && !actor.viaSession && body.allow_my_agents !== undefined) {
+		throw new ApiFail(
+			403,
+			'consent_browser_required',
+			'Personal permission must be chosen in the browser'
+		);
+	}
+	if (body.allow_my_agents !== undefined && target.to_state.category !== 'active') {
+		throw new ApiFail(
+			422,
+			'permission_state_invalid',
+			body.allow_my_agents
+				? 'Permission can be enabled only when the issue enters an active state'
+				: 'Use the issue permission control to turn permission off',
+			{ field: 'allow_my_agents' }
+		);
+	}
 
 	// Requirements are checked after resolving the target transition and
 	// before the compare-and-swap write. The check and the CAS are not
@@ -1689,21 +2323,98 @@ export async function transitionIssue(
 	// the state the transition was validated against, and the event insert is
 	// guarded on that same write landing — a lost race records nothing.
 	const now = Date.now();
-	const results = await runAtomic(env, [
-		db
-			.updateTable('issue')
-			.set({
-				state_id: target.to_state.id,
-				// Entering a state (re-)starts the artifact-freshness clock.
-				state_entered_at: now,
-				updated_at: now,
-				// A non-run-key transition is the spec's definition of "manual":
-				// it un-parks the issue and resets the attempt count.
-				...(actor.agentRunId ? {} : { needs_attention: 0, attempt_count: 0 })
+	const token = newId('dcn');
+	const lifecycleReset = target.to_state.category === 'done' || current.state.category === 'done';
+	const implicitChoice =
+		consentMode &&
+		actor.viaSession &&
+		!actor.bearerPresent &&
+		target.to_state.category === 'active' &&
+		current.state.category !== 'done' &&
+		(decision.consent_value === null || decision.consent_value === 'unset');
+	const desiredChoice =
+		consentMode && target.to_state.category === 'active' && current.state.category !== 'done'
+			? body.allow_my_agents !== undefined
+				? body.allow_my_agents
+				: implicitChoice
+					? true
+					: null
+			: null;
+	const nextConsentValue = desiredChoice === null ? null : desiredChoice ? 'on' : 'off';
+	const choiceChanged =
+		nextConsentValue !== null &&
+		(decision.consent_value !== nextConsentValue || decision.consent_source !== 'explicit_issue');
+	const stateWrite = sql`
+		UPDATE issue SET state_id = ${target.to_state.id}, state_entered_at = ${now}, updated_at = ${now},
+			decision_revision = decision_revision + 1,
+			consent_epoch = consent_epoch + ${lifecycleReset ? 1 : 0},
+			last_decision_token = CASE WHEN ${consentMode ? 1 : 0} = 1 THEN ${token} ELSE last_decision_token END,
+			needs_attention = CASE WHEN ${actor.agentRunId ? 1 : 0} = 1 THEN needs_attention ELSE 0 END,
+			attempt_count = CASE WHEN ${actor.agentRunId ? 1 : 0} = 1 THEN attempt_count ELSE 0 END
+		WHERE id = ${id} AND state_id = ${current.state.id}
+			AND project_id = ${decision.project_id}
+			AND project_assignment_token = ${decision.project_assignment_token}
+			AND EXISTS (SELECT 1 FROM workflow_transition wt
+				WHERE wt.id = ${target.transition_id} AND wt.workflow_id = issue.workflow_id
+					AND wt.from_state_id = ${current.state.id} AND wt.to_state_id = ${target.to_state.id})
+			${
+				consentMode
+					? sql`AND decision_revision = ${decision.decision_revision}
+				AND consent_epoch = ${decision.consent_epoch}
+				AND EXISTS (SELECT 1 FROM project p WHERE p.id = issue.project_id AND p.user_id = ${actor.userId}
+					AND p.shared_at IS NOT NULL AND p.sharing_revision = ${decision.sharing_revision}
+					AND p.archived_at IS NULL)
+				AND COALESCE((SELECT c.revision FROM issue_personal_choice c
+					WHERE c.issue_id = issue.id AND c.user_id = ${actor.userId}), 0) = ${choiceRevision}
+				AND EXISTS (SELECT 1 FROM workflow w WHERE w.id = issue.workflow_id
+					AND w.decision_revision = ${decision.workflow_revision})`
+					: sql``
+			}`.compile(db);
+	const writeQueries = [stateWrite];
+	if (consentMode) {
+		writeQueries.push(
+			...releaseAssignedIssueQueries(db, {
+				issueId: id,
+				userId: actor.userId,
+				token,
+				eventId: newId('evt'),
+				now,
+				reason: 'Issue decision changed before admission',
+				guard: sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id} AND last_decision_token = ${token})`
 			})
-			.where('id', '=', id)
-			.where('state_id', '=', current.state.id)
-			.compile(),
+		);
+	}
+	if (lifecycleReset && consentMode) {
+		writeQueries.push(
+			sql`UPDATE issue_personal_choice SET value = 'unset', revision = revision + 1,
+				issue_epoch = (SELECT consent_epoch FROM issue WHERE id = ${id}),
+				source_kind = NULL, source_schedule_id = NULL, source_grant_revision = NULL,
+				source_permission_epoch = NULL, updated_at = ${now}
+			WHERE issue_id = ${id}
+				AND EXISTS (SELECT 1 FROM issue WHERE id = ${id} AND last_decision_token = ${token})`.compile(db)
+		);
+	} else if (consentMode && choiceChanged && nextConsentValue) {
+		writeQueries.push(
+			sql`INSERT INTO issue_personal_choice
+				(issue_id, user_id, value, revision, issue_epoch, membership_revision, source_kind, updated_at,
+				 last_request_token)
+			SELECT ${id}, ${actor.userId}, ${nextConsentValue}, 1, issue.consent_epoch, 0,
+				'explicit_issue', ${now}, ${token}
+			FROM issue WHERE id = ${id} AND last_decision_token = ${token}
+			ON CONFLICT(issue_id, user_id) DO UPDATE SET value = excluded.value,
+				revision = issue_personal_choice.revision + 1, issue_epoch = excluded.issue_epoch,
+				source_kind = 'explicit_issue', source_schedule_id = NULL, source_grant_revision = NULL,
+				source_permission_epoch = NULL, updated_at = excluded.updated_at,
+				last_request_token = excluded.last_request_token
+			WHERE issue_personal_choice.revision = ${choiceRevision}`.compile(db)
+		);
+	}
+	const decisionGuard = consentMode
+		? {
+				predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id} AND last_decision_token = ${token})`
+			}
+		: { issueId: id, stateId: target.to_state.id, updatedAt: now };
+	writeQueries.push(
 		eventInsert(
 			db,
 			actor,
@@ -1724,9 +2435,37 @@ export async function transitionIssue(
 					to_state_category: target.to_state.category
 				}
 			},
-			{ issueId: id, stateId: target.to_state.id, updatedAt: now }
+			decisionGuard
 		)
-	]);
+	);
+	if (consentMode && choiceChanged && nextConsentValue && !lifecycleReset) {
+		writeQueries.push(
+			eventInsert(
+				db,
+				actor,
+				{
+					type: 'issue.personal_permission_changed',
+					issueId: id,
+					projectId: current.project_id,
+					payload: { value: nextConsentValue, revision: choiceRevision + 1 }
+				},
+				{
+					predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue_personal_choice WHERE issue_id = ${id}
+					AND user_id = ${actor.userId} AND last_request_token = ${token})`
+				}
+			)
+		);
+	}
+	if (consentMode && body.disclosure_version && nextConsentValue === 'on') {
+		writeQueries.push(
+			sql`INSERT INTO personal_disclosure (user_id, version, acknowledged_at)
+				SELECT ${actor.userId}, ${body.disclosure_version}, ${now}
+				WHERE EXISTS (SELECT 1 FROM issue_personal_choice WHERE issue_id = ${id}
+					AND user_id = ${actor.userId} AND last_request_token = ${token})
+				ON CONFLICT(user_id, version) DO NOTHING`.compile(db)
+		);
+	}
+	const results = await runAtomic(env, writeQueries);
 	if ((results[0]?.meta.changes ?? 0) === 0) {
 		const fresh = await getIssueDetail(db, actor.userId, { id });
 		throw new ApiFail(
@@ -1737,7 +2476,17 @@ export async function transitionIssue(
 		);
 	}
 	effects.signalDispatch();
-	return getIssueDetail(db, actor.userId, { id });
+	const updated = await getIssueDetail(db, actor.userId, { id });
+	if (!consentMode) return updated;
+	const permission_receipt: IssueConsentReceipt = {
+		...(await readIssueConsent(db, actor.userId, id)),
+		actor: actor.viaSession ? 'owner' : 'key',
+		committed_atomically: true,
+		...(actor.viaSession
+			? {}
+			: { message: 'Permission unchanged; manage your permission in the browser.' })
+	};
+	return { ...updated, permission_receipt };
 }
 
 /**
@@ -1790,39 +2539,49 @@ export async function createComment(
 	env: Env,
 	actor: ActorContext,
 	issueId: string,
-	body: CreateCommentRequest
+	body: CreateCommentRequest,
+	beforeCommit?: () => Promise<void>
 ): Promise<Comment> {
-	const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+	const access = await resolveIssueAccess(db, actor, issueId);
 	requireAccess(
 		actor,
-		[{ domain: 'project', access: 'write', projectId: issue.project_id }],
+		[{ domain: 'project', access: 'write', projectId: access.projectId }],
 		'comment.create',
-		{ projectId: issue.project_id, issueId: issue.id }
+		{ projectId: access.projectId, issueId }
 	);
-	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
+	if (access.role === 'owner') {
+		const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+		await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
+	} else if (actor.agentRunId) throw notFound();
 	const text = requireString(body.body, 'body', { max: 100_000 });
 
 	const id = newId('cmt');
-	await runAtomic(env, [
-		db
-			.insertInto('comment')
-			.values({
-				id,
-				issue_id: issue.id,
-				body: text,
-				actor_user_id: actor.userId,
-				actor_api_key_id: actor.apiKeyId,
-				created_at: Date.now()
-			})
-			.compile(),
-		eventInsert(db, actor, {
-			type: 'issue.commented',
-			issueId: issue.id,
-			projectId: issue.project_id,
-			payload: { comment_id: id }
-		})
+	const now = Date.now();
+	const guard = currentProjectWriterPredicate(access.projectId, actor, access, issueId);
+	await beforeCommit?.();
+	const results = await runAtomic(env, [
+		sql`INSERT INTO comment (id, issue_id, body, actor_user_id, actor_api_key_id,
+			author_run_id, author_run_name, created_at)
+		SELECT ${id}, i.id, ${text}, ${actor.userId}, ${actor.apiKeyId},
+			${actor.agentRunId ?? null},
+			(SELECT name FROM runner WHERE id = (SELECT runner_id FROM agent_run WHERE id = ${actor.agentRunId ?? null})), ${now}
+		FROM issue i WHERE i.id = ${issueId} AND i.project_id = ${access.projectId} AND ${guard}`.compile(
+			db
+		),
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.commented',
+				issueId,
+				projectId: access.projectId,
+				payload: { comment_id: id }
+			},
+			{ predicate: sql<boolean>`EXISTS (SELECT 1 FROM comment WHERE id = ${id})` }
+		)
 	]);
-	const comments = await loadComments(db, issue.id);
+	if (!results[0]?.meta.changes) throw notFound();
+	const comments = await loadComments(db, issueId);
 	const created = comments.find((c) => c.id === id);
 	if (!created) throw new ApiFail(500, 'internal', 'Comment insert failed');
 	return created;
@@ -1836,10 +2595,23 @@ export async function createComment(
  * notes (the affordance asymmetry of specs/context/AGENT_EDITING.md).
  */
 export function assertCommentActionAllowed(
-	actor: Pick<ActorContext, 'agentRunId' | 'apiKeyId'>,
-	comment: { actor_api_key_id: string | null }
+	actor: Pick<ActorContext, 'agentRunId' | 'apiKeyId' | 'userId'>,
+	comment: {
+		actor_api_key_id: string | null;
+		actor_user_id?: string;
+		author_run_id?: string | null;
+	},
+	owner = true
 ): void {
-	if (!actor.agentRunId) return;
+	if (!actor.agentRunId) {
+		if (
+			owner ||
+			(comment.actor_user_id === actor.userId &&
+				(comment.actor_api_key_id === null || comment.author_run_id !== null))
+		)
+			return;
+		throw new ApiFail(403, 'comment_forbidden', 'You can repair your own human or run comments.');
+	}
 	// The null check guards a state the types allow but auth cannot produce: a
 	// run actor always carries its key, so a session-authored comment (key id
 	// null) must never match by two nulls.
@@ -1858,27 +2630,43 @@ async function requireComment(
 	actor: ActorContext,
 	issueId: string,
 	commentId: string,
-	access: 'write' | 'delete',
 	operation: 'comment.update' | 'comment.delete'
 ): Promise<{
-	issue: IssueDetail;
-	row: { id: string; body: string; actor_api_key_id: string | null };
+	access: Awaited<ReturnType<typeof resolveIssueAccess>>;
+	row: {
+		id: string;
+		body: string;
+		actor_api_key_id: string | null;
+		actor_user_id: string;
+		author_run_id: string | null;
+	};
 }> {
-	const issue = await getIssueDetail(db, actor.userId, { id: issueId });
-	requireAccess(actor, [{ domain: 'project', access, projectId: issue.project_id }], operation, {
-		projectId: issue.project_id,
-		issueId: issue.id
-	});
-	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
+	const access = await resolveIssueAccess(db, actor, issueId);
+	requireAccess(
+		actor,
+		[
+			{
+				domain: 'project',
+				access: operation === 'comment.delete' ? 'delete' : 'write',
+				projectId: access.projectId
+			}
+		],
+		operation,
+		{ projectId: access.projectId, issueId }
+	);
+	if (access.role === 'owner') {
+		const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+		await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
+	}
 	const row = await db
 		.selectFrom('comment')
-		.select(['id', 'body', 'actor_api_key_id'])
+		.select(['id', 'body', 'actor_api_key_id', 'actor_user_id', 'author_run_id'])
 		.where('id', '=', commentId)
-		.where('issue_id', '=', issue.id)
+		.where('issue_id', '=', issueId)
 		.executeTakeFirst();
 	if (!row) throw notFound();
-	assertCommentActionAllowed(actor, row);
-	return { issue, row };
+	assertCommentActionAllowed(actor, row, access.role === 'owner');
+	return { access, row };
 }
 
 export async function updateComment(
@@ -1889,26 +2677,39 @@ export async function updateComment(
 	commentId: string,
 	body: UpdateCommentRequest
 ): Promise<Comment> {
-	const { issue } = await requireComment(db, actor, issueId, commentId, 'write', 'comment.update');
+	const { access, row } = await requireComment(db, actor, issueId, commentId, 'comment.update');
 	const text = requireString(body.body, 'body', { max: 100_000 });
-
-	await runAtomic(env, [
-		db
-			.updateTable('comment')
-			.set({ body: text, updated_at: Date.now() })
-			.where('id', '=', commentId)
-			.compile(),
+	const now = Date.now();
+	const token = newId('edt');
+	const guard = currentProjectWriterPredicate(access.projectId, actor, access, issueId);
+	const authorGuard = actor.agentRunId
+		? sql<boolean>`actor_api_key_id = ${actor.apiKeyId}`
+		: access.role === 'owner'
+			? sql<boolean>`1=1`
+			: sql<boolean>`actor_user_id = ${actor.userId} AND (actor_api_key_id IS NULL OR author_run_id IS NOT NULL)`;
+	const results = await runAtomic(env, [
+		sql`UPDATE comment SET body = ${text}, updated_at = ${now}, edited_at = ${now}, last_edit_token = ${token},
+			editor_user_id = ${actor.userId}, editor_api_key_id = ${actor.apiKeyId}
+		WHERE id = ${commentId} AND issue_id = ${issueId} AND ${authorGuard} AND ${guard}`.compile(db),
 		// Payload stays content-free: the audit trail records the action, not
 		// the text (events are append-only, and a mis-posted secret is exactly
 		// what an edit is for).
-		eventInsert(db, actor, {
-			type: 'issue.comment_edited',
-			issueId: issue.id,
-			projectId: issue.project_id,
-			payload: { comment_id: commentId, changed: ['body'] }
-		})
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.comment_edited',
+				issueId,
+				projectId: access.projectId,
+				payload: { comment_id: commentId, changed: ['body'] }
+			},
+			{
+				predicate: sql<boolean>`EXISTS (SELECT 1 FROM comment WHERE id = ${commentId} AND last_edit_token = ${token})`
+			}
+		)
 	]);
-	const comments = await loadComments(db, issue.id);
+	if (!results[0]?.meta.changes) throw notFound();
+	const comments = await loadComments(db, issueId);
 	const updated = comments.find((c) => c.id === commentId);
 	if (!updated) throw new ApiFail(500, 'internal', 'Comment update failed');
 	return updated;
@@ -1921,23 +2722,32 @@ export async function deleteComment(
 	issueId: string,
 	commentId: string
 ): Promise<void> {
-	const { issue, row } = await requireComment(
-		db,
-		actor,
-		issueId,
-		commentId,
-		'delete',
-		'comment.delete'
-	);
-	await runAtomic(env, [
-		db.deleteFrom('comment').where('id', '=', commentId).compile(),
-		eventInsert(db, actor, {
-			type: 'issue.comment_deleted',
-			issueId: issue.id,
-			projectId: issue.project_id,
-			payload: { comment_id: commentId, body_length: row.body.length }
-		})
+	const { access, row } = await requireComment(db, actor, issueId, commentId, 'comment.delete');
+	const guard = currentProjectWriterPredicate(access.projectId, actor, access, issueId);
+	const authorGuard = actor.agentRunId
+		? sql<boolean>`actor_api_key_id = ${actor.apiKeyId}`
+		: access.role === 'owner'
+			? sql<boolean>`1=1`
+			: sql<boolean>`actor_user_id = ${actor.userId} AND (actor_api_key_id IS NULL OR author_run_id IS NOT NULL)`;
+	const marker = newId('del');
+	const results = await runAtomic(env, [
+		sql`UPDATE comment SET editor_user_id = ${marker} WHERE id = ${commentId} AND issue_id = ${issueId} AND ${authorGuard} AND ${guard}`.compile(
+			db
+		),
+		sql`DELETE FROM comment WHERE id = ${commentId} AND editor_user_id = ${marker}`.compile(db),
+		eventInsert(
+			db,
+			actor,
+			{
+				type: 'issue.comment_deleted',
+				issueId,
+				projectId: access.projectId,
+				payload: { comment_id: commentId, body_length: row.body.length }
+			},
+			{ predicate: sql<boolean>`(SELECT changes()) > 0` }
+		)
 	]);
+	if (!results[0]?.meta.changes) throw notFound();
 }
 
 export { loadComments };

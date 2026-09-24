@@ -112,7 +112,7 @@ test('creates an issue with generated, editable file artifact names', async ({
 	await expect(dialog).toBeVisible();
 	releaseCreate();
 
-	await expect(page).toHaveURL(new RegExp(`/issues/${project.name}/\\d+$`));
+	await expect(page).toHaveURL(new RegExp(`/issues/${project.id}/\\d+$`));
 	await expect(page.getByRole('heading', { name: 'Created with references' })).toBeVisible();
 	const artifactsFold = page.getByRole('button', { name: /^Artifacts/ });
 	if (await artifactsFold.isVisible()) await artifactsFold.click();
@@ -324,7 +324,7 @@ test('future repeats created by the native Worker do not copy browser attachment
 	await dialog.getByRole('button', { name: 'Repeat' }).click();
 	await dialog.getByLabel('Repeat', { exact: true }).selectOption('daily');
 	await dialog.getByRole('button', { name: 'Create issue + schedule' }).click();
-	await expect(page).toHaveURL(new RegExp(`/issues/${project.name}/\\d+$`));
+	await expect(page).toHaveURL(new RegExp(`/issues/${project.id}/\\d+$`));
 
 	const api = apiFor(ALICE);
 	const number = Number(new URL(page.url()).pathname.split('/').at(-1));

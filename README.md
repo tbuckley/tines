@@ -89,6 +89,16 @@ repository and starts its harness. A machine owner can opt into web-adjustable c
 with `--allow-remote-concurrency --max-concurrent N`; `N` remains a local ceiling that the
 web cannot enable or raise.
 
+### Shared projects (in review)
+
+The Tines/669 branch adds invitations, safe member reads, attributed comments
+and awaiting-human decisions, plus personal issue and recurring permission in
+the browser. Only the owner's approved agents may run in this first release;
+member permission can be saved but cannot launch work. API and run keys cannot
+set personal permission. See [Shared projects](docs/shared-projects.md) and the
+[proposed execution handoff](docs/shared-project-execution-contract.md). The
+handoff remains unreviewed until the parent change lands and review completes.
+
 ### Contributor setup
 
 Prereqs: Node 20+, pnpm 10 (`corepack enable`).

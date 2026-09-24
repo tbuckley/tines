@@ -2,6 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import { partitionProjects } from '$lib/archived';
 import { clearStaleFocus, resolveFocus } from '$lib/server/api/preferences';
 import { listProjects } from '$lib/server/api/projects';
+import { listSharedProjects } from '$lib/server/api/shared-projects';
 import { sessionActor } from '$lib/server/api/core';
 import { getDb } from '$lib/server/db';
 import type { LayoutServerLoad } from './$types';
@@ -27,10 +28,16 @@ export const load: LayoutServerLoad = async ({ locals, platform, depends, url })
 	depends('app:preferences');
 
 	const db = getDb(platform!.env);
-	const actor = sessionActor(locals.user);
-	const [all, resolved] = await Promise.all([
-		listProjects(db, actor, { archived: 'all' }),
-		resolveFocus(db, locals.user.id)
+	const [all, shared, resolved, disclosure] = await Promise.all([
+		listProjects(db, sessionActor(locals.user), { archived: 'all' }),
+		listSharedProjects(db, sessionActor(locals.user), 'all'),
+		resolveFocus(db, locals.user.id),
+		db
+			.selectFrom('personal_disclosure')
+			.select('version')
+			.where('user_id', '=', locals.user.id)
+			.orderBy('version desc')
+			.executeTakeFirst()
 	]);
 
 	if (resolved.staleFocusId) {
@@ -48,13 +55,17 @@ export const load: LayoutServerLoad = async ({ locals, platform, depends, url })
 	}
 
 	const { live, archived } = partitionProjects(all);
+	const { live: liveShared, archived: archivedShared } = partitionProjects(shared);
 	return {
 		user: locals.user,
+		disclosureAcknowledged: (disclosure?.version ?? 0) >= 1,
 		projects: live,
+		sharedProjects: liveShared,
+		archivedSharedProjects: archivedShared,
 		// Archived projects stay *nameable*: several pages resolve a stale
 		// ?project= against this half.
 		archivedProjects: archived,
-		focus: live.find((p) => p.id === resolved.focusId) ?? null,
+		focus: [...live, ...liveShared].find((p) => p.id === resolved.focusId) ?? null,
 		// Raw: the New-issue default checks it against `projects` itself.
 		lastProjectId: resolved.lastProjectId
 	};

@@ -40,6 +40,9 @@ tines issues create <project> --title "…" -d @description.md
 tines issues create <project> --title "Linked" --blocked-by Other/12 --blocks Other/14 --duplicate-of Other/9
 tines issues show <project>/<number>
 tines issues move <project>/<number> <action>        # a workflow transition
+tines issues hold <project>/<number>                 # stop new admission, keep permission
+tines issues release <project>/<number>              # resume eligibility if permission remains on
+tines issues cancel-run <project>/<number> <run-id>   # request bounded cancellation
 tines issues transfer <project>/<number> --project <dest>   # move to another project (keeps ID, record and old refs)
 tines issues transfer <ref> --project <dest> --dry-run      # review only: no number allocated, nothing written
 tines issues transfer <ref> --project <dest> --inspect 0    # print any reviewed guidance item, including retained, in full
@@ -76,6 +79,20 @@ or narrow the list's filters.
 `--duplicate-of` reference. The issue and all initial relationships are created atomically.
 When a recurrence is also supplied, the relationships apply only to the first issue; later
 scheduled instances start without copied relationships.
+
+For a shared project's recurring schedule, `schedules list` and `schedules show` report
+your saved future-instance permission and its epoch. They are read receipts: the CLI and
+API keys cannot turn personal permission on or off. Open the schedule in the browser to
+choose. The first issue's permission is independent of the future schedule choice; future
+permission starts off.
+
+On a shared issue, `issues show` displays the safe member view. An accepted
+member can use `issues comment`, repair their own human or run comment with
+`comment-edit`/`comment-delete`, and use `issues move` from an awaiting-human
+state. `issues move` submits the current exact decision witness once and does
+not retry after a conflict. Keys cannot turn issue or future-schedule personal
+permission on or off; open the issue or shared project in the browser. A saved
+member choice does not enable member execution in this release.
 
 ## Workflow package files
 

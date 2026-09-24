@@ -384,12 +384,8 @@ focusTest.describe.serial('project focus', () => {
 				await issueActivityLink.click();
 				await expect(page).toHaveURL('/activity');
 				await expect(page.getByRole('heading', { name: 'Activity', level: 1 })).toBeVisible();
-				await expect(
-					page.locator(`a[href="/issues/${encodeURIComponent(world.bName)}/1"]`).first()
-				).toBeVisible();
-				await expect(
-					page.locator(`a[href="/issues/${encodeURIComponent(world.aName)}/1"]`)
-				).toHaveCount(0);
+				await expect(page.locator(`a[href="/issues/${world.bId}/1"]`).first()).toBeVisible();
+				await expect(page.locator(`a[href="/issues/${world.aId}/1"]`)).toHaveCount(0);
 
 				// This fixture has no state context: the link remains available on an empty surface.
 				await gotoHydrated(page, `/workflows/${world.workflowId}`);
@@ -477,10 +473,10 @@ focusTest.describe.serial('project focus', () => {
 				await expect(issueLinks.first()).toBeVisible();
 				expect(
 					await issueLinks.evaluateAll((links) => links.map((link) => link.getAttribute('href')))
-				).toEqual(expect.arrayContaining([`/issues/${encodeURIComponent(world.aName)}/1`]));
+				).toEqual(expect.arrayContaining([`/issues/${world.aId}/1`]));
 				expect(
 					await issueLinks.evaluateAll((links) => links.map((link) => link.getAttribute('href')))
-				).not.toContain(`/issues/${encodeURIComponent(world.bName)}/1`);
+				).not.toContain(`/issues/${world.bId}/1`);
 
 				await gotoHydrated(page, '/workflows');
 				const standard = page.locator('a[href="/workflows/wf_standard"]');
@@ -907,8 +903,8 @@ focusTest.describe.serial('project focus', () => {
 
 			await gotoHydrated(page, '/activity');
 			await chooseFocus(page, world.bName);
-			await expect(page.locator(`a[href="/issues/${world.bName}/2"]`)).toBeVisible();
-			await expect(page.locator(`a[href="/issues/${world.aName}/1"]`)).toHaveCount(0);
+			await expect(page.locator(`a[href="/issues/${world.bId}/2"]`)).toBeVisible();
+			await expect(page.locator(`a[href="/issues/${world.aId}/1"]`)).toHaveCount(0);
 
 			await gotoHydrated(page, '/workflows');
 			await chooseFocus(page, world.aName);
@@ -1010,7 +1006,7 @@ focusTest.describe.serial('project focus', () => {
 				const issue = page.getByRole('link', { name: new RegExp(`${world.aName} issue`) });
 				await expect(issue).toBeVisible();
 				await issue.click();
-				await expect(page).toHaveURL(`/issues/${encodeURIComponent(world.aName)}/1`);
+				await expect(page).toHaveURL(`/issues/${encodeURIComponent(world.aId)}/1`);
 				await expect(page.getByRole('button', { name: `Focus ${world.aName}` })).toHaveCount(0);
 				await expect(
 					page.locator('main').getByRole('link', { name: 'Issues', exact: true })

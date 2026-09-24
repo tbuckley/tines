@@ -64,6 +64,7 @@ import {
 	ApiError,
 	ARTIFACT_SITE_INDEX,
 	lintHtmlArtifact,
+	personalPermissionLabel,
 	siteEntry,
 	type Artifact,
 	type CreateScheduleInput,
@@ -102,6 +103,57 @@ function printIssueLinks(links: IssueLinks): void {
 }
 
 function printIssueDetail(issue: IssueDetail): void {
+	const shared = issue as IssueDetail & {
+		mode?: 'member';
+		project?: { name: string; owner: { name: string } };
+		workflow?: { name: string };
+		state?: { name: string; category: string };
+		artifacts?: { name: string; current_version: { version: number } }[];
+		comments?: {
+			id: string;
+			body: string;
+			author: { name: string; run?: { name: string } | null };
+			editor?: { name: string } | null;
+		}[];
+		roster?: { user: { name: string }; role: string; value: string }[];
+		my_choice?: { value: string };
+		latest_run?: { status: string } | null;
+	};
+	if (shared.mode === 'member') {
+		console.log(`${shared.project?.name}/${shared.number}  ${shared.title}`);
+		console.log(
+			`state: ${shared.state?.name} (${shared.state?.category})  workflow: ${shared.workflow?.name}`
+		);
+		console.log(`owner: ${shared.project?.owner.name}  id: ${shared.id}`);
+		if (shared.description) console.log(`\n${shared.description}`);
+		if (shared.artifacts?.length) {
+			console.log('\nartifacts:');
+			table(shared.artifacts.map((a) => [a.name, `v${a.current_version.version}`]));
+		}
+		if (shared.roster?.length) {
+			console.log('\npeople and permission:');
+			table(
+				shared.roster.map((person) => [
+					person.user.name,
+					person.role,
+					personalPermissionLabel(person.role, person.value)
+				])
+			);
+		}
+		console.log(`your issue permission: ${shared.my_choice?.value ?? 'unset'} (browser control)`);
+		console.log(`latest run: ${shared.latest_run?.status ?? 'none'}`);
+		if (shared.comments?.length) {
+			console.log('\ncomments:');
+			for (const comment of shared.comments)
+				console.log(
+					`${comment.id} · ${comment.author.name}${comment.author.run ? ` via ${comment.author.run.name}` : ''}${comment.editor ? ` · edited by ${comment.editor.name}` : ''}\n${comment.body}`
+				);
+		}
+		console.log(
+			'\nMembers may comment and take a current awaiting-human transition. Personal permission is chosen in the browser; member execution is unavailable.'
+		);
+		return;
+	}
 	console.log(`${issue.project_name}/#${issue.number}  ${issue.title}`);
 	// The state line carries the effective state; on a duplicate that is the
 	// canonical issue's, and the issue's own (dormant) state moves below it.
@@ -124,6 +176,10 @@ function printIssueDetail(issue: IssueDetail): void {
 		console.log(`labels: ${issue.labels.map((l) => l.name).join(', ')}`);
 	}
 	console.log(`id: ${issue.id}`);
+	if (issue.schedule_origin)
+		console.log(
+			`created by schedule: ${issue.schedule_origin.schedule_name} [${issue.schedule_origin.schedule_id}]  permission epoch: ${issue.schedule_origin.permission_epoch}  (historical source; current issue permission is separate)`
+		);
 	printIssueLinks(issue.links);
 	if (issue.description) {
 		console.log(`\n${issue.description}`);
@@ -316,13 +372,13 @@ export function register(program: Command): void {
 							`${i.project_name}/${i.number}`,
 							i.title,
 							i.effective_state.name,
-							ageLabel(new Date(i.state_entered_at).toISOString()),
+							ageLabel(new Date(i.state_entered_at ?? i.created_at).toISOString()),
 							arrivedViaLabel(i.arrived_via),
 							roundSummaryLabel(i.round_summary ?? null),
 							[
-								i.open_blockers.length > 0 ? 'blocked' : '',
+								(i.open_blockers?.length ?? 0) > 0 ? 'blocked' : '',
 								i.duplicate_of ? 'dup' : '',
-								...i.labels.map((l) => `[${l.name}]`)
+								...(i.labels ?? []).map((l) => `[${l.name}]`)
 							]
 								.filter(Boolean)
 								.join(' ')
@@ -339,11 +395,11 @@ export function register(program: Command): void {
 						// (and the filters above) go by the effective state.
 						i.effective_state.name,
 						i.effective_state.category,
-						timestamp(i.last_activity_at),
+						timestamp(i.last_activity_at ?? i.updated_at),
 						[
-							i.open_blockers.length > 0 ? 'blocked' : '',
+							(i.open_blockers?.length ?? 0) > 0 ? 'blocked' : '',
 							i.duplicate_of ? 'dup' : '',
-							...i.labels.map((l) => `[${l.name}]`)
+							...(i.labels ?? []).map((l) => `[${l.name}]`)
 						]
 							.filter(Boolean)
 							.join(' ')
@@ -515,14 +571,107 @@ export function register(program: Command): void {
 	withCommon(
 		issues
 			.command('move <ref> <action>')
-			.description('Take a transition on an issue by its action name (e.g. "approve")')
+			.description('Take a current transition (members: awaiting-human only; no permission change)')
 	).action(async (ref: string, action: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
-		const moved = await api.transitionIssue(issue.id, { action });
+		let request: Parameters<typeof api.transitionIssue>[1] = { action };
+		const member = issue as IssueDetail & {
+			mode?: 'member';
+			project?: { name: string };
+			workflow_revision?: number;
+			decision_revision?: number;
+			my_choice?: { revision: number; epoch: number };
+			workflow: IssueDetail['workflow'] & { transitions?: { id: string; name: string }[] };
+		};
+		if (member.mode === 'member') {
+			const transition = member.workflow.transitions?.find(
+				(candidate) => candidate.name.toLowerCase() === action.toLowerCase()
+			);
+			if (
+				!transition ||
+				!member.my_choice ||
+				member.workflow_revision === undefined ||
+				member.decision_revision === undefined
+			)
+				throw new Error(`No current transition named "${action}"; refresh the issue`);
+			request = {
+				transition_id: transition.id,
+				expected_state_id: issue.state.id,
+				expected_decision_revision: member.decision_revision,
+				expected_workflow_revision: member.workflow_revision,
+				expected_consent_revision: member.my_choice.revision,
+				expected_consent_epoch: member.my_choice.epoch
+			};
+		} else {
+			const project = issue.project_id ? await api.getProject(issue.project_id) : null;
+			if (project?.shared_at != null) {
+				const transition = issue.allowed_transitions.find(
+					(candidate) => candidate.name.toLowerCase() === action.toLowerCase()
+				);
+				if (!transition)
+					throw new Error(`No current transition named "${action}"; refresh the issue`);
+				const permission = await api.getIssueConsent(issue.id);
+				request = {
+					transition_id: transition.transition_id,
+					expected_state_id: permission.issue_state.id,
+					expected_decision_revision: permission.issue_state.decision_revision,
+					expected_workflow_revision: permission.issue_state.workflow_revision,
+					expected_consent_revision: permission.my_agents.revision,
+					expected_consent_epoch: permission.my_agents.epoch
+				};
+			}
+		}
+		const moved = await api.transitionIssue(issue.id, request);
 		if (opts.json) return printJson(moved);
+		const movedMember = moved as IssueDetail & { project?: { name: string } };
 		console.log(
-			`${moved.project_name}/#${moved.number}: ${issue.state.name} → ${moved.state.name} ("${action}")`
+			`${moved.project_name ?? movedMember.project?.name}/#${moved.number}: ${issue.state.name} → ${moved.state.name} ("${action}")`
+		);
+		if (member.mode === 'member')
+			console.log(
+				'Personal permission is managed in the browser. Member execution is unavailable in this release.'
+			);
+		else if (moved.permission_receipt?.message) console.log(moved.permission_receipt.message);
+	});
+
+	for (const held of [true, false]) {
+		const verb = held ? 'hold' : 'release';
+		withCommon(
+			issues
+				.command(`${verb} <ref>`)
+				.description(
+					held
+						? 'Hold an issue so approved agents cannot be admitted'
+						: 'Release an issue hold; existing permission choices stay unchanged'
+				)
+		).action(async (ref: string, opts: CommonOpts) => {
+			const api = client(opts);
+			const issue = await resolveIssue(api, ref);
+			const consent = await api.getIssueConsent(issue.id);
+			const receipt = await api.setIssueHold(issue.id, {
+				held,
+				expected_revision: consent.agent_hold.revision
+			});
+			if (opts.json) return printJson(receipt);
+			console.log(`${issueRef(issue)}: ${receipt.message}`);
+			if (receipt.released_assigned > 0) {
+				console.log(`${receipt.released_assigned} assigned run(s) were released without a strike.`);
+			}
+		});
+	}
+
+	withCommon(
+		issues
+			.command('cancel-run <ref> <run-id>')
+			.description('Request cancellation of a run that belongs to this issue')
+	).action(async (ref: string, runId: string, opts: CommonOpts) => {
+		const api = client(opts);
+		const issue = await resolveIssue(api, ref);
+		const run = await api.cancelIssueRun(issue.id, runId);
+		if (opts.json) return printJson(run);
+		console.log(
+			`${issueRef(issue)}: ${run.status === 'canceled' ? 'run canceled' : 'cancellation requested; the run keeps its slot until it stops'}`
 		);
 	});
 
@@ -651,7 +800,7 @@ export function register(program: Command): void {
 		if (opts.json) return printJson(comment);
 		// Echo the id: the comment you just posted is the one you may need to fix.
 		console.log(
-			`commented on ${issue.project_name}/#${issue.number} as ${actorLabel(comment.actor)} (id ${comment.id})`
+			`commented on ${issue.project_name ?? (issue as IssueDetail & { project?: { name: string } }).project?.name}/#${issue.number} as ${actorLabel(comment.actor)} (id ${comment.id})`
 		);
 	});
 
@@ -675,7 +824,9 @@ export function register(program: Command): void {
 			const issue = await resolveIssue(api, ref);
 			const comment = await api.updateComment(issue.id, commentId, { body });
 			if (opts.json) return printJson(comment);
-			console.log(`edited comment ${comment.id} on ${issue.project_name}/#${issue.number}`);
+			console.log(
+				`edited comment ${comment.id} on ${issue.project_name ?? (issue as IssueDetail & { project?: { name: string } }).project?.name}/#${issue.number}`
+			);
 		}
 	);
 
@@ -688,7 +839,9 @@ export function register(program: Command): void {
 		const issue = await resolveIssue(api, ref);
 		await api.deleteComment(issue.id, commentId);
 		if (opts.json) return printJson({ id: commentId, deleted: true });
-		console.log(`deleted comment ${commentId} from ${issue.project_name}/#${issue.number}`);
+		console.log(
+			`deleted comment ${commentId} from ${issue.project_name ?? (issue as IssueDetail & { project?: { name: string } }).project?.name}/#${issue.number}`
+		);
 	});
 
 	// Labels read as sentences too, and label ids never surface: every command
