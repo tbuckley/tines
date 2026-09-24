@@ -87,6 +87,85 @@ describe('requireAccess', () => {
 		);
 	});
 
+	it('allows run-key context reads in its project without a mutation marker, subject to stored domains', () => {
+		const run: ActorContext = {
+			...scoped,
+			agentRunId: 'run_1',
+			runRestriction: {
+				policy: 'run-v1',
+				runId: 'run_1',
+				issueId: 'iss_a',
+				projectId: 'prj_a',
+				launchStateId: 'wfs_a'
+			}
+		};
+		const contextRequirements = [
+			{ domain: 'project', access: 'read', projectId: 'prj_a' },
+			{ domain: 'workspace', access: 'read' }
+		] as const;
+		for (const issueId of ['iss_a', 'iss_other']) {
+			expect(() =>
+				requireAccess(run, contextRequirements, 'context.read', { projectId: 'prj_a', issueId })
+			).not.toThrow();
+		}
+		expect(() =>
+			requireAccess(
+				run,
+				[{ domain: 'project', access: 'read', projectId: 'prj_b' }],
+				'context.read',
+				{ projectId: 'prj_b', issueId: 'iss_b' }
+			)
+		).toThrow(
+			expect.objectContaining({
+				code: 'run_key_forbidden',
+				details: expect.objectContaining({ reason: 'outside_run_project' })
+			})
+		);
+		const insufficient = (domain: string) =>
+			expect.objectContaining({
+				code: 'insufficient_permissions',
+				details: expect.objectContaining({ domain })
+			});
+		expect(() =>
+			requireAccess(
+				{
+					...run,
+					permissions: parseApiKeyPermissions({
+						...run.permissions!,
+						projects: { access: 'read', scope: ['prj_b'] }
+					})
+				},
+				contextRequirements,
+				'context.read',
+				{ projectId: 'prj_a', issueId: 'iss_a' }
+			)
+		).toThrow(insufficient('project'));
+		expect(() =>
+			requireAccess(
+				{ ...run, permissions: parseApiKeyPermissions({ ...run.permissions!, workspace: 'none' }) },
+				contextRequirements,
+				'context.read',
+				{ projectId: 'prj_a', issueId: 'iss_a' }
+			)
+		).toThrow(insufficient('workspace'));
+		const promptRequirements = [
+			...contextRequirements,
+			{ domain: 'control_plane', access: 'read' }
+		] as const;
+		expect(() =>
+			requireAccess(run, promptRequirements, 'context.read', {
+				projectId: 'prj_a',
+				issueId: 'iss_a'
+			})
+		).toThrow(insufficient('control_plane'));
+		expect(() =>
+			requireAccess(run, contextRequirements, 'context.read', {
+				projectId: 'prj_a',
+				issueId: 'iss_a'
+			})
+		).not.toThrow();
+	});
+
 	it('binds every existing-issue context and link mutation to the run issue', () => {
 		const run: ActorContext = {
 			...scoped,
@@ -124,17 +203,35 @@ describe('requireAccess', () => {
 				expect.objectContaining({ code: 'run_key_forbidden' })
 			);
 		}
-		expect(() =>
-			requireAccess(run, [], 'context.create', {
-				projectId: 'prj_a',
-				issueId: 'iss_a'
-			})
-		).toThrow(
-			expect.objectContaining({
-				code: 'run_key_forbidden',
-				details: expect.objectContaining({ reason: 'context_not_issue_scoped' })
-			})
-		);
+		for (const operation of [
+			'context.create',
+			'context.update',
+			'context.append',
+			'context.delete'
+		]) {
+			for (const issueScoped of [undefined, false]) {
+				expect(() =>
+					requireAccess(run, [], operation, { projectId: 'prj_a', issueId: 'iss_a', issueScoped })
+				).toThrow(
+					expect.objectContaining({
+						code: 'run_key_forbidden',
+						details: expect.objectContaining({ reason: 'context_not_issue_scoped' })
+					})
+				);
+			}
+			expect(() =>
+				requireAccess(run, [], operation, {
+					projectId: 'prj_a',
+					issueId: 'iss_other',
+					issueScoped: true
+				})
+			).toThrow(
+				expect.objectContaining({
+					code: 'run_key_forbidden',
+					details: expect.objectContaining({ reason: 'outside_run_issue' })
+				})
+			);
+		}
 	});
 
 	it('never lets a run key satisfy an all-projects requirement', () => {
