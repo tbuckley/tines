@@ -124,7 +124,15 @@
 <svelte:window onclick={() => (menuOpen = false)} />
 
 <div class="flex min-h-screen flex-col">
-	<header class="bg-background/90 sticky top-0 z-40 border-b backdrop-blur">
+	<!--
+		The header and bottom bar get their own transition groups (see app.css):
+		<main> is the named `page` group, and every named group paints above the
+		root snapshot, so chrome left in root would vanish under the sliding page.
+	-->
+	<header
+		class="bg-background/90 sticky top-0 z-40 border-b backdrop-blur"
+		style:view-transition-name="app-header"
+	>
 		<div class="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4">
 			<a href="/issues" class="flex shrink-0 items-center gap-2 font-semibold tracking-tight">
 				<span
@@ -236,6 +244,7 @@
 		class="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur md:hidden"
 		style="padding-bottom: env(safe-area-inset-bottom)"
 		aria-label="Primary"
+		style:view-transition-name="tab-bar"
 	>
 		<div class="grid h-16 grid-cols-3">
 			{#each tabs as tab (tab.path)}
