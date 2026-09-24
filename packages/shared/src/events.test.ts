@@ -93,6 +93,7 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	},
 	'project.unarchived': { name: 'Tines', schedules_resumed: 2 },
 	'project.sharing_started': {},
+	'project.invitation_created': {},
 	'project.member_joined': {},
 	'project.member_removed': {},
 	'workflow.created': { name: 'Engineering' },

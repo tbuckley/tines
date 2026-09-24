@@ -172,8 +172,9 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'project.archived': (ev, p) => projectSegments(ev, p),
 	'project.unarchived': (ev, p) => projectSegments(ev, p),
 	'project.sharing_started': () => [text('started sharing this project')],
+	'project.invitation_created': () => [text('created a project invitation')],
 	'project.member_joined': () => [text('joined this project')],
-	'project.member_removed': () => [text('removed a member from this project')],
+	'project.member_removed': () => [text('changed membership in this project')],
 	'workflow.created': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
 	'workflow.updated': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
 	'workflow.deleted': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
@@ -185,8 +186,9 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'api_key.revoked': (_ev, p) => [text('revoked API key'), name(p.name)],
 	'scheduled_task.created': (ev, p) => [text(`${action(ev.type)} schedule`), name(p.name)],
 	'scheduled_task.personal_permission_changed': (_ev, p) => [
-		text('changed future permission for schedule'),
-		name(p.schedule_id)
+		text(
+			`${p.value === 'on' ? 'allowed' : 'stopped'} their agents on future issues from a schedule`
+		)
 	],
 	'scheduled_task.updated': (ev, p) => [text(`${action(ev.type)} schedule`), name(p.name)],
 	'scheduled_task.deleted': (ev, p) => [text(`${action(ev.type)} schedule`), name(p.name)],

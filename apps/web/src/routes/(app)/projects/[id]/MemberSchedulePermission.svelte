@@ -38,15 +38,21 @@
 </script>
 
 <div class="mt-3">
-	<p class="text-sm">Your future permission: {schedule.my_future_permission.value}</p>
-	<ul class="mt-2 space-y-1 text-sm" aria-label="Future permission roster">
+	<ul class="divide-y text-sm" aria-label="Future permission roster">
 		{#each schedule.roster as person (person.user.id)}
-			<li class="flex flex-wrap justify-between gap-1 border-b py-1 last:border-b-0">
-				{person.user.name}{person.user.id === schedule.viewer_id ? ' (You)' : ''} · {person.role} · {person.value}
+			<li class="flex flex-wrap items-center justify-between gap-2 py-2">
+				<span
+					>{person.user.name}{person.user.id === schedule.viewer_id ? ' (You)' : ''}<span
+						class="text-muted-foreground"
+					>
+						· {person.role}</span
+					></span
+				>
+				<span class="bg-muted rounded-full px-2 py-0.5 text-xs capitalize">{person.value}</span>
 			</li>
 		{/each}
 	</ul>
-	<label class="mt-2 block text-sm" for={`future-${schedule.id}`}
+	<label class="mt-3 block border-t pt-3 text-sm font-medium" for={`future-${schedule.id}`}
 		>My agents on future instances</label
 	>
 	<Select

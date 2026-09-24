@@ -205,12 +205,15 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	await expect(page.getByRole('note', { name: 'First permission warning' })).toHaveCount(0);
 	await expect(page.getByText('What this means')).toBeVisible();
 	await page.screenshot({ path: testInfo.outputPath('member-phone.png'), fullPage: true });
-	await page.setViewportSize({ width: 390, height: 560 });
+	await page.setViewportSize({ width: 320, height: 700 });
 	await expect(page.getByRole('button', { name: 'Save permission' })).toBeVisible();
+	await expect
+		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+		.toBe(true);
 	await page.screenshot({ path: testInfo.outputPath('member-small-phone.png'), fullPage: true });
 	await page.getByLabel('Transition').selectOption({ label: 'Start' });
 	await page.getByRole('button', { name: 'Apply decision' }).click();
-	await expect(page.getByText(/#\d+ · Working/)).toBeVisible();
+	await expect(page.locator('.state-badge').first()).toHaveText('Working');
 	const decision = d1<{ id: string; created_at: number }>(
 		`SELECT id,created_at FROM event WHERE issue_id=${sqlLiteral(issue.id)} AND type='issue.transitioned' AND actor_user_id=${sqlLiteral(BOB.id)} ORDER BY created_at DESC LIMIT 1`
 	)[0];

@@ -3274,6 +3274,7 @@ export const EVENT_TYPES = [
 	'project.archived',
 	'project.unarchived',
 	'project.sharing_started',
+	'project.invitation_created',
 	'project.member_joined',
 	'project.member_removed',
 	'workflow.created',
