@@ -53,6 +53,7 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
+	import LoadingState from '$lib/components/LoadingState.svelte';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import { PROJECT_ARCHIVED_TOOLTIP } from '$lib/archived';
 	import { checklistItems, checklistProgress, type FirstRunInputs } from '$lib/first-run';
@@ -1303,7 +1304,7 @@
 							This issue's context
 						</h3>
 						{#if contextItemsPanel.current.status === 'pending'}
-							<Skeleton class="h-16 w-full" />
+							<LoadingState id="issue.context-items"><Skeleton class="h-16 w-full" /></LoadingState>
 						{:else if contextItemsPanel.current.status === 'loaded'}
 							<ContextItemList
 								items={contextItemsPanel.current.value}
@@ -1326,7 +1327,9 @@
 							</summary>
 							<div class="mt-3">
 								{#if effectiveContextPanel.current.status === 'pending'}
-									<Skeleton class="h-24 w-full" />
+									<LoadingState id="issue.effective-context">
+										<Skeleton class="h-24 w-full" />
+									</LoadingState>
 								{:else if effectiveContextPanel.current.status === 'loaded' && effectiveContextPanel.current.value}
 									<EffectiveContextView context={effectiveContextPanel.current.value} />
 								{:else}
@@ -1346,7 +1349,7 @@
 		<!-- the supervisor's view of this issue -->
 		<PhoneFold title="Agent activity" summary={agentSummaryLabel} bind:open={agentFoldOpen}>
 			{#if agentActivityPanel.current.status === 'pending'}
-				<Skeleton class="h-40 w-full" />
+				<LoadingState id="issue.agent-activity"><Skeleton class="h-40 w-full" /></LoadingState>
 			{:else if agentActivityPanel.current.status === 'loaded'}
 				{@const [dispatch, runs, runners] = agentActivityPanel.current.value}
 				<AgentActivityCard
@@ -1365,7 +1368,7 @@
 				{#if isMember}
 					<!-- spend is the owner's account -->
 				{:else if usagePanel.current.status === 'pending'}
-					<Skeleton class="mt-4 h-24 w-full" />
+					<LoadingState id="issue.usage"><Skeleton class="mt-4 h-24 w-full" /></LoadingState>
 				{:else if usagePanel.current.status === 'loaded' && usagePanel.current.value}
 					<IssueUsage initial={usagePanel.current.value} />
 				{:else}

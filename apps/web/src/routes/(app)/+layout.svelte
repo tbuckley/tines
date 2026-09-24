@@ -5,7 +5,14 @@
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconSettings from '@tabler/icons-svelte/icons/settings';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
-	import { goto, invalidate, invalidateAll, onNavigate } from '$app/navigation';
+	import {
+		afterNavigate,
+		beforeNavigate,
+		goto,
+		invalidate,
+		invalidateAll,
+		onNavigate
+	} from '$app/navigation';
 	import { navigating, page } from '$app/state';
 	import { api } from '$lib/api';
 	import { authClient } from '$lib/auth-client';
@@ -14,6 +21,7 @@
 	import { resolveClientFocus } from '$lib/focus';
 	import { prefersReducedMotion } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
+	import { dataTiming, record, viewportClass } from '$lib/perf/telemetry';
 	import { fade } from 'svelte/transition';
 
 	let { data, children } = $props();
@@ -69,6 +77,32 @@
 		await invalidateAll();
 		await goto('/');
 	}
+
+	// Real-user navigation latency (docs/PERFORMANCE.md, "Real users"): click
+	// to new page mounted, per route, plus how much of it was spent waiting on
+	// the data request and what the server said that request cost.
+	let navStartedAt: number | null = null;
+	beforeNavigate((navigation) => {
+		navStartedAt = navigation.willUnload ? null : performance.now();
+	});
+	afterNavigate((navigation) => {
+		const route = navigation.to?.route.id;
+		if (!route || !navigation.to) return;
+		const enter = navigation.type === 'enter';
+		const startedAt = enter ? 0 : navStartedAt;
+		navStartedAt = null;
+		if (startedAt === null) return;
+		const data = dataTiming(navigation.to.url.pathname, startedAt);
+		record({
+			k: 'nav',
+			route,
+			from: navigation.from?.route.id ?? '',
+			type: navigation.type,
+			ms: Math.round(performance.now() - startedAt),
+			...data,
+			vp: viewportClass()
+		});
+	});
 
 	// Shared-element page transitions (View Transitions API where available).
 	//

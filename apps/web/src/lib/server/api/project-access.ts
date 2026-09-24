@@ -12,6 +12,16 @@ export type ProjectAccess = {
 	archivedAt: number | null;
 };
 
+/** The project and viewer-membership columns an access decision reads. */
+export type ProjectAccessRow = {
+	user_id: string;
+	shared_at: number | null;
+	sharing_revision: number;
+	archived_at: number | null;
+	revision: number | null;
+	revoked_at: number | null;
+};
+
 /** Membership is checked against D1 on every request, never a cookie claim. */
 export async function resolveProjectAccess(
 	db: Kysely<Database>,
@@ -34,6 +44,20 @@ export async function resolveProjectAccess(
 		])
 		.where('p.id', '=', projectId)
 		.executeTakeFirst();
+	return projectAccessFromRow(actor, projectId, row);
+}
+
+/**
+ * The decision `resolveProjectAccess` makes, over a row the caller already
+ * read — so a page can fold the access columns into a query it makes anyway
+ * instead of paying a round trip of its own. The row must be read in the
+ * same request: a cached row is never authority.
+ */
+export function projectAccessFromRow(
+	actor: ActorContext,
+	projectId: string,
+	row: ProjectAccessRow | undefined
+): ProjectAccess {
 	if (!row) throw notFound();
 	requireAccess(actor, [{ domain: 'project', access: 'read', projectId }], 'project.read', {
 		projectId
@@ -204,14 +228,24 @@ export async function actorForProject(
 		.select('name')
 		.where('id', '=', access.ownerId)
 		.executeTakeFirstOrThrow();
+	return memberActor(actor, access, owner.name);
+}
+
+/** `actorForProject`'s member branch, for a caller that already holds the access and owner name. */
+export function memberActor(
+	actor: ActorContext,
+	access: ProjectAccess,
+	ownerName: string
+): ActorContext {
+	if (access.role === 'owner') return actor;
 	return {
 		...actor,
 		userId: access.ownerId,
-		userName: owner.name,
+		userName: ownerName,
 		member: {
 			userId: actor.userId,
 			userName: actor.userName,
-			projectId,
+			projectId: access.projectId,
 			membershipRevision: access.membershipRevision!
 		}
 	};

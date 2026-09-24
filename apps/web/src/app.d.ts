@@ -1,6 +1,7 @@
 // See https://svelte.dev/docs/kit/types#app.d.ts
 // for information about these interfaces
 import type {
+	AnalyticsEngineDataset,
 	CacheStorage,
 	D1Database,
 	ExecutionContext,
@@ -20,6 +21,8 @@ declare global {
 		ARTIFACTS?: R2Bucket;
 		/** Full run-log storage (wrangler.jsonc `r2_buckets`); see lib/server/run-log-store.ts. */
 		RUN_LOGS?: R2Bucket;
+		/** Real-user latency telemetry (wrangler.jsonc `analytics_engine_datasets`); see lib/server/telemetry.ts. */
+		PERF?: AnalyticsEngineDataset;
 		EMAIL?: SendEmail;
 		EMAIL_FROM?: string;
 		BETTER_AUTH_URL?: string;

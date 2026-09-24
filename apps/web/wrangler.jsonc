@@ -77,6 +77,10 @@
 	// routes that to the (nonexistent) origin and 522s. env.SELF invokes the
 	// worker's fetch handler directly instead.
 	"services": [{ "binding": "SELF", "service": "tines-web" }],
+	// Real-user latency telemetry (docs/PERFORMANCE.md, "Real users"): one row
+	// per navigation and per loading state, written by /api/telemetry and read
+	// by `pnpm --filter web perf:report`. The dataset is created on first write.
+	"analytics_engine_datasets": [{ "binding": "PERF", "dataset": "tines_perf" }],
 	"send_email": [
 		{
 			// Cloudflare Email Service binding for magic-link sign-in emails.
@@ -122,6 +126,7 @@
 				}
 			],
 			"send_email": [{ "name": "EMAIL" }],
+			"analytics_engine_datasets": [{ "binding": "PERF", "dataset": "tines_perf_preview" }],
 			"r2_buckets": [
 				{
 					"binding": "ARTIFACTS",
