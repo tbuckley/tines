@@ -28,6 +28,15 @@ test('a member files and edits issues in a shared project, and people stay the o
 	const shared = await body<{ id: string; number: number }>(
 		await owner.post(`/api/v1/projects/${project.id}/issues`, { title: 'Owner issue' })
 	);
+	// Bob has no workflow of this name: the CLI resolves it in Alice's library.
+	const ownerWorkflow = await body<{ id: string; name: string }>(
+		await owner.post('/api/v1/workflows', {
+			name: uniqueName('member-writes-flow'),
+			initial_state: 'Doing',
+			states: [{ name: 'Doing', category: 'active' }],
+			transitions: []
+		})
+	);
 	const privateProject = await body<{ id: string }>(
 		await owner.post('/api/v1/projects', { name: uniqueName('member-writes-private') })
 	);
@@ -87,9 +96,14 @@ test('a member files and edits issues in a shared project, and people stay the o
 			content_type: 'text/plain'
 		})
 	);
-	expect(cli('issues', 'create', project.id, '-t', 'CLI member issue')).toContain(
-		'CLI member issue'
-	);
+	expect(
+		cli('issues', 'create', project.id, '-t', 'CLI member issue', '-w', ownerWorkflow.name)
+	).toContain('CLI member issue');
+	expect(
+		d1<{ workflow_id: string }>(
+			`SELECT workflow_id FROM issue WHERE project_id = ${sqlLiteral(project.id)} AND title = 'CLI member issue'`
+		)
+	).toEqual([{ workflow_id: ownerWorkflow.id }]);
 	expect(
 		d1<{ actor_user_id: string }>(
 			`SELECT actor_user_id FROM event WHERE issue_id = ${sqlLiteral(shared.id)} AND type = 'issue.updated'`

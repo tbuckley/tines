@@ -469,7 +469,9 @@ export function register(program: Command): void {
 				opts.description !== undefined ? readBodyValue(opts.description) : undefined;
 			const api = client(opts);
 			const project = await resolveProject(api, projectRef);
-			const workflowId = opts.workflow ? (await resolveWorkflow(api, opts.workflow)).id : undefined;
+			const workflowId = opts.workflow
+				? (await resolveWorkflow(api, opts.workflow, project.id)).id
+				: undefined;
 			const recurrence = buildRecurrence(opts);
 			if (!recurrence && (opts.ifClosed !== undefined || opts.scheduleName !== undefined)) {
 				die('--if-closed/--schedule-name need a recurrence: add --every … or --cron "<expr>"');
@@ -550,7 +552,7 @@ export function register(program: Command): void {
 			if (description !== undefined) body.description = description;
 			if (opts.state !== undefined) body.state = opts.state;
 			if (opts.workflow !== undefined)
-				body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
+				body.workflow_id = (await resolveWorkflow(api, opts.workflow, issue.project_id)).id;
 			if (Object.keys(body).length === 0) {
 				die('nothing to update: pass --title, --description, --state, and/or --workflow');
 			}

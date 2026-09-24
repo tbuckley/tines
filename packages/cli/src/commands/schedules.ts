@@ -213,7 +213,7 @@ export function register(program: Command): void {
 			if (opts.title !== undefined) body.title_template = opts.title;
 			if (descriptionTemplate !== undefined) body.description_template = descriptionTemplate;
 			if (opts.workflow !== undefined)
-				body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
+				body.workflow_id = (await resolveWorkflow(api, opts.workflow, schedule.project_id)).id;
 			if (opts.state !== undefined) body.state = opts.state;
 			const recurrence = buildRecurrence(opts);
 			if (recurrence?.preset) body.preset = recurrence.preset as SchedulePreset;
