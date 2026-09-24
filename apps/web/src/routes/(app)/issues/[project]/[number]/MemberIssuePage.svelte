@@ -5,14 +5,24 @@
 	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
 	import EventList from '$lib/components/EventList.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
+	import Modal from '$lib/components/Modal.svelte';
+	import PendingButton from '$lib/components/PendingButton.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
+	import TransitionBar from '$lib/components/TransitionBar.svelte';
+	import TransitionList from '$lib/components/TransitionList.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import { relativeTime } from '$lib/format';
 	import { issueBackTarget, navMemory } from '$lib/nav-memory.svelte';
-	import type { TinesEvent } from '@tines/shared';
+	import { planTransitions } from '$lib/transitions';
+	import type {
+		AllowedTransition,
+		ArtifactRequirementCheck,
+		TinesEvent,
+		WorkflowState
+	} from '@tines/shared';
 	let { data } = $props();
 	const backList = $derived.by(() => {
 		const previous = navMemory.lastList;
@@ -67,18 +77,63 @@
 	$effect(() => {
 		if (!choiceDirty) choice = data.issue.my_choice.value === 'on' ? 'on' : 'off';
 	});
-	let decisionId = $state('');
+	// The same transition buttons, phone bar and confirm dialog as the owner's
+	// page, fed from the member-safe read: its transitions are already only the
+	// ones out of the current state, with live artifact-requirement status.
+	const states = $derived(
+		data.issue.workflow.states.map(
+			(state: Pick<WorkflowState, 'id' | 'name' | 'category' | 'position'>): WorkflowState => ({
+				...state,
+				inherits_from: null
+			})
+		)
+	);
+	const currentState = $derived(
+		states.find((state: WorkflowState) => state.id === data.issue.state.id) ?? {
+			...data.issue.state,
+			position: 0,
+			inherits_from: null
+		}
+	);
+	const allowed = $derived(
+		data.issue.workflow.transitions.flatMap(
+			(transition: {
+				id: string;
+				name: string;
+				to_state_id: string;
+				requires: ArtifactRequirementCheck[];
+			}): AllowedTransition[] => {
+				const toState = states.find((state: WorkflowState) => state.id === transition.to_state_id);
+				if (!toState) return [];
+				return [
+					{
+						transition_id: transition.id,
+						name: transition.name,
+						to_state: toState,
+						...(transition.requires.length > 0 ? { requires: transition.requires } : {})
+					}
+				];
+			}
+		)
+	);
+	const unmetFor = (transition: AllowedTransition) =>
+		(transition.requires ?? []).filter((r) => r.status !== 'satisfied');
+	const plan = $derived(
+		planTransitions(allowed, currentState, states, (t) => unmetFor(t).length > 0)
+	);
+	const archivedReason = $derived(
+		data.issue.project.archived_at ? 'This project is archived.' : null
+	);
+	let stateSheetOpen = $state(false);
+	let pendingTransition = $state<AllowedTransition | null>(null);
+	let transitionComment = $state('');
 	let transitionAllowsAgents = $state(true);
-	let chosenTransition = $derived(
-		data.issue.workflow.transitions.find(
-			(entry: { id: string; to_state_id: string }) => entry.id === decisionId
-		)
-	);
-	let chosenDestination = $derived(
-		data.issue.workflow.states.find(
-			(state: { id: string; category: string }) => state.id === chosenTransition?.to_state_id
-		)
-	);
+	function requestMove(transition: AllowedTransition) {
+		transitionComment = '';
+		transitionAllowsAgents = data.issue.my_choice.value !== 'off';
+		stateSheetOpen = false;
+		pendingTransition = transition;
+	}
 	const refresh = () => invalidate('app:issue');
 	function fail(e: unknown) {
 		error = e instanceof Error ? e.message : 'Save failed. Try again.';
@@ -146,26 +201,29 @@
 			saving = false;
 		}
 	}
-	async function decide() {
-		if (saving || !decisionId) return;
+	async function move(transition: AllowedTransition, comment: string) {
+		if (saving) return;
 		saving = true;
 		error = '';
 		try {
+			// Comment first, as on the owner's page: whoever the move hands the
+			// issue to reads it.
+			if (comment) await api.createComment(data.issue.id, { body: comment });
 			await api.transitionIssue(data.issue.id, {
-				transition_id: decisionId,
+				transition_id: transition.transition_id,
 				expected_state_id: data.issue.state.id,
 				expected_decision_revision: data.issue.decision_revision,
 				expected_workflow_revision: data.issue.workflow_revision,
 				expected_consent_revision: data.issue.my_choice.revision,
 				expected_consent_epoch: data.issue.my_choice.epoch,
-				...(chosenDestination?.category === 'active'
+				...(transition.to_state.category === 'active'
 					? {
 							allow_my_agents: transitionAllowsAgents,
 							...(transitionAllowsAgents ? { disclosure_version: 1 } : {})
 						}
 					: {})
 			});
-			decisionId = '';
+			pendingTransition = null;
 			await invalidateAll();
 		} catch (e) {
 			fail(e);
@@ -216,37 +274,11 @@
 
 <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:grid-rows-[auto_1fr]">
 	{#if data.issue.capabilities.decide}<section
-			class="rounded-lg border p-4 lg:col-start-2 lg:row-start-1"
+			class="min-w-0 rounded-lg border p-4 max-sm:hidden lg:col-start-2 lg:row-start-1"
 			aria-labelledby="decision-heading"
 		>
-			<h2 id="decision-heading" class="text-sm font-semibold">Decide this issue</h2>
-			<label for="member-transition" class="mt-3 block text-sm">Transition</label>
-			<Select
-				id="member-transition"
-				aria-label="Transition"
-				class="mt-1 min-h-11"
-				bind:value={decisionId}
-				onchange={() => (transitionAllowsAgents = data.issue.my_choice.value !== 'off')}
-				disabled={saving}
-			>
-				<option value="">Choose a transition</option
-				>{#each data.issue.workflow.transitions as transition (transition.id)}<option
-						value={transition.id}>{transition.name}</option
-					>{/each}
-			</Select>
-			{#if chosenDestination?.category === 'active'}<label
-					class="mt-3 block text-sm"
-					for="transition-permission">My agents after this decision</label
-				><Select
-					id="transition-permission"
-					class="mt-1 min-h-11"
-					bind:value={transitionAllowsAgents}
-					disabled={saving}
-					><option value={true}>On</option><option value={false}>Off</option></Select
-				>{#if transitionAllowsAgents}<PersonalPermissionWarning role="member" />{/if}{/if}
-			<Button class="mt-3 w-full" onclick={decide} disabled={saving || !decisionId}
-				>Apply decision</Button
-			>
+			<h2 id="decision-heading" class="mb-3 text-sm font-semibold">State</h2>
+			{@render statePanel()}
 		</section>{/if}
 	<div class="min-w-0 space-y-6 lg:col-start-1 lg:row-span-2 lg:row-start-1">
 		<section class="rounded-lg border" aria-labelledby="description-heading">
@@ -422,3 +454,97 @@
 		</section>
 	</aside>
 </div>
+
+{#snippet statePanel()}
+	<TransitionList
+		transitions={plan.ordered}
+		{unmetFor}
+		disabled={saving || archivedReason !== null}
+		disabledReason={archivedReason}
+		stateEnteredAt={data.issue.state_entered_at}
+		canAttach={false}
+		onmove={requestMove}
+	/>
+	<p class="text-muted-foreground mt-3 min-w-0 text-xs wrap-anywhere">
+		Workflow: {data.issue.workflow.name}
+	</p>
+{/snippet}
+
+{#if data.issue.capabilities.decide}
+	<!-- phone: the owner's decide-while-reading bar and its State sheet. The
+	     spacer keeps the last section clear of the bar. -->
+	<div class="h-14 sm:hidden" aria-hidden="true"></div>
+	<TransitionBar
+		current={currentState}
+		transitions={plan.ordered}
+		{unmetFor}
+		primaryId={plan.primaryId}
+		disabled={saving || archivedReason !== null}
+		disabledReason={archivedReason}
+		onmove={requestMove}
+		onopen={() => (stateSheetOpen = true)}
+	/>
+	<Modal bind:open={stateSheetOpen} title="State">
+		{@render statePanel()}
+	</Modal>
+{/if}
+
+{#if pendingTransition}
+	{@const transition = pendingTransition}
+	<Modal
+		open={true}
+		onclose={() => (pendingTransition = null)}
+		title={`${transition.name} → ${transition.to_state.name}`}
+	>
+		<form
+			class="space-y-3"
+			onsubmit={(e) => {
+				e.preventDefault();
+				void move(transition, transitionComment.trim());
+			}}
+		>
+			<p class="text-sm">
+				Move this issue to <span class="font-medium">{transition.to_state.name}</span>
+				({transition.to_state.category.replaceAll('_', ' ')})?
+			</p>
+			{#if transition.to_state.category === 'active'}
+				<div class="rounded-md border p-3 text-sm">
+					<label class="flex min-h-11 items-center gap-2 font-medium">
+						<input type="checkbox" bind:checked={transitionAllowsAgents} /> Allow my agents after this
+						move
+					</label>
+					{#if transitionAllowsAgents}<PersonalPermissionWarning role="member" />{/if}
+				</div>
+			{/if}
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="member-transition-comment">Comment (optional)</label
+				>
+				<Textarea
+					id="member-transition-comment"
+					bind:value={transitionComment}
+					rows={3}
+					placeholder="Feedback, context, or instructions for whoever picks this up…"
+				/>
+				<p class="text-muted-foreground text-xs">Posted with the transition.</p>
+			</div>
+			<div class="flex flex-wrap justify-end gap-2">
+				<Button
+					type="button"
+					variant="ghost"
+					disabled={saving}
+					onclick={() => (pendingTransition = null)}
+				>
+					Cancel
+				</Button>
+				<PendingButton
+					type="submit"
+					pending={saving}
+					pendingLabel="Moving…"
+					title={transition.name}
+				>
+					{transition.name}
+				</PendingButton>
+			</div>
+		</form>
+	</Modal>
+{/if}

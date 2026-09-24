@@ -211,8 +211,14 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
 		.toBe(true);
 	await page.screenshot({ path: testInfo.outputPath('member-small-phone.png'), fullPage: true });
-	await page.getByLabel('Transition').selectOption({ label: 'Start' });
-	await page.getByRole('button', { name: 'Apply decision' }).click();
+	// The owner's phone bar and confirm dialog, not a member-only form.
+	await page
+		.getByTestId('transition-bar')
+		.getByRole('button', { name: 'Start', exact: true })
+		.click();
+	const confirm = page.getByRole('dialog', { name: 'Start → Working' });
+	await expect(confirm.getByLabel('Allow my agents after this move')).toBeChecked();
+	await confirm.getByRole('button', { name: 'Start', exact: true }).click();
 	await expect(page.locator('.state-badge').first()).toHaveText('Working');
 	const decision = d1<{ id: string; created_at: number }>(
 		`SELECT id,created_at FROM event WHERE issue_id=${sqlLiteral(issue.id)} AND type='issue.transitioned' AND actor_user_id=${sqlLiteral(BOB.id)} ORDER BY created_at DESC LIMIT 1`
@@ -516,6 +522,99 @@ test('native D1 removal wins after member choice preparation without a grant or 
 			`SELECT COUNT(*) AS n FROM personal_disclosure WHERE user_id=${sqlLiteral(BOB.id)}`
 		)
 	).toEqual([{ n: 0 }]);
+});
+
+test('members decide with the owner transition buttons and see what a gated move still needs', async ({
+	request,
+	page,
+	uniqueName
+}) => {
+	test.setTimeout(90_000);
+	const owner = apiClient(request, ALICE.apiKey);
+	const project = await body<{ id: string }>(
+		await owner.post('/api/v1/projects', { name: uniqueName('member-buttons') })
+	);
+	const workflow = await body<{ id: string }>(
+		await owner.post('/api/v1/workflows', {
+			name: uniqueName('member-buttons-workflow'),
+			initial_state: 'Working',
+			states: [
+				{ name: 'Working', category: 'active' },
+				{ name: 'Review', category: 'awaiting_human' },
+				{ name: 'Shipped', category: 'done' }
+			],
+			transitions: [
+				{ name: 'Review', from: 'Working', to: 'Review' },
+				{ name: 'Rework', from: 'Review', to: 'Working' },
+				{
+					name: 'Ship',
+					from: 'Review',
+					to: 'Shipped',
+					requires: [{ artifact: 'signoff', type: 'text' }]
+				}
+			]
+		})
+	);
+	const issue = await body<{ id: string; number: number }>(
+		await owner.post(`/api/v1/projects/${project.id}/issues`, {
+			title: 'Gated member decision',
+			workflow_id: workflow.id
+		})
+	);
+	await body(await owner.post(`/api/v1/issues/${issue.id}/transition`, { action: 'Review' }));
+	const invite = await body<{ id: string }>(
+		await owner.post(`/api/v1/projects/${project.id}/invitations`, {
+			email: BOB.email,
+			confirm_sharing: true,
+			expected_sharing_revision: 0
+		})
+	);
+	const sink = await body<{ url: string }>(
+		await request.get(`/api/v1/__e2e/invitation-email/${invite.id}`)
+	);
+	await body(
+		await request.post('/api/v1/invitations/accept', {
+			headers: {
+				cookie: `better-auth.session_token=${signedSessionCookie(BOB.sessionToken)}`,
+				origin: BASE_URL
+			},
+			data: { token: sink.url.split('/').at(-1) }
+		})
+	);
+
+	await signIn(page.context(), BOB.sessionToken);
+	await page.setViewportSize({ width: 1280, height: 900 });
+	await gotoHydrated(page, `/issues/${project.id}/${issue.number}`);
+	await expect(page.getByRole('combobox', { name: 'Transition' })).toHaveCount(0);
+	const card = page.getByRole('region', { name: 'State' });
+	const ship = card.getByRole('button', { name: /^Ship/ });
+	await expect(ship).toBeDisabled();
+	await expect(card).toContainText(
+		'Needs artifact signoff — the owner or an agent must attach it.'
+	);
+	await expect(card.getByRole('link', { name: 'Artifacts' })).toHaveCount(0);
+
+	// Once the owner attaches it, the member can take the gated move.
+	await body(
+		await owner.put(`/api/v1/issues/${issue.id}/artifacts/signoff`, {
+			type: 'text',
+			content: 'Signed off.'
+		})
+	);
+	await page.reload();
+	await expect(card.getByRole('button', { name: /^Ship/ })).toBeEnabled();
+	await card.getByRole('button', { name: /^Ship/ }).click();
+	const confirm = page.getByRole('dialog', { name: 'Ship → Shipped' });
+	await expect(confirm.getByLabel('Allow my agents after this move')).toHaveCount(0);
+	await confirm.getByLabel('Comment (optional)').fill('Shipping it.');
+	await confirm.getByRole('button', { name: 'Ship', exact: true }).click();
+	await expect(page.locator('.state-badge').first()).toHaveText('Shipped');
+	await expect(page.getByText('Shipping it.')).toBeVisible();
+	expect(
+		d1<{ n: number }>(
+			`SELECT COUNT(*) AS n FROM event WHERE issue_id=${sqlLiteral(issue.id)} AND type='issue.transitioned' AND actor_user_id=${sqlLiteral(BOB.id)}`
+		)
+	).toEqual([{ n: 1 }]);
 });
 
 async function memberWriteFixture(request: APIRequestContext, name: string) {

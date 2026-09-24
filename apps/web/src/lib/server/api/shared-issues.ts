@@ -2,6 +2,7 @@ import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { getArtifactStore } from '$lib/server/artifact-store';
 import type { Artifact, ArtifactDetail, ArtifactVersion, ArtifactType } from '@tines/shared';
+import { checkRequirements } from './artifacts';
 import { ApiFail, notFound, type ActorContext } from './core';
 import { resolveIssueAccess, resolveProjectAccess } from './project-access';
 import { sharedEventPayload } from './shared-events';
@@ -253,7 +254,15 @@ export async function readSharedIssue(
 			id: transition.id,
 			name: transition.name,
 			to_state_id: transition.to_state_id,
-			requires: transition.requirements ? JSON.parse(transition.requirements) : []
+			// Live status, as the owner's read reports it, so the member page can
+			// show which artifact a gated move still needs before it is tried.
+			requires: transition.requirements
+				? checkRequirements(
+						JSON.parse(transition.requirements),
+						artifactRows,
+						`${row.project_name}/${row.number}`
+					)
+				: []
 		}));
 	await beforeFinalCheck?.();
 	const currentLinks = [] as typeof visibleLinks;

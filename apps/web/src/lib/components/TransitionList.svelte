@@ -20,6 +20,7 @@
 		disabled = false,
 		disabledReason = null,
 		stateEnteredAt,
+		canAttach = true,
 		onmove
 	}: {
 		/**
@@ -33,6 +34,12 @@
 		/** Why the buttons are disabled, as their tooltip (archived project). */
 		disabledReason?: string | null;
 		stateEnteredAt: number;
+		/**
+		 * Whether the viewer can clear a missing or stale requirement from this
+		 * page. Project members cannot upload artifacts, so their lines name who
+		 * can instead of pointing at an Artifacts card they cannot use.
+		 */
+		canAttach?: boolean;
 		onmove: (t: AllowedTransition) => void;
 	} = $props();
 
@@ -84,11 +91,15 @@
 									<IconBan size={13} class="mt-0.5 shrink-0" />
 									<span class="min-w-0">
 										{#if r.status === 'missing'}
-											Needs artifact <span class="font-mono">{r.artifact}</span> — attach it in
-											<a href="#artifacts" class="underline">Artifacts</a>.
+											Needs artifact <span class="font-mono">{r.artifact}</span> —
+											{#if canAttach}attach it in <a href="#artifacts" class="underline"
+													>Artifacts</a
+												>.{:else}the owner or an agent must attach it.{/if}
 										{:else if r.status === 'stale'}
 											<span class="font-mono">{r.artifact}</span> is stale — this state began
-											{relativeTime(stateEnteredAt)}; attach a new version or reaffirm it.
+											{relativeTime(stateEnteredAt)}; {canAttach
+												? 'attach a new version or reaffirm it.'
+												: 'the owner or an agent must attach a new version or reaffirm it.'}
 										{:else if r.type !== undefined && r.current_type !== r.type}
 											<span class="font-mono">{r.artifact}</span> must be a {r.type} artifact{#if r.content_type}{' '}
 												({r.content_type}){/if} — the attached one is {r.current_type}.
