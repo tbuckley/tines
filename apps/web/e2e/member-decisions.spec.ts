@@ -190,23 +190,24 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	await page.setViewportSize({ width: 390, height: 844 });
 	await gotoHydrated(page, `/issues/${project.id}/${issue.number}`);
 	await expect(page.getByRole('heading', { name: 'Member decision journey' })).toBeVisible();
-	await expect(page.getByText(`${BOB.name} (You)`, { exact: false })).toBeVisible();
-	await page.getByRole('textbox', { name: 'New comment' }).fill('Member note');
-	await page.getByRole('button', { name: 'Post comment' }).click();
+	await page.getByRole('textbox', { name: 'Leave a comment (Markdown)…' }).fill('Member note');
+	await page.getByRole('button', { name: 'Comment', exact: true }).click();
 	await expect(page.getByText('Member note')).toBeVisible();
-	await page.getByLabel('My agents on this issue').selectOption('on');
+	// The owner's agent activity fold, with the member's own permission controls.
+	await page.getByRole('button', { name: /^Agent activity/ }).click();
+	await expect(page.getByText(`${BOB.name} (You)`, { exact: false })).toBeVisible();
 	await expect(page.getByRole('note', { name: 'First permission warning' })).toContainText(
 		'including after member execution is released'
 	);
-	await page.getByRole('button', { name: 'Save permission' }).click();
+	await page.getByRole('button', { name: 'Allow my agents', exact: true }).click();
 	await expect(
-		page.getByText('Permission saved. Member execution is not available in this release.')
+		page.getByText(/^Permission saved\. Member execution is not available in this release/)
 	).toBeVisible();
 	await expect(page.getByRole('note', { name: 'First permission warning' })).toHaveCount(0);
 	await expect(page.getByText('What this means')).toBeVisible();
 	await page.screenshot({ path: testInfo.outputPath('member-phone.png'), fullPage: true });
 	await page.setViewportSize({ width: 320, height: 700 });
-	await expect(page.getByRole('button', { name: 'Save permission' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Turn off', exact: true })).toBeVisible();
 	await expect
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
 		.toBe(true);
@@ -250,8 +251,7 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	await expect(page.locator(`[data-event-id="evt_allowed_669_0_${project.id}"]`)).toHaveCount(0);
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await gotoHydrated(page, `/issues/${project.id}/${issue.number}`);
-	await expect(page.getByText('Latest run')).toBeVisible();
-	await expect(page.getByText('No run yet')).toBeVisible();
+	await expect(page.getByText('No runs yet.')).toBeVisible();
 	await page.screenshot({ path: testInfo.outputPath('member-desktop.png'), fullPage: true });
 	await gotoHydrated(page, `/projects/${project.id}`);
 	d1(`DELETE FROM personal_disclosure WHERE user_id=${sqlLiteral(BOB.id)}`);
@@ -277,14 +277,15 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	} finally {
 		d1('DROP TRIGGER trg_669_ack_failure');
 	}
-	await page.getByLabel('My agents on future instances').selectOption('on');
 	await expect(page.getByRole('note', { name: 'First permission warning' })).toContainText(
 		'including after member execution is released'
 	);
-	await page.getByRole('button', { name: 'Save future permission' }).click();
-	await expect(
-		page.getByText('Future permission saved. Member execution is not available in this release.')
-	).toBeVisible();
+	await page
+		.getByRole('switch', {
+			name: 'Allow my agents on future issues from Future member work {{count}}'
+		})
+		.click();
+	await expect(page.getByText('Future permission saved.')).toBeVisible();
 	expect(
 		d1<{ version: number }>(
 			`SELECT version FROM personal_disclosure WHERE user_id=${sqlLiteral(BOB.id)}`
@@ -586,24 +587,22 @@ test('members decide with the owner transition buttons and see what a gated move
 	await page.setViewportSize({ width: 1280, height: 900 });
 	await gotoHydrated(page, `/issues/${project.id}/${issue.number}`);
 	await expect(page.getByRole('combobox', { name: 'Transition' })).toHaveCount(0);
-	const card = page.getByRole('region', { name: 'State' });
-	const ship = card.getByRole('button', { name: /^Ship/ });
+	const ship = page.getByRole('button', { name: /^Ship/ });
 	await expect(ship).toBeDisabled();
-	await expect(card).toContainText(
-		'Needs artifact signoff — the owner or an agent must attach it.'
-	);
-	await expect(card.getByRole('link', { name: 'Artifacts' })).toHaveCount(0);
+	// Members attach artifacts too, so the hint points them at the panel.
+	await expect(page.getByText('Needs artifact signoff — attach it in')).toBeVisible();
+	await expect(page.getByRole('link', { name: 'Artifacts', exact: true })).toBeVisible();
 
-	// Once the owner attaches it, the member can take the gated move.
+	// Once the member attaches it, they can take the gated move.
 	await body(
-		await owner.put(`/api/v1/issues/${issue.id}/artifacts/signoff`, {
+		await apiClient(request, BOB.apiKey).put(`/api/v1/issues/${issue.id}/artifacts/signoff`, {
 			type: 'text',
 			content: 'Signed off.'
 		})
 	);
 	await page.reload();
-	await expect(card.getByRole('button', { name: /^Ship/ })).toBeEnabled();
-	await card.getByRole('button', { name: /^Ship/ }).click();
+	await expect(ship).toBeEnabled();
+	await ship.click();
 	const confirm = page.getByRole('dialog', { name: 'Ship → Shipped' });
 	await expect(confirm.getByLabel('Allow my agents after this move')).toHaveCount(0);
 	await confirm.getByLabel('Comment (optional)').fill('Shipping it.');

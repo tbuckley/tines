@@ -102,7 +102,7 @@ test('two accounts join and read without owner-private payloads, then removal re
 	const now = Date.now();
 	d1(`INSERT INTO context_item (id,user_id,kind,name,description,project_id,workflow_state_id,issue_id,label_id,body,position,version,created_at,updated_at)
 		VALUES (${sqlLiteral(privateContextId)},${sqlLiteral(ALICE.id)},'prompt','private-canary','',NULL,NULL,
-		${sqlLiteral(issue.id)},NULL,'SECRET_CONTEXT_CANARY',0,1,${now},${now})`);
+		${sqlLiteral(privateIssue.id)},NULL,'SECRET_CONTEXT_CANARY',0,1,${now},${now})`);
 	const invite = await body<{ id: string }>(
 		await owner.post(`/api/v1/projects/${project.id}/invitations`, {
 			email: BOB.email,
@@ -143,6 +143,7 @@ test('two accounts join and read without owner-private payloads, then removal re
 		await bobPage.getByRole('button', { name: 'Join project' }).click();
 		await expect(bobPage.getByRole('heading', { name: 'Shared decision' })).toBeVisible();
 		expect(await bobPage.content()).not.toContain('SECRET_CONTEXT_CANARY');
+		await bobPage.getByRole('button', { name: /^Relations/ }).click();
 		await expect(bobPage.getByRole('link', { name: /Visible linked work/ })).toBeVisible();
 		await expect(bobPage.getByText('Blocked by another issue.')).toBeVisible();
 		expect(await bobPage.content()).not.toContain('FOREIGN_LINK_CANARY');
@@ -193,14 +194,15 @@ test('two accounts join and read without owner-private payloads, then removal re
 				})
 			).status()
 		).toBe(404);
+		// Members mint site links like the owner.
 		expect(
 			(
 				await request.post(`/api/v1/issues/${issue.id}/artifacts/site/site-link`, {
 					headers: { authorization: `Bearer ${BOB.apiKey}` },
 					data: {}
 				})
-			).status()
-		).toBe(404);
+			).ok()
+		).toBe(true);
 		const html = await request.get(`/api/v1/issues/${issue.id}/artifacts/site/content?inline=1`, {
 			headers: { authorization: `Bearer ${BOB.apiKey}` }
 		});
@@ -231,7 +233,7 @@ test('two accounts join and read without owner-private payloads, then removal re
 		expect(pageOne.next_cursor).toBeTruthy();
 		expect(pageTwo.items[0].id).not.toBe(pageOne.items[0].id);
 		await gotoHydrated(bobPage, `/issues?project=${project.id}`);
-		await expect(bobPage.getByRole('option', { name: 'All (4)' })).toBeAttached();
+		await expect(bobPage.getByRole('link', { name: 'Open 4' })).toBeVisible();
 		await gotoHydrated(bobPage, `/issues/${project.id}/${issue.number}`);
 		await expect(bobPage.getByRole('heading', { name: 'Shared decision' })).toBeVisible();
 		const artifact = await body<{ version_count: number; versions: { version: number }[] }>(
@@ -282,7 +284,7 @@ test('two accounts join and read without owner-private payloads, then removal re
 			JSON.parse(cli(BOB.apiKey, 'issues', 'list', '--project', project.id, '--json')).items
 		).toEqual(expect.arrayContaining([expect.objectContaining({ id: issue.id })]));
 		expect(cli(BOB.apiKey, 'issues', 'show', `${project.id}/${issue.number}`)).toContain(
-			'Members may comment'
+			'Members work on shared issues'
 		);
 		expect(
 			cli(BOB.apiKey, 'issues', 'artifacts', 'show', `${project.id}/${issue.number}`, 'notes')
@@ -292,7 +294,7 @@ test('two accounts join and read without owner-private payloads, then removal re
 		);
 		expect(
 			cli(BOB.apiKey, 'schedules', 'show', `${project.id}/${recurring.schedule.id}`)
-		).toContain('This shared schedule is read only');
+		).toContain('Members edit, pause, run and delete shared schedules');
 		const roster = await body<{ members: { id: string; revision: number }[] }>(
 			await request.get(`/api/v1/projects/${project.id}/people`, {
 				headers: { authorization: `Bearer ${BOB.apiKey}` }
@@ -372,10 +374,8 @@ test('resend replaces the old link and expiry blocks acceptance', async ({
 	await signIn(page.context(), BOB.sessionToken);
 	await gotoHydrated(page, new URL(latestUrl).pathname);
 	await page.getByRole('button', { name: 'Join project' }).click();
-	await expect(page.getByText('No issues match this view.')).toBeVisible();
-	await expect(page.getByRole('link', { name: 'View all project issues' })).toBeVisible();
-	await page.getByRole('link', { name: 'View all project issues' }).click();
 	await expect(page.getByRole('heading', { name: 'Issues' })).toBeVisible();
+	await expect(page.getByText('No issues match these filters.')).toBeVisible();
 });
 
 test('magic-link sign-in returns to the invitation before acceptance', async ({
@@ -409,7 +409,7 @@ test('magic-link sign-in returns to the invitation before acceptance', async ({
 	await expect(page).toHaveURL(url);
 	await expect(page.getByRole('button', { name: 'Join project' })).toBeVisible();
 	await page.getByRole('button', { name: 'Join project' }).click();
-	await expect(page.getByText('No issues match this view.')).toBeVisible();
+	await expect(page.getByText('No issues match these filters.')).toBeVisible();
 });
 
 test('duplicate project names disclose only readable IDs and require immutable addressing', async ({

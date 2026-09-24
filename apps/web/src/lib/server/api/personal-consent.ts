@@ -5,6 +5,7 @@ import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { eventInsert } from './events';
 import type { QueryGuard } from './query-guard';
 import { releaseAssignedIssueQueries } from '../supervisor/consent-admission';
+import { memberStillCurrentPredicate } from './project-access';
 
 const CONSENT_FIELDS = [
 	'allow_my_agents',
@@ -121,7 +122,7 @@ export function createProjectWriteGuard(
 			SELECT 1 FROM project
 			WHERE id = ${projectId} AND user_id = ${actor.userId}
 				AND archived_at IS NULL AND sharing_revision = ${sharingRevision}
-		)`
+		) AND ${memberStillCurrentPredicate(actor)}`
 	};
 }
 

@@ -94,10 +94,9 @@ test('shared project pages use the app UI at desktop, phone, and 320px', async (
 		).toBeVisible();
 		await memberPage.setViewportSize({ width: 1280, height: 900 });
 		await gotoHydrated(memberPage, `/issues/${project.id}/${issue.number}`);
-		await memberPage.getByLabel('My agents on this issue').selectOption('on');
-		await memberPage.getByRole('button', { name: 'Save permission' }).click();
+		await memberPage.getByRole('button', { name: 'Allow my agents', exact: true }).click();
 		await expect(
-			memberPage.getByText('Permission saved. Member execution is not available in this release.')
+			memberPage.getByText(/^Permission saved\. Member execution is not available in this release/)
 		).toBeVisible();
 		await memberPage.reload();
 		await expect(memberPage.getByText('The checklist is ready for review.')).toBeVisible();
@@ -109,13 +108,8 @@ test('shared project pages use the app UI at desktop, phone, and 320px', async (
 		await memberPage.setViewportSize({ width: 390, height: 844 });
 		await memberPage.evaluate(() => window.scrollTo(0, 0));
 		await capture(memberPage, 'issue-member-phone-top');
-		await memberPage
-			.getByRole('heading', { name: 'People and permission' })
-			.scrollIntoViewIfNeeded();
-		await memberPage.evaluate(() => {
-			const heading = document.getElementById('people-heading');
-			if (heading) window.scrollBy(0, heading.getBoundingClientRect().top - 90);
-		});
+		await memberPage.getByRole('button', { name: /^Agent activity/ }).click();
+		await memberPage.getByText('People and permission', { exact: true }).scrollIntoViewIfNeeded();
 		await capture(memberPage, 'issue-member-phone-permission');
 		await memberPage.setViewportSize({ width: 320, height: 700 });
 		await memberPage.evaluate(() => window.scrollTo(0, 0));
@@ -138,7 +132,7 @@ test('shared project pages use the app UI at desktop, phone, and 320px', async (
 		await gotoHydrated(memberPage, '/issues');
 		await capture(memberPage, 'issues-member-desktop');
 		await memberPage.getByRole('link', { name: /Approve the release checklist/ }).click();
-		await expect(memberPage.getByTestId('member-issue-back')).toHaveAttribute('href', '/issues');
+		await expect(memberPage.getByTestId('issue-back')).toHaveAttribute('href', '/issues');
 		await gotoHydrated(memberPage, '/activity');
 		await expect(memberPage.getByText('allowed their agents on', { exact: false })).toBeVisible();
 		await capture(memberPage, 'activity-member-desktop');

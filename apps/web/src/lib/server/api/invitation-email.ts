@@ -9,7 +9,7 @@ export async function sendInvitationEmail(
 ): Promise<void> {
 	if (!env.EMAIL || !env.EMAIL_FROM) throw new Error('Invitation email is not configured');
 	const subject = `${input.owner} invited you to ${input.project}`;
-	const text = `${input.owner} invited you to join the whole ${input.project} project in Tines. Open this invitation while signed in with ${input.email}:\n\n${input.url}\n\nExpires ${new Date(input.expiresAt).toUTCString()}. If you did not expect this invitation, ignore this email.`;
+	const text = `${input.owner} invited you to join the whole ${input.project} project in Tines. Open this invitation while signed in with ${input.email}:\n\n${input.url}\n\nThis link expires ${new Date(input.expiresAt).toUTCString()}; once you join, you stay a member until the owner removes you or you leave. If you did not expect this invitation, ignore this email.`;
 	// Plain text avoids embedding untrusted names or links in an HTML context.
 	await env.EMAIL.send({
 		to: input.email,

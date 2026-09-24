@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import { ARTIFACT_FOLDER_MAX_BYTES } from '@tines/shared';
 import { uploadArtifactFolder, type FolderUploadFile } from '$lib/server/api/artifacts';
 import { api, apiContext, ApiFail } from '$lib/server/api/core';
+import { actorForIssue } from '$lib/server/api/project-access';
 import type { RequestHandler } from './$types';
 
 /**
@@ -11,7 +12,9 @@ import type { RequestHandler } from './$types';
  * always born whole — there are no per-file writes.
  */
 export const PUT: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor: requester } = await apiContext(event);
+	// Members work on shared issues with the owner's scope (project-access.ts).
+	const actor = await actorForIssue(db, requester, event.params.id);
 	// The multipart parse buffers in memory; a declared length far past the
 	// cap is rejected before reading (multipart overhead gets some slack —
 	// the exact per-file/total caps are enforced after the parse). Absence is

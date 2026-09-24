@@ -508,9 +508,10 @@ export async function acceptInvitation(
 				.where('project_id', '=', invite.project_id)
 				.executeTakeFirst()
 		: null;
+	// Members work on the whole project, so without a landing issue they see all of its open issues.
 	const landingPath = landing
 		? `/issues/${encodeURIComponent(invite.project_id)}/${landing.number}`
-		: `/issues?project=${encodeURIComponent(invite.project_id)}&category=awaiting_human`;
+		: `/issues?project=${encodeURIComponent(invite.project_id)}`;
 	if (invite.accepted_at !== null) {
 		if (
 			invite.accepted_by_user_id === actor.userId &&

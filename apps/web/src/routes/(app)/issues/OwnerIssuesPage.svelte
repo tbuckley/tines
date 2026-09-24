@@ -11,7 +11,14 @@
 	import { defaultProjectId } from '$lib/focus';
 	import { navMemory } from '$lib/nav-memory.svelte';
 
-	let { data }: { data: Extract<PageData, { mode: 'owner' }> } = $props();
+	let { data }: { data: PageData } = $props();
+
+	// Focused on a project shared with you, New issue files into it.
+	const createProjects = $derived(
+		data.viewerRole === 'member'
+			? data.sharedProjects.filter((project) => project.id === data.focusId)
+			: data.projects
+	);
 
 	// Remember the filters so the Issues nav tab and issue back links return
 	// here as it stands. The URL is already the source of truth, so this picks
@@ -21,6 +28,8 @@
 	});
 
 	let newIssueOpen = $state(false);
+	/** No project of their own and none shared with them: nothing to file into yet. */
+	const noProjects = $derived(data.projects.length === 0 && data.sharedProjects.length === 0);
 
 	/** What the list is scoped to right now, for the stale-link notices. */
 	const scopeLabel = $derived(data.focus ? `“${data.focus.name}”` : 'All projects');
@@ -30,7 +39,7 @@
 
 <div class="mb-6 flex items-center justify-between gap-3">
 	<h1 class="text-2xl font-semibold tracking-tight">Issues</h1>
-	<Button onclick={() => (newIssueOpen = true)} disabled={data.projects.length === 0}>
+	<Button onclick={() => (newIssueOpen = true)} disabled={createProjects.length === 0}>
 		<IconPlus size={16} /> New issue
 	</Button>
 </div>
@@ -48,10 +57,10 @@
 
 <NewIssueModal
 	bind:open={newIssueOpen}
-	projects={data.projects}
+	projects={createProjects}
 	workflows={data.workflows}
 	labels={data.labels}
-	defaultProjectId={defaultProjectId(data.projects, data.focusId, data.lastProjectId)}
+	defaultProjectId={defaultProjectId(createProjects, data.focusId, data.lastProjectId)}
 />
 
 <!-- Focused on one project, every ref would repeat its name: rows show the
@@ -67,12 +76,12 @@
 	showProject={!data.focusId}
 	emptyMessage={data.pagination.bounded
 		? 'No issues on this page. Results may have changed.'
-		: data.projects.length === 0
+		: noProjects
 			? 'No issues yet — create a project first, then add issues to it.'
 			: data.filters.ready
 				? 'No ready issues match these filters.'
 				: 'No issues match these filters.'}
-	emptyAction={!data.pagination.bounded && data.projects.length === 0
+	emptyAction={!data.pagination.bounded && noProjects
 		? { label: 'New project', href: '/projects?new=1' }
 		: undefined}
 />

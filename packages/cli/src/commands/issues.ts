@@ -150,7 +150,7 @@ function printIssueDetail(issue: IssueDetail): void {
 				);
 		}
 		console.log(
-			'\nMembers may comment and take a current awaiting-human transition. Personal permission is chosen in the browser; member execution is unavailable.'
+			'\nMembers work on shared issues as the owner does, except adding or removing people. Personal permission is chosen in the browser; member execution is unavailable.'
 		);
 		return;
 	}
@@ -469,7 +469,9 @@ export function register(program: Command): void {
 				opts.description !== undefined ? readBodyValue(opts.description) : undefined;
 			const api = client(opts);
 			const project = await resolveProject(api, projectRef);
-			const workflowId = opts.workflow ? (await resolveWorkflow(api, opts.workflow)).id : undefined;
+			const workflowId = opts.workflow
+				? (await resolveWorkflow(api, opts.workflow, project.id)).id
+				: undefined;
 			const recurrence = buildRecurrence(opts);
 			if (!recurrence && (opts.ifClosed !== undefined || opts.scheduleName !== undefined)) {
 				die('--if-closed/--schedule-name need a recurrence: add --every … or --cron "<expr>"');
@@ -550,7 +552,7 @@ export function register(program: Command): void {
 			if (description !== undefined) body.description = description;
 			if (opts.state !== undefined) body.state = opts.state;
 			if (opts.workflow !== undefined)
-				body.workflow_id = (await resolveWorkflow(api, opts.workflow)).id;
+				body.workflow_id = (await resolveWorkflow(api, opts.workflow, issue.project_id)).id;
 			if (Object.keys(body).length === 0) {
 				die('nothing to update: pass --title, --description, --state, and/or --workflow');
 			}
@@ -571,7 +573,7 @@ export function register(program: Command): void {
 	withCommon(
 		issues
 			.command('move <ref> <action>')
-			.description('Take a current transition (members: awaiting-human only; no permission change)')
+			.description('Take a current transition (members: no permission change)')
 	).action(async (ref: string, action: string, opts: CommonOpts) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);

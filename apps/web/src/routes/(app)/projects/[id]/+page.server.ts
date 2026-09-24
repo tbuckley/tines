@@ -5,10 +5,9 @@ import { ApiFail, sessionActor } from '$lib/server/api/core';
 import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
 import { listLabelsInternal } from '$lib/server/api/labels';
 import { getProject } from '$lib/server/api/projects';
-import { resolveProjectAccess } from '$lib/server/api/project-access';
-import { readSharedProject } from '$lib/server/api/shared-projects';
-import { listSharedIssues } from '$lib/server/api/shared-issues';
-import { readSharedScheduleSummary } from '$lib/server/api/schedule-consent';
+import { actorForProject, resolveProjectAccess } from '$lib/server/api/project-access';
+import { readScheduleConsent } from '$lib/server/api/schedule-consent';
+import { redactForMember, scopeBlockersForMember } from '$lib/server/api/member-context';
 import { listRoutingRules } from '$lib/server/api/routing';
 import { listSchedules } from '$lib/server/api/schedules';
 import { loadWorkflows } from '$lib/server/api/workflows';
@@ -32,34 +31,11 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		if (e instanceof ApiFail) error(e.status, e.message);
 		throw e;
 	});
-	if (access.role === 'member') {
-		const project = await readSharedProject(db, actor, params.id).catch((e) => {
-			if (e instanceof ApiFail) error(e.status, e.message);
-			throw e;
-		});
-		const issues = await listSharedIssues(db, actor, params.id, {
-			q: url.searchParams.get('q') ?? undefined
-		});
-		const schedules = await db
-			.selectFrom('scheduled_task')
-			.select('id')
-			.where('project_id', '=', params.id)
-			.execute();
-		const summaries = await Promise.all(
-			schedules.map((s) => readSharedScheduleSummary(db, actor, s.id))
-		);
-		const current = await resolveProjectAccess(db, actor, params.id).catch(() =>
-			error(404, 'Project unavailable')
-		);
-		if (current.membershipRevision !== access.membershipRevision) error(404, 'Project unavailable');
-		return {
-			mode: 'member' as const,
-			project,
-			issues: issues.items,
-			hasMore: issues.hasMore,
-			schedules: summaries
-		};
-	}
+	// A member sees the owner's project page, loaded with the owner's scope.
+	// Routing and account-wide context stay the owner's and are left out.
+	const isMember = access.role === 'member';
+	const scopeActor = isMember ? await actorForProject(db, actor, params.id) : actor;
+	const ownerId = scopeActor.userId;
 	let page;
 	try {
 		page = readIssuePage(url);
@@ -68,7 +44,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		throw e;
 	}
 
-	const project = await getProject(db, actor, params.id).catch((e) => {
+	const project = await getProject(db, scopeActor, params.id).catch((e) => {
 		const status = e instanceof ApiFail ? e.status : 500;
 		error(status, status === 404 ? `No project has the ID “${truncate(params.id)}”.` : 'Not found');
 	});
@@ -103,7 +79,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 	] = await Promise.all([
 		listIssues(
 			db,
-			userId,
+			ownerId,
 			{
 				...scope,
 				category: filters.category,
@@ -113,12 +89,12 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 			},
 			page
 		),
-		countIssuesByCategory(db, userId, scope),
-		listLabelsInternal(db, userId),
-		loadWorkflows(db, userId),
-		listSchedules(db, userId, { projectId: project.id }, { cursor: null, limit: 100 }),
-		listContextItems(db, actor, { project: project.id }, { cursor: null, limit: 100 }),
-		listRoutingRules(db, userId)
+		countIssuesByCategory(db, ownerId, scope),
+		listLabelsInternal(db, ownerId),
+		loadWorkflows(db, ownerId),
+		listSchedules(db, ownerId, { projectId: project.id }, { cursor: null, limit: 100 }),
+		listContextItems(db, scopeActor, { project: project.id }, { cursor: null, limit: 100 }),
+		isMember ? Promise.resolve([]) : listRoutingRules(db, ownerId)
 	]);
 	// The inline agent-routing rows: this project's own rules, or — when it
 	// has none — the global rule its issues would fall back to.
@@ -126,16 +102,31 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 	const fallbackRules = routingRules.filter(
 		(r) => r.scope.project_id === null && r.scope.workflow_state_id === null
 	);
+	// A member's schedule switches are their own future permission.
+	const viewerSchedules = isMember
+		? await Promise.all(
+				schedules.map(async (schedule) => ({
+					...schedule,
+					my_future_permission: (await readScheduleConsent(db, userId, schedule.id))
+						.my_future_permission
+				}))
+			)
+		: schedules;
 	return {
-		mode: 'owner' as const,
+		viewerRole: access.role,
+		owner: isMember ? { id: ownerId, name: scopeActor.userName } : null,
 		routingRules: projectRules.length > 0 ? projectRules : fallbackRules,
-		project,
-		issues,
+		project: { ...project, viewer_role: access.role },
+		issues: scopeBlockersForMember(scopeActor, issues),
 		workflows,
-		schedules,
+		schedules: viewerSchedules,
 		// Issue-anchored items appear only on their issue's page (and the
-		// Context tab) — they are that issue's business.
-		contextItems: contextItems.filter((i) => i.scope.issue_id === null),
+		// Context tab) — they are that issue's business. A member sees this
+		// project's own items only, never the owner's global ones.
+		contextItems: contextItems
+			.filter((i) => i.scope.issue_id === null)
+			.filter((i) => !isMember || i.scope.project_id === project.id)
+			.map((i) => redactForMember(scopeActor, i)),
 		counts,
 		labels,
 		filters,

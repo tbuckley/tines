@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { createSiteLink } from '$lib/server/api/artifacts';
 import { ApiFail, api, apiContext } from '$lib/server/api/core';
+import { actorForIssue } from '$lib/server/api/project-access';
 import type { RequestHandler } from './$types';
 
 /**
@@ -8,7 +9,9 @@ import type { RequestHandler } from './$types';
  * POST, not GET, so a capability URL is never prefetched or cached.
  */
 export const POST: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor: requester } = await apiContext(event);
+	// Members work on shared issues with the owner's scope (project-access.ts).
+	const actor = await actorForIssue(db, requester, event.params.id);
 	const body = (await readJson(event.request)) as { version?: unknown };
 	return json(
 		await createSiteLink(db, env, actor, event.params.id, event.params.name, {

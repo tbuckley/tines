@@ -32,6 +32,7 @@ import { ACTIVE_RUN_STATUSES } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { ApiFail, type ActorContext } from './core';
+import { assertMemberStillCurrent } from './project-access';
 
 /** The three columns the gate needs; every write path already has them. */
 export interface ArchivableProject {
@@ -74,6 +75,9 @@ export async function assertWritable(
 	project: ArchivableProject,
 	opts: { issueId?: string } = {}
 ): Promise<void> {
+	// Every gated write passes here, so a member removed since the request
+	// began is refused before anything is written.
+	await assertMemberStillCurrent(db, actor);
 	if (project.archived_at === null) return;
 	if (opts.issueId && actor.agentRunId) {
 		const run = await db

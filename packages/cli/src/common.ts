@@ -291,8 +291,20 @@ export async function resolveProject(api: ApiClient, ref: string): Promise<Proje
 	die(`no project named "${ref}" (have: ${have || 'none'})`);
 }
 
-export async function resolveWorkflow(api: ApiClient, ref: string): Promise<WorkflowResponse> {
-	return pickWorkflow((await api.listWorkflows()).items, ref);
+/**
+ * Resolve a workflow id or name. Pass `projectId` when the workflow is for an
+ * issue, schedule or default in that project: in a project shared with you,
+ * names resolve against the owner's library rather than your own.
+ */
+export async function resolveWorkflow(
+	api: ApiClient,
+	ref: string,
+	projectId?: string
+): Promise<WorkflowResponse> {
+	return pickWorkflow(
+		(await api.listWorkflows(projectId ? { project: projectId } : {})).items,
+		ref
+	);
 }
 
 /**

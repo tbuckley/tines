@@ -5,7 +5,7 @@ import { resolveProjectAccess } from './project-access';
 import { notFound } from './core';
 import { projectReadPredicate } from './permissions';
 
-/** Explicit member projection: no default workflow library or owner account fields. */
+/** Explicit member projection: no owner account fields. */
 export async function readSharedProject(
 	db: Kysely<Database>,
 	actor: ActorContext,
@@ -24,6 +24,7 @@ export async function readSharedProject(
 			'p.archived_at',
 			'p.shared_at',
 			'p.sharing_revision',
+			'p.default_workflow_id',
 			'owner.id as owner_id',
 			'owner.name as owner_name'
 		])
@@ -46,7 +47,7 @@ export async function readSharedProject(
 		id: row.id,
 		name: row.name,
 		description: row.description,
-		default_workflow_id: null,
+		default_workflow_id: row.default_workflow_id,
 		owner: { id: row.owner_id, name: row.owner_name },
 		viewer_role: access.role,
 		archived_at: row.archived_at,
@@ -58,7 +59,7 @@ export async function readSharedProject(
 		capabilities: {
 			read: true,
 			invite: access.role === 'owner',
-			create_issue: access.role === 'owner',
+			create_issue: true,
 			leave: access.role === 'member'
 		}
 	};
@@ -83,6 +84,7 @@ export async function listSharedProjects(
 			'p.archived_at',
 			'p.shared_at',
 			'p.sharing_revision',
+			'p.default_workflow_id',
 			'm.revision as membership_revision',
 			'owner.id as owner_id',
 			'owner.name as owner_name'
@@ -114,7 +116,7 @@ export async function listSharedProjects(
 		id: row.id,
 		name: row.name,
 		description: row.description,
-		default_workflow_id: null,
+		default_workflow_id: row.default_workflow_id,
 		owner: { id: row.owner_id, name: row.owner_name },
 		viewer_role: 'member' as const,
 		archived_at: row.archived_at,
@@ -123,7 +125,7 @@ export async function listSharedProjects(
 		created_at: row.created_at,
 		updated_at: row.updated_at,
 		issue_count: Number(row.issue_count),
-		capabilities: { read: true, invite: false, create_issue: false, leave: true }
+		capabilities: { read: true, invite: false, create_issue: true, leave: true }
 	}));
 }
 

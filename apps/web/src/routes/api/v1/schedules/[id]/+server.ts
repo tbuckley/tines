@@ -3,7 +3,7 @@ import type { UpdateScheduleRequest } from '@tines/shared';
 import { api, apiContext, readJson } from '$lib/server/api/core';
 import { deleteSchedule, getScheduleForActor, updateSchedule } from '$lib/server/api/schedules';
 import { readSharedScheduleSummary } from '$lib/server/api/schedule-consent';
-import { resolveProjectAccess } from '$lib/server/api/project-access';
+import { actorForSchedule, resolveProjectAccess } from '$lib/server/api/project-access';
 import { notFound } from '$lib/server/api/core';
 import type { RequestHandler } from './$types';
 
@@ -27,13 +27,17 @@ export const GET: RequestHandler = api(async (event) => {
 });
 
 export const PATCH: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor: requester } = await apiContext(event);
+	// Members work on shared projects with the owner's scope (project-access.ts).
+	const actor = await actorForSchedule(db, requester, event.params.id);
 	const body = await readJson<UpdateScheduleRequest>(event);
 	return json(await updateSchedule(db, env, actor, event.params.id, body));
 });
 
 export const DELETE: RequestHandler = api(async (event) => {
-	const { db, env, actor } = await apiContext(event);
+	const { db, env, actor: requester } = await apiContext(event);
+	// Members work on shared projects with the owner's scope (project-access.ts).
+	const actor = await actorForSchedule(db, requester, event.params.id);
 	await deleteSchedule(db, env, actor, event.params.id);
 	return new Response(null, { status: 204 });
 });

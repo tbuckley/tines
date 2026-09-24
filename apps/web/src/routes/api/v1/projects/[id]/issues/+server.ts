@@ -6,7 +6,7 @@ import { readIssueCreateMultipart } from '$lib/server/api/issue-create-files';
 import { addIssueLink } from '$lib/server/api/issue-links';
 import { getProject } from '$lib/server/api/projects';
 import { assertWritable } from '$lib/server/api/archive';
-import { resolveProjectAccess } from '$lib/server/api/project-access';
+import { actorForProject, resolveProjectAccess } from '$lib/server/api/project-access';
 import { listSharedIssues } from '$lib/server/api/shared-issues';
 import type { RequestHandler } from './$types';
 
@@ -65,7 +65,10 @@ export const GET: RequestHandler = api(async (event) => {
 });
 
 export const POST: RequestHandler = api(async (event) => {
-	const { db, env, actor, effects } = await apiContext(event);
+	const { db, env, actor: requester, effects } = await apiContext(event);
+	// Members create in shared projects with the owner's scope; the issue and
+	// its events are attributed to them (project-access.ts).
+	const actor = await actorForProject(db, requester, event.params.id);
 	if (
 		(event.request.headers.get('content-type') ?? '')
 			.toLowerCase()

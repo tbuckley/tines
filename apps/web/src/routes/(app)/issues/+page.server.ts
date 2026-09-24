@@ -1,10 +1,10 @@
 import { error, redirect } from '@sveltejs/kit';
 import { issuePageHref } from '$lib/issue-pagination';
-import { ApiFail } from '$lib/server/api/core';
+import { ApiFail, sessionActor } from '$lib/server/api/core';
 import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
-import { countSharedIssuesByCategory, listSharedIssues } from '$lib/server/api/shared-issues';
-import { resolveProjectAccess } from '$lib/server/api/project-access';
+import { actorForProject, resolveProjectAccess } from '$lib/server/api/project-access';
 import { listLabelsInternal } from '$lib/server/api/labels';
+import { scopeBlockersForMember } from '$lib/server/api/member-context';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
 import { issuePagination, readIssuePage } from '$lib/server/issue-pagination';
@@ -24,63 +24,19 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 	// The project scope is the focus, not a URL filter (Tines/259) — one
 	// PK-indexed query ahead of the lists that read it.
 	const { focusId, lastProjectId, notice } = await resolvePageFocus(db, platform!.env, userId, url);
+	// Focused on a project shared with this user: the owner's list, loaded
+	// with the owner's scope so members see and file issues exactly as the
+	// owner does (project-access.ts).
+	let scopeActor = sessionActor(locals.user!);
+	let viewerRole: 'owner' | 'member' = 'owner';
 	if (focusId) {
-		const actor = {
-			userId,
-			userName: locals.user!.name,
-			apiKeyId: null,
-			apiKeyName: null,
-			viaSession: true
-		};
-		const access = await resolveProjectAccess(db, actor, focusId);
+		const access = await resolveProjectAccess(db, scopeActor, focusId);
 		if (access.role === 'member') {
-			const params = url.searchParams;
-			let memberPage;
-			try {
-				memberPage = readIssuePage(url);
-			} catch (e) {
-				if (e instanceof ApiFail) error(e.status, e.message);
-				throw e;
-			}
-			const project = await db
-				.selectFrom('project')
-				.select('name')
-				.where('id', '=', focusId)
-				.executeTakeFirstOrThrow();
-			const rows = await listSharedIssues(db, actor, focusId, {
-				limit: memberPage.limit,
-				cursor: memberPage.cursor
-					? { created_at: memberPage.cursor.createdAt, id: memberPage.cursor.id }
-					: undefined,
-				direction: memberPage.direction,
-				q: params.get('q') ?? undefined,
-				category: params.get('category') ?? undefined,
-				state: params.get('state') ?? undefined,
-				workflow: params.get('workflow') ?? undefined,
-				hideDone: params.get('done') !== '1',
-				hideDuplicates: params.get('duplicates') !== '1',
-				ready: params.get('ready') === '1',
-				labels: params.getAll('label')
-			});
-			const counts = await countSharedIssuesByCategory(db, actor, focusId, {
-				q: params.get('q') ?? undefined,
-				state: params.get('state') ?? undefined,
-				workflow: params.get('workflow') ?? undefined,
-				hideDuplicates: params.get('duplicates') !== '1',
-				ready: params.get('ready') === '1',
-				labels: params.getAll('label')
-			});
-			return {
-				mode: 'member' as const,
-				project: { id: focusId, name: project.name },
-				issues: rows.items,
-				hasMore: rows.hasMore,
-				counts,
-				pagination: issuePagination(url, memberPage, rows.items, rows.hasMore, focusId),
-				filters: { q: params.get('q') ?? '', category: params.get('category') ?? '' }
-			};
+			scopeActor = await actorForProject(db, scopeActor, focusId);
+			viewerRole = 'member';
 		}
 	}
+	const scopeUserId = scopeActor.userId;
 	let page;
 	try {
 		page = readIssuePage(url);
@@ -131,7 +87,7 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 	const [{ items: issues, hasMore }, counts, workflows, labels] = await Promise.all([
 		listIssues(
 			db,
-			userId,
+			scopeUserId,
 			{
 				...scope,
 				category: filters.category,
@@ -142,15 +98,15 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 			},
 			page
 		),
-		countIssuesByCategory(db, userId, scope),
-		loadWorkflows(db, userId),
-		listLabelsInternal(db, userId)
+		countIssuesByCategory(db, scopeUserId, scope),
+		loadWorkflows(db, scopeUserId),
+		listLabelsInternal(db, scopeUserId)
 	]);
 
 	// `projects` and `focus` come from the app layout.
 	return {
-		mode: 'owner' as const,
-		issues,
+		viewerRole,
+		issues: scopeBlockersForMember(scopeActor, issues),
 		counts,
 		workflows,
 		labels,

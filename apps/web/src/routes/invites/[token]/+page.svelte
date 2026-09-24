@@ -38,14 +38,15 @@
 	<section class="bg-card w-full rounded-xl border p-6 shadow-sm">
 		<h1 class="text-2xl font-semibold">Join {data.invitation.project.name}</h1>
 		<p class="mt-3">
-			{data.invitation.project.owner} invited you to the whole project. Members can read its issues and
-			schedules.
+			{data.invitation.project.owner} invited you to the whole project. Members work on its issues and
+			schedules alongside the owner; only the owner adds or removes people.
 		</p>
 		<p class="text-muted-foreground mt-3 text-sm">
-			Invitation expires {new Date(data.invitation.expires_at).toLocaleString()}.
+			This link expires {new Date(data.invitation.expires_at).toLocaleString()}. Once you join, you
+			stay a member until the owner removes you or you leave.
 		</p>
 		{#if data.invitation.status === 'expired'}
-			<p class="mt-5" role="status">This invitation expired. Ask the owner to resend it.</p>
+			<p class="mt-5" role="status">This invitation link expired. Ask the owner to resend it.</p>
 		{:else if !data.invitation.signed_in}
 			<Button class="mt-5" onclick={(event) => signIn?.open(event.currentTarget)}
 				>Sign in to continue</Button

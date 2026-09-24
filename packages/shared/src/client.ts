@@ -372,8 +372,9 @@ export function createApiClient(options: ApiClientOptions) {
 			request<UnarchiveProjectResponse>('POST', `/api/v1/projects/${id}/unarchive`),
 
 		// Workflows
-		listWorkflows: (page: PageParams = {}) =>
-			get<ListResponse<WorkflowResponse>>(`/api/v1/workflows${query(page)}`),
+		/** `project` narrows to the workflows an issue in that project can use. */
+		listWorkflows: (params: PageParams & { project?: string } = {}) =>
+			get<ListResponse<WorkflowResponse>>(`/api/v1/workflows${query(params)}`),
 		createWorkflow: (body: CreateWorkflowRequest) =>
 			request<WorkflowResponse>('POST', '/api/v1/workflows', body),
 		getWorkflow: (id: string) => get<WorkflowResponse>(`/api/v1/workflows/${id}`),

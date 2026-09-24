@@ -355,7 +355,9 @@ export function register(program: Command): void {
 			if (opts.description !== undefined) body.description = opts.description;
 			if (opts.defaultWorkflow === false) body.default_workflow_id = null;
 			else if (opts.defaultWorkflow !== undefined) {
-				body.default_workflow_id = (await resolveWorkflow(api, opts.defaultWorkflow)).id;
+				body.default_workflow_id = (
+					await resolveWorkflow(api, opts.defaultWorkflow, project.id)
+				).id;
 			}
 			if (Object.keys(body).length === 0) {
 				die('nothing to update: pass --name, --description, or --[no-]default-workflow');

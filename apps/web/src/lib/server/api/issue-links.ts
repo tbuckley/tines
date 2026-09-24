@@ -100,15 +100,18 @@ interface PlanDiagnosticEdge extends DiagnosticEdge {
 
 async function loadOwnedLinkEndpoints(
 	db: Kysely<Database>,
-	userId: string,
+	actor: Pick<ActorContext, 'userId' | 'member'>,
 	ids: string[]
 ): Promise<LinkEndpoint[]> {
 	if (ids.length === 0) return [];
+	// A member links only within the shared project: the owner's other
+	// projects are not theirs to see.
 	return sql<LinkEndpoint>`
 		SELECT issue.id, issue.project_id, project.name AS project_name,
 			project.archived_at AS project_archived_at, issue.number, issue.title
 		FROM issue JOIN project ON project.id = issue.project_id
-		WHERE project.user_id = ${userId}
+		WHERE project.user_id = ${actor.userId}
+			${actor.member ? sql`AND project.id = ${actor.member.projectId}` : sql``}
 			AND issue.id IN (SELECT value FROM json_each(${JSON.stringify([...new Set(ids)])}))
 	`
 		.execute(db)
@@ -182,7 +185,7 @@ export async function prepareCreateIssueLinkPlan(
 
 	const endpoints = await loadOwnedLinkEndpoints(
 		db,
-		actor.userId,
+		actor,
 		requested.map((item) => item.otherId)
 	);
 	const byId = new Map(endpoints.map((endpoint) => [endpoint.id, endpoint]));
@@ -656,7 +659,7 @@ export async function recheckCreateIssueLinkPlan(
 	const ids = plan.edges
 		.flatMap((edge) => [edge.source_issue_id, edge.target_issue_id])
 		.filter((id) => id !== plan.prospective!.id);
-	const endpoints = await loadOwnedLinkEndpoints(db, actor.userId, ids);
+	const endpoints = await loadOwnedLinkEndpoints(db, actor, ids);
 	const byId = new Map(endpoints.map((endpoint) => [endpoint.id, endpoint]));
 	for (const id of ids) {
 		const endpoint = byId.get(id);
@@ -721,7 +724,7 @@ export async function addIssueLink(
 		});
 	}
 
-	const rows = await loadOwnedLinkEndpoints(db, actor.userId, [issueId, otherId]);
+	const rows = await loadOwnedLinkEndpoints(db, actor, [issueId, otherId]);
 	const issue = rows.find((r) => r.id === issueId);
 	const other = rows.find((r) => r.id === otherId);
 	// The addressed issue missing = 404 like any bad issue URL; the referenced
@@ -798,6 +801,13 @@ export async function removeIssueLink(
 		.where('issue_link.id', '=', linkId)
 		.where('source_project.user_id', '=', actor.userId)
 		.executeTakeFirst();
+	if (
+		link &&
+		actor.member &&
+		(link.source_project_id !== actor.member.projectId ||
+			link.target_project_id !== actor.member.projectId)
+	)
+		throw notFound();
 	// Either endpoint's issue id addresses the link; anything else is a 404.
 	if (!link || (link.source_issue_id !== issueId && link.target_issue_id !== issueId)) {
 		throw notFound();

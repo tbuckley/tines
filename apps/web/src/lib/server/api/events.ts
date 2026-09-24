@@ -1,7 +1,7 @@
 import type { Actor, ActorRun, TinesEvent } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely, type RawBuilder } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
-import { ApiFail, type ActorContext } from './core';
+import { ApiFail, attributedUserId, type ActorContext } from './core';
 
 export interface EventWindowFilters {
 	since?: number;
@@ -76,7 +76,7 @@ export function eventInsert(
 				? sql<string>`(SELECT user_id FROM project WHERE id = ${input.projectId})`
 				: sql<string>`${actor.userId}`,
 		type: input.type,
-		actor_user_id: actor.userId,
+		actor_user_id: attributedUserId(actor),
 		actor_api_key_id: actor.apiKeyId,
 		issue_id: input.issueId ?? null,
 		payload: input.payloadSql ?? JSON.stringify(input.payload ?? {}),

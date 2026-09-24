@@ -15,6 +15,7 @@
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
+	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
 	import RepeatFields from '$lib/components/RepeatFields.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -33,6 +34,7 @@
 		workflows,
 		highlightId = null,
 		disabledReason = null,
+		memberView = false,
 		onerror
 	}: {
 		schedules: Schedule[];
@@ -41,8 +43,15 @@
 		highlightId?: string | null;
 		/** When set, every mutating control is disabled and carries this as its tooltip. */
 		disabledReason?: string | null;
+		/**
+		 * A shared project's member: `my_future_permission` is theirs, which
+		 * starts off (only the owner's unset counts as on).
+		 */
+		memberView?: boolean;
 		onerror: (e: unknown) => void;
 	} = $props();
+
+	const futureOn = (value: string) => (memberView ? value === 'on' : value !== 'off');
 
 	const readOnly = $derived(disabledReason != null);
 
@@ -141,11 +150,13 @@
 		futureSaved = null;
 		futureError[s.id] = undefined;
 		try {
+			const next = futureOn(choice.value) ? 'off' : 'on';
 			await api.setScheduleConsent(s.id, {
-				// Only the owner sees this list, and the owner's unset is on.
-				value: choice.value === 'off' ? 'on' : 'off',
+				value: next,
 				expected_revision: choice.revision,
-				permission_epoch: choice.epoch
+				permission_epoch: choice.epoch,
+				// The on warning is shown beside the switch for members.
+				...(memberView && next === 'on' ? { disclosure_version: 1 } : {})
 			});
 			futureSaved = s.id;
 			await invalidateAll();
@@ -319,17 +330,24 @@
 							type="checkbox"
 							role="switch"
 							aria-label="Allow my agents on future issues from {s.name}"
-							checked={s.my_future_permission.value !== 'off'}
+							checked={futureOn(s.my_future_permission.value)}
 							disabled={busyId !== null}
 							onchange={() => setFuturePermission(s)}
 						/>
 						My agents on future issues
 					</label>
 					<p class="text-muted-foreground text-xs">
-						On by default for you as the owner. Turn it off to keep your agents away from the issues
-						this schedule creates from now on; existing issues keep their own choices. Members'
-						agents always need their own permission.
+						{#if memberView}
+							Off until you turn it on. It lets your agents work on the issues this schedule creates
+							from now on, once member execution is available; existing issues keep their own
+							choices.
+						{:else}
+							On by default for you as the owner. Turn it off to keep your agents away from the
+							issues this schedule creates from now on; existing issues keep their own choices.
+							Members' agents always need their own permission.
+						{/if}
 					</p>
+					{#if memberView}<PersonalPermissionWarning role="member" future />{/if}
 					{#if futureSaved === s.id}<p role="status">Future permission saved.</p>{/if}
 					{#if futureError[s.id]}<p class="text-destructive" role="alert">
 							{futureError[s.id]}
