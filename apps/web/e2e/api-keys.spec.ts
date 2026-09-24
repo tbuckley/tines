@@ -320,6 +320,66 @@ test.describe.serial('API keys page', () => {
 		}
 	});
 
+	test('issue context and prompts require their stored read domains', async ({ page }) => {
+		const ownerHeaders = { authorization: `Bearer ${ALICE.apiKey}` };
+		const createdKeyIds: string[] = [];
+		const createRestrictedKey = async (
+			workspace: 'none' | 'read',
+			controlPlane: 'none' | 'read'
+		) => {
+			const response = await page.request.post('/api/v1/api-keys', {
+				headers: ownerHeaders,
+				data: {
+					name: `issue-read-${workspace}-${controlPlane}-${runId}`,
+					permissions: {
+						version: 1,
+						projects: { access: 'read', scope: [RUNROW.projectId] },
+						workspace,
+						control_plane: controlPlane
+					}
+				}
+			});
+			expect(response.status()).toBe(201);
+			const key = (await response.json()) as { id: string; key: string };
+			createdKeyIds.push(key.id);
+			return { authorization: `Bearer ${key.key}` };
+		};
+		const issuePath = `/api/v1/issues/${RUNROW.runKeyIssueId}`;
+		try {
+			const noWorkspace = await createRestrictedKey('none', 'read');
+			const deniedContext = await page.request.get(`${issuePath}/context`, {
+				headers: noWorkspace
+			});
+			expect(deniedContext.status()).toBe(403);
+			expect((await deniedContext.json()).error).toMatchObject({
+				code: 'insufficient_permissions',
+				details: { domain: 'workspace' }
+			});
+
+			const noControlPlane = await createRestrictedKey('read', 'none');
+			for (const suffix of ['', '?resume=1']) {
+				const deniedPrompt = await page.request.get(`${issuePath}/prompt${suffix}`, {
+					headers: noControlPlane
+				});
+				expect(deniedPrompt.status(), suffix || 'launch prompt').toBe(403);
+				expect((await deniedPrompt.json()).error).toMatchObject({
+					code: 'insufficient_permissions',
+					details: { domain: 'control_plane' }
+				});
+			}
+
+			const allowed = await createRestrictedKey('read', 'read');
+			for (const path of ['context', 'prompt', 'prompt?resume=1']) {
+				const response = await page.request.get(`${issuePath}/${path}`, { headers: allowed });
+				expect(response.status(), path).toBe(200);
+			}
+		} finally {
+			for (const id of createdKeyIds) {
+				await page.request.delete(`/api/v1/api-keys/${id}`, { headers: ownerHeaders });
+			}
+		}
+	});
+
 	test('a run key cannot re-scope shared context to its issue', async ({ page }) => {
 		const ownerHeaders = { authorization: `Bearer ${ALICE.apiKey}` };
 		const runHeaders = { authorization: `Bearer ${RUNROW.runKey}` };
