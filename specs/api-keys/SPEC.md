@@ -1,5 +1,9 @@
 # API key permissions
 
+## 2026-09-23 — Run-key context reads (Tines/719)
+
+Run keys may read an issue's effective context with project and workspace read authority, and its launch or resume prompt with additional control-plane read authority. Reads remain limited to the run project by the run ceiling and to any narrower stored project policy. Other issues in that project remain readable when the stored policy permits them. The `issueScoped` marker applies only to context create, update, append, and delete: each mutation must be anchored to the run's assigned issue, including both old and new scopes on an update. A read never needs that mutation marker.
+
 ## 2026-09-21 — Explicit three-domain authority (Tines/648)
 
 API keys store a versioned policy with independent project, workspace, and control-plane domains. Levels are cumulative (`none < read < write < delete`); projects additionally carry either `all` or an explicit ID set. Existing rows and old-worker inserts receive the explicit full-authority database default. Invalid stored policies fail authentication closed.
