@@ -1,10 +1,11 @@
 /**
  * NAVIGATION COST PROBE (Tines/32) — a measurement tool, not a behavioural
  * test. Excluded from `pnpm test`; run it with `pnpm --filter web perf:nav`,
- * which CI also runs (Tines/416). What that gate covers is that every page's
- * `load` still *executes* against a real event and that the issue-detail page
- * issues no duplicated statement — never a wave count or a millisecond, which
- * are machine-dependent.
+ * which CI also runs (Tines/416). That gate covers that every page's `load`
+ * still *executes* against a real event, that the issue-detail page issues no
+ * duplicated statement, and that no page awaits more sequential waves than
+ * its `WAVE_BUDGET`. Waves are counted (see `instrumentLatency`), so they are
+ * exact on any machine; milliseconds are reported but never gated.
  *
  * Runs the real route `load` functions against the migration-backed in-memory
  * DB, with every D1 statement wrapped in an artificial fixed latency. Because
@@ -138,18 +139,47 @@ const event = (env: Env, path: string, params: Record<string, string> = {}): Pro
 const callLoad = (load: unknown, input: ProbeEvent) =>
 	(load as (event: ProbeEvent) => Promise<unknown>)(input);
 
-async function measure(name: string, run: (env: Env) => Promise<unknown>) {
+/**
+ * Sequential D1 round trips each page's `load` may await before it resolves
+ * (for the issue page: before first paint; its streamed panels are not
+ * counted). Counted, not timed, so the numbers are exact on any machine; a
+ * page over budget fails the probe and CI. Lower a budget when a change
+ * earns it; raising one needs a reason in docs/PERFORMANCE.md.
+ */
+const WAVE_BUDGET: Record<string, number> = {
+	'/issues': 3,
+	'/issues/[project]/[number]': 4,
+	'/issues/[project]/[number] by name': 4,
+	'/projects': 2,
+	'/activity': 3,
+	'/agents': 2,
+	'/context': 3
+};
+
+function reportWaves(bySql: { sql: string; wave: number }[], upTo: number) {
+	for (let wave = 1; wave <= upTo; wave++)
+		for (const { sql } of bySql.filter((q) => q.wave === wave))
+			report(`    w${wave}  ${sql.slice(0, 100).replace(/\s+/g, ' ')}`);
+}
+
+async function measure(name: string, run: (env: Env, number: number) => Promise<unknown>) {
 	const t = createTestDb();
 	const { number } = seed(t);
-	const { env, sqls, conc } = instrument(t);
+	const { env, sqls, conc, waves } = instrument(t);
 	const started = performance.now();
-	await run(env);
+	await run(env, number);
 	const elapsed = performance.now() - started;
-	const waves = elapsed / LATENCY_MS;
 	report(
-		`\n${name}\n  queries: ${sqls.length}\n  sequential waves (critical path): ~${waves.toFixed(1)}\n  modelled time @${LATENCY_MS}ms/query: ${elapsed.toFixed(0)}ms\n  peak concurrent queries: ${conc.max}`
+		`\n${name}\n  queries: ${sqls.length}\n  sequential waves (critical path): ${waves.max} (budget ${WAVE_BUDGET[name]})\n  modelled time @${LATENCY_MS}ms/query: ${elapsed.toFixed(0)}ms\n  peak concurrent queries: ${conc.max}`
 	);
-	return { queries: sqls.length, waves, number, sqls };
+	if (waves.max > WAVE_BUDGET[name]) reportWaves(waves.bySql, waves.max);
+	return { queries: sqls.length, waves: waves.max, number, sqls };
+}
+
+function expectWithinBudget(name: string, waves: number) {
+	expect(waves, `${name}: sequential D1 waves over budget (see report)`).toBeLessThanOrEqual(
+		WAVE_BUDGET[name]
+	);
 }
 
 if (SERIALIZE) {
@@ -169,12 +199,13 @@ describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipp
 		const { load } = await import('../../../routes/(app)/issues/+page.server');
 		const r = await measure('/issues', (env) => callLoad(load, event(env, '/issues')));
 		expect(r.queries).toBeGreaterThan(0);
+		expectWithinBudget('/issues', r.waves);
 	});
 
 	it('issue detail', async () => {
 		const t = createTestDb();
 		const { number } = seed(t);
-		const { env, sqls, conc } = instrument(t);
+		const { env, sqls, conc, waves } = instrument(t);
 		const { load } = await import('../../../routes/(app)/issues/[project]/[number]/+page.server');
 		const started = performance.now();
 		const result = await callLoad(
@@ -186,12 +217,14 @@ describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipp
 		// flight at this point.
 		const elapsed = performance.now() - started;
 		const awaitedQueries = sqls.length;
+		const paintWaves = waves.max;
 		const { deferred, ...eager } = result as Record<string, unknown>;
 		const settled = await Promise.all(Object.values(deferred as Record<string, Promise<unknown>>));
 		const fullElapsed = performance.now() - started;
 		report(
-			`\n/issues/[project]/[number]\n  queries: ${awaitedQueries} blocking, ${sqls.length} total\n  sequential waves (critical path): ~${(elapsed / LATENCY_MS).toFixed(1)} to first paint, ~${(fullElapsed / LATENCY_MS).toFixed(1)} to fully settled\n  modelled time @${LATENCY_MS}ms/query: ${elapsed.toFixed(0)}ms to first paint, ${fullElapsed.toFixed(0)}ms settled\n  peak concurrent queries: ${conc.max}\n  serialized payload: ${JSON.stringify(eager).length} bytes blocking, ${JSON.stringify({ ...eager, deferred: settled }).length} bytes total`
+			`\n/issues/[project]/[number]\n  queries: ${awaitedQueries} blocking, ${sqls.length} total\n  sequential waves (critical path): ${paintWaves} to first paint (budget ${WAVE_BUDGET['/issues/[project]/[number]']}), ${waves.max} to fully settled\n  modelled time @${LATENCY_MS}ms/query: ${elapsed.toFixed(0)}ms to first paint, ${fullElapsed.toFixed(0)}ms settled\n  peak concurrent queries: ${conc.max}\n  serialized payload: ${JSON.stringify(eager).length} bytes blocking, ${JSON.stringify({ ...eager, deferred: settled }).length} bytes total`
 		);
+		reportWaves(waves.bySql, waves.max);
 		const counts = new Map<string, number>();
 		for (const s of sqls) counts.set(s, (counts.get(s) ?? 0) + 1);
 		const dupes = [...counts.entries()].filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1]);
@@ -205,25 +238,46 @@ describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipp
 		// navigation is a missing shared promise. Reported above, so a failure
 		// names the offenders.
 		expect(dupes).toEqual([]);
+		expectWithinBudget('/issues/[project]/[number]', paintWaves);
+	});
+
+	it('issue detail, addressed by project name as lists link it', async () => {
+		const { load } = await import('../../../routes/(app)/issues/[project]/[number]/+page.server');
+		// Resolved by name in the same statement as the id, so a list click
+		// pays nothing extra; measured separately because most clicks take it.
+		const r = await measure('/issues/[project]/[number] by name', (env, number) =>
+			callLoad(load, {
+				...event(env, `/issues/${SEEDED_PROJECT.name}/${number}`, {
+					project: SEEDED_PROJECT.name,
+					number: String(number)
+				}),
+				isDataRequest: true
+			} as ProbeEvent)
+		);
+		expectWithinBudget('/issues/[project]/[number] by name', r.waves);
 	});
 
 	it('projects', async () => {
 		const { load } = await import('../../../routes/(app)/projects/+page.server');
-		await measure('/projects', (env) => callLoad(load, event(env, '/projects')));
+		const r = await measure('/projects', (env) => callLoad(load, event(env, '/projects')));
+		expectWithinBudget('/projects', r.waves);
 	});
 
 	it('activity', async () => {
 		const { load } = await import('../../../routes/(app)/activity/+page.server');
-		await measure('/activity', (env) => callLoad(load, event(env, '/activity')));
+		const r = await measure('/activity', (env) => callLoad(load, event(env, '/activity')));
+		expectWithinBudget('/activity', r.waves);
 	});
 
 	it('agents', async () => {
 		const { load } = await import('../../../routes/(app)/agents/+page.server');
-		await measure('/agents', (env) => callLoad(load, event(env, '/agents')));
+		const r = await measure('/agents', (env) => callLoad(load, event(env, '/agents')));
+		expectWithinBudget('/agents', r.waves);
 	});
 
 	it('context', async () => {
 		const { load } = await import('../../../routes/(app)/context/+page.server');
-		await measure('/context', (env) => callLoad(load, event(env, '/context')));
+		const r = await measure('/context', (env) => callLoad(load, event(env, '/context')));
+		expectWithinBudget('/context', r.waves);
 	});
 });

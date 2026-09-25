@@ -29,20 +29,22 @@ export const load: PageServerLoad = async ({ locals, platform, url, depends }) =
 	if (focusId) q = q.where('event.project_id', '=', focusId);
 	if (type) q = q.where('event.type', '=', type);
 
-	const rows = await q
-		.orderBy('event.created_at desc')
-		.orderBy('event.id desc')
-		.limit(PAGE_SIZE + 1)
-		.execute();
-
-	const shared = await listSharedEvents(db, actor, {
-		projectId: focusId ?? undefined,
-		type: type ? [type] : undefined,
-		since,
-		until,
-		state,
-		limit: PAGE_SIZE
-	});
+	// The owner's events and the shared projects' are independent: one wave.
+	const [rows, shared] = await Promise.all([
+		q
+			.orderBy('event.created_at desc')
+			.orderBy('event.id desc')
+			.limit(PAGE_SIZE + 1)
+			.execute(),
+		listSharedEvents(db, actor, {
+			projectId: focusId ?? undefined,
+			type: type ? [type] : undefined,
+			since,
+			until,
+			state,
+			limit: PAGE_SIZE
+		})
+	]);
 	const merged = [...rows.slice(0, PAGE_SIZE).map(serializeEvent), ...shared.items].sort(
 		(a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id)
 	);

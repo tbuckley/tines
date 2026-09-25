@@ -229,6 +229,11 @@ export function instrumentLatency(t: TestDb, latencyMs: number) {
 	const sqls: string[] = [];
 	let inFlight = 0;
 	const conc = { max: 0 };
+	// Sequential round trips, counted rather than timed: a statement's wave is
+	// one more than the deepest statement that had completed when it was
+	// issued. Unlike wall-clock ÷ latency it does not drift with CPU time, so
+	// it can be held to a budget (see nav-perf.test.ts).
+	const waves = { completed: 0, max: 0, bySql: [] as { sql: string; wave: number }[] };
 	const realPrepare = t.env.DB.prepare.bind(t.env.DB);
 	const DB = {
 		prepare: (sqlText: string) => {
@@ -240,9 +245,13 @@ export function instrumentLatency(t: TestDb, latencyMs: number) {
 						...bound,
 						all: async () => {
 							sqls.push(sqlText);
+							const wave = waves.completed + 1;
+							waves.max = Math.max(waves.max, wave);
+							waves.bySql.push({ sql: sqlText, wave });
 							conc.max = Math.max(conc.max, ++inFlight);
 							await new Promise((r) => setTimeout(r, latencyMs));
 							inFlight--;
+							waves.completed = Math.max(waves.completed, wave);
 							return bound.all();
 						}
 					};
@@ -251,5 +260,5 @@ export function instrumentLatency(t: TestDb, latencyMs: number) {
 		},
 		batch: t.env.DB.batch.bind(t.env.DB)
 	};
-	return { env: { ...t.env, DB } as unknown as Env, sqls, conc };
+	return { env: { ...t.env, DB } as unknown as Env, sqls, conc, waves };
 }
