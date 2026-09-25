@@ -195,6 +195,9 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	await expect(page.getByText('Member note')).toBeVisible();
 	// The owner's agent activity fold, with the member's own permission controls.
 	await page.getByRole('button', { name: /^Agent activity/ }).click();
+	await expect(page.getByRole('button', { name: 'Allow my agents', exact: true })).toBeVisible();
+	await expect(page.getByText(/Total spend:/)).toHaveCount(0);
+	await expect(page.getByRole('heading', { name: 'Lifetime through now' })).toHaveCount(0);
 	await expect(page.getByText(`${BOB.name} (You)`, { exact: false })).toBeVisible();
 	await expect(page.getByRole('note', { name: 'First permission warning' })).toContainText(
 		'including after member execution is released'

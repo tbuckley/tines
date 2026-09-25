@@ -201,33 +201,7 @@ test.describe('Agents Spend real ledger', () => {
 		await expect(page.getByText(/Tokens: input tokens/)).toBeVisible();
 		await page.goBack();
 		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeVisible();
-		await page.getByRole('button', { name: 'Close detail' }).click();
-		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeHidden();
-	});
-
-	test('shows direct lifetime independently from the operational run page', async ({ page }) => {
-		await armLedgerDays();
-		await page.setViewportSize({ width: 320, height: 700 });
-		await gotoHydrated(page, `/issues/${encodeURIComponent(SPEND.projects.alpha.name)}/1`);
-		await page.getByRole('button', { name: /Agent activity 1 run/ }).click();
-		await expect(page.getByRole('heading', { name: 'Lifetime through now' })).toBeVisible();
-		await expect(page.getByText(/\$2\.00 · complete · 1 finalized · 0 pending/i)).toBeVisible();
-		await expect(
-			page
-				.getByRole('region', { name: 'Contributing runs' })
-				.getByText('run_e2e_spend_alpha_today', { exact: true })
-		).toBeVisible();
-		const runLabel = page.getByText('run_e2e_spend_alpha_today', { exact: true });
-		const runCost = page.getByRole('region', { name: 'Contributing runs' }).locator('.cost');
-		const [labelBox, costBox] = await Promise.all([runLabel.boundingBox(), runCost.boundingBox()]);
-		expect(labelBox).not.toBeNull();
-		expect(costBox).not.toBeNull();
-		const overlaps =
-			labelBox!.x < costBox!.x + costBox!.width &&
-			labelBox!.x + labelBox!.width > costBox!.x &&
-			labelBox!.y < costBox!.y + costBox!.height &&
-			labelBox!.y + labelBox!.height > costBox!.y;
-		expect(overlaps).toBe(false);
+		await page.getByRole('button', { name: /Alpha\/1 Spend alpha_today/ }).click();
 		await page.getByText('Accounting details for run_e2e_spend_alpha_today').click();
 		const accounting = page.locator('.accounting');
 		await expect(accounting).toContainText('Tokens: input tokens 20');
@@ -240,7 +214,86 @@ test.describe('Agents Spend real ledger', () => {
 		await expect(accounting).toContainText('effective 2026-09-01');
 		await expect(accounting).toContainText('rates input=100000');
 		await expect(accounting).toContainText('per 1000000 tokens');
-		await page.getByRole('button', { name: 'Refresh through now' }).click();
-		await expect(page.getByRole('button', { name: 'Refresh through now' })).toBeEnabled();
+		await page.goBack();
+		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeVisible();
+		await page.getByRole('button', { name: 'Close detail' }).click();
+		await expect(page.getByRole('heading', { name: 'Contributing issues' })).toBeHidden();
+	});
+
+	test('shows owner lifetime spend inside Agent activity at phone and desktop widths', async ({
+		page
+	}) => {
+		await armLedgerDays();
+		for (const width of [320, 1440]) {
+			await page.setViewportSize({ width, height: 900 });
+			await gotoHydrated(page, `/issues/${encodeURIComponent(SPEND.projects.alpha.name)}/1`);
+			if (width === 320) await page.getByRole('button', { name: /Agent activity 1 run/ }).click();
+			const total = page.locator('p[title*="retained direct runs"]');
+			await expect(total).toContainText('Total spend: $2.00');
+			await expect(total.locator('..').locator('h2')).toContainText('Agent activity');
+			await expect(total).toHaveAttribute('title', /As of .*Z\./);
+			await expect(page.getByRole('heading', { name: 'Lifetime through now' })).toHaveCount(0);
+			await expect(page.getByRole('region', { name: 'Contributing runs' })).toHaveCount(0);
+			await expect(page.getByRole('button', { name: 'Refresh through now' })).toHaveCount(0);
+			await expect(page.locator('[data-run-id="run_e2e_spend_alpha_today"]')).toBeVisible();
+			await expect(page.locator('[data-run-id="run_e2e_spend_alpha_today"]')).toContainText(
+				'$2.00'
+			);
+			expect(
+				await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
+			).toBe(true);
+		}
+	});
+
+	test('sums all direct runs beyond the latest 20 and refreshes the total', async ({ page }) => {
+		await armLedgerDays();
+		const issueUrl = `/issues/${encodeURIComponent(SPEND.projects.alpha.name)}/1`;
+		try {
+			d1(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 20)
+				INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage, state_id_at_start, state_id_at_end, log, created_at, started_at, ended_at)
+				SELECT 'run_e2e_spend_extra_' || x, r.user_id, r.issue_id, r.runner_id, r.status, r.outcome, r.tier, r.model, r.usage, r.state_id_at_start, r.state_id_at_end, r.log, r.created_at + x, r.started_at + x, r.ended_at + x
+				FROM agent_run r, n WHERE r.id = 'run_e2e_spend_alpha_today'`);
+			await gotoHydrated(page, issueUrl);
+			const card = page.getByRole('heading', { name: 'Agent activity' }).locator('..');
+			await expect(card.getByText(/Total spend:\s*\$42\.00/)).toBeVisible();
+			await expect(card.locator('li[data-run-id]')).toHaveCount(20);
+			d1(
+				`UPDATE agent_run SET usage = json_set(usage, '$.cost_usd', 3) WHERE id = 'run_e2e_spend_extra_1'`
+			);
+			await page.reload({ waitUntil: 'networkidle' });
+			await expect(card.getByText(/Total spend:\s*\$43\.00/)).toBeVisible();
+		} finally {
+			d1(`DELETE FROM agent_run WHERE id LIKE 'run_e2e_spend_extra_%'`);
+		}
+	});
+
+	test('labels empty, unknown, partial, pending, and measured-zero totals', async ({ page }) => {
+		await armLedgerDays();
+		armPendingRun();
+		const cases = [
+			[`${SPEND.projects.alpha.id}/5`, 'No agent runs'],
+			[`${SPEND.projects.pending.id}/1`, 'No finalized runs · 1 pending'],
+			[`${SPEND.projects.unreported.id}/1`, 'Unknown'],
+			[`${SPEND.projects.tokens.id}/1`, 'Unknown'],
+			[`${SPEND.projects.zero.id}/1`, '$0']
+		] as const;
+		for (const [issuePath, expected] of cases) {
+			await page.goto(`/issues/${issuePath}`);
+			await expect(page.locator('p[title*="retained direct runs"]')).toContainText(expected);
+		}
+		try {
+			d1(`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage, state_id_at_start, state_id_at_end, log, created_at, started_at, ended_at)
+				SELECT 'run_e2e_spend_partial', user_id, issue_id, runner_id, status, outcome, tier, model, NULL, state_id_at_start, state_id_at_end, log, created_at + 1, started_at + 1, ended_at + 1
+				FROM agent_run WHERE id = 'run_e2e_spend_alpha_today'`);
+			await page.goto(`/issues/${encodeURIComponent(SPEND.projects.alpha.name)}/1`);
+			await expect(
+				page
+					.getByRole('heading', { name: 'Agent activity' })
+					.locator('..')
+					.getByText(/Total spend:\s*\$2\.00 · partial/)
+			).toBeVisible();
+		} finally {
+			d1(`DELETE FROM agent_run WHERE id = 'run_e2e_spend_partial'`);
+		}
 	});
 });
