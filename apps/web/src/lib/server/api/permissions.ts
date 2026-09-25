@@ -24,6 +24,18 @@ export interface ResolvedPermissionTarget {
 	issueScoped?: boolean;
 	/** Set only after the context service resolves the exact journal scope. */
 	boundJournal?: boolean;
+	/** The write lands on an issue this same request is creating. */
+	creating?: boolean;
+}
+
+/**
+ * True when `issueId` is the run's own: the issue it was launched on, or one
+ * it filed during this run. Every actor that is not a run owns nothing here.
+ */
+export function isRunOwnIssue(actor: ActorContext, issueId: string | null | undefined): boolean {
+	const run = actor.runRestriction;
+	if (!run || !issueId) return false;
+	return issueId === run.issueId || (run.createdIssueIds?.includes(issueId) ?? false);
 }
 
 function actorPolicy(actor: ActorContext): ApiKeyPermissions {
@@ -136,7 +148,8 @@ function requireRunOperation(
 	// Env items are fenced separately at every scope.
 	const context = CONTEXT_MUTATIONS.has(operation);
 	const reachesTarget =
-		target.issueId === run.issueId ||
+		target.creating === true ||
+		isRunOwnIssue(actor, target.issueId) ||
 		(scope !== 'issue' && target.issueId !== undefined) ||
 		(scope === 'workspace' && context);
 	if (boundIssueWrite.has(operation) && !reachesTarget) {

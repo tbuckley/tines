@@ -77,6 +77,7 @@ import {
 	accessAllowed,
 	contextReadPredicate,
 	contextRequirements,
+	isRunOwnIssue,
 	requireAccess
 } from './permissions';
 
@@ -1016,7 +1017,7 @@ export async function createContextItem(
 		{
 			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
 			issueId: scope.issueId ?? undefined,
-			issueScoped: scope.issueId === actor.runRestriction?.issueId,
+			issueScoped: isRunOwnIssue(actor, scope.issueId),
 			boundJournal
 		}
 	);
@@ -1168,8 +1169,7 @@ export async function updateContextItem(
 			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
 			issueId: scope.issueId ?? undefined,
 			issueScoped:
-				currentScope.issueId === actor.runRestriction?.issueId &&
-				scope.issueId === actor.runRestriction?.issueId,
+				isRunOwnIssue(actor, currentScope.issueId) && isRunOwnIssue(actor, scope.issueId),
 			boundJournal: oldBoundJournal && newBoundJournal
 		}
 	);
@@ -1386,7 +1386,7 @@ export async function deleteContextItem(
 		{
 			projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
 			issueId: scope.issueId ?? undefined,
-			issueScoped: scope.issueId === actor.runRestriction?.issueId,
+			issueScoped: isRunOwnIssue(actor, scope.issueId),
 			boundJournal
 		}
 	);
@@ -1464,7 +1464,7 @@ export async function appendContextItem(
 			{
 				projectId: scope.issueProjectId ?? scope.projectId ?? undefined,
 				issueId: scope.issueId ?? undefined,
-				issueScoped: scope.issueId === actor.runRestriction?.issueId,
+				issueScoped: isRunOwnIssue(actor, scope.issueId),
 				boundJournal
 			}
 		);
