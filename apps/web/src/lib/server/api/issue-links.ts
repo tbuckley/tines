@@ -200,13 +200,13 @@ export async function prepareCreateIssueLinkPlan(
 		);
 		await assertWritable(db, actor, endpointProject(endpoint), { issueId: endpoint.id });
 	}
-	// A prospective issue is not the run's bound issue, so a run key cannot
-	// attach a relationship while creating an unrelated issue.
+	// The prospective issue is one this request files, so a run owns it; the
+	// other end of each link was checked above like any existing issue.
 	requireAccess(
 		actor,
 		[{ domain: 'project', access: 'write', projectId: prospective.projectId }],
 		'issue_link.create',
-		{ projectId: prospective.projectId, issueId: prospective.id }
+		{ projectId: prospective.projectId, issueId: prospective.id, creating: true }
 	);
 
 	return {

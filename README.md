@@ -371,7 +371,9 @@ actually launch.
 Every run gets a key minted for it, bound to its issue and that issue's project and revoked
 when the run ends. By default the key writes only to its own issue: it can comment, attach
 artifacts, label, link, write that issue's context and its stage journal, and take the
-issue's transitions. It can read the rest of its project and create issues there.
+issue's transitions. It can read the rest of its project and create issues there, with
+existing labels and links. An issue a run files counts as its own for the rest of that run,
+so it can go on commenting on, labelling, editing and moving it.
 
 Some stages exist to act on other work: backlog triage, journal upkeep, applying approved
 prompt changes. For those, the workflow owner widens the stage on its workflow page, under
@@ -385,8 +387,9 @@ prompt changes. For those, the workflow owner widens the stage on its workflow p
 
 Only the owner sets this, from a browser session; no API key can, so a run can never widen
 its own stage. At every level a run cannot delete workflows or labels, write env
-items, change runners, routing, the supervisor or API keys, force-set a state, or put an issue
-into a stage whose scope reaches further than its own.
+items, change runners, routing, the supervisor or API keys, force-set a state, put an issue
+into a stage whose scope reaches further than its own, or apply a label a routing rule
+matches. Only the widest level can create new labels.
 
 ### Routing, quotas, and budgets
 

@@ -62,7 +62,12 @@ import {
 } from './project-access';
 import { readSharedIssue } from './shared-issues';
 import { deriveRound, deriveSinceLastRun } from './handoff';
-import { issueLabelInserts, labelInserts, resolveOrCreateLabels } from './labels';
+import {
+	assertLabelsDoNotRoute,
+	issueLabelInserts,
+	labelInserts,
+	resolveOrCreateLabels
+} from './labels';
 import { runQuery, serializeRun } from './runs';
 import { requireTier } from './runners';
 import { getSchedule, prepareSchedule, scheduleInsertQueries } from './schedules';
@@ -1210,6 +1215,7 @@ export function issueInsertQueries(
 				attempt_count: 0,
 				needs_attention: 0,
 				state_entered_at: now,
+				created_by_run_id: actor.agentRunId ?? null,
 				created_at: now,
 				updated_at: now,
 				project_assignment_token: ''
@@ -1311,9 +1317,11 @@ export async function createIssue(
 		requireAccess(actor, [{ domain: 'project', access: 'write', projectId }], 'schedule.create', {
 			projectId
 		});
+	// Labels land on the issue this request creates, which a run owns.
 	if ((body.labels?.length ?? 0) > 0)
 		requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'label.assign', {
-			projectId
+			projectId,
+			creating: true
 		});
 	if (futureChoice !== undefined && project.shared_at === null)
 		throw new ApiFail(
@@ -1401,6 +1409,10 @@ export async function createIssue(
 			projectId
 		});
 	}
+	// A routing-scoped label re-routes work: a run may not apply one here any
+	// more than it may add one to an existing issue.
+	if (actor.agentRunId && resolvedLabels)
+		await assertLabelsDoNotRoute(db, actor, resolvedLabels.labels);
 
 	const now = Date.now();
 	const id = newId('iss');

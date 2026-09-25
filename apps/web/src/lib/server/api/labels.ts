@@ -495,7 +495,12 @@ export async function resolveOrCreateLabels(
 			labels.push(existing);
 			continue;
 		}
-		if (actor.agentRunId || LABEL_ID_RE.test(name)) {
+		// A run applies existing labels only, unless its stage's scope reaches
+		// the shared library (workspace), which may create them.
+		if (
+			(actor.agentRunId && actor.runRestriction?.scope !== 'workspace') ||
+			LABEL_ID_RE.test(name)
+		) {
 			unknown.push(name);
 			continue;
 		}
@@ -640,7 +645,7 @@ async function requireIssue(db: Kysely<Database>, userId: string, ref: string) {
  * runs before anything is written: the call is all-or-nothing, like an
  * `unknown_label` miss.
  */
-async function assertLabelsDoNotRoute(
+export async function assertLabelsDoNotRoute(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	labels: Label[]

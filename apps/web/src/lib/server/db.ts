@@ -105,6 +105,8 @@ export interface IssueTable {
 	 * backfill in exotic cases — readers fall back to created_at.
 	 */
 	state_entered_at: number | null;
+	/** Migration 0048: the run whose key filed this issue, or NULL. */
+	created_by_run_id?: string | null;
 	created_at: number;
 	updated_at: number;
 	/** Opaque fence changed on every project transfer, including A -> B -> A. */
