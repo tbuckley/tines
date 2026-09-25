@@ -1,4 +1,5 @@
 import type {
+	RunScope,
 	AddIssueLabelsResponse,
 	AddIssueLinkRequest,
 	AgentRun,
@@ -380,6 +381,13 @@ export function createApiClient(options: ApiClientOptions) {
 		getWorkflow: (id: string) => get<WorkflowResponse>(`/api/v1/workflows/${id}`),
 		updateWorkflow: (id: string, body: UpdateWorkflowRequest) =>
 			request<WorkflowResponse>('PATCH', `/api/v1/workflows/${id}`, body),
+		/** Browser-session only: API keys are refused. */
+		setStateRunScope: (workflowId: string, stateId: string, runScope: RunScope) =>
+			request<WorkflowResponse>(
+				'PUT',
+				`/api/v1/workflows/${workflowId}/states/${stateId}/run-scope`,
+				{ run_scope: runScope }
+			),
 		deleteWorkflow: (id: string, body?: DeleteAnchorRequest) =>
 			request<DeleteAnchorResponse | void>('DELETE', `/api/v1/workflows/${id}`, body),
 

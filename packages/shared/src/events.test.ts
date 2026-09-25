@@ -99,6 +99,11 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'workflow.created': { name: 'Engineering' },
 	'workflow.updated': { name: 'Engineering' },
 	'workflow.deleted': { name: 'Engineering' },
+	'workflow.run_scope_changed': {
+		name: 'Engineering',
+		state_name: 'Triaging',
+		run_scope: 'project'
+	},
 	'api_key.created': { name: 'laptop' },
 	'api_key.permissions_updated': { name: 'laptop' },
 	'api_key.revoked': { name: 'laptop' },

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ContextItem, UpdateWorkflowRequest } from '@tines/shared';
+	import type { ContextItem, RunScope, UpdateWorkflowRequest } from '@tines/shared';
 	import {
 		activeStateIds as deriveActiveStateIds,
 		ApiError,
@@ -11,6 +11,7 @@
 	import IconDownload from '@tabler/icons-svelte/icons/download';
 	import IconLock from '@tabler/icons-svelte/icons/lock';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
+	import IconShieldLock from '@tabler/icons-svelte/icons/shield-lock';
 	import IconWorldUpload from '@tabler/icons-svelte/icons/world-upload';
 	import { slide } from 'svelte/transition';
 	import { goto, invalidateAll } from '$app/navigation';
@@ -95,6 +96,29 @@
 			confirmLabel: 'Delete them',
 			destructive: true
 		});
+	}
+
+	// --- run scope ---------------------------------------------------------------
+
+	const RUN_SCOPE_LABELS: Record<RunScope, string> = {
+		issue: 'Its own issue',
+		project: 'Any issue in its project',
+		workspace: 'Project, plus shared context, workflows and labels'
+	};
+	/** Runs only launch in active states, so only those carry a scope. */
+	const runStates = $derived(data.workflow.states.filter((s) => s.category === 'active'));
+	let savingScopeFor = $state<string | null>(null);
+	async function setRunScope(stateId: string, runScope: RunScope) {
+		savingScopeFor = stateId;
+		try {
+			await api.setStateRunScope(data.workflow.id, stateId, runScope);
+			await invalidateAll();
+		} catch (e) {
+			showError(e);
+			await invalidateAll();
+		} finally {
+			savingScopeFor = null;
+		}
 	}
 
 	async function saveWorkflow(request: UpdateWorkflowRequest) {
@@ -353,6 +377,41 @@
 			{/each}
 		</div>
 	</div>
+
+	{#if !readOnly && runStates.length > 0}
+		<!-- run scope: what a run launched in each active state may touch -->
+		<div class="mt-8" data-testid="run-scope">
+			<h2 class="mb-1 flex items-center gap-1.5 text-sm font-semibold">
+				<IconShieldLock size={16} stroke={1.75} /> What runs can change
+			</h2>
+			<p class="text-muted-foreground mb-3 text-xs">
+				A run can always work its own issue. Widen a stage only when its job is to act on other
+				issues or shared guidance, such as triage or journal upkeep. Env secrets, runners, routing
+				and API keys stay off limits at every level, and a run cannot put an issue into a stage that
+				reaches further than its own.
+			</p>
+			<div class="rounded-lg border">
+				{#each runStates as state (state.id)}
+					<label
+						class="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2.5 text-sm last:border-0"
+					>
+						<StateBadge {state} />
+						<select
+							class="border-input bg-background rounded-md border px-2 py-1.5 text-sm"
+							value={state.run_scope ?? 'issue'}
+							disabled={savingScopeFor === state.id}
+							aria-label={`What runs in ${state.name} can change`}
+							onchange={(event) => setRunScope(state.id, event.currentTarget.value as RunScope)}
+						>
+							{#each Object.entries(RUN_SCOPE_LABELS) as [value, label] (value)}
+								<option {value}>{label}</option>
+							{/each}
+						</select>
+					</label>
+				{/each}
+			</div>
+		</div>
+	{/if}
 
 	<div class="mt-8">
 		<AgentRoutingCard

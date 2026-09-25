@@ -272,3 +272,105 @@ describe('projectReadPredicate', () => {
 		expect(rows).toEqual([{ id: 'prj_a' }]);
 	});
 });
+
+describe('run scope', () => {
+	const runAt = (scope: 'issue' | 'project' | 'workspace' | undefined): ActorContext => ({
+		...session,
+		apiKeyId: 'key_run',
+		apiKeyName: 'run',
+		viaSession: false,
+		agentRunId: 'run_1',
+		permissions: parseApiKeyPermissions({
+			projects: { access: 'write', scope: ['prj_a'] },
+			workspace: 'write',
+			control_plane: 'read'
+		}),
+		runRestriction: {
+			policy: 'run-v1',
+			runId: 'run_1',
+			issueId: 'iss_a',
+			projectId: 'prj_a',
+			launchStateId: 'wfs_a',
+			...(scope ? { scope } : {})
+		}
+	});
+	const write = [{ domain: 'project', access: 'write', projectId: 'prj_a' }] as const;
+	const reason = (why: string) =>
+		expect.objectContaining({
+			code: 'run_key_forbidden',
+			details: expect.objectContaining({ reason: why })
+		});
+
+	it('keeps the default scope on the run issue', () => {
+		for (const run of [runAt(undefined), runAt('issue')]) {
+			expect(() =>
+				requireAccess(run, write, 'issue.transition', { projectId: 'prj_a', issueId: 'iss_a' })
+			).not.toThrow();
+			for (const op of ['issue.transition', 'comment.create', 'issue.update', 'label.assign'])
+				expect(() =>
+					requireAccess(run, write, op, { projectId: 'prj_a', issueId: 'iss_other' })
+				).toThrow(reason('outside_run_issue'));
+			expect(() => requireAccess(run, [], 'context.update', { issueScoped: false })).toThrow(
+				reason('outside_run_issue')
+			);
+			expect(() => requireAccess(run, [], 'workflow.update')).toThrow(
+				reason('operation_forbidden')
+			);
+		}
+	});
+
+	it('lets a project-scope run write any issue in its project, and nothing outside it', () => {
+		const run = runAt('project');
+		for (const op of ['issue.transition', 'comment.create', 'issue.update', 'issue_link.create'])
+			expect(() =>
+				requireAccess(run, write, op, { projectId: 'prj_a', issueId: 'iss_other' })
+			).not.toThrow();
+		expect(() =>
+			requireAccess(
+				run,
+				[{ domain: 'project', access: 'write', projectId: 'prj_b' }],
+				'issue.transition',
+				{ projectId: 'prj_b', issueId: 'iss_b' }
+			)
+		).toThrow(reason('outside_run_project'));
+		// Shared (non-issue) context and the library stay out of reach.
+		expect(() => requireAccess(run, [], 'context.update', { issueScoped: false })).toThrow(
+			reason('outside_run_issue')
+		);
+		expect(() => requireAccess(run, [], 'workflow.update')).toThrow(reason('operation_forbidden'));
+	});
+
+	it('lets a workspace-scope run edit shared context, workflows and labels, never the control plane', () => {
+		const run = runAt('workspace');
+		const workspace = [{ domain: 'workspace', access: 'write' }] as const;
+		for (const op of [
+			'context.update',
+			'context.create',
+			'workflow.create',
+			'workflow.update',
+			'label.create'
+		])
+			expect(() => requireAccess(run, workspace, op, { issueScoped: false })).not.toThrow();
+		expect(() =>
+			requireAccess(run, write, 'issue.transition', { projectId: 'prj_a', issueId: 'iss_other' })
+		).not.toThrow();
+		// Deletes need workspace delete, which a run key's stored policy never grants.
+		expect(() =>
+			requireAccess(run, [{ domain: 'workspace', access: 'delete' }], 'workflow.update')
+		).toThrow(expect.objectContaining({ code: 'insufficient_permissions' }));
+		for (const op of [
+			'workflow.delete',
+			'label.delete',
+			'runner.update',
+			'api_key.create',
+			'library.import'
+		])
+			expect(() => requireAccess(run, [], op)).toThrow(reason('operation_forbidden'));
+		expect(() =>
+			requireAccess(run, [{ domain: 'control_plane', access: 'write' }], 'label.assign', {
+				projectId: 'prj_a',
+				issueId: 'iss_a'
+			})
+		).toThrow(expect.objectContaining({ code: 'insufficient_permissions' }));
+	});
+});

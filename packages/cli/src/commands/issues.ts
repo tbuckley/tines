@@ -613,15 +613,22 @@ export function register(program: Command): void {
 				);
 				if (!transition)
 					throw new Error(`No current transition named "${action}"; refresh the issue`);
-				const permission = await api.getIssueConsent(issue.id);
-				request = {
-					transition_id: transition.transition_id,
-					expected_state_id: permission.issue_state.id,
-					expected_decision_revision: permission.issue_state.decision_revision,
-					expected_workflow_revision: permission.issue_state.workflow_revision,
-					expected_consent_revision: permission.my_agents.revision,
-					expected_consent_epoch: permission.my_agents.epoch
-				};
+				// A run key cannot read personal permission, so it has no witness
+				// to echo; the server accepts its exact transition without one.
+				const permission = await api.getIssueConsent(issue.id).catch((err: unknown) => {
+					if (err instanceof ApiError && err.code === 'run_key_forbidden') return null;
+					throw err;
+				});
+				request = permission
+					? {
+							transition_id: transition.transition_id,
+							expected_state_id: permission.issue_state.id,
+							expected_decision_revision: permission.issue_state.decision_revision,
+							expected_workflow_revision: permission.issue_state.workflow_revision,
+							expected_consent_revision: permission.my_agents.revision,
+							expected_consent_epoch: permission.my_agents.epoch
+						}
+					: { transition_id: transition.transition_id };
 			}
 		}
 		const moved = await api.transitionIssue(issue.id, request);
