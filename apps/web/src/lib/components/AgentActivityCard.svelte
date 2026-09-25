@@ -38,6 +38,7 @@
 		ownerControls = true,
 		viewerId = null,
 		checklist,
+		totalSpend,
 		onerror
 	}: {
 		issue: IssueDetail;
@@ -62,6 +63,7 @@
 		 * The page owns every handler; this card stays dumb.
 		 */
 		checklist?: Snippet;
+		totalSpend?: Snippet;
 		onerror: (e: unknown) => void;
 	} = $props();
 
@@ -182,6 +184,9 @@
 	<h2 class="mb-3 flex items-center gap-1.5 text-sm font-semibold">
 		<IconRobot size={16} stroke={1.75} /> Agent activity
 	</h2>
+	{#if ownerControls && totalSpend}
+		{@render totalSpend()}
+	{/if}
 	{#if permission}
 		{@const open = permission.issue_state.category !== 'done'}
 		<div class="mb-4 rounded-md border text-sm">
@@ -434,6 +439,7 @@
 						<RunRow
 							{run}
 							showLogs={ownerControls}
+							showCost={ownerControls}
 							oncancel={permission ? () => cancelRun(run.id) : undefined}
 						/>
 					{/each}

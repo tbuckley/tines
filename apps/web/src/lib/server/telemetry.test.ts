@@ -17,11 +17,11 @@ const nav = {
 describe('parseTelemetry', () => {
 	it('keeps well-formed navigation and loading records, rounded', () => {
 		const out = parseTelemetry({
-			records: [nav, { k: 'loading', id: 'issue.usage', route: nav.route, ms: 250.6 }]
+			records: [nav, { k: 'loading', id: 'issue.agent-activity', route: nav.route, ms: 250.6 }]
 		});
 		expect(out).toEqual([
 			{ ...nav, ms: 123, app: 41 },
-			{ k: 'loading', id: 'issue.usage', route: nav.route, ms: 251 }
+			{ k: 'loading', id: 'issue.agent-activity', route: nav.route, ms: 251 }
 		]);
 	});
 
