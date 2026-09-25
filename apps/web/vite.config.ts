@@ -11,7 +11,12 @@ const deploymentIdentity = resolveDeploymentIdentity();
 
 export default defineConfig({
 	define: {
-		__TINES_DEPLOYMENT__: JSON.stringify(deploymentIdentity)
+		__TINES_DEPLOYMENT__: JSON.stringify(deploymentIdentity),
+		// /api/preview-login exists only in PR preview and e2e builds; a
+		// production or dev bundle compiles it to a 404 (lib/server/preview-login.ts).
+		__TINES_PREVIEW_LOGIN__: JSON.stringify(
+			process.env.TINES_BUILD_CHANNEL === 'preview' || process.env.VITE_TINES_E2E === '1'
+		)
 	},
 	server: {
 		// The simulated EMAIL binding writes each message under .wrangler/tmp/,
