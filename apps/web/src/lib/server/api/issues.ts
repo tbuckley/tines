@@ -952,15 +952,34 @@ function issueRef(issue: Pick<Issue, 'project_name' | 'number'>): string {
 	return `${issue.project_name}/${issue.number}`;
 }
 
+/**
+ * The columns `getIssueDetail`'s own reads key off, known before the full row
+ * when a caller resolved them in an earlier statement (the issue page's
+ * address query). The row itself is still loaded and returned as-is.
+ */
+export type IssueHead = { id: string; project_id: string; workflow_id: string; state_id: string };
+
 export async function getIssueDetail(
 	db: Kysely<Database>,
 	userId: string,
-	ref: IssueLookup | Issue,
+	ref: IssueLookup | Issue | { head: IssueHead; issue: Promise<Issue> },
 	opts: IssueDetailOptions = {}
 ): Promise<FullIssueDetail> {
 	// An already-loaded issue can be passed straight in (the page resolves the
-	// row first so everything below it starts in one wave).
-	const issue = 'workflow_id' in ref ? ref : await loadIssue(db, userId, ref);
+	// row first so everything below it starts in one wave), or its head plus
+	// the row in flight, so the reads below start alongside the row instead of
+	// after it.
+	const pending = 'head' in ref ? ref : null;
+	const loaded =
+		'head' in ref ? null : 'workflow_id' in ref ? ref : await loadIssue(db, userId, ref);
+	const head: IssueHead = pending
+		? pending.head
+		: {
+				id: loaded!.id,
+				project_id: loaded!.project_id,
+				workflow_id: loaded!.workflow_id,
+				state_id: loaded!.state.id
+			};
 	const actor = opts.authorizationActor;
 	const workspaceReadable =
 		actor === undefined ||
@@ -968,33 +987,45 @@ export async function getIssueDetail(
 	const controlReadable =
 		actor === undefined ||
 		accessAllowed(actor, [{ domain: 'control_plane', access: 'read' }], 'run.read', {
-			projectId: issue.project_id,
-			issueId: issue.id
+			projectId: head.project_id,
+			issueId: head.id
 		});
 
 	// Artifacts are needed unconditionally when the caller asked for them, and
 	// otherwise only if some outgoing transition declares requirements — which
 	// we cannot know until the workflow lands. Fetching them in this wave when
 	// asked keeps the requirement pre-flight off the critical path entirely.
-	const [workflows, commentHistory, links, contextSummary, preloadedArtifacts, handoff] =
+	const [issue, workflows, commentHistory, links, headSummary, preloadedArtifacts, handoff] =
 		await Promise.all([
-			opts.workflows ?? loadWorkflows(db, userId, issue.workflow_id),
-			loadCommentHistory(db, issue.id),
-			loadIssueLinks(db, userId, issue.id),
+			loaded ?? pending!.issue,
+			opts.workflows ?? loadWorkflows(db, userId, head.workflow_id),
+			loadCommentHistory(db, head.id),
+			loadIssueLinks(db, userId, head.id),
 			contextSummaryForIssue(
 				db,
 				userId,
 				{
-					projectId: issue.project_id,
-					stateId: issue.state.id,
-					issueId: issue.id
+					projectId: head.project_id,
+					stateId: head.state_id,
+					issueId: head.id
 				},
 				actor
 			),
-			opts.artifacts ? listArtifacts(db, userId, issue.id) : null,
-			opts.round && controlReadable ? loadHandoffRows(db, userId, issue.id) : null
+			opts.artifacts ? listArtifacts(db, userId, head.id) : null,
+			opts.round && controlReadable ? loadHandoffRows(db, userId, head.id) : null
 		]);
 	const comments = commentHistory.comments;
+	// The head was read a statement earlier than the row: if the issue moved
+	// state in between, the context summary follows the row.
+	const contextSummary =
+		issue.state.id === head.state_id && issue.project_id === head.project_id
+			? headSummary
+			: await contextSummaryForIssue(
+					db,
+					userId,
+					{ projectId: issue.project_id, stateId: issue.state.id, issueId: issue.id },
+					actor
+				);
 
 	const workflow = workflows.find((w) => w.id === issue.workflow_id);
 	if (!workflow) throw notFound();

@@ -119,38 +119,50 @@ The counts moved because the loaders did — `/agents`, for instance, gained the
 fleet queue (2026-09-06) and the first-run checklist (2026-09-09) — not because
 a wave was added: every multi-query page still fans out in one or two waves.
 
-## Current, 2026-09-24 (counted waves)
+## Current, 2026-09-25 (counted waves)
 
 The member-sharing work had grown the issue page to ~9 sequential waves to
 first paint (a project lookup, the address, an access check and the sharing
-lookups, each its own round trip, ahead of the original two waves); nothing
-failed because the probe did not gate waves. It is back to 4: one statement
-resolves the address, project, membership and issue id together and access
-is decided from that row (`projectAccessFromRow`). That statement matches
-the project segment as an id or a name: lists link by name, and resolving
-the name first had cost every list click three more waves (7), which the
-probe did not see because it addressed the issue by id. It now measures both. `/activity` lost a serial
-wave by fetching the owner's and shared events together.
+lookups, each its own round trip, ahead of the original two waves), and a
+list click, which addresses the project by name, paid three more resolving
+it. Nothing failed because the probe did not gate waves and addressed the
+issue by id. Since then (#296 and after):
 
-| Page | Queries | Waves (budget) |
-|---|---|---|
-| `/issues/[project]/[number]` | 12 blocking, 29 total | 4 to first paint (4), 7 settled |
-| same, addressed by project name | 12 blocking | 4 to first paint (4) |
-| `/agents` | 22 | 2 (2) |
-| `/issues` | 7 | 3 (3) |
-| `/context` | 7 | 3 (3) |
-| `/projects` | 3 | 2 (2) |
-| `/activity` | 4 | 3 (3) |
+- One statement resolves the address (by id or name), project, membership
+  and the issue's head columns; access is decided from that row
+  (`projectAccessFromRow`).
+- `getIssueDetail` takes that head and starts its own reads alongside the
+  issue row instead of after it.
+- `loadWorkflows` selects states and transitions through the same
+  visibility predicate as the workflows, so all three run in one wave
+  instead of two. Every page that lists workflows gains a wave.
+- `listArtifacts` reads the issue, items, versions and files in one wave
+  instead of four. The probe issue now carries an artifact, as most worked
+  issues do; without one the probe had hidden two of those waves.
+- `/activity` fetches the owner's and shared events together.
+
+| Page | Waves to first paint (budget) |
+|---|---|
+| `/issues/[project]/[number]`, by id or by name | 2 (2); 5 fully settled |
+| `/issues` | 2 (2) |
+| `/agents` | 2 (2) |
+| `/context` | 2 (2) |
+| `/projects` | 1 (1) |
+| `/activity` | 3 (3) |
 
 ## What a page load may await
 
-The View Transition in `(app)/+layout.svelte` freezes the outgoing page until
-`navigation.complete`, so **anything a `load` awaits is perceived latency** and
+SvelteKit runs a client navigation's `load` before anything changes on
+screen: the old page stays as it is until the data arrives, and only then
+does `onNavigate` (and the View Transition in `(app)/+layout.svelte`) run. So
+**anything a `load` awaits is time the click appears to do nothing**, and
 anything it streams is not. The issue page is the worked example:
 
-- It resolves the address, the project, the viewer's membership and the issue
-  id in one statement and decides access from that row, then fetches the
-  issue row alongside everything keyed by the issue id alone, then the detail.
+- It resolves the address, the project, the viewer's membership and the
+  issue's id, project, workflow and state in one statement and decides
+  access from that row, then fetches the issue row alongside everything
+  keyed by those columns, the detail's comments, links, context summary and
+  artifacts included.
 - It awaits only what the header, comments and activity feed need.
 - The sidebar panels — issue context, effective context, agent activity — are
   returned as promises under `data.deferred`. They render a `Skeleton` (with a
@@ -160,9 +172,8 @@ anything it streams is not. The issue page is the worked example:
   while a replacement is in flight, instead of `{#await}` collapsing the
   panel back to a skeleton on every resync.
 
-Result (`pnpm --filter web perf:nav`, 2026-09-24): 12 statements and 4 waves
-to first paint, 29 statements and 7 waves to fully settled — from 26
-statements and 29.1 waves before Tines/32.
+Result (`pnpm --filter web perf:nav`, 2026-09-25): 2 waves to first paint
+and 5 to fully settled — from 29.1 waves before Tines/32.
 
 Two rules follow, and the probe asserts the first:
 

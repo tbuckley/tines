@@ -31,21 +31,22 @@ import { sessionActor } from '$lib/server/api/core';
 import type { PageServerLoad } from './$types';
 
 /**
- * Three D1 waves to first paint (Tines/32; regained after sharing added a
+ * Two D1 waves to first paint (Tines/32; regained after sharing added a
  * serial access chain in front of them): (A) one statement resolves the
- * address, the project, the viewer's membership and the issue id together, so
- * access is decided without a round trip of its own; (B) the issue row and
- * everything keyed by the issue id alone fan out at once; (C) the detail,
- * which needs the row's workflow and state. Nothing here may be fetched twice:
- * workflows are loaded once and handed to `getIssueDetail`, artifacts once (it
- * returns them), and the issue row once (`explainDispatch` takes it rather
- * than re-reading). `perf:nav` holds the page to its wave budget.
+ * address, the project, the viewer's membership and the issue's id, project,
+ * workflow and state, so access is decided without a round trip of its own;
+ * (B) the issue row and everything keyed by those columns — the detail's
+ * comments, links, context summary and artifacts included — fan out at once.
+ * Nothing here may be fetched twice: workflows are loaded once and handed to
+ * `getIssueDetail`, artifacts once (it returns them), and the issue row once
+ * (`explainDispatch` takes it rather than re-reading). `perf:nav` holds the
+ * page to its wave budget.
  *
- * Only those waves are awaited. The panels below the fold stream in as
- * promises, so the View Transition in `(app)/+layout.svelte` — which waits on
- * `navigation.complete` — commits as soon as the header and comments can
- * paint. Keep the awaited set small: anything moved out of `deferred` puts
- * itself back on the navigation critical path.
+ * Only those waves are awaited. SvelteKit keeps the previous page on screen
+ * until a navigation's `load` resolves, so everything awaited here is time
+ * the click appears to do nothing; the panels below the fold stream in as
+ * promises instead. Keep the awaited set small: anything moved out of
+ * `deferred` puts itself back on the navigation critical path.
  */
 export const load: PageServerLoad = async ({
 	locals,
@@ -96,7 +97,9 @@ export const load: PageServerLoad = async ({
 			'm.revoked_at',
 			'owner.name as owner_name',
 			'a.issue_id',
-			'i.project_id as issue_project_id'
+			'i.project_id as issue_project_id',
+			'i.workflow_id as issue_workflow_id',
+			'i.state_id as issue_state_id'
 		])
 		.where((eb) =>
 			eb.or([
@@ -191,9 +194,32 @@ export const load: PageServerLoad = async ({
 	const rosterPromise = sharedPromise.then((shared) =>
 		shared ? listIssuePermissionRoster(db, issueId) : []
 	);
+	// The detail's own reads (comments, links, context summary, artifacts) key
+	// off the head from wave A, so they start now, alongside the row.
+	const detailPromise = getIssueDetail(
+		db,
+		userId,
+		{
+			head: {
+				id: issueId,
+				project_id: address.issue_project_id,
+				workflow_id: address.issue_workflow_id!,
+				state_id: address.issue_state_id!
+			},
+			issue: issuePromise
+		},
+		{ workflows: workflowsPromise, artifacts: true }
+	);
 	// Nothing awaits these until the issue row lands; a rejection in the
 	// meantime would otherwise be unhandled.
-	for (const p of [workflowsPromise, eventsPromise, labelsPromise, receiptPromise, rosterPromise])
+	for (const p of [
+		workflowsPromise,
+		eventsPromise,
+		labelsPromise,
+		receiptPromise,
+		rosterPromise,
+		detailPromise
+	])
 		p.catch(() => {});
 
 	const issue = await issuePromise.catch(async () => {
@@ -215,9 +241,8 @@ export const load: PageServerLoad = async ({
 		redirect(307, `${canonicalPath}${url.search}`);
 	}
 
-	// Wave C: the detail, which needs the row's workflow and state.
 	const [detail, events, labelLibrary, permissionReceipt, permissionRoster] = await Promise.all([
-		getIssueDetail(db, userId, issue, { workflows: workflowsPromise, artifacts: true }),
+		detailPromise,
 		eventsPromise,
 		labelsPromise,
 		receiptPromise,
