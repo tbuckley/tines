@@ -163,6 +163,34 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 		)
 	).toBe(true);
 	expect(JSON.stringify(sharedHistory.history)).not.toContain('SECRET_HISTORY_CANARY');
+	// A priced run makes the privacy check sensitive to the owner's usage report.
+	const spendRunId = `arun_member_spend_${project.id}`;
+	const spendTime = Date.now();
+	const spendState = d1<{ state_id: string }>(
+		`SELECT state_id FROM issue WHERE id=${sqlLiteral(issue.id)}`
+	)[0].state_id;
+	d1(`INSERT INTO agent_run (id,user_id,issue_id,runner_id,status,outcome,tier,usage,log,created_at,started_at,ended_at,state_id_at_start,state_id_at_end)
+		VALUES (${sqlLiteral(spendRunId)},${sqlLiteral(ALICE.id)},${sqlLiteral(issue.id)},${sqlLiteral(RUNROW_FAILED.runnerId)},'completed','advanced','balanced','{"cost_usd":731.42,"cost_source":"provider"}','',${spendTime},${spendTime},${spendTime},${sqlLiteral(spendState)},${sqlLiteral(spendState)})`);
+	const issuePath = `/issues/${project.id}/${issue.number}`;
+	const ownerPageResponse = await request.get(issuePath, {
+		headers: { cookie: `better-auth.session_token=${signedSessionCookie(ALICE.sessionToken)}` }
+	});
+	expect(ownerPageResponse.status()).toBe(200);
+	const ownerPageData = await ownerPageResponse.text();
+	expect(ownerPageData).toContain('731.42');
+	const usageDeferredId = ownerPageData.match(/usage:__sveltekit_\w+\.defer\((\d+)\)/)?.[1];
+	expect(usageDeferredId).toBeDefined();
+	const ownerUsageResolution = ownerPageData
+		.split(`.resolve(${usageDeferredId}, () => [`)[1]
+		?.split('</script>')[0];
+	expect(ownerUsageResolution).toContain('cost_usd:731.42');
+	const memberPageResponse = await request.get(issuePath, { headers: memberHeaders });
+	expect(memberPageResponse.status()).toBe(200);
+	const memberPageData = await memberPageResponse.text();
+	expect(memberPageData).not.toContain('731.42');
+	const memberUsageDeferredId = memberPageData.match(/usage:__sveltekit_\w+\.defer\((\d+)\)/)?.[1];
+	expect(memberUsageDeferredId).toBeDefined();
+	expect(memberPageData).toContain(`.resolve(${memberUsageDeferredId}, () => [null])`);
 	d1(
 		`UPDATE event SET created_at=${Date.now() - 100_000} WHERE issue_id=${sqlLiteral(issue.id)} AND type='runner.updated' AND id LIKE 'evt_hidden_669_%'`
 	);
@@ -188,13 +216,18 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	).toEqual([{ n: 0 }]);
 	await signIn(page.context(), BOB.sessionToken);
 	await page.setViewportSize({ width: 390, height: 844 });
-	await gotoHydrated(page, `/issues/${project.id}/${issue.number}`);
+	await gotoHydrated(page, issuePath);
 	await expect(page.getByRole('heading', { name: 'Member decision journey' })).toBeVisible();
 	await page.getByRole('textbox', { name: 'Leave a comment (Markdown)…' }).fill('Member note');
 	await page.getByRole('button', { name: 'Comment', exact: true }).click();
 	await expect(page.getByText('Member note')).toBeVisible();
 	// The owner's agent activity fold, with the member's own permission controls.
 	await page.getByRole('button', { name: /^Agent activity/ }).click();
+	await expect(page.getByRole('button', { name: 'Allow my agents', exact: true })).toBeVisible();
+	await expect(page.getByText(/Total spend:/)).toHaveCount(0);
+	await expect(page.getByText('$731.42', { exact: true })).toHaveCount(0);
+	d1(`DELETE FROM agent_run WHERE id=${sqlLiteral(spendRunId)}`);
+	await expect(page.getByRole('heading', { name: 'Lifetime through now' })).toHaveCount(0);
 	await expect(page.getByText(`${BOB.name} (You)`, { exact: false })).toBeVisible();
 	await expect(page.getByRole('note', { name: 'First permission warning' })).toContainText(
 		'including after member execution is released'

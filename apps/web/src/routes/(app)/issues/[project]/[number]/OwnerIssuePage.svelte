@@ -9,7 +9,7 @@
 		RoutingRule,
 		WorkflowState
 	} from '@tines/shared';
-	import { ApiError } from '@tines/shared';
+	import { ApiError, usageCostLabel } from '@tines/shared';
 	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconArchive from '@tabler/icons-svelte/icons/archive';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
@@ -41,7 +41,6 @@
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import IssueTransferModal from '$lib/components/IssueTransferModal.svelte';
-	import IssueUsage from '$lib/components/IssueUsage.svelte';
 	import MoveDirectlyForm from '$lib/components/MoveDirectlyForm.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
 	import PhoneFold from '$lib/components/PhoneFold.svelte';
@@ -1045,6 +1044,36 @@
 	{/if}
 {/snippet}
 
+{#snippet issueTotalSpend()}
+	{#if usagePanel.current.status === 'loaded' && usagePanel.current.value}
+		{@const report = usagePanel.current.value}
+		{@const aggregate = report.issue.aggregate}
+		<p
+			class="text-muted-foreground mb-4 text-sm"
+			title={`Known finalized cost for retained direct runs; excludes pending runs. As of ${new Date(report.cutoff).toISOString()}.`}
+		>
+			Total spend:
+			<span class="text-foreground font-semibold">
+				{report.issue.attempt_count === 0
+					? 'No agent runs'
+					: aggregate.finalized_run_count === 0
+						? 'No finalized runs'
+						: usageCostLabel(aggregate.cost_usd, aggregate.finalized_run_count)}
+			</span>
+			{#if aggregate.coverage === 'partial'}
+				· partial{/if}
+			{#if report.issue.pending_count > 0}
+				· {report.issue.pending_count} pending{/if}
+		</p>
+	{:else if usagePanel.current.status === 'pending'}
+		<p class="text-muted-foreground mb-4 text-sm">Total spend: Loading…</p>
+	{:else}
+		<p class="text-muted-foreground mb-4 text-sm">
+			Total spend unavailable <Button size="sm" variant="ghost" onclick={refresh}>Retry</Button>
+		</p>
+	{/if}
+{/snippet}
+
 <ContextItemEditor
 	bind:open={contextEditorOpen}
 	item={editingContextItem}
@@ -1364,16 +1393,8 @@
 					viewerId={data.viewerId}
 					onerror={showError}
 					checklist={checklistInputs ? firstRunChecklist : undefined}
+					totalSpend={isMember ? undefined : issueTotalSpend}
 				/>
-				{#if isMember}
-					<!-- spend is the owner's account -->
-				{:else if usagePanel.current.status === 'pending'}
-					<LoadingState id="issue.usage"><Skeleton class="mt-4 h-24 w-full" /></LoadingState>
-				{:else if usagePanel.current.status === 'loaded' && usagePanel.current.value}
-					<IssueUsage initial={usagePanel.current.value} />
-				{:else}
-					<p class="text-destructive mt-3 text-sm">Lifetime usage unavailable.</p>
-				{/if}
 			{:else}
 				{@render loadFailed('agent activity')}
 			{/if}

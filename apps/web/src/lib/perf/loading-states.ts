@@ -14,7 +14,6 @@ export const LOADING_STATES = {
 		'Issue sidebar: the effective context bundle is several reads deep and collapsed by default.',
 	'issue.agent-activity':
 		'Issue sidebar: dispatch explanation, runs and runners stream after first paint.',
-	'issue.usage': 'Issue sidebar: lifetime spend aggregates every run on the issue.',
 	'activity.load-more': 'Activity: the next page, fetched only when the reader asks for more.'
 } as const;
 

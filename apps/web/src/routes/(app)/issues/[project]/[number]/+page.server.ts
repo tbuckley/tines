@@ -23,7 +23,6 @@ import { listRunners } from '$lib/server/api/runners';
 import { listRoutingRules } from '$lib/server/api/routing';
 import { hasAnyRun, listRuns } from '$lib/server/api/runs';
 import { getIssueUsage } from '$lib/server/api/usage';
-import { mintUsageScope, usageKeyMaterial } from '$lib/server/usage-scope';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { explainDispatch } from '$lib/server/supervisor/explain';
 import { getDb } from '$lib/server/db';
@@ -273,20 +272,6 @@ export const load: PageServerLoad = async ({
 		const cutoff = Date.now();
 		const report = await getIssueUsage(db, userId, issue.id, cutoff, cutoff);
 		if (!report) throw new Error('Issue usage unavailable');
-		const material = usageKeyMaterial(platform!.env);
-		if (!material) throw new Error('Usage evidence signing is not configured');
-		report.scope = await mintUsageScope(
-			{
-				v: 1,
-				owner: userId,
-				mode: 'issue',
-				issue: issue.id,
-				cutoff,
-				timezone: report.timezone,
-				timezone_source: report.timezone_source
-			},
-			material
-		);
 		return report;
 	})();
 	usagePromise.catch(() => {});
@@ -336,7 +321,7 @@ export const load: PageServerLoad = async ({
 				? ownerOnly(null)
 				: explainDispatch(db, userId, issue.id, Date.now(), issue),
 			issueRuns: listRuns(db, userId, { issue: issue.id }, { cursor: null, limit: 20 }).then(
-				(page) => page.items
+				(page) => (isMember ? page.items.map((run) => ({ ...run, usage: null })) : page.items)
 			),
 			usage: usagePromise,
 			runners: isMember ? ownerOnly([]) : listRunners(db, userId),
