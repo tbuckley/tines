@@ -348,6 +348,20 @@
 	}
 }
 
+/*
+ * The app header and the phone bottom bar are named groups, so they paint
+ * above the `page` group instead of being flattened into root beneath it
+ * (groups stack in the paint order of their elements, and root is always
+ * bottom). Their old and new snapshots are near-identical, so the default
+ * crossfade reads as the chrome holding still. Snapshots don't carry
+ * backdrop-filter, so back each group with the page colour or the
+ * translucent bars would show the sliding content through them.
+ */
+::view-transition-group(app-header),
+::view-transition-group(tab-bar) {
+	background: var(--background);
+}
+
 /* Full-width push: the old screen exits one side as the new one enters
    from the other, carousel-style, so the sideways travel is unmistakable. */
 @keyframes vt-page-out-left {
