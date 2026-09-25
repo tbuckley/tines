@@ -15,7 +15,7 @@ import {
 	type WorkflowTransitionInput
 } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
-import { idChunks, newId, type Database, type WorkflowStateTable } from '$lib/server/db';
+import { newId, type Database, type WorkflowStateTable } from '$lib/server/db';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
 import {
@@ -703,30 +703,34 @@ export async function loadWorkflows(
 		.orderBy('workflow.user_id asc') // system workflow (NULL) first
 		.orderBy('workflow.created_at asc');
 	if (id !== undefined) q = q.where('workflow.id', '=', id);
-	const rows = await q.execute();
-	if (rows.length === 0) return [];
-
-	const ids = rows.map((r) => r.id);
-	const chunks = idChunks(ids);
-	const [stateChunks, transitionChunks] = await Promise.all([
-		Promise.all(
-			chunks.map((chunk) =>
-				db
-					.selectFrom('workflow_state')
-					.selectAll()
-					.where('workflow_id', 'in', chunk)
-					.orderBy('position asc')
-					.execute()
-			)
-		),
-		Promise.all(
-			chunks.map((chunk) =>
-				db.selectFrom('workflow_transition').selectAll().where('workflow_id', 'in', chunk).execute()
-			)
-		)
+	// States and transitions are selected through the same visibility
+	// predicate rather than by the workflow ids, so all three statements run
+	// in one D1 wave instead of two (docs/PERFORMANCE.md).
+	const visibleIds = () => {
+		let sub = db
+			.selectFrom('workflow')
+			.select('workflow.id')
+			.where((eb) =>
+				eb.or([eb('workflow.user_id', '=', userId), eb('workflow.user_id', 'is', null)])
+			);
+		if (id !== undefined) sub = sub.where('workflow.id', '=', id);
+		return sub;
+	};
+	const [rows, states, transitions] = await Promise.all([
+		q.execute(),
+		db
+			.selectFrom('workflow_state')
+			.selectAll()
+			.where('workflow_id', 'in', visibleIds())
+			.orderBy('position asc')
+			.execute(),
+		db
+			.selectFrom('workflow_transition')
+			.selectAll()
+			.where('workflow_id', 'in', visibleIds())
+			.execute()
 	]);
-	const states = stateChunks.flat();
-	const transitions = transitionChunks.flat();
+	if (rows.length === 0) return [];
 
 	return rows.map((row) => {
 		const wfStates = states.filter((s) => s.workflow_id === row.id);
