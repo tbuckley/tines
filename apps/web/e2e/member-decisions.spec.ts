@@ -223,7 +223,7 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	await expect(page.getByText('Member note')).toBeVisible();
 	// The owner's agent activity fold, with the member's own permission controls.
 	await page.getByRole('button', { name: /^Agent activity/ }).click();
-	await expect(page.getByRole('button', { name: 'Allow my agents', exact: true })).toBeVisible();
+	await expect(page.getByRole('switch', { name: 'Allow my agents', exact: true })).toBeVisible();
 	await expect(page.getByText(/Total spend:/)).toHaveCount(0);
 	await expect(page.getByText('$731.42', { exact: true })).toHaveCount(0);
 	d1(`DELETE FROM agent_run WHERE id=${sqlLiteral(spendRunId)}`);
