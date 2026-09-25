@@ -8,6 +8,7 @@
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
+	import LoadingState from '$lib/components/LoadingState.svelte';
 
 	let { data } = $props();
 
@@ -134,11 +135,13 @@
 />
 
 {#if loadingMore}
-	<div class="mt-4 space-y-2">
-		<Skeleton class="h-10 w-full" />
-		<Skeleton class="h-10 w-full" />
-		<Skeleton class="h-10 w-full" />
-	</div>
+	<LoadingState id="activity.load-more">
+		<div class="mt-4 space-y-2">
+			<Skeleton class="h-10 w-full" />
+			<Skeleton class="h-10 w-full" />
+			<Skeleton class="h-10 w-full" />
+		</div>
+	</LoadingState>
 {/if}
 
 {#if loadError}<p class="text-destructive mt-4 text-center text-sm" role="alert">

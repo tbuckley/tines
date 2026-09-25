@@ -12,9 +12,10 @@ import {
 import { SHARED_EVENT_TYPES, sharedEventPayload } from '$lib/server/api/shared-events';
 import {
 	actorForProject,
+	memberActor,
+	projectAccessFromRow,
 	resolveAccessibleProjectRef,
-	resolveIssueAccess,
-	resolveProjectAccess
+	resolveIssueAccess
 } from '$lib/server/api/project-access';
 import { listIssuePermissionRoster, readIssueConsent } from '$lib/server/api/personal-consent';
 import { listLabelsInternal } from '$lib/server/api/labels';
@@ -30,13 +31,17 @@ import { sessionActor } from '$lib/server/api/core';
 import type { PageServerLoad } from './$types';
 
 /**
- * Two D1 waves, not seven (Tines/32). Everything except the issue row itself
- * keys off `issue.id`, so the row is resolved alone and then the whole rest of
- * the page fans out at once. Nothing here may be fetched twice: workflows are
- * loaded once and handed to `getIssueDetail`, artifacts once (it returns them),
- * and the issue row once (`explainDispatch` takes it rather than re-reading).
+ * Three D1 waves to first paint (Tines/32; regained after sharing added a
+ * serial access chain in front of them): (A) one statement resolves the
+ * address, the project, the viewer's membership and the issue id together, so
+ * access is decided without a round trip of its own; (B) the issue row and
+ * everything keyed by the issue id alone fan out at once; (C) the detail,
+ * which needs the row's workflow and state. Nothing here may be fetched twice:
+ * workflows are loaded once and handed to `getIssueDetail`, artifacts once (it
+ * returns them), and the issue row once (`explainDispatch` takes it rather
+ * than re-reading). `perf:nav` holds the page to its wave budget.
  *
- * Only the first wave is awaited. The panels below the fold stream in as
+ * Only those waves are awaited. The panels below the fold stream in as
  * promises, so the View Transition in `(app)/+layout.svelte` — which waits on
  * `navigation.complete` — commits as soon as the header and comments can
  * paint. Keep the awaited set small: anything moved out of `deferred` puts
@@ -63,62 +68,135 @@ export const load: PageServerLoad = async ({
 	const number = Number.parseInt(params.number, 10);
 	if (!Number.isInteger(number) || number < 1)
 		error(404, `“${truncate(params.number)}” is not an issue number.`);
-	const directProject = await db
-		.selectFrom('project')
-		.select('id')
-		.where('id', '=', params.project)
-		.executeTakeFirst();
-	const addressProjectId = directProject
-		? directProject.id
-		: await resolveAccessibleProjectRef(db, actor, params.project).catch((e) => {
-				if (e instanceof ApiFail && e.status === 404)
-					error(404, `You have no project named “${truncate(params.project)}”.`);
-				if (e instanceof ApiFail) error(e.status, e.message);
-				throw e;
-			});
-	const addressed = await db
-		.selectFrom('issue_address')
-		.select('issue_id')
-		.where('project_id', '=', addressProjectId)
-		.where('number', '=', number)
-		.executeTakeFirst();
-	if (!addressed) {
-		await resolveProjectAccess(db, actor, addressProjectId).catch((e) => {
+	// Wave A, one statement: the addressed project with the viewer's
+	// membership, the owner's name (a member acts with the owner's scope), and
+	// the issue the address points at. Access is decided from this row, not
+	// from a round trip of its own. The project segment is matched as an id
+	// or as a name in the same statement: lists link by name, and resolving
+	// the name first cost three more round trips on every click.
+	const ref = params.project;
+	const candidates = await db
+		.selectFrom('project as p')
+		.innerJoin('user as owner', 'owner.id', 'p.user_id')
+		.leftJoin('project_member as m', (join) =>
+			join.onRef('m.project_id', '=', 'p.id').on('m.user_id', '=', viewerId)
+		)
+		.leftJoin('issue_address as a', (join) =>
+			join.onRef('a.project_id', '=', 'p.id').on('a.number', '=', number)
+		)
+		.leftJoin('issue as i', 'i.id', 'a.issue_id')
+		.select([
+			'p.id',
+			'p.name',
+			'p.user_id',
+			'p.shared_at',
+			'p.sharing_revision',
+			'p.archived_at',
+			'm.revision',
+			'm.revoked_at',
+			'owner.name as owner_name',
+			'a.issue_id',
+			'i.project_id as issue_project_id'
+		])
+		.where((eb) =>
+			eb.or([
+				eb('p.id', '=', ref),
+				// A name resolves only within the viewer's accessible set, as
+				// resolveAccessibleProjectRef does.
+				eb.and([
+					eb('p.name', '=', ref),
+					eb.or([
+						eb('p.user_id', '=', viewerId),
+						eb.and([
+							eb('p.shared_at', 'is not', null),
+							eb('m.revision', 'is not', null),
+							eb('m.revoked_at', 'is', null)
+						])
+					])
+				])
+			])
+		)
+		.execute();
+	// Immutable ids win; an ambiguous name gets the shared resolver's 409.
+	const named = candidates.filter((row) => row.id !== ref);
+	const address =
+		candidates.find((row) => row.id === ref) ??
+		(named.length > 1
+			? await resolveAccessibleProjectRef(db, actor, ref).then(
+					(id) => named.find((row) => row.id === id),
+					(e) => {
+						if (e instanceof ApiFail) error(e.status, e.message);
+						throw e;
+					}
+				)
+			: named[0]);
+	if (!address) error(404, `You have no project named “${truncate(params.project)}”.`);
+	const addressAccess = (() => {
+		try {
+			return projectAccessFromRow(actor, address.id, address);
+		} catch (e) {
 			if (e instanceof ApiFail) error(e.status, e.message);
 			throw e;
-		});
-		const named = await db
-			.selectFrom('project')
-			.select('name')
-			.where('id', '=', addressProjectId)
-			.executeTakeFirstOrThrow();
-		error(404, `Issue #${number} does not exist in “${truncate(named.name)}”.`);
-	}
-	const access = await resolveIssueAccess(db, actor, addressed.issue_id).catch((e) => {
-		if (e instanceof ApiFail) error(e.status, e.message);
-		throw e;
-	});
-	if (access.projectId !== addressProjectId)
-		await resolveProjectAccess(db, actor, addressProjectId).catch((e) => {
-			if (e instanceof ApiFail) error(e.status, e.message);
-			throw e;
-		});
+		}
+	})();
+	if (!address.issue_id || !address.issue_project_id)
+		error(404, `Issue #${number} does not exist in “${truncate(address.name)}”.`);
+	const issueId = address.issue_id;
+	// An address outlives a transfer: the issue now lives in another project,
+	// whose access is checked in its own right (rare, so it pays its own trip).
+	const access =
+		address.issue_project_id === address.id
+			? addressAccess
+			: await resolveIssueAccess(db, actor, issueId).catch((e) => {
+					if (e instanceof ApiFail) error(e.status, e.message);
+					throw e;
+				});
 	// A member sees the owner's page for a shared issue, loaded with the
 	// owner's scope. What stays the owner's (runners, routing, run logs, the
 	// launch prompt, account-wide context and spend) is left out below.
 	const isMember = access.role === 'member';
-	const scopeActor = isMember ? await actorForProject(db, actor, access.projectId) : actor;
+	const scopeActor =
+		access === addressAccess
+			? memberActor(actor, access, address.owner_name)
+			: isMember
+				? await actorForProject(db, actor, access.projectId)
+				: actor;
 	const userId = scopeActor.userId;
 
-	// Wave 1: the issue row (URLs address projects by name, joined here so the
-	// project resolve is not a round trip of its own) alongside the two lists
-	// that do not depend on it.
+	// Wave B: the issue row and everything that needs only its id, at once.
+	const sharedPromise =
+		access === addressAccess
+			? Promise.resolve(address.shared_at != null)
+			: db
+					.selectFrom('project')
+					.select('shared_at')
+					.where('id', '=', access.projectId)
+					.where('user_id', '=', userId)
+					.executeTakeFirst()
+					.then((row) => row?.shared_at != null);
 	const workflowsPromise = loadWorkflows(db, userId);
-	// A rejected promise that nothing awaits until wave 2 would be an unhandled
-	// rejection if the issue lookup throws first.
-	workflowsPromise.catch(() => {});
+	const issuePromise = loadIssue(db, userId, { id: issueId });
+	const eventsPromise = eventQuery(db, userId)
+		.where('event.issue_id', '=', issueId)
+		.orderBy('event.created_at desc')
+		.orderBy('event.id desc')
+		.limit(100)
+		.execute()
+		.then((rows) => rows.map(serializeEvent));
+	// The whole vocabulary, for the labels picker in the aside.
+	const labelsPromise = listLabelsInternal(db, userId);
+	const receiptPromise = sharedPromise.then((shared) =>
+		shared ? readIssueConsent(db, viewerId, issueId) : null
+	);
+	const rosterPromise = sharedPromise.then((shared) =>
+		shared ? listIssuePermissionRoster(db, issueId) : []
+	);
+	// Nothing awaits these until the issue row lands; a rejection in the
+	// meantime would otherwise be unhandled.
+	for (const p of [workflowsPromise, eventsPromise, labelsPromise, receiptPromise, rosterPromise])
+		p.catch(() => {});
 
-	const issue = await loadIssue(db, userId, { id: addressed.issue_id }).catch(async () => {
+	const issue = await issuePromise.catch(async () => {
 		// Only the 404 path pays for naming which half of the address was
 		// wrong, and only it awaits the layout: both halves, so an archived
 		// project says "no such issue" rather than "no such project".
@@ -130,16 +208,6 @@ export const load: PageServerLoad = async ({
 				: `You have no project named “${truncate(params.project)}”.`
 		);
 	});
-	const sharing = await db
-		.selectFrom('project')
-		.select('shared_at')
-		.where('id', '=', issue.project_id)
-		.where('user_id', '=', userId)
-		.executeTakeFirst();
-	const permissionReceipt =
-		sharing?.shared_at == null ? null : await readIssueConsent(db, viewerId, issue.id);
-	const permissionRoster =
-		sharing?.shared_at == null ? [] : await listIssuePermissionRoster(db, issue.id);
 	const canonicalPath = `/issues/${encodeURIComponent(issue.project_id)}/${issue.number}`;
 	if (!isDataRequest && url.pathname !== canonicalPath) {
 		// A native document redirect retains the browser fragment. Client data
@@ -147,24 +215,13 @@ export const load: PageServerLoad = async ({
 		redirect(307, `${canonicalPath}${url.search}`);
 	}
 
-	// Wave 2: everything else, in parallel.
-	const detailPromise = getIssueDetail(db, userId, issue, {
-		workflows: workflowsPromise,
-		artifacts: true
-	});
-	const eventsPromise = eventQuery(db, userId)
-		.where('event.issue_id', '=', issue.id)
-		.orderBy('event.created_at desc')
-		.orderBy('event.id desc')
-		.limit(100)
-		.execute()
-		.then((rows) => rows.map(serializeEvent));
-
-	const [detail, events, labelLibrary] = await Promise.all([
-		detailPromise,
+	// Wave C: the detail, which needs the row's workflow and state.
+	const [detail, events, labelLibrary, permissionReceipt, permissionRoster] = await Promise.all([
+		getIssueDetail(db, userId, issue, { workflows: workflowsPromise, artifacts: true }),
 		eventsPromise,
-		// The whole vocabulary, for the labels picker in the aside.
-		listLabelsInternal(db, userId)
+		labelsPromise,
+		receiptPromise,
+		rosterPromise
 	]);
 
 	// The artifacts ride along on the detail (fetched in the same wave); expose
