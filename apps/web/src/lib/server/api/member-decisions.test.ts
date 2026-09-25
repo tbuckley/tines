@@ -1,9 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { FULL_API_KEY_PERMISSIONS } from '@tines/shared';
-import { NOW, PROJECT, REVIEW, OPEN, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
+import {
+	NOW,
+	PROJECT,
+	REVIEW,
+	OPEN,
+	USER,
+	addIssue,
+	addRun,
+	addRunKey,
+	addRunner,
+	seedBase
+} from '../supervisor/test-fixtures';
 import { createTestDb } from './test-db';
 import { TEST_NOOP_DISPATCH_EFFECTS } from './test-dispatch-effects';
-import { createComment, updateComment, deleteComment, transitionIssue } from './issues';
+import {
+	createComment,
+	updateComment,
+	deleteComment,
+	getIssueDetail,
+	transitionIssue
+} from './issues';
 import { readIssueConsent, writeIssueConsent } from './personal-consent';
 import { listSharedEvents } from './shared-events';
 import { eventQuery } from './events';
@@ -278,5 +295,49 @@ describe('attributed member decisions', () => {
 				expected_workflow_revision: working.workflow_revision
 			})
 		).resolves.toMatchObject({ state: { id: next.to_state_id } });
+	});
+
+	it("lets the owner's run key take an allowed transition on its own issue without a witness", async () => {
+		const { t } = setup();
+		const issueId = addIssue(t, { state: OPEN });
+		const runnerId = addRunner(t, {});
+		const runId = addRun(t, { issueId, runnerId, status: 'running' });
+		const keyId = addRunKey(t, runId);
+		const runKey = {
+			userId: USER,
+			userName: 'alice',
+			apiKeyId: keyId,
+			apiKeyName: `run ${runId}`,
+			viaSession: false,
+			bearerPresent: true,
+			agentRunId: runId,
+			permissions: FULL_API_KEY_PERMISSIONS,
+			runRestriction: {
+				policy: 'run-v1' as const,
+				runId,
+				issueId,
+				projectId: PROJECT,
+				launchStateId: OPEN
+			}
+		};
+		const before = await getIssueDetail(t.db, USER, { id: issueId });
+		const target = before.allowed_transitions.find((x) => x.to_state.id === REVIEW);
+		expect(target).toBeDefined();
+		const moved = await transitionIssue(t.db, t.env, runKey, TEST_NOOP_DISPATCH_EFFECTS, issueId, {
+			action: target!.name
+		});
+		expect(moved).toMatchObject({
+			state: { id: REVIEW },
+			permission_receipt: { actor: 'key', my_agents: { revision: 0 } }
+		});
+		expect(t.all('SELECT * FROM issue_personal_choice WHERE issue_id = ?', issueId)).toEqual([]);
+		// Permission stays browser-only for run keys too.
+		const [back] = (await getIssueDetail(t.db, USER, { id: issueId })).allowed_transitions;
+		await expect(
+			transitionIssue(t.db, t.env, runKey, TEST_NOOP_DISPATCH_EFFECTS, issueId, {
+				transition_id: back.transition_id,
+				allow_my_agents: true
+			})
+		).rejects.toMatchObject({ status: 403, code: 'consent_browser_required' });
 	});
 });

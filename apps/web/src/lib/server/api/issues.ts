@@ -2281,7 +2281,11 @@ export async function transitionIssue(
 
 	const action = body.action?.trim();
 	const transitionId = body.transition_id?.trim();
-	if (consentMode) {
+	// The witness below proves a person saw the current permission before
+	// deciding. A run key can neither read nor set personal permission, so it
+	// has no witness to echo; it moves its own issue by name or id, and the
+	// compare-and-swap write still pins the revisions read here.
+	if (consentMode && !actor.agentRunId) {
 		if (!transitionId || action) {
 			throw new ApiFail(
 				409,

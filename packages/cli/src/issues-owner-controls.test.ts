@@ -43,7 +43,13 @@ beforeAll(async () => {
 			if (path === '/api/v1/projects') return send({ items: [project], next_cursor: null });
 			if (path === '/api/v1/projects/prj_1') return send(project);
 			if (path === '/api/v1/projects/prj_1/issues/1') return send(issue);
-			if (path === '/api/v1/issues/iss_1/my-consent') return send(permission);
+			if (path === '/api/v1/issues/iss_1/my-consent') {
+				if (req.headers.authorization === 'Bearer run') {
+					res.statusCode = 403;
+					return send({ error: { code: 'run_key_forbidden', message: 'Run keys cannot' } });
+				}
+				return send(permission);
+			}
 		}
 		let raw = '';
 		req.on('data', (chunk) => (raw += chunk));
@@ -63,12 +69,12 @@ beforeAll(async () => {
 });
 afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
 
-function cli(args: string[]) {
+function cli(args: string[], key = 'test') {
 	return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
 		execFile(
 			NODE,
 			[CLI_BIN, ...args],
-			{ env: { ...process.env, TINES_API_URL: baseUrl, TINES_API_KEY: 'test' }, timeout: 60_000 },
+			{ env: { ...process.env, TINES_API_URL: baseUrl, TINES_API_KEY: key }, timeout: 60_000 },
 			(error, stdout, stderr) =>
 				resolve({ code: (error as { code?: number } | null)?.code ?? 0, stdout, stderr })
 		);
@@ -91,6 +97,15 @@ it('moves with the exact witness and no CLI permission input', async () => {
 				expected_consent_epoch: 2
 			}
 		}
+	]);
+});
+
+it('moves a run key by exact transition when it cannot read personal permission', async () => {
+	writes.length = 0;
+	const result = await cli(['issues', 'move', 'demo/1', 'Review', '--json'], 'run');
+	expect(result.code, result.stderr).toBe(0);
+	expect(writes).toEqual([
+		{ path: '/api/v1/issues/iss_1/transition', body: { transition_id: 'tr_1' } }
 	]);
 });
 
