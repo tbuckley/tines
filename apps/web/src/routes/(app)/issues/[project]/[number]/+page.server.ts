@@ -321,7 +321,7 @@ export const load: PageServerLoad = async ({
 				? ownerOnly(null)
 				: explainDispatch(db, userId, issue.id, Date.now(), issue),
 			issueRuns: listRuns(db, userId, { issue: issue.id }, { cursor: null, limit: 20 }).then(
-				(page) => page.items
+				(page) => (isMember ? page.items.map((run) => ({ ...run, usage: null })) : page.items)
 			),
 			usage: usagePromise,
 			runners: isMember ? ownerOnly([]) : listRunners(db, userId),

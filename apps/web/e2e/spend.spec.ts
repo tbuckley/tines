@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { SPEND } from './constants.mjs';
 import { d1 } from './d1';
-import { gotoHydrated, signIn } from './helpers';
+import { apiClient, body, gotoHydrated, signIn } from './helpers';
 import { armLedgerDays, utcDate } from './spend-arm';
 
 /**
@@ -229,7 +229,7 @@ test.describe('Agents Spend real ledger', () => {
 			await gotoHydrated(page, `/issues/${encodeURIComponent(SPEND.projects.alpha.name)}/1`);
 			if (width === 320) await page.getByRole('button', { name: /Agent activity 1 run/ }).click();
 			const total = page.locator('p[title*="retained direct runs"]');
-			await expect(total).toContainText('Total spend: $2.00');
+			await expect(total).toHaveText('Total spend: $2.00');
 			await expect(total.locator('..').locator('h2')).toContainText('Agent activity');
 			expect(await total.evaluate((element) => element.previousElementSibling?.tagName)).toBe('H2');
 			await expect(total).toHaveAttribute('title', /As of .*Z\./);
@@ -246,6 +246,121 @@ test.describe('Agents Spend real ledger', () => {
 		}
 	});
 
+	test('resets spend while following an issue link before destination usage settles', async ({
+		page,
+		request
+	}) => {
+		await armLedgerDays();
+		const api = apiClient(request, SPEND.apiKey);
+		const sourceId = 'iss_e2e_spend_alpha_today';
+		const destinationId = 'iss_e2e_spend_zero';
+		const link = await body<{ id: string }>(
+			await api.post(`/api/v1/issues/${sourceId}/links`, {
+				kind: 'duplicate_of',
+				issue_id: destinationId
+			})
+		);
+		try {
+			await gotoHydrated(page, `/issues/${encodeURIComponent(SPEND.projects.alpha.name)}/1`);
+			const total = page.locator('p[title*="retained direct runs"]');
+			await expect(total).toHaveText('Total spend: $2.00');
+			// SvelteKit streams the destination's data in lines. Pass every chunk
+			// except the usage promise, so the activity card renders while spend waits.
+			await page.evaluate(() => {
+				const nativeFetch = window.fetch.bind(window);
+				window.fetch = async (...args) => {
+					const response = await nativeFetch(...args);
+					const input = args[0];
+					const url = new URL(
+						typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+						location.href
+					);
+					if (!url.pathname.endsWith('/__data.json') || !response.body) return response;
+					const reader = response.body.getReader();
+					const encoder = new TextEncoder();
+					const decoder = new TextDecoder();
+					const stream = new ReadableStream<Uint8Array>({
+						async start(controller) {
+							let buffer = '';
+							let usageId: number | undefined;
+							let heldLine = '';
+							let sourceDone = false;
+							const release = window as typeof window & { releaseSpendStream?: () => void };
+							const sendLine = (line: string) => {
+								if (usageId === undefined) {
+									const payload = JSON.parse(line) as { nodes: { data: unknown[] }[] };
+									const data = payload.nodes.at(-1)!.data;
+									const root = data[0] as { deferred: number };
+									const deferred = data[root.deferred] as { usage: number };
+									const promise = data[deferred.usage] as [string, number];
+									usageId = data[promise[1]] as number;
+									controller.enqueue(encoder.encode(line));
+									return;
+								}
+								const chunk = JSON.parse(line) as { type: string; id?: number };
+								if (chunk.type !== 'chunk' || chunk.id !== usageId) {
+									controller.enqueue(encoder.encode(line));
+									return;
+								}
+								heldLine = line;
+								release.releaseSpendStream = () => {
+									if (!heldLine) return;
+									controller.enqueue(encoder.encode(heldLine));
+									heldLine = '';
+									if (sourceDone) controller.close();
+								};
+							};
+							try {
+								for (;;) {
+									const { done, value } = await reader.read();
+									if (done) break;
+									buffer += decoder.decode(value, { stream: true });
+									let boundary: number;
+									while ((boundary = buffer.indexOf('\n')) >= 0) {
+										sendLine(buffer.slice(0, boundary + 1));
+										buffer = buffer.slice(boundary + 1);
+									}
+								}
+								if (buffer) sendLine(buffer);
+								sourceDone = true;
+								if (!heldLine) controller.close();
+							} catch (error) {
+								controller.error(error);
+							}
+						}
+					});
+					return new Response(stream, { status: response.status, headers: response.headers });
+				};
+			});
+			await page
+				.getByRole('link', { name: `${SPEND.projects.zero.name}/#1` })
+				.first()
+				.click({ noWaitAfter: true });
+			await expect(page.getByRole('heading', { name: 'Spend zero' })).toBeVisible();
+			await expect(page.getByText('Total spend: Loading…')).toBeVisible();
+			await expect
+				.poll(() =>
+					page.evaluate(
+						() =>
+							typeof (window as typeof window & { releaseSpendStream?: () => void })
+								.releaseSpendStream
+					)
+				)
+				.toBe('function');
+			await page.evaluate(() => {
+				(window as typeof window & { releaseSpendStream?: () => void }).releaseSpendStream?.();
+			});
+			await expect(total).toHaveText('Total spend: $0');
+		} finally {
+			await page
+				.evaluate(() => {
+					(window as typeof window & { releaseSpendStream?: () => void }).releaseSpendStream?.();
+				})
+				.catch(() => {});
+			await api.delete(`/api/v1/issues/${sourceId}/links/${link.id}`);
+		}
+	});
+
 	test('sums all direct runs beyond the latest 20 and refreshes the total', async ({ page }) => {
 		await armLedgerDays();
 		const issueUrl = `/issues/${encodeURIComponent(SPEND.projects.alpha.name)}/1`;
@@ -256,13 +371,17 @@ test.describe('Agents Spend real ledger', () => {
 				FROM agent_run r, n WHERE r.id = 'run_e2e_spend_alpha_today'`);
 			await gotoHydrated(page, issueUrl);
 			const card = page.getByRole('heading', { name: 'Agent activity' }).locator('..');
-			await expect(card.getByText(/Total spend:\s*\$42\.00/)).toBeVisible();
+			await expect(card.locator('p[title*="retained direct runs"]')).toHaveText(
+				'Total spend: $42.00'
+			);
 			await expect(card.locator('li[data-run-id]')).toHaveCount(20);
 			d1(
 				`UPDATE agent_run SET usage = json_set(usage, '$.cost_usd', 3) WHERE id = 'run_e2e_spend_extra_1'`
 			);
 			await page.reload({ waitUntil: 'networkidle' });
-			await expect(card.getByText(/Total spend:\s*\$43\.00/)).toBeVisible();
+			await expect(card.locator('p[title*="retained direct runs"]')).toHaveText(
+				'Total spend: $43.00'
+			);
 		} finally {
 			d1(`DELETE FROM agent_run WHERE id LIKE 'run_e2e_spend_extra_%'`);
 		}
@@ -280,26 +399,25 @@ test.describe('Agents Spend real ledger', () => {
 		] as const;
 		for (const [issuePath, expected] of cases) {
 			await page.goto(`/issues/${issuePath}`);
-			await expect(page.locator('p[title*="retained direct runs"]')).toContainText(expected);
+			await expect(page.locator('p[title*="retained direct runs"]')).toHaveText(
+				`Total spend: ${expected}`
+			);
 		}
 		try {
 			d1(`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage, state_id_at_start, log, created_at, started_at, ended_at)
 				SELECT 'run_e2e_spend_partial_pending', user_id, 'iss_e2e_spend_alpha_today', runner_id, status, outcome, tier, model, usage, state_id_at_start, log, created_at, started_at, ended_at
 				FROM agent_run WHERE id = 'run_e2e_spend_pending'`);
 			await page.goto(`/issues/${SPEND.projects.alpha.id}/1`);
-			await expect(page.locator('p[title*="retained direct runs"]')).toContainText(
+			await expect(page.locator('p[title*="retained direct runs"]')).toHaveText(
 				'Total spend: $2.00 · 1 pending'
 			);
 			d1(`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage, state_id_at_start, state_id_at_end, log, created_at, started_at, ended_at)
 				SELECT 'run_e2e_spend_partial', user_id, issue_id, runner_id, status, outcome, tier, model, NULL, state_id_at_start, state_id_at_end, log, created_at + 1, started_at + 1, ended_at + 1
 				FROM agent_run WHERE id = 'run_e2e_spend_alpha_today'`);
 			await page.goto(`/issues/${encodeURIComponent(SPEND.projects.alpha.name)}/1`);
-			await expect(
-				page
-					.getByRole('heading', { name: 'Agent activity' })
-					.locator('..')
-					.getByText(/Total spend:\s*\$2\.00 · partial · 1 pending/)
-			).toBeVisible();
+			await expect(page.locator('p[title*="retained direct runs"]')).toHaveText(
+				'Total spend: $2.00 · partial · 1 pending'
+			);
 		} finally {
 			d1(
 				`DELETE FROM agent_run WHERE id IN ('run_e2e_spend_partial', 'run_e2e_spend_partial_pending')`

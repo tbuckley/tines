@@ -381,6 +381,7 @@
 						<RunRow
 							{run}
 							showLogs={ownerControls}
+							showCost={ownerControls}
 							oncancel={permission ? () => cancelRun(run.id) : undefined}
 						/>
 					{/each}
