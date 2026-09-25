@@ -919,3 +919,49 @@ test('the read-only system workflow keeps its description in the header', async 
 	await expect(page.getByRole('button', { name: 'Copy to library' })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0);
 });
+
+test('the owner widens what runs in a stage can change, and an API key cannot', async ({
+	page,
+	apiFor,
+	uniqueName
+}) => {
+	const api = apiFor(ALICE);
+	const created = await body<{ id: string; states: { id: string; name: string }[] }>(
+		await api.post('/api/v1/workflows', {
+			name: uniqueName('Run scope', { maxLength: 100 }),
+			description: 'A workflow used to verify per-stage run scope.',
+			initial_state: 'Triaging',
+			states: [
+				{ name: 'Triaging', category: 'active' },
+				{ name: 'Done', category: 'done' }
+			],
+			transitions: [{ name: 'Triage complete', from: 'Triaging', to: 'Done' }]
+		})
+	);
+	const triaging = created.states.find((state) => state.name === 'Triaging')!;
+	const refused = await api.put(`/api/v1/workflows/${created.id}/states/${triaging.id}/run-scope`, {
+		run_scope: 'workspace'
+	});
+	expect(refused.status()).toBe(403);
+
+	await gotoHydrated(page, `/workflows/${created.id}`);
+	const section = page.getByTestId('run-scope');
+	// Only active states carry a scope; Done is not listed.
+	await expect(section.getByRole('combobox')).toHaveCount(1);
+	const select = section.getByLabel('What runs in Triaging can change');
+	await expect(select).toHaveValue('issue');
+	const saved = page.waitForResponse(
+		(response) => response.url().endsWith('/run-scope') && response.request().method() === 'PUT'
+	);
+	await select.selectOption('project');
+	expect((await saved).status()).toBe(200);
+
+	await page.reload();
+	await expect(
+		page.getByTestId('run-scope').getByLabel('What runs in Triaging can change')
+	).toHaveValue('project');
+	const workflow = await body<{ states: { id: string; run_scope?: string }[] }>(
+		await api.get(`/api/v1/workflows/${created.id}`)
+	);
+	expect(workflow.states.find((state) => state.id === triaging.id)?.run_scope).toBe('project');
+});

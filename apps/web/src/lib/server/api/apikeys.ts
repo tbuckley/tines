@@ -376,7 +376,8 @@ export function currentApiKeyAuthority(actor: ActorContext): {
 						run_id: actor.runRestriction.runId,
 						issue_id: actor.runRestriction.issueId,
 						project_id: actor.runRestriction.projectId,
-						launch_state_id: actor.runRestriction.launchStateId
+						launch_state_id: actor.runRestriction.launchStateId,
+						scope: actor.runRestriction.scope ?? 'issue'
 					}
 				: null,
 			usable: true

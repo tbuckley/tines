@@ -1,4 +1,4 @@
-import type { StateCategory } from '@tines/shared';
+import type { RunScope, StateCategory } from '@tines/shared';
 import { Kysely, SqliteAdapter, type Generated } from 'kysely';
 import { D1Dialect } from 'kysely-d1';
 import { traceUsageScaleDb } from './usage-scale-trace';
@@ -66,6 +66,8 @@ export interface WorkflowStateTable {
 	position: number;
 	/** The state this one inherits context from (Tines/238), or null. */
 	inherits_from_state_id: string | null;
+	/** Migration 0047: what runs launched in this state may touch. */
+	run_scope: Generated<RunScope>;
 	created_at: number;
 }
 

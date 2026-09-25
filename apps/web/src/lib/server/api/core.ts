@@ -4,7 +4,8 @@ import {
 	parseApiKeyPermissions,
 	type ApiErrorBody,
 	type ApiKeyPermissions,
-	type ArchivedFilter
+	type ArchivedFilter,
+	type RunScope
 } from '@tines/shared';
 import { json, type RequestEvent } from '@sveltejs/kit';
 import type { CompiledQuery } from 'kysely';
@@ -226,6 +227,8 @@ export interface ActorContext {
 		issueId: string;
 		projectId: string;
 		launchStateId: string;
+		/** The launch state's run scope; absent means `issue`. */
+		scope?: RunScope;
 	} | null;
 	/**
 	 * Set when a project member acts on a shared project: `userId` is then the
@@ -302,6 +305,7 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 		.innerJoin('user', 'user.id', 'api_key.user_id')
 		.leftJoin('agent_run as run', 'run.id', 'api_key.agent_run_id')
 		.leftJoin('issue as run_issue', 'run_issue.id', 'run.issue_id')
+		.leftJoin('workflow_state as run_state', 'run_state.id', 'run.state_id_at_start')
 		.select([
 			'api_key.id',
 			'api_key.user_id',
@@ -314,6 +318,7 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 			'run.issue_id as run_issue_id',
 			'run.state_id_at_start as run_launch_state_id',
 			'run_issue.project_id as run_project_id',
+			'run_state.run_scope as run_scope',
 			'user.name as user_name'
 		])
 		.where('api_key.key_hash', '=', hash)
@@ -353,7 +358,10 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 			runId: row.agent_run_id,
 			issueId: row.run_issue_id,
 			projectId: row.run_project_id,
-			launchStateId: row.run_launch_state_id
+			launchStateId: row.run_launch_state_id,
+			// Read at request time, so the owner widening or narrowing a stage
+			// applies to runs already in flight.
+			scope: row.run_scope ?? 'issue'
 		};
 	}
 

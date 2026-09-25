@@ -366,6 +366,28 @@ A `gemini_managed` type exists in the schema but has no adapter yet; the registr
 `apps/web/src/lib/server/supervisor/adapter.ts` is the source of truth for what can
 actually launch.
 
+### What a run can change
+
+Every run gets a key minted for it, bound to its issue and that issue's project and revoked
+when the run ends. By default the key writes only to its own issue: it can comment, attach
+artifacts, label, link, write that issue's context and its stage journal, and take the
+issue's transitions. It can read the rest of its project and create issues there.
+
+Some stages exist to act on other work: backlog triage, journal upkeep, applying approved
+prompt changes. For those, the workflow owner widens the stage on its workflow page, under
+**What runs can change**:
+
+- **Its own issue** (default) — as above.
+- **Any issue in its project** — also comment on, transition, edit, label and link every
+  issue in the run's project, and rewrite any of that project's journals.
+- **Project, plus shared context, workflows and labels** — also create and edit prompt and
+  skill items that are not scoped to another project, workflows, and labels.
+
+Only the owner sets this, from a browser session; no API key can, so a run can never widen
+its own stage. At every level a run cannot delete workflows or labels, write env
+items, change runners, routing, the supervisor or API keys, force-set a state, or put an issue
+into a stage whose scope reaches further than its own.
+
 ### Routing, quotas, and budgets
 
 All of this is edited on the **Agents** tab, and most of it from the CLI too:

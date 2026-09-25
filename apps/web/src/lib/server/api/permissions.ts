@@ -1,6 +1,7 @@
 import {
 	FULL_API_KEY_PERMISSIONS,
 	accessIncludes,
+	runScopeCovers,
 	permissionsIncludeProject,
 	type AccessLevel,
 	type ApiKeyPermissions,
@@ -75,6 +76,18 @@ const RUN_OPERATIONS = new Set([
 	'library.export'
 ]);
 
+/**
+ * Shared-library writes a run may make only when its launch state's run scope
+ * is `workspace`. Deletes are absent on purpose: a run key's stored policy
+ * grants workspace `write`, never `delete`.
+ */
+const WORKSPACE_RUN_OPERATIONS = new Set([
+	'workflow.create',
+	'workflow.update',
+	'label.create',
+	'label.update'
+]);
+
 const CONTEXT_MUTATIONS = new Set([
 	'context.create',
 	'context.update',
@@ -89,8 +102,12 @@ function requireRunOperation(
 ): void {
 	const run = actor.runRestriction;
 	if (!run) return;
-	if (!RUN_OPERATIONS.has(operation))
-		throw runKeyForbidden({ operation, reason: 'operation_forbidden' });
+	const scope = run.scope ?? 'issue';
+	if (
+		!RUN_OPERATIONS.has(operation) &&
+		!(scope === 'workspace' && WORKSPACE_RUN_OPERATIONS.has(operation))
+	)
+		throw runKeyForbidden({ operation, reason: 'operation_forbidden', run_scope: scope });
 	if (target.projectId !== undefined && target.projectId !== run.projectId) {
 		throw runKeyForbidden({ operation, reason: 'outside_run_project' });
 	}
@@ -113,14 +130,54 @@ function requireRunOperation(
 		'issue_link.create',
 		'issue_link.remove'
 	]);
-	if (boundIssueWrite.has(operation) && target.issueId !== run.issueId) {
-		throw runKeyForbidden({ operation, reason: 'outside_run_issue' });
+	// A stage's run scope widens the reach past the run's own issue, never
+	// past its project (checked above): `project` reaches every issue there,
+	// `workspace` also reaches context items that are not issue-anchored.
+	// Env items are fenced separately at every scope.
+	const context = CONTEXT_MUTATIONS.has(operation);
+	const reachesTarget =
+		target.issueId === run.issueId ||
+		(scope !== 'issue' && target.issueId !== undefined) ||
+		(scope === 'workspace' && context);
+	if (boundIssueWrite.has(operation) && !reachesTarget) {
+		throw runKeyForbidden({ operation, reason: 'outside_run_issue', run_scope: scope });
 	}
-	if (CONTEXT_MUTATIONS.has(operation) && target.issueScoped !== true) {
-		throw runKeyForbidden({ operation, reason: 'context_not_issue_scoped' });
+	if (context && scope === 'issue' && target.issueScoped !== true) {
+		throw runKeyForbidden({ operation, reason: 'context_not_issue_scoped', run_scope: scope });
 	}
 	if (operation.startsWith('journal.') && !target.boundJournal) {
 		throw runKeyForbidden({ operation, reason: 'journal_anchor_unavailable' });
+	}
+}
+
+/**
+ * A run may not put an issue into a state whose run scope reaches further
+ * than its own: the run that state launches would hold authority this one
+ * lacks, on a description this one wrote. Applies to creating an issue at a
+ * start state and to taking a transition.
+ */
+export async function requireRunScopeCeiling(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	stateId: string
+): Promise<void> {
+	const run = actor.runRestriction;
+	if (!run) return;
+	const own = run.scope ?? 'issue';
+	if (own === 'workspace') return;
+	const state = await db
+		.selectFrom('workflow_state')
+		.select('run_scope')
+		.where('id', '=', stateId)
+		.executeTakeFirst();
+	const target = state?.run_scope ?? 'issue';
+	if (!runScopeCovers(own, target)) {
+		throw runKeyForbidden({
+			reason: 'run_scope_ceiling',
+			run_scope: own,
+			state_run_scope: target,
+			state_id: stateId
+		});
 	}
 }
 
