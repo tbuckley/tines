@@ -149,6 +149,7 @@ const callLoad = (load: unknown, input: ProbeEvent) =>
 const WAVE_BUDGET: Record<string, number> = {
 	'/issues': 3,
 	'/issues/[project]/[number]': 4,
+	'/issues/[project]/[number] by name': 4,
 	'/projects': 2,
 	'/activity': 3,
 	'/agents': 2,
@@ -161,12 +162,12 @@ function reportWaves(bySql: { sql: string; wave: number }[], upTo: number) {
 			report(`    w${wave}  ${sql.slice(0, 100).replace(/\s+/g, ' ')}`);
 }
 
-async function measure(name: string, run: (env: Env) => Promise<unknown>) {
+async function measure(name: string, run: (env: Env, number: number) => Promise<unknown>) {
 	const t = createTestDb();
 	const { number } = seed(t);
 	const { env, sqls, conc, waves } = instrument(t);
 	const started = performance.now();
-	await run(env);
+	await run(env, number);
 	const elapsed = performance.now() - started;
 	report(
 		`\n${name}\n  queries: ${sqls.length}\n  sequential waves (critical path): ${waves.max} (budget ${WAVE_BUDGET[name]})\n  modelled time @${LATENCY_MS}ms/query: ${elapsed.toFixed(0)}ms\n  peak concurrent queries: ${conc.max}`
@@ -238,6 +239,22 @@ describe(`navigation cost probe (${SERIALIZE ? 'serialized baseline' : 'as shipp
 		// names the offenders.
 		expect(dupes).toEqual([]);
 		expectWithinBudget('/issues/[project]/[number]', paintWaves);
+	});
+
+	it('issue detail, addressed by project name as lists link it', async () => {
+		const { load } = await import('../../../routes/(app)/issues/[project]/[number]/+page.server');
+		// Resolved by name in the same statement as the id, so a list click
+		// pays nothing extra; measured separately because most clicks take it.
+		const r = await measure('/issues/[project]/[number] by name', (env, number) =>
+			callLoad(load, {
+				...event(env, `/issues/${SEEDED_PROJECT.name}/${number}`, {
+					project: SEEDED_PROJECT.name,
+					number: String(number)
+				}),
+				isDataRequest: true
+			} as ProbeEvent)
+		);
+		expectWithinBudget('/issues/[project]/[number] by name', r.waves);
 	});
 
 	it('projects', async () => {

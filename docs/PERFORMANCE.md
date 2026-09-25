@@ -126,12 +126,16 @@ first paint (a project lookup, the address, an access check and the sharing
 lookups, each its own round trip, ahead of the original two waves); nothing
 failed because the probe did not gate waves. It is back to 4: one statement
 resolves the address, project, membership and issue id together and access
-is decided from that row (`projectAccessFromRow`). `/activity` lost a serial
+is decided from that row (`projectAccessFromRow`). That statement matches
+the project segment as an id or a name: lists link by name, and resolving
+the name first had cost every list click three more waves (7), which the
+probe did not see because it addressed the issue by id. It now measures both. `/activity` lost a serial
 wave by fetching the owner's and shared events together.
 
 | Page | Queries | Waves (budget) |
 |---|---|---|
 | `/issues/[project]/[number]` | 12 blocking, 29 total | 4 to first paint (4), 7 settled |
+| same, addressed by project name | 12 blocking | 4 to first paint (4) |
 | `/agents` | 22 | 2 (2) |
 | `/issues` | 7 | 3 (3) |
 | `/context` | 7 | 3 (3) |

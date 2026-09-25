@@ -71,45 +71,65 @@ export const load: PageServerLoad = async ({
 	// Wave A, one statement: the addressed project with the viewer's
 	// membership, the owner's name (a member acts with the owner's scope), and
 	// the issue the address points at. Access is decided from this row, not
-	// from a round trip of its own.
-	const addressQuery = (projectId: string) =>
-		db
-			.selectFrom('project as p')
-			.innerJoin('user as owner', 'owner.id', 'p.user_id')
-			.leftJoin('project_member as m', (join) =>
-				join.onRef('m.project_id', '=', 'p.id').on('m.user_id', '=', viewerId)
-			)
-			.leftJoin('issue_address as a', (join) =>
-				join.onRef('a.project_id', '=', 'p.id').on('a.number', '=', number)
-			)
-			.leftJoin('issue as i', 'i.id', 'a.issue_id')
-			.select([
-				'p.id',
-				'p.name',
-				'p.user_id',
-				'p.shared_at',
-				'p.sharing_revision',
-				'p.archived_at',
-				'm.revision',
-				'm.revoked_at',
-				'owner.name as owner_name',
-				'a.issue_id',
-				'i.project_id as issue_project_id'
+	// from a round trip of its own. The project segment is matched as an id
+	// or as a name in the same statement: lists link by name, and resolving
+	// the name first cost three more round trips on every click.
+	const ref = params.project;
+	const candidates = await db
+		.selectFrom('project as p')
+		.innerJoin('user as owner', 'owner.id', 'p.user_id')
+		.leftJoin('project_member as m', (join) =>
+			join.onRef('m.project_id', '=', 'p.id').on('m.user_id', '=', viewerId)
+		)
+		.leftJoin('issue_address as a', (join) =>
+			join.onRef('a.project_id', '=', 'p.id').on('a.number', '=', number)
+		)
+		.leftJoin('issue as i', 'i.id', 'a.issue_id')
+		.select([
+			'p.id',
+			'p.name',
+			'p.user_id',
+			'p.shared_at',
+			'p.sharing_revision',
+			'p.archived_at',
+			'm.revision',
+			'm.revoked_at',
+			'owner.name as owner_name',
+			'a.issue_id',
+			'i.project_id as issue_project_id'
+		])
+		.where((eb) =>
+			eb.or([
+				eb('p.id', '=', ref),
+				// A name resolves only within the viewer's accessible set, as
+				// resolveAccessibleProjectRef does.
+				eb.and([
+					eb('p.name', '=', ref),
+					eb.or([
+						eb('p.user_id', '=', viewerId),
+						eb.and([
+							eb('p.shared_at', 'is not', null),
+							eb('m.revision', 'is not', null),
+							eb('m.revoked_at', 'is', null)
+						])
+					])
+				])
 			])
-			.where('p.id', '=', projectId)
-			.executeTakeFirst();
-	// Immutable ids are the canonical address; a legacy name costs one more
-	// round trip to resolve among the viewer's accessible projects.
+		)
+		.execute();
+	// Immutable ids win; an ambiguous name gets the shared resolver's 409.
+	const named = candidates.filter((row) => row.id !== ref);
 	const address =
-		(await addressQuery(params.project)) ??
-		(await addressQuery(
-			await resolveAccessibleProjectRef(db, actor, params.project).catch((e) => {
-				if (e instanceof ApiFail && e.status === 404)
-					error(404, `You have no project named “${truncate(params.project)}”.`);
-				if (e instanceof ApiFail) error(e.status, e.message);
-				throw e;
-			})
-		));
+		candidates.find((row) => row.id === ref) ??
+		(named.length > 1
+			? await resolveAccessibleProjectRef(db, actor, ref).then(
+					(id) => named.find((row) => row.id === id),
+					(e) => {
+						if (e instanceof ApiFail) error(e.status, e.message);
+						throw e;
+					}
+				)
+			: named[0]);
 	if (!address) error(404, `You have no project named “${truncate(params.project)}”.`);
 	const addressAccess = (() => {
 		try {
