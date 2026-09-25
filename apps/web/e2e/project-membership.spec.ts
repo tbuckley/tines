@@ -171,6 +171,13 @@ test('two accounts join and read without owner-private payloads, then removal re
 			id: workflow.id,
 			states: [{ name: 'Working' }, { name: 'Review' }]
 		});
+		// The issue's workflow link opens the owner's workflow read-only, not a 404.
+		await bobPage.getByRole('link', { name: workflow.name }).click();
+		await expect(bobPage.getByRole('heading', { name: workflow.name })).toBeVisible();
+		await expect(bobPage.getByText(/read-only/)).toBeVisible();
+		await expect(bobPage.getByText('Review', { exact: true }).first()).toBeVisible();
+		await expect(bobPage.getByRole('button', { name: 'Save' })).toHaveCount(0);
+		await expect(bobPage.getByText('Context by state')).toHaveCount(0);
 		expect(
 			(
 				await body<{ items: { id: string }[] }>(

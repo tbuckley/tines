@@ -33,6 +33,10 @@
 				(data.focus.default_workflow_id === null && data.workflow.is_system))
 	);
 
+	/** A shared project's workflow: the member reads it, only its owner edits it. */
+	const shared = $derived(data.sharedOwnerName !== null);
+	const readOnly = $derived(data.workflow.is_system || shared);
+
 	/** Active-category states, so dead routing rules are flagged as such. */
 	const activeStateIds = $derived(deriveActiveStateIds(data.workflows));
 
@@ -187,11 +191,18 @@
 				>
 					<IconLock size={12} /> standard · read-only
 				</span>
+			{:else if shared}
+				<span
+					class="text-muted-foreground bg-muted inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium"
+				>
+					<IconLock size={12} />
+					{data.sharedOwnerName}'s · read-only
+				</span>
 			{/if}
 		</h1>
 		<!-- The editable page repeats the description in its Description field, so
 		     the header only carries it where that form is absent. -->
-		{#if data.workflow.is_system && data.workflow.description}
+		{#if readOnly && data.workflow.description}
 			<p class="text-muted-foreground mt-1 max-w-xl text-sm">{data.workflow.description}</p>
 		{/if}
 		{#if data.focusedOpenCount !== null && data.focus}
@@ -206,21 +217,23 @@
 			</p>
 		{/if}
 	</div>
-	<div class="flex gap-2">
-		{#if !data.workflow.is_system}
-			<Button variant="outline" href="/workflows/{data.workflow.id}/export">
-				<IconWorldUpload size={16} /> Publish workflow
+	{#if !shared}
+		<div class="flex gap-2">
+			{#if !data.workflow.is_system}
+				<Button variant="outline" href="/workflows/{data.workflow.id}/export">
+					<IconWorldUpload size={16} /> Publish workflow
+				</Button>
+			{/if}
+			<Button variant="outline" href="/workflows/{data.workflow.id}/export?download=1">
+				<IconDownload size={16} /> Export package
 			</Button>
-		{/if}
-		<Button variant="outline" href="/workflows/{data.workflow.id}/export?download=1">
-			<IconDownload size={16} /> Export package
-		</Button>
-		{#if data.workflow.is_system}
-			<Button variant="outline" onclick={copyToLibrary}>
-				<IconCopy size={16} /> Copy to library
-			</Button>
-		{/if}
-	</div>
+			{#if data.workflow.is_system}
+				<Button variant="outline" onclick={copyToLibrary}>
+					<IconCopy size={16} /> Copy to library
+				</Button>
+			{/if}
+		</div>
+	{/if}
 </div>
 
 {#if errorMessage}
@@ -232,7 +245,7 @@
 	</div>
 {/if}
 
-{#if data.workflow.is_system}
+{#if readOnly}
 	<!-- read-only: graph plus a plain state table -->
 	<div class="grid gap-8 lg:grid-cols-2">
 		<div class="bg-muted/30 rounded-lg border p-4">
@@ -284,78 +297,80 @@
 	{/key}
 {/if}
 
-<!-- per-state context: what agents carry while an issue sits in each state -->
-<div class="mt-8 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2">
-	<h2 class="mb-1 flex items-center gap-1.5 text-sm font-semibold">
-		<IconBooks size={16} stroke={1.75} /> Context by state
-	</h2>
-	<a
-		href="/context"
-		class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mb-1 rounded-sm text-xs outline-none focus-visible:ring-[3px]"
-	>
-		View all context
-	</a>
-	<p class="text-muted-foreground col-span-full mb-3 text-xs">
-		Items scoped to a state apply to any issue sitting in it. Removing a state warns about its
-		attached context.
-	</p>
-	<div class="col-span-full rounded-lg border">
-		{#each data.workflow.states as state (state.id)}
-			{@const items = itemsByState.get(state.id) ?? []}
-			{@const open = selectedStateId === state.id}
-			<div class="border-b last:border-0" id={workflowStateAnchorId(state.id)}>
-				<button
-					type="button"
-					class="hover:bg-muted/50 flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm"
-					onclick={() => (selectedStateId = open ? null : state.id)}
-					aria-expanded={open}
-				>
-					<StateBadge {state} />
-					{#if items.length > 0}
-						<span class="bg-primary/10 text-primary rounded-full px-2 py-0.5 text-xs font-medium">
-							{items.length} item{items.length === 1 ? '' : 's'}
-						</span>
-					{:else}
-						<span class="text-muted-foreground text-xs">no context</span>
-					{/if}
-				</button>
-				{#if open}
-					<div
-						class="space-y-2 px-3 pb-3"
-						transition:slide={{ duration: prefersReducedMotion() ? 0 : 180 }}
+{#if !shared}
+	<!-- per-state context: what agents carry while an issue sits in each state -->
+	<div class="mt-8 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2">
+		<h2 class="mb-1 flex items-center gap-1.5 text-sm font-semibold">
+			<IconBooks size={16} stroke={1.75} /> Context by state
+		</h2>
+		<a
+			href="/context"
+			class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 mb-1 rounded-sm text-xs outline-none focus-visible:ring-[3px]"
+		>
+			View all context
+		</a>
+		<p class="text-muted-foreground col-span-full mb-3 text-xs">
+			Items scoped to a state apply to any issue sitting in it. Removing a state warns about its
+			attached context.
+		</p>
+		<div class="col-span-full rounded-lg border">
+			{#each data.workflow.states as state (state.id)}
+				{@const items = itemsByState.get(state.id) ?? []}
+				{@const open = selectedStateId === state.id}
+				<div class="border-b last:border-0" id={workflowStateAnchorId(state.id)}>
+					<button
+						type="button"
+						class="hover:bg-muted/50 flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm"
+						onclick={() => (selectedStateId = open ? null : state.id)}
+						aria-expanded={open}
 					>
-						<ContextItemList
-							{items}
-							shortScope
-							onselect={openContextEdit}
-							emptyMessage="Nothing scoped to this state yet."
-						/>
-						<Button size="sm" variant="ghost" onclick={() => openContextCreate(state.id)}>
-							<IconPlus size={14} /> Add context for this state
-						</Button>
-					</div>
-				{/if}
-			</div>
-		{/each}
+						<StateBadge {state} />
+						{#if items.length > 0}
+							<span class="bg-primary/10 text-primary rounded-full px-2 py-0.5 text-xs font-medium">
+								{items.length} item{items.length === 1 ? '' : 's'}
+							</span>
+						{:else}
+							<span class="text-muted-foreground text-xs">no context</span>
+						{/if}
+					</button>
+					{#if open}
+						<div
+							class="space-y-2 px-3 pb-3"
+							transition:slide={{ duration: prefersReducedMotion() ? 0 : 180 }}
+						>
+							<ContextItemList
+								{items}
+								shortScope
+								onselect={openContextEdit}
+								emptyMessage="Nothing scoped to this state yet."
+							/>
+							<Button size="sm" variant="ghost" onclick={() => openContextCreate(state.id)}>
+								<IconPlus size={14} /> Add context for this state
+							</Button>
+						</div>
+					{/if}
+				</div>
+			{/each}
+		</div>
 	</div>
-</div>
 
-<div class="mt-8">
-	<AgentRoutingCard
-		rules={data.routingRules}
-		{activeStateIds}
-		emptyMessage="No routing rules are scoped to this workflow's states — project and global rules still apply."
+	<div class="mt-8">
+		<AgentRoutingCard
+			rules={data.routingRules}
+			{activeStateIds}
+			emptyMessage="No routing rules are scoped to this workflow's states — project and global rules still apply."
+		/>
+	</div>
+
+	<ContextItemEditor
+		bind:open={contextEditorOpen}
+		item={editingContextItem}
+		defaults={selectedStateId ? { workflow_state_id: selectedStateId } : {}}
+		projects={data.projects}
+		workflows={data.workflows}
+		onsaved={invalidateAll}
 	/>
-</div>
-
-<ContextItemEditor
-	bind:open={contextEditorOpen}
-	item={editingContextItem}
-	defaults={selectedStateId ? { workflow_state_id: selectedStateId } : {}}
-	projects={data.projects}
-	workflows={data.workflows}
-	onsaved={invalidateAll}
-/>
+{/if}
 
 {#each data.workflow.warnings ?? [] as warning (warning)}
 	<p
