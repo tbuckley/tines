@@ -105,9 +105,16 @@
 	let savingPin = $state(false);
 	let savingPermission = $state(false);
 	let permissionMessage = $state<string | null>(null);
+	/**
+	 * The switch's position while a save is in flight, so it flips on click.
+	 * Cleared once the reloaded receipt lands — which also snaps it back if
+	 * the save failed.
+	 */
+	let pendingOn = $state<boolean | null>(null);
 	async function setPermission(value: 'on' | 'off') {
 		if (!permission || savingPermission) return;
 		savingPermission = true;
+		pendingOn = value === 'on';
 		permissionMessage = null;
 		try {
 			const saved = await api.setIssueConsent(issue.id, {
@@ -126,6 +133,7 @@
 			onerror(e);
 		} finally {
 			savingPermission = false;
+			pendingOn = null;
 		}
 	}
 	async function setHold(held: boolean) {
@@ -213,13 +221,13 @@
 						<span class="text-muted-foreground shrink-0 text-xs">{person.role}</span>
 						{#if you && open}
 							<span class="flex w-20 shrink-0 items-center justify-end gap-1.5">
-								{#if inherited}<span
+								{#if inherited && pendingOn === null}<span
 										class="text-muted-foreground text-xs"
 										title="On by default as the owner">default</span
 									>{/if}
 								<Switch
 									aria-label="Allow my agents"
-									bind:checked={() => on, (next) => setPermission(next ? 'on' : 'off')}
+									bind:checked={() => pendingOn ?? on, (next) => setPermission(next ? 'on' : 'off')}
 									disabled={savingPermission}
 								/>
 							</span>
