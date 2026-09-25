@@ -285,7 +285,10 @@ test.describe('Agents Spend real ledger', () => {
 							let usageId: number | undefined;
 							let heldLine = '';
 							let sourceDone = false;
-							const release = window as typeof window & { releaseSpendStream?: () => void };
+							const release = window as typeof window & {
+								releaseSpendStream?: () => void;
+								spendSourceDone?: boolean;
+							};
 							const sendLine = (line: string) => {
 								if (usageId === undefined) {
 									const payload = JSON.parse(line) as { nodes: { data: unknown[] }[] };
@@ -323,6 +326,7 @@ test.describe('Agents Spend real ledger', () => {
 								}
 								if (buffer) sendLine(buffer);
 								sourceDone = true;
+								release.spendSourceDone = true;
 								if (!heldLine) controller.close();
 							} catch (error) {
 								controller.error(error);
@@ -347,10 +351,19 @@ test.describe('Agents Spend real ledger', () => {
 					)
 				)
 				.toBe('function');
+			await expect
+				.poll(
+					() =>
+						page.evaluate(
+							() => (window as typeof window & { spendSourceDone?: boolean }).spendSourceDone
+						),
+					{ timeout: 15_000 }
+				)
+				.toBe(true);
 			await page.evaluate(() => {
 				(window as typeof window & { releaseSpendStream?: () => void }).releaseSpendStream?.();
 			});
-			await expect(total).toHaveText('Total spend: $0');
+			await expect(total).toHaveText('Total spend: $0', { timeout: 10_000 });
 		} finally {
 			await page
 				.evaluate(() => {
