@@ -178,6 +178,13 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'workflow.created': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
 	'workflow.updated': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
 	'workflow.deleted': (ev, p) => [text(`${action(ev.type)} workflow`), name(p.name)],
+	'workflow.run_scope_changed': (_ev, p) => [
+		text('set run scope of'),
+		name(p.state_name),
+		text('in workflow'),
+		name(p.name),
+		text(`to ${String(p.run_scope)}`)
+	],
 	'api_key.created': (_ev, p) => [text('created API key'), name(p.name)],
 	'api_key.permissions_updated': (_ev, p) => [
 		text('updated permissions for API key'),

@@ -6,6 +6,22 @@ import type { ApiKeyPermissions } from './permissions.js';
 
 export type StateCategory = 'backlog' | 'active' | 'awaiting_human' | 'done';
 
+/**
+ * What a run launched in a state may touch beyond its own issue: `issue`
+ * (only its own issue), `project` (every issue and journal in the run's
+ * project) or `workspace` (`project` plus creating and editing context items
+ * not scoped to another project, workflows and labels). Env items, deletes
+ * outside the project, and the control plane stay off limits at every scope.
+ * Only the workflow's owner sets it, from a browser session.
+ */
+export type RunScope = 'issue' | 'project' | 'workspace';
+export const RUN_SCOPES: readonly RunScope[] = ['issue', 'project', 'workspace'];
+
+/** True when `scope` reaches at least as far as `floor`. */
+export function runScopeCovers(scope: RunScope, floor: RunScope): boolean {
+	return RUN_SCOPES.indexOf(scope) >= RUN_SCOPES.indexOf(floor);
+}
+
 export const STATE_CATEGORIES: readonly StateCategory[] = [
 	'backlog',
 	'active',
@@ -229,6 +245,8 @@ export interface WorkflowState {
 	 * state's own layer.
 	 */
 	inherits_from: string | null;
+	/** Present on workflow reads: what runs launched here may touch. */
+	run_scope?: RunScope;
 }
 
 export interface WorkflowTransition {
@@ -3280,6 +3298,7 @@ export const EVENT_TYPES = [
 	'workflow.created',
 	'workflow.updated',
 	'workflow.deleted',
+	'workflow.run_scope_changed',
 	'api_key.created',
 	'api_key.permissions_updated',
 	'api_key.revoked',
@@ -3369,6 +3388,8 @@ export interface ApiKey {
 		issue_id: string;
 		project_id: string;
 		launch_state_id: string;
+		/** Present on the calling key's own read. */
+		scope?: RunScope;
 	} | null;
 	/** False for revoked, expired, detached, or ended run keys. */
 	usable?: boolean;

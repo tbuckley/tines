@@ -1548,6 +1548,9 @@ async function isBoundRunJournal(
 ): Promise<boolean> {
 	const run = actor.runRestriction;
 	if (!run || !isJournal(row) || row.project_id !== run.projectId) return false;
+	// A stage scoped past its own issue curates every journal in its project
+	// (Distillation prunes other stages' journals).
+	if ((run.scope ?? 'issue') !== 'issue') return true;
 	const chain = await resolveStateChain(db, run.launchStateId);
 	return chain.length > 0 && row.workflow_state_id === chain[0];
 }

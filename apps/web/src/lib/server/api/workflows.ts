@@ -1,6 +1,7 @@
 import {
 	ARTIFACT_NAME_PATTERN,
 	ARTIFACT_TYPES,
+	RUN_SCOPES,
 	STATE_CATEGORIES,
 	STATE_PROMPT_NAME,
 	type ArtifactRequirement,
@@ -8,6 +9,7 @@ import {
 	type CreateWorkflowRequest,
 	type ClearedInheritance,
 	type DeletedContextItem,
+	type RunScope,
 	type StateCategory,
 	type UpdateWorkflowRequest,
 	type WorkflowResponse,
@@ -746,7 +748,8 @@ export async function loadWorkflows(
 				name: s.name,
 				category: s.category,
 				position: s.position,
-				inherits_from: s.inherits_from_state_id
+				inherits_from: s.inherits_from_state_id,
+				run_scope: s.run_scope
 			})),
 			transitions: wfTransitions.map((t) => ({
 				id: t.id,
@@ -1434,6 +1437,68 @@ export async function updateWorkflow(
 	if (contextSweep.deleted.length > 0) updated.deleted_context = contextSweep.deleted;
 	if (clearedInheritance.length > 0) updated.cleared_inheritance = clearedInheritance;
 	return updated;
+}
+
+/**
+ * Set what runs launched in one state may touch (see `RunScope`). Owner-only
+ * and browser-session-only: no API key, a full one included, may widen what
+ * agents can do — otherwise a run holding workspace authority could promote
+ * its own stage.
+ */
+export async function setStateRunScope(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	workflowId: string,
+	stateId: string,
+	body: { run_scope?: unknown }
+): Promise<WorkflowResponse> {
+	if (!actor.viaSession || actor.apiKeyId !== null || actor.bearerPresent || actor.member) {
+		throw new ApiFail(
+			403,
+			'run_scope_browser_required',
+			"A stage's run scope is set by the workflow owner in the browser"
+		);
+	}
+	const scope = body.run_scope;
+	if (typeof scope !== 'string' || !(RUN_SCOPES as readonly string[]).includes(scope)) {
+		throw new ApiFail(422, 'invalid_field', `"run_scope" must be one of ${RUN_SCOPES.join(', ')}`, {
+			field: 'run_scope'
+		});
+	}
+	const current = await loadWorkflow(db, actor.userId, workflowId);
+	if (current.is_system) {
+		throw new ApiFail(
+			403,
+			'workflow_read_only',
+			'The standard workflow is read-only; copy it into your library to make changes'
+		);
+	}
+	const state = current.states.find((s) => s.id === stateId);
+	if (!state) throw notFound();
+	if (state.run_scope === scope) return current;
+	const now = Date.now();
+	await runAtomic(env, [
+		db
+			.updateTable('workflow_state')
+			.set({ run_scope: scope as RunScope })
+			.where('id', '=', stateId)
+			.where('workflow_id', '=', workflowId)
+			.compile(),
+		db.updateTable('workflow').set({ updated_at: now }).where('id', '=', workflowId).compile(),
+		eventInsert(db, actor, {
+			type: 'workflow.run_scope_changed',
+			payload: {
+				workflow_id: workflowId,
+				name: current.name,
+				state_id: stateId,
+				state_name: state.name,
+				run_scope: scope,
+				previous_run_scope: state.run_scope ?? 'issue'
+			}
+		})
+	]);
+	return loadWorkflow(db, actor.userId, workflowId);
 }
 
 export async function deleteWorkflow(
