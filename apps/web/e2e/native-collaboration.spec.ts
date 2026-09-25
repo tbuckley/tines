@@ -481,9 +481,10 @@ test.describe.serial('native D1 owner permission', () => {
 		await signIn(page.context(), ALICE.sessionToken);
 		await page.setViewportSize({ width: 1440, height: 900 });
 		await gotoHydrated(page, `/issues/${encodeURIComponent(fixture.project.name)}/${issue.number}`);
-		await expect(page.getByText('My agent permission: on')).toBeVisible();
-		await page.getByRole('button', { name: 'Turn off' }).click();
-		await expect(page.getByText('My agent permission: off')).toBeVisible();
+		const mine = page.getByRole('switch', { name: 'Allow my agents', exact: true });
+		await expect(mine).toBeChecked();
+		await mine.click();
+		await expect(mine).not.toBeChecked();
 		await page.getByRole('button', { name: 'Hold new work' }).click();
 		await expect(page.getByRole('button', { name: 'Release hold' })).toBeVisible();
 	});
