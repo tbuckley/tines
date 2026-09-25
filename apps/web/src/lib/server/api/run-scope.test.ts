@@ -3,7 +3,9 @@ import type { RequestEvent } from '@sveltejs/kit';
 import { createTestDb, type TestDb } from './test-db';
 import { TEST_NOOP_DISPATCH_EFFECTS } from './test-dispatch-effects';
 import { requireActor, sessionActor, sha256Hex } from './core';
-import { createComment, createIssue, transitionIssue } from './issues';
+import { createComment, createIssue, transitionIssue, updateIssue } from './issues';
+import { addIssueLabels } from './labels';
+import { addIssueLink } from './issue-links';
 import { createContextItem, updateContextItem } from './context';
 import { loadWorkflow, setStateRunScope } from './workflows';
 import {
@@ -14,6 +16,8 @@ import {
 	USER,
 	addEngineeringWorkflow,
 	addIssue,
+	addLabel,
+	addRule,
 	addRun,
 	addRunKey,
 	addRunner,
@@ -41,7 +45,7 @@ async function setup() {
 		}),
 		keyId
 	);
-	return { t, own, other };
+	return { t, own, other, runId };
 }
 
 function scope(t: TestDb, stateId: string, runScope: string) {
@@ -190,5 +194,88 @@ describe('run scope', () => {
 				payload: expect.stringContaining('"previous_run_scope":"issue"')
 			}
 		]);
+	});
+
+	it('lets an own-issue run label, edit, link and move the issues it files', async () => {
+		const { t, own, other, runId } = await setup();
+		addLabel(t, 'docs');
+		const filed = await createIssue(
+			t.db,
+			t.env,
+			await runActor(t),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			PROJECT,
+			{ title: 'README drift', labels: ['docs'], blocks: [own] }
+		);
+		expect(filed.labels.map((l) => l.name)).toEqual(['docs']);
+		expect(
+			t.sqlite.prepare('SELECT created_by_run_id FROM issue WHERE id = ?').get(filed.id)
+		).toEqual({
+			created_by_run_id: runId
+		});
+
+		// A later request by the same run still treats the filed issue as its own.
+		const run = await runActor(t);
+		const next = await createIssue(t.db, t.env, run, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Usage table drift'
+		});
+		expect(run.runRestriction?.createdIssueIds).toEqual([filed.id]);
+		expect((await runActor(t)).runRestriction?.createdIssueIds?.toSorted()).toEqual(
+			[filed.id, next.id].toSorted()
+		);
+		await createComment(t.db, t.env, run, filed.id, { body: 'Found in docs/usage.md.' });
+		addLabel(t, 'qa');
+		await addIssueLabels(t.db, t.env, run, TEST_NOOP_DISPATCH_EFFECTS, filed.id, ['qa']);
+		await updateIssue(t.db, t.env, run, TEST_NOOP_DISPATCH_EFFECTS, filed.id, {
+			title: 'README drift in usage'
+		});
+		await addIssueLink(t.db, t.env, run, TEST_NOOP_DISPATCH_EFFECTS, filed.id, {
+			kind: 'blocks',
+			issue_id: next.id
+		});
+		await expect(
+			transitionIssue(t.db, t.env, run, TEST_NOOP_DISPATCH_EFFECTS, filed.id, {
+				action: 'Abandon'
+			})
+		).resolves.toMatchObject({ state: { name: 'Closed' } });
+
+		// Issues it did not file stay out of reach.
+		await expect(
+			addIssueLabels(t.db, t.env, run, TEST_NOOP_DISPATCH_EFFECTS, other, ['qa'])
+		).rejects.toMatchObject(forbidden('outside_run_issue'));
+		await expect(
+			createIssue(t.db, t.env, run, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+				title: 'Nope',
+				labels: ['brand-new']
+			})
+		).rejects.toMatchObject({ status: 422, code: 'unknown_label' });
+	});
+
+	it('refuses a run a label that routes, even on an issue it files', async () => {
+		const { t } = await setup();
+		const label = addLabel(t, 'gpu');
+		addRule(t, { label, targets: [{ runner_id: 'rnr_1' }] });
+		await expect(
+			createIssue(t.db, t.env, await runActor(t), TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+				title: 'Heavy job',
+				labels: ['gpu']
+			})
+		).rejects.toMatchObject(forbidden('routing_label'));
+	});
+
+	it('lets a project run label and edit any issue in the project', async () => {
+		const { t, other } = await setup();
+		addLabel(t, 'stale');
+		scope(t, OPEN, 'project');
+		const run = await runActor(t);
+		await addIssueLabels(t.db, t.env, run, TEST_NOOP_DISPATCH_EFFECTS, other, ['stale']);
+		await expect(
+			updateIssue(t.db, t.env, run, TEST_NOOP_DISPATCH_EFFECTS, other, {
+				title: 'Stale request (duplicate)'
+			})
+		).resolves.toMatchObject({
+			title: 'Stale request (duplicate)',
+			labels: [expect.objectContaining({ name: 'stale' })]
+		});
 	});
 });

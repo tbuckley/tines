@@ -8,7 +8,7 @@ import {
 	type RunScope
 } from '@tines/shared';
 import { json, type RequestEvent } from '@sveltejs/kit';
-import type { CompiledQuery } from 'kysely';
+import { sql, type CompiledQuery } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
 import { getDb } from '$lib/server/db';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
@@ -229,6 +229,8 @@ export interface ActorContext {
 		launchStateId: string;
 		/** The launch state's run scope; absent means `issue`. */
 		scope?: RunScope;
+		/** Issues this run filed; they count as its own for the rest of the run. */
+		createdIssueIds?: readonly string[];
 	} | null;
 	/**
 	 * Set when a project member acts on a shared project: `userId` is then the
@@ -280,6 +282,16 @@ export function runKeyForbidden(details?: Record<string, unknown>): ApiFail {
 	);
 }
 
+function parseIdList(raw: string | null): string[] {
+	if (!raw) return [];
+	try {
+		const ids: unknown = JSON.parse(raw);
+		return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+	} catch {
+		return [];
+	}
+}
+
 export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	const header = event.request.headers.get('authorization');
 	const key = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
@@ -319,6 +331,8 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 			'run.state_id_at_start as run_launch_state_id',
 			'run_issue.project_id as run_project_id',
 			'run_state.run_scope as run_scope',
+			sql<string>`(SELECT json_group_array(filed.id) FROM issue AS filed
+				WHERE filed.created_by_run_id = api_key.agent_run_id)`.as('run_created_issue_ids'),
 			'user.name as user_name'
 		])
 		.where('api_key.key_hash', '=', hash)
@@ -361,7 +375,8 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 			launchStateId: row.run_launch_state_id,
 			// Read at request time, so the owner widening or narrowing a stage
 			// applies to runs already in flight.
-			scope: row.run_scope ?? 'issue'
+			scope: row.run_scope ?? 'issue',
+			createdIssueIds: parseIdList(row.run_created_issue_ids)
 		};
 	}
 
