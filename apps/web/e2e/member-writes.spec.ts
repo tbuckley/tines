@@ -96,6 +96,11 @@ test('a member files and edits issues in a shared project, and people stay the o
 			content_type: 'text/plain'
 		})
 	);
+	// Members pick from the owner's whole library, so they can read a workflow
+	// before any issue in the project uses it.
+	expect(
+		await body<{ id: string }>(await member.get(`/api/v1/workflows/${ownerWorkflow.id}`))
+	).toMatchObject({ id: ownerWorkflow.id, name: ownerWorkflow.name });
 	expect(
 		cli('issues', 'create', project.id, '-t', 'CLI member issue', '-w', ownerWorkflow.name)
 	).toContain('CLI member issue');
@@ -140,4 +145,10 @@ test('a member files and edits issues in a shared project, and people stay the o
 	await expect(page.getByRole('heading', { name: 'Retitled by member' })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'View launch prompt' })).toHaveCount(0);
 	expect(await page.content()).not.toContain('PRIVATE_WRITE_CANARY');
+	// The owner's workflow page opens read-only for the member.
+	await page.goto(`/workflows/${ownerWorkflow.id}`);
+	await expect(page.getByRole('heading', { name: ownerWorkflow.name })).toBeVisible();
+	await expect(page.getByText(/read-only/)).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Delete' })).toHaveCount(0);
+	await expect(page.getByText('Context by state')).toHaveCount(0);
 });

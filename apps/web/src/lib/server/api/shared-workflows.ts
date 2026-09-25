@@ -5,16 +5,15 @@ import { notFound, type ActorContext } from './core';
 import { resolveProjectAccess } from './project-access';
 import { projectReadPredicate } from './permissions';
 
-/** A workflow is visible only through a current member project that uses it. */
-const usedByMemberProject = (actor: ActorContext) => sql<boolean>`EXISTS (
+/**
+ * A workflow is visible through a current member project whose owner's library
+ * holds it: members pick from that whole library when they file issues.
+ */
+const inMemberProjectOwnersLibrary = (actor: ActorContext) => sql<boolean>`EXISTS (
 	SELECT 1 FROM project p JOIN project_member m ON m.project_id = p.id
 	WHERE m.user_id = ${actor.userId} AND m.revoked_at IS NULL AND p.shared_at IS NOT NULL
 	AND ${projectReadPredicate(actor, 'p.id')}
-	AND p.user_id != ${actor.userId} AND (
-		p.default_workflow_id = w.id OR
-		EXISTS (SELECT 1 FROM issue i WHERE i.project_id = p.id AND i.workflow_id = w.id) OR
-		EXISTS (SELECT 1 FROM scheduled_task s WHERE s.project_id = p.id AND s.workflow_id = w.id)
-	))`;
+	AND p.user_id != ${actor.userId} AND p.user_id = w.user_id)`;
 
 export async function listSharedWorkflows(
 	db: Kysely<Database>,
@@ -24,7 +23,7 @@ export async function listSharedWorkflows(
 	const rows = await db
 		.selectFrom('workflow as w')
 		.select('w.id')
-		.where(usedByMemberProject(actor))
+		.where(inMemberProjectOwnersLibrary(actor))
 		.orderBy('w.created_at')
 		.execute();
 	return Promise.all(rows.map((row) => readSharedWorkflow(db, actor, row.id)));
@@ -48,9 +47,9 @@ export async function readSharedWorkflow(
 			'w.updated_at'
 		])
 		.where('w.id', '=', workflowId)
-		.where(usedByMemberProject(actor))
+		.where(inMemberProjectOwnersLibrary(actor))
 		.executeTakeFirst();
-	if (!row) throw notFound();
+	if (!row || row.user_id === null) throw notFound();
 	const source = await db
 		.selectFrom('project as p')
 		.innerJoin('project_member as m', (join) =>
@@ -60,25 +59,7 @@ export async function readSharedWorkflow(
 		.where('m.revoked_at', 'is', null)
 		.where('p.shared_at', 'is not', null)
 		.where(projectReadPredicate(actor, 'p.id'))
-		.where((eb) =>
-			eb.or([
-				eb('p.default_workflow_id', '=', workflowId),
-				eb.exists(
-					eb
-						.selectFrom('issue')
-						.select('id')
-						.whereRef('project_id', '=', 'p.id')
-						.where('workflow_id', '=', workflowId)
-				),
-				eb.exists(
-					eb
-						.selectFrom('scheduled_task')
-						.select('id')
-						.whereRef('project_id', '=', 'p.id')
-						.where('workflow_id', '=', workflowId)
-				)
-			])
-		)
+		.where('p.user_id', '=', row.user_id)
 		.executeTakeFirst();
 	if (!source) throw notFound();
 	const [states, transitions, count] = await Promise.all([
