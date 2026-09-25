@@ -231,6 +231,7 @@ test.describe('Agents Spend real ledger', () => {
 			const total = page.locator('p[title*="retained direct runs"]');
 			await expect(total).toContainText('Total spend: $2.00');
 			await expect(total.locator('..').locator('h2')).toContainText('Agent activity');
+			expect(await total.evaluate((element) => element.previousElementSibling?.tagName)).toBe('H2');
 			await expect(total).toHaveAttribute('title', /As of .*Z\./);
 			await expect(page.getByRole('heading', { name: 'Lifetime through now' })).toHaveCount(0);
 			await expect(page.getByRole('region', { name: 'Contributing runs' })).toHaveCount(0);
@@ -282,6 +283,13 @@ test.describe('Agents Spend real ledger', () => {
 			await expect(page.locator('p[title*="retained direct runs"]')).toContainText(expected);
 		}
 		try {
+			d1(`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage, state_id_at_start, log, created_at, started_at, ended_at)
+				SELECT 'run_e2e_spend_partial_pending', user_id, 'iss_e2e_spend_alpha_today', runner_id, status, outcome, tier, model, usage, state_id_at_start, log, created_at, started_at, ended_at
+				FROM agent_run WHERE id = 'run_e2e_spend_pending'`);
+			await page.goto(`/issues/${SPEND.projects.alpha.id}/1`);
+			await expect(page.locator('p[title*="retained direct runs"]')).toContainText(
+				'Total spend: $2.00 · 1 pending'
+			);
 			d1(`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage, state_id_at_start, state_id_at_end, log, created_at, started_at, ended_at)
 				SELECT 'run_e2e_spend_partial', user_id, issue_id, runner_id, status, outcome, tier, model, NULL, state_id_at_start, state_id_at_end, log, created_at + 1, started_at + 1, ended_at + 1
 				FROM agent_run WHERE id = 'run_e2e_spend_alpha_today'`);
@@ -290,10 +298,12 @@ test.describe('Agents Spend real ledger', () => {
 				page
 					.getByRole('heading', { name: 'Agent activity' })
 					.locator('..')
-					.getByText(/Total spend:\s*\$2\.00 · partial/)
+					.getByText(/Total spend:\s*\$2\.00 · partial · 1 pending/)
 			).toBeVisible();
 		} finally {
-			d1(`DELETE FROM agent_run WHERE id = 'run_e2e_spend_partial'`);
+			d1(
+				`DELETE FROM agent_run WHERE id IN ('run_e2e_spend_partial', 'run_e2e_spend_partial_pending')`
+			);
 		}
 	});
 });
