@@ -53,6 +53,21 @@ function seed(t: TestDb) {
 	addRunner(t);
 	const id = addIssue(t, { id: 'iss_probe', state: OPEN, title: 'Probe issue' });
 	const number = (t.all('SELECT number FROM issue WHERE id = ?', id)[0] as any).number as number;
+	// An artifact with a version, as most worked issues have: its panel's
+	// reads are on the first-paint path.
+	t.sqlite
+		.prepare(
+			`INSERT INTO context_item (id, user_id, kind, name, description, issue_id, config,
+				position, version, created_at, updated_at)
+			VALUES ('ctx_probe_design', ?, 'artifact', 'design', '', ?, ?, 0, 1, ?, ?)`
+		)
+		.run(USER, id, JSON.stringify({ artifact_type: 'design' }), NOW, NOW);
+	t.sqlite
+		.prepare(
+			`INSERT INTO artifact_version (id, context_item_id, version, content, actor_user_id, created_at)
+			VALUES ('av_probe_1', 'ctx_probe_design', 1, '# Design', ?, ?)`
+		)
+		.run(USER, NOW);
 	// A little ambient volume so list queries aren't degenerate.
 	for (let i = 0; i < AMBIENT_ISSUES; i++) addIssue(t);
 	for (let i = 0; i < 30; i++) {
@@ -147,13 +162,13 @@ const callLoad = (load: unknown, input: ProbeEvent) =>
  * earns it; raising one needs a reason in docs/PERFORMANCE.md.
  */
 const WAVE_BUDGET: Record<string, number> = {
-	'/issues': 3,
-	'/issues/[project]/[number]': 4,
-	'/issues/[project]/[number] by name': 4,
-	'/projects': 2,
+	'/issues': 2,
+	'/issues/[project]/[number]': 2,
+	'/issues/[project]/[number] by name': 2,
+	'/projects': 1,
 	'/activity': 3,
 	'/agents': 2,
-	'/context': 3
+	'/context': 2
 };
 
 function reportWaves(bySql: { sql: string; wave: number }[], upTo: number) {

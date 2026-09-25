@@ -420,6 +420,54 @@ async function loadVersions(
 	return { byItem, filesByVersion };
 }
 
+/**
+ * `loadVersions` for every artifact item on one issue, selected through the
+ * item rather than by item and version ids, so versions and files are read
+ * in the same wave as the items themselves.
+ */
+async function loadIssueItemVersions(
+	db: Kysely<Database>,
+	userId: string,
+	issueId: string
+): Promise<{ byItem: Map<string, VersionRow[]>; filesByVersion: FilesByVersion }> {
+	const items = db
+		.selectFrom('context_item')
+		.select('context_item.id')
+		.where('context_item.user_id', '=', userId)
+		.where('context_item.kind', '=', 'artifact')
+		.where('context_item.issue_id', '=', issueId);
+	const [rows, fileRows] = await Promise.all([
+		versionQuery(db)
+			.where('artifact_version.context_item_id', 'in', items)
+			.orderBy('artifact_version.version asc')
+			.execute(),
+		db
+			.selectFrom('artifact_version_file')
+			.selectAll('artifact_version_file')
+			.where('artifact_version_file.artifact_version_id', 'in', (eb) =>
+				eb
+					.selectFrom('artifact_version')
+					.select('artifact_version.id')
+					.where('artifact_version.context_item_id', 'in', items)
+			)
+			.orderBy('artifact_version_file.path asc')
+			.execute()
+	]);
+	const byItem = new Map<string, VersionRow[]>();
+	for (const row of rows) {
+		const list = byItem.get(row.context_item_id) ?? [];
+		list.push(row);
+		byItem.set(row.context_item_id, list);
+	}
+	const filesByVersion: FilesByVersion = new Map();
+	for (const file of fileRows) {
+		const list = filesByVersion.get(file.artifact_version_id) ?? [];
+		list.push(file);
+		filesByVersion.set(file.artifact_version_id, list);
+	}
+	return { byItem, filesByVersion };
+}
+
 /** One artifact version on an issue, with its item's name and its file list. */
 export interface IssueArtifactVersion {
 	item_id: string;
@@ -494,15 +542,13 @@ export async function listArtifacts(
 	userId: string,
 	issueId: string
 ): Promise<Artifact[]> {
-	const issue = await requireIssue(db, userId, issueId);
-	const items = await itemQuery(db, userId, issue.id)
-		.orderBy('created_at asc')
-		.orderBy('id asc')
-		.execute();
-	const { byItem, filesByVersion } = await loadVersions(
-		db,
-		items.map((i) => i.id)
-	);
+	// Items, versions and files all key off the issue id through the item, so
+	// they are read alongside the issue check: one D1 wave, not four.
+	const [issue, items, { byItem, filesByVersion }] = await Promise.all([
+		requireIssue(db, userId, issueId),
+		itemQuery(db, userId, issueId).orderBy('created_at asc').orderBy('id asc').execute(),
+		loadIssueItemVersions(db, userId, issueId)
+	]);
 	return items
 		.filter((i) => (byItem.get(i.id) ?? []).length > 0)
 		.map((i) => serializeArtifact(i, byItem.get(i.id)!, filesByVersion, issue));

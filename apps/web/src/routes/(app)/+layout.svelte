@@ -106,9 +106,10 @@
 
 	// Shared-element page transitions (View Transitions API where available).
 	//
-	// The old page stays frozen until `navigation.complete`, so this turns
-	// server latency straight into perceived latency: the transition is only as
-	// fast as the slowest thing a page `load` *awaits*. Panels a page streams
+	// SvelteKit calls this only once the new page's `load` has resolved (the
+	// old page sits unchanged until then), so the transition itself adds no
+	// wait, but everything a page `load` *awaits* is time the click appears to
+	// do nothing. Panels a page streams
 	// (returned as promises under `data.deferred`) are not part of it and land
 	// after the commit — which is why the issue page awaits only its first D1
 	// wave. Keep it that way when adding data to a load.
