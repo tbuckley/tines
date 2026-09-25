@@ -26,11 +26,17 @@ probe user in the shared preview database. Sessions last one hour.
 
 ```sh
 cd apps/web
-openssl rand -base64 36 | pnpm exec wrangler secret put PREVIEW_LOGIN_TOKEN --env preview
+openssl rand -base64 36 | pnpm exec wrangler versions secret put PREVIEW_LOGIN_TOKEN --env preview
 ```
 
+`versions secret put`, not `secret put`: the preview worker only ever
+uploads versions and never deploys, and plain `secret put` refuses to edit
+a worker whose latest version is not deployed. The new version carries the
+secret, and every later `wrangler versions upload` (each PR push, via
+`preview.yml`) inherits it, so previews pick it up from their next push.
+
 Give the same value to whoever will call it (for a Claude environment, as an
-environment secret named `PREVIEW_LOGIN_TOKEN`). To revoke, put a new value;
+environment secret named `PREVIEW_LOGIN_TOKEN`). To revoke, put a new value the same way;
 existing sessions still run out within the hour.
 
 ## Use
