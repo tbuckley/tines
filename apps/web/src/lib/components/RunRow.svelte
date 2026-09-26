@@ -19,6 +19,7 @@
 		run,
 		showIssueRef = false,
 		showLogs = true,
+		showCost = true,
 		oncancel
 	}: {
 		run: AgentRun;
@@ -26,6 +27,8 @@
 		showIssueRef?: boolean;
 		/** Run logs are the owner's: a shared project's members see status only. */
 		showLogs?: boolean;
+		/** Account spend stays private when the issue is shared with a member. */
+		showCost?: boolean;
 		/** Omitted → no Cancel button. */
 		oncancel?: (run: AgentRun) => void;
 	} = $props();
@@ -149,7 +152,7 @@
 			resumed run {run.resumed_from_run_id}
 		</span>
 	{/if}
-	<RunCostCell {run} />
+	{#if showCost}<RunCostCell {run} />{/if}
 	{#if run.provider_session_id}
 		<span class="text-muted-foreground max-w-full font-mono text-xs break-all select-text">
 			session: {run.provider_session_id}

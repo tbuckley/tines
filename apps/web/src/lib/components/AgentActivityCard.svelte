@@ -7,8 +7,12 @@
 		ModelTier,
 		Runner
 	} from '@tines/shared';
-	import { MODEL_TIERS, personalPermissionLabel } from '@tines/shared';
+	import { MODEL_TIERS } from '@tines/shared';
 	import IconCheck from '@tabler/icons-svelte/icons/check';
+	import IconCircleCheck from '@tabler/icons-svelte/icons/circle-check';
+	import IconCircleOff from '@tabler/icons-svelte/icons/circle-off';
+	import IconInfoCircle from '@tabler/icons-svelte/icons/info-circle';
+	import IconPlayerPause from '@tabler/icons-svelte/icons/player-pause';
 	import IconPin from '@tabler/icons-svelte/icons/pin';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconX from '@tabler/icons-svelte/icons/x';
@@ -18,6 +22,7 @@
 	import RunRow from '$lib/components/RunRow.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
+	import { Switch } from '$lib/components/ui/switch/index.js';
 	import type { Snippet } from 'svelte';
 	import { prefersReducedMotion } from '$lib/format';
 	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
@@ -33,6 +38,7 @@
 		ownerControls = true,
 		viewerId = null,
 		checklist,
+		totalSpend,
 		onerror
 	}: {
 		issue: IssueDetail;
@@ -57,11 +63,30 @@
 		 * The page owns every handler; this card stays dumb.
 		 */
 		checklist?: Snippet;
+		totalSpend?: Snippet;
 		onerror: (e: unknown) => void;
 	} = $props();
 
 	const readOnly = $derived(disabledReason != null);
 	const viewerRole = $derived(ownerControls ? 'owner' : 'member');
+
+	type Person = (typeof roster)[number];
+	const isViewer = (person: Person) =>
+		viewerId ? person.user.id === viewerId : person.role === 'owner';
+	/**
+	 * One row per person, the viewer's carrying their switch. The roster always
+	 * includes the viewer on a shared issue; the fallback row only keeps the
+	 * control reachable if it ever arrives without them.
+	 */
+	const people = $derived.by((): Person[] => {
+		if (!permission || roster.some(isViewer)) return roster;
+		const you: Person = {
+			user: { id: viewerId ?? 'you', name: 'Me' },
+			role: viewerRole,
+			value: permission.my_agents.value
+		};
+		return viewerRole === 'owner' ? [you, ...roster] : [...roster, you];
+	});
 
 	const dur = () => (prefersReducedMotion() ? 0 : 180);
 
@@ -82,9 +107,16 @@
 	let savingPin = $state(false);
 	let savingPermission = $state(false);
 	let permissionMessage = $state<string | null>(null);
+	/**
+	 * The switch's position while a save is in flight, so it flips on click.
+	 * Cleared once the reloaded receipt lands — which also snaps it back if
+	 * the save failed.
+	 */
+	let pendingOn = $state<boolean | null>(null);
 	async function setPermission(value: 'on' | 'off') {
 		if (!permission || savingPermission) return;
 		savingPermission = true;
+		pendingOn = value === 'on';
 		permissionMessage = null;
 		try {
 			const saved = await api.setIssueConsent(issue.id, {
@@ -103,6 +135,7 @@
 			onerror(e);
 		} finally {
 			savingPermission = false;
+			pendingOn = null;
 		}
 	}
 	async function setHold(held: boolean) {
@@ -151,61 +184,91 @@
 	<h2 class="mb-3 flex items-center gap-1.5 text-sm font-semibold">
 		<IconRobot size={16} stroke={1.75} /> Agent activity
 	</h2>
+	{#if ownerControls && totalSpend}
+		{@render totalSpend()}
+	{/if}
 	{#if permission}
-		<div class="mb-4 space-y-2 rounded-md border p-3 text-sm">
-			<p class="font-medium">
-				My agent permission: {personalPermissionLabel(viewerRole, permission.my_agents.value)}
-			</p>
-			<PersonalPermissionWarning role={viewerRole}>
-				<p>
-					Enabling lets your agents use your runner and account resources for this issue. Holding
-					stops new work without changing this choice. An admitted run can finish after permission
-					turns off.
-				</p>
-			</PersonalPermissionWarning>
-			<div class="flex flex-wrap gap-2">
-				{#if permission.issue_state.category !== 'done'}
-					<Button
-						size="sm"
-						variant="outline"
-						disabled={savingPermission || permission.my_agents.value === 'on'}
-						onclick={() => setPermission('on')}>Allow my agents</Button
+		{@const open = permission.issue_state.category !== 'done'}
+		<div class="mb-4 rounded-md border text-sm">
+			<div class="flex min-h-10 items-center gap-2 px-3 py-1.5">
+				<p class="flex-1 font-medium">Agent permission</p>
+				{#if permission.agent_hold.held}
+					<span
+						class="flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
 					>
+						<IconPlayerPause size={12} stroke={2} /> Held
+					</span>
+				{/if}
+				{#if open}
 					<Button
 						size="sm"
-						variant="outline"
-						disabled={savingPermission || permission.my_agents.value === 'off'}
-						onclick={() => setPermission('off')}>Turn off</Button
-					>
-					<Button
-						size="sm"
-						variant="outline"
+						variant="ghost"
+						class="text-muted-foreground h-7 px-2 text-xs"
 						disabled={savingPermission}
+						title={permission.agent_hold.held
+							? 'Let agents start new work on this issue again'
+							: "Stop new work on this issue without changing anyone's permission"}
 						onclick={() => setHold(!permission.agent_hold.held)}
 						>{permission.agent_hold.held ? 'Release hold' : 'Hold new work'}</Button
 					>
 				{/if}
 			</div>
-			{#if permissionMessage}<p role="status" class="text-xs">{permissionMessage}</p>{/if}
-			{#if roster.length > 0}
-				<div class="mt-3 border-t pt-3">
-					<p class="font-medium">People and permission</p>
-					<ul class="mt-2 space-y-1" aria-label="Issue permission roster">
-						{#each roster as person (person.user.id)}
-							<li>
-								{person.user.name}{(
-									viewerId ? person.user.id === viewerId : person.role === 'owner'
-								)
-									? ' (You)'
-									: ''} · {person.role} · {personalPermissionLabel(
-									person.role,
-									person.value
-								)}{person.role === 'member' ? ' · member execution unavailable' : ''}
-							</li>
-						{/each}
-					</ul>
-				</div>
-			{/if}
+			<ul class="divide-y border-t" aria-label="Issue permission roster">
+				{#each people as person (person.user.id)}
+					{@const you = isViewer(person)}
+					{@const on =
+						person.value === 'on' || (person.role === 'owner' && person.value === 'unset')}
+					{@const inherited = person.role === 'owner' && person.value === 'unset'}
+					<li class="flex min-h-10 items-center gap-2 px-3 py-1.5">
+						<span class="min-w-0 flex-1 truncate" title={person.user.name}
+							>{person.user.name}{you ? ' (You)' : ''}</span
+						>
+						<span class="text-muted-foreground shrink-0 text-xs">{person.role}</span>
+						{#if you && open}
+							<span class="flex w-20 shrink-0 items-center justify-end gap-1.5">
+								{#if inherited && pendingOn === null}<span
+										class="text-muted-foreground text-xs"
+										title="On by default as the owner">default</span
+									>{/if}
+								<Switch
+									aria-label="Allow my agents"
+									bind:checked={() => pendingOn ?? on, (next) => setPermission(next ? 'on' : 'off')}
+									disabled={savingPermission}
+								/>
+							</span>
+						{:else}
+							<span
+								class="flex w-20 shrink-0 items-center justify-end gap-1 text-xs {on
+									? 'text-emerald-700 dark:text-emerald-400'
+									: 'text-muted-foreground'}"
+								title={inherited ? 'On by default as the owner' : undefined}
+							>
+								{#if on}<IconCircleCheck size={14} stroke={1.75} />{:else}<IconCircleOff
+										size={14}
+										stroke={1.75}
+									/>{/if}
+								{on ? 'On' : person.value === 'off' ? 'Off' : 'Not set'}
+							</span>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+			<div class="space-y-1 border-t px-3 py-2 text-xs">
+				{#if permissionMessage}<p role="status">{permissionMessage}</p>{/if}
+				{#if people.some((person) => person.role === 'member')}
+					<p class="text-muted-foreground flex items-start gap-1">
+						<IconInfoCircle size={14} stroke={1.75} class="mt-px shrink-0" />
+						Only the owner's agents can run in this release.
+					</p>
+				{/if}
+				<PersonalPermissionWarning role={viewerRole}>
+					<p>
+						Enabling lets your agents use your runner and account resources for this issue. Holding
+						stops new work without changing anyone's choice. An admitted run can finish after
+						permission turns off.
+					</p>
+				</PersonalPermissionWarning>
+			</div>
 		</div>
 	{/if}
 
@@ -376,6 +439,7 @@
 						<RunRow
 							{run}
 							showLogs={ownerControls}
+							showCost={ownerControls}
 							oncancel={permission ? () => cancelRun(run.id) : undefined}
 						/>
 					{/each}
