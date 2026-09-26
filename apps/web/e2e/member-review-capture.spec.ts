@@ -94,7 +94,7 @@ test('shared project pages use the app UI at desktop, phone, and 320px', async (
 		).toBeVisible();
 		await memberPage.setViewportSize({ width: 1280, height: 900 });
 		await gotoHydrated(memberPage, `/issues/${project.id}/${issue.number}`);
-		await memberPage.getByRole('button', { name: 'Allow my agents', exact: true }).click();
+		await memberPage.getByRole('switch', { name: 'Allow my agents', exact: true }).click();
 		await expect(
 			memberPage.getByText(/^Permission saved\. Member execution is not available in this release/)
 		).toBeVisible();
@@ -109,7 +109,7 @@ test('shared project pages use the app UI at desktop, phone, and 320px', async (
 		await memberPage.evaluate(() => window.scrollTo(0, 0));
 		await capture(memberPage, 'issue-member-phone-top');
 		await memberPage.getByRole('button', { name: /^Agent activity/ }).click();
-		await memberPage.getByText('People and permission', { exact: true }).scrollIntoViewIfNeeded();
+		await memberPage.getByLabel('Issue permission roster').scrollIntoViewIfNeeded();
 		await capture(memberPage, 'issue-member-phone-permission');
 		await memberPage.setViewportSize({ width: 320, height: 700 });
 		await memberPage.evaluate(() => window.scrollTo(0, 0));

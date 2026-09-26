@@ -223,7 +223,7 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	await expect(page.getByText('Member note')).toBeVisible();
 	// The owner's agent activity fold, with the member's own permission controls.
 	await page.getByRole('button', { name: /^Agent activity/ }).click();
-	await expect(page.getByRole('button', { name: 'Allow my agents', exact: true })).toBeVisible();
+	await expect(page.getByRole('switch', { name: 'Allow my agents', exact: true })).toBeVisible();
 	await expect(page.getByText(/Total spend:/)).toHaveCount(0);
 	await expect(page.getByText('$731.42', { exact: true })).toHaveCount(0);
 	d1(`DELETE FROM agent_run WHERE id=${sqlLiteral(spendRunId)}`);
@@ -232,7 +232,7 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	await expect(page.getByRole('note', { name: 'First permission warning' })).toContainText(
 		'including after member execution is released'
 	);
-	await page.getByRole('button', { name: 'Allow my agents', exact: true }).click();
+	await page.getByRole('switch', { name: 'Allow my agents', exact: true }).click();
 	await expect(
 		page.getByText(/^Permission saved\. Member execution is not available in this release/)
 	).toBeVisible();
@@ -240,7 +240,7 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 	await expect(page.getByText('What this means')).toBeVisible();
 	await page.screenshot({ path: testInfo.outputPath('member-phone.png'), fullPage: true });
 	await page.setViewportSize({ width: 320, height: 700 });
-	await expect(page.getByRole('button', { name: 'Turn off', exact: true })).toBeVisible();
+	await expect(page.getByRole('switch', { name: 'Allow my agents', exact: true })).toBeChecked();
 	await expect
 		.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
 		.toBe(true);
@@ -336,10 +336,17 @@ test('member phone and desktop decisions stay attributed, personal, and unavaila
 		const ownerPage = await ownerContext.newPage();
 		await gotoHydrated(ownerPage, `/issues/${project.id}/${issue.number}`);
 		await expect(ownerPage.getByText('Member note')).toBeVisible();
+		await ownerPage.getByRole('button', { name: /^Agent activity/ }).click();
 		await expect(ownerPage.getByLabel('Issue permission roster')).toContainText(ALICE.name);
-		await expect(ownerPage.getByLabel('Issue permission roster')).toContainText(
-			`${BOB.name} · member · on · member execution unavailable`
-		);
+		const bobRow = ownerPage
+			.getByLabel('Issue permission roster')
+			.getByRole('listitem')
+			.filter({ hasText: BOB.name });
+		await expect(bobRow).toContainText('member');
+		await expect(bobRow).toContainText('On');
+		await expect(
+			ownerPage.getByText("Only the owner's agents can run in this release.")
+		).toBeVisible();
 		await expect(ownerPage.locator(`[data-event-id="${decisionEvent}"]`)).toContainText(BOB.name);
 		await ownerPage.screenshot({ path: testInfo.outputPath('owner-phone.png'), fullPage: true });
 		await ownerPage.setViewportSize({ width: 1440, height: 900 });

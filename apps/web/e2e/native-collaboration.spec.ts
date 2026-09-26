@@ -481,9 +481,21 @@ test.describe.serial('native D1 owner permission', () => {
 		await signIn(page.context(), ALICE.sessionToken);
 		await page.setViewportSize({ width: 1440, height: 900 });
 		await gotoHydrated(page, `/issues/${encodeURIComponent(fixture.project.name)}/${issue.number}`);
-		await expect(page.getByText('My agent permission: on')).toBeVisible();
-		await page.getByRole('button', { name: 'Turn off' }).click();
-		await expect(page.getByText('My agent permission: off')).toBeVisible();
+		const mine = page.getByRole('switch', { name: 'Allow my agents', exact: true });
+		await expect(mine).toBeChecked();
+		// Hold the save open: the switch flips at once and stays disabled until it lands.
+		let release!: () => void;
+		const held = new Promise<void>((resolve) => (release = resolve));
+		await page.route('**/api/v1/issues/*/my-consent', async (route) => {
+			await held;
+			await route.continue();
+		});
+		await mine.click();
+		await expect(mine).not.toBeChecked();
+		await expect(mine).toBeDisabled();
+		release();
+		await expect(mine).toBeEnabled();
+		await expect(mine).not.toBeChecked();
 		await page.getByRole('button', { name: 'Hold new work' }).click();
 		await expect(page.getByRole('button', { name: 'Release hold' })).toBeVisible();
 	});

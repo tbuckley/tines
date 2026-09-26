@@ -19,6 +19,7 @@
    utilities compile to a selector nothing matches. Map the variant here rather
    than hand-editing generated components (see CLAUDE.md). */
 @custom-variant data-checked (&[data-state='checked']);
+@custom-variant data-unchecked (&[data-state='unchecked']);
 
 :root {
 	color-scheme: light;
