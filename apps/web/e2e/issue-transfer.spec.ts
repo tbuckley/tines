@@ -20,6 +20,7 @@ base.beforeEach(async ({ request }) => {
 type TransferWorld = {
 	sourceName: string;
 	destinationName: string;
+	destinationId: string;
 	longName: string;
 	issueId: string;
 	sourceId: string;
@@ -188,6 +189,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				await use({
 					sourceName,
 					destinationName,
+					destinationId: destination.id,
 					longName,
 					issueId,
 					sourceId,
@@ -512,7 +514,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			request,
 			world
 		}) => {
-			const { sourceName, sourceId, sourceNumber, destinationName, issueId } = world;
+			const { sourceName, sourceId, sourceNumber, destinationName, destinationId, issueId } = world;
 			const api = apiClient(request, ALICE.apiKey);
 			expect((await api.patch('/api/v1/preferences', { focused_project_id: sourceId })).ok()).toBe(
 				true
@@ -546,8 +548,9 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			});
 
 			// The destination's number is its next one (its first is taken), and
-			// the browser lands on that canonical URL without leaving the issue.
-			await expect(page).toHaveURL(new RegExp(`/issues/${destinationName}/2$`));
+			// the address bar ends on the issue's canonical (project id) URL without
+			// leaving the issue.
+			await expect(page).toHaveURL(new RegExp(`/issues/${destinationId}/2$`));
 			await expect(page.getByRole('status')).toContainText(
 				`Moved ${sourceName}/${sourceNumber} to ${destinationName}/2`
 			);
