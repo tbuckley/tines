@@ -58,7 +58,10 @@ import { actorOf, eventInsert, eventQuery, serializeEvent } from './events';
 import {
 	assertNotMember,
 	resolveIssueAccess,
-	currentProjectWriterPredicate
+	currentProjectWriterPredicate,
+	runStillBoundPredicate,
+	assertRunStillBound,
+	runProjectActor
 } from './project-access';
 import { readSharedIssue } from './shared-issues';
 import { deriveRound, deriveSinceLastRun } from './handoff';
@@ -1577,9 +1580,10 @@ export async function createIssue(
 		}
 		if (linkPlan) await recheckCreateIssueLinkPlan(db, actor, linkPlan);
 	}
-	if (actor.member && project.shared_at !== null) {
-		// The owner's agents stay off a member's new issue until the owner
-		// allows them; an explicit off wins over the owner default.
+	if ((actor.member || actor.runRestriction) && project.shared_at !== null) {
+		// The owner's agents stay off a member's new issue, and off any
+		// run-filed issue (a proposal, whoever's run filed it), until the
+		// owner allows them; an explicit off wins over the owner default.
 		queries.push(
 			sql`INSERT INTO issue_personal_choice
 				(issue_id, user_id, value, revision, issue_epoch, membership_revision, source_kind, updated_at)
@@ -1656,7 +1660,11 @@ export async function createIssue(
 			actor: !actor.viaSession ? 'key' : actor.member ? 'member' : 'owner',
 			...(actor.viaSession
 				? {}
-				: { message: 'Permission unchanged; manage your permission in the browser.' })
+				: {
+						message: actor.runRestriction
+							? 'Permission unchanged; manage your permission in the browser. Agents stay off until a person allows them.'
+							: 'Permission unchanged; manage your permission in the browser.'
+					})
 		};
 	}
 	return response;
@@ -1695,7 +1703,8 @@ export async function updateIssue(
 	actor: ActorContext,
 	effects: DispatchEffects,
 	id: string,
-	body: UpdateIssueRequest
+	body: UpdateIssueRequest,
+	beforeCommit?: () => Promise<void>
 ): Promise<IssueDetail> {
 	assertConsentFieldsSupported(actor, body);
 	assertPinFieldsAllowed(actor, body);
@@ -1874,6 +1883,7 @@ export async function updateIssue(
 		})
 		.where('id', '=', id);
 	if (guarded) update = update.where('state_id', '=', current.state.id);
+	if (actor.runRestriction) update = update.where(runStillBoundPredicate(actor));
 	if (structural && structuralWitness)
 		update = update
 			.where('decision_revision', '=', structuralWitness.decision_revision)
@@ -1966,7 +1976,9 @@ export async function updateIssue(
 		);
 	}
 
+	await beforeCommit?.();
 	const results = await runAtomic(env, queries);
+	if ((results[0]?.meta.changes ?? 0) === 0) await assertRunStillBound(db, actor);
 	if (guarded && (results[0]?.meta.changes ?? 0) === 0) {
 		const fresh = await getIssueDetail(db, actor.userId, { id });
 		throw new ApiFail(
@@ -2218,6 +2230,7 @@ async function transitionMemberIssue(
 		);
 	await beforeCommit?.();
 	const results = await runAtomic(env, writes);
+	if (!results[0]?.meta.changes) await assertRunStillBound(db, actor);
 	if (!results[0]?.meta.changes)
 		throw new ApiFail(409, 'decision_refresh_required', 'Issue changed; refresh and choose again', {
 			committed: false
@@ -2253,7 +2266,13 @@ export async function transitionIssue(
 		});
 	}
 	const access = await resolveIssueAccess(db, actor, id);
-	if (access.role === 'member') {
+	// A member-contributor run moves its admitted project's issues exactly as
+	// the owner's run would (Tines/751); the human member path stays for people.
+	if (access.role === 'member' && actor.agentRunId) {
+		const delegated = runProjectActor(actor, access.projectId);
+		if (!delegated) throw notFound();
+		actor = delegated;
+	} else if (access.role === 'member') {
 		requireAccess(
 			actor,
 			[{ domain: 'project', access: 'write', projectId: access.projectId }],
@@ -2424,6 +2443,8 @@ export async function transitionIssue(
 	const choiceChanged =
 		nextConsentValue !== null &&
 		(decision.consent_value !== nextConsentValue || decision.consent_source !== 'explicit_issue');
+	// A delegated member run's E2E race hook fires here, after every preflight read.
+	if (actor.member) await beforeMemberCommit?.();
 	const stateWrite = sql`
 		UPDATE issue SET state_id = ${target.to_state.id}, state_entered_at = ${now}, updated_at = ${now},
 			decision_revision = decision_revision + 1,
@@ -2434,6 +2455,7 @@ export async function transitionIssue(
 		WHERE id = ${id} AND state_id = ${current.state.id}
 			AND project_id = ${decision.project_id}
 			AND project_assignment_token = ${decision.project_assignment_token}
+			AND ${runStillBoundPredicate(actor)}
 			AND EXISTS (SELECT 1 FROM workflow_transition wt
 				WHERE wt.id = ${target.transition_id} AND wt.workflow_id = issue.workflow_id
 					AND wt.from_state_id = ${current.state.id} AND wt.to_state_id = ${target.to_state.id})
@@ -2547,6 +2569,7 @@ export async function transitionIssue(
 	}
 	const results = await runAtomic(env, writeQueries);
 	if ((results[0]?.meta.changes ?? 0) === 0) {
+		await assertRunStillBound(db, actor);
 		const fresh = await getIssueDetail(db, actor.userId, { id });
 		throw new ApiFail(
 			409,
@@ -2632,7 +2655,8 @@ export async function createComment(
 	if (access.role === 'owner') {
 		const issue = await getIssueDetail(db, actor.userId, { id: issueId });
 		await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
-	} else if (actor.agentRunId) throw notFound();
+		// A member run comments on its admitted project (Tines/751); no other run does.
+	} else if (actor.agentRunId && !runProjectActor(actor, access.projectId)) throw notFound();
 	const text = requireString(body.body, 'body', { max: 100_000 });
 
 	const id = newId('cmt');

@@ -76,6 +76,7 @@ function runActor(issueId: string, opts: { id?: string } = {}): ActorContext {
 		`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, agent_run_id, expires_at, created_at)
 			VALUES ('${keyId}', '${USER}', 'run ${runId}', 'h_${runId}', 'p', '${runId}', 9999999999999, 0)`
 	);
+	t.sqlite.prepare('UPDATE agent_run SET api_key_id = ? WHERE id = ?').run(keyId, runId);
 	return {
 		userId: USER,
 		userName: 'alice',

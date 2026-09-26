@@ -2,7 +2,7 @@ import type { ContextItem, ContextScope, IssueLinks, IssueRef, LinkedIssue } fro
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { notFound, type ActorContext } from './core';
-import { actorForProject } from './project-access';
+import { actorForProject, runProjectActor } from './project-access';
 
 /**
  * Members of a shared project work on the context that belongs to it: items
@@ -37,7 +37,8 @@ export async function actorForContextScope(
 	requester: ActorContext,
 	projectId: string | null
 ): Promise<ActorContext> {
-	if (!projectId || requester.agentRunId) return requester;
+	if (!projectId) return requester;
+	if (requester.agentRunId) return runProjectActor(requester, projectId) ?? requester;
 	return actorForProject(db, requester, projectId);
 }
 
@@ -52,8 +53,10 @@ export async function actorForContextItem(
 		.select(['user_id', 'project_id', 'issue_id'])
 		.where('id', '=', itemId)
 		.executeTakeFirst();
-	if (!item || item.user_id === requester.userId || requester.agentRunId) return requester;
+	if (!item || item.user_id === requester.userId) return requester;
 	const projectId = await contextScopeProject(db, item);
+	if (requester.agentRunId)
+		return (projectId && runProjectActor(requester, projectId)) || requester;
 	if (!projectId) throw notFound();
 	return actorForProject(db, requester, projectId);
 }

@@ -16,6 +16,7 @@ import {
 	memberScopeAllowed,
 	redactForMember
 } from '$lib/server/api/member-context';
+import { memberWriteRace } from '$lib/server/api/member-e2e-race';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
@@ -71,6 +72,12 @@ export const POST: RequestHandler = api(async (event) => {
 	);
 	if (actor.member && body.project_id && body.project_id !== actor.member.projectId)
 		throw notFound();
-	const item = await createContextItem(db, env, actor, body);
+	const item = await createContextItem(
+		db,
+		env,
+		actor,
+		body,
+		memberWriteRace(event.request, db, actor)
+	);
 	return json(redactForMember(actor, item), { status: 201 });
 });

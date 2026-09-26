@@ -45,6 +45,7 @@ import {
 	type UpdateContextItemRequest
 } from '@tines/shared';
 import { insertValues, type QueryGuard } from './query-guard';
+import { assertRunStillBound, runBoundGuard, runStillBoundPredicate } from './project-access';
 import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { artifactKeyPrefix, getArtifactStore } from '$lib/server/artifact-store';
@@ -56,6 +57,7 @@ import {
 	optionalString,
 	requireString,
 	runAtomic,
+	attributedUserId,
 	sessionActor,
 	type ActorContext,
 	runKeyForbidden,
@@ -985,7 +987,8 @@ export async function createContextItem(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	body: CreateContextItemRequest
+	body: CreateContextItemRequest,
+	beforeCommit?: () => Promise<void>
 ): Promise<ContextItem> {
 	const fields = validateContextCreateFields(body);
 	const { kind, name } = fields;
@@ -1032,9 +1035,12 @@ export async function createContextItem(
 		fields,
 		scope,
 		position,
-		now
+		now,
+		guard: runBoundGuard(actor)
 	});
-	await runContextWrite(env, queries);
+	await beforeCommit?.();
+	const results = await runContextWrite(env, queries);
+	if (!results[0]?.meta.changes) await assertRunStillBound(db, actor);
 	return getContextItem(db, actor, id);
 }
 
@@ -1082,6 +1088,7 @@ export async function updateContextItem(
 	actor: ActorContext,
 	id: string,
 	body: UpdateContextItemRequest & { kind?: unknown },
+	beforeCommit?: () => Promise<void>,
 	/** Internal: lost-race retry count for last-write-wins updates. */
 	attempt = 0
 ): Promise<ContextItem> {
@@ -1327,6 +1334,7 @@ export async function updateContextItem(
 			.where(sql<boolean>`workflow_state_id IS ${row.workflow_state_id}`)
 			.where(sql<boolean>`label_id IS ${row.label_id}`)
 			.where(sql<boolean>`issue_id IS ${row.issue_id}`)
+			.where(runStillBoundPredicate(actor))
 			.compile()
 	);
 	if (filesChanged && files !== undefined) {
@@ -1352,8 +1360,10 @@ export async function updateContextItem(
 			newVersion
 		)
 	);
+	await beforeCommit?.();
 	const results = await runContextWrite(env, queries);
 	if ((results[0]?.meta.changes ?? 0) === 0) {
+		await assertRunStillBound(db, actor);
 		const fresh = await contextItemQuery(db, actor.userId)
 			.where('context_item.id', '=', id)
 			.executeTakeFirst();
@@ -1361,7 +1371,7 @@ export async function updateContextItem(
 		// An explicit expectation surfaces the conflict; otherwise this is
 		// last-write-wins, so re-apply the merge-patch onto the fresh row.
 		if (body.expected_version !== undefined || attempt >= 3) throw versionConflict(fresh);
-		return updateContextItem(db, env, actor, id, body, attempt + 1);
+		return updateContextItem(db, env, actor, id, body, undefined, attempt + 1);
 	}
 	return getContextItem(db, actor, id);
 }
@@ -1391,8 +1401,9 @@ export async function deleteContextItem(
 		}
 	);
 	await assertScopeWritable(db, actor, scope);
-	await runAtomic(env, [
-		db.deleteFrom('context_item_file').where('context_item_id', '=', id).compile(),
+	const bound = runStillBoundPredicate(actor);
+	const results = await runAtomic(env, [
+		db.deleteFrom('context_item_file').where('context_item_id', '=', id).where(bound).compile(),
 		db
 			.deleteFrom('artifact_version_file')
 			.where(
@@ -1400,15 +1411,17 @@ export async function deleteContextItem(
 				'in',
 				db.selectFrom('artifact_version').select('id').where('context_item_id', '=', id)
 			)
+			.where(bound)
 			.compile(),
-		db.deleteFrom('artifact_version').where('context_item_id', '=', id).compile(),
-		db.deleteFrom('context_item').where('id', '=', id).compile(),
+		db.deleteFrom('artifact_version').where('context_item_id', '=', id).where(bound).compile(),
+		db.deleteFrom('context_item').where('id', '=', id).where(bound).compile(),
 		eventInsert(db, actor, {
 			type: 'context.deleted',
 			...eventRefs(scope),
 			payload: { context_id: id, kind: row.kind, name: row.name, scope: scopeEventPayload(scope) }
 		})
 	]);
+	if (!results[3]?.meta.changes) await assertRunStillBound(db, actor);
 	if (row.kind === 'artifact') {
 		// D1 first, then best-effort R2 — an orphaned object is the accepted
 		// failure mode, never a row referencing a missing object.
@@ -1429,7 +1442,8 @@ export async function appendContextItem(
 	env: Env,
 	actor: ActorContext,
 	id: string,
-	body: AppendContextRequest
+	body: AppendContextRequest,
+	beforeCommit?: () => Promise<void>
 ): Promise<ContextItem> {
 	const text = requireString(body.text, 'text', { max: PROMPT_MAX_BYTES }).trim();
 	for (let attempt = 0; ; attempt++) {
@@ -1470,12 +1484,14 @@ export async function appendContextItem(
 		);
 		const newVersion = row.version + 1;
 		const now = Date.now();
+		if (attempt === 0) await beforeCommit?.();
 		const results = await runAtomic(env, [
 			db
 				.updateTable('context_item')
 				.set({ body: nextBody, version: newVersion, updated_at: now })
 				.where('id', '=', id)
 				.where('version', '=', row.version)
+				.where(runStillBoundPredicate(actor))
 				.compile(),
 			guardedContextEvent(
 				db,
@@ -1498,6 +1514,7 @@ export async function appendContextItem(
 			)
 		]);
 		if ((results[0]?.meta.changes ?? 0) > 0) return getContextItem(db, actor, id);
+		await assertRunStillBound(db, actor);
 		// Lost the race: with an explicit expectation that's a conflict;
 		// otherwise re-read and re-append onto the fresh body.
 		if (body.expected_version !== undefined || attempt >= 4) {
@@ -1931,7 +1948,8 @@ export async function launchStateForRun(
 			'start_state.id as start_state_id'
 		])
 		.where('agent_run.id', '=', actor.agentRunId)
-		.where('agent_run.user_id', '=', actor.userId)
+		// A delegated member run's `userId` is the project owner's; the run is the contributor's.
+		.where('agent_run.user_id', '=', attributedUserId(actor))
 		.executeTakeFirst();
 	// The run's key is revoked in the same batch that ends the run, so a live
 	// key implies a live run; a missing row can only be stale data.

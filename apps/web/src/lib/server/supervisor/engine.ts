@@ -63,11 +63,16 @@ async function runBatch(env: Env, queries: CompiledQuery[]): Promise<D1Result[]>
 }
 
 /**
- * Supervisor-initiated event: attributed to the owning user with no API key
- * (the schedules-sweep pattern); the run is identified in the payload. An
+ * Supervisor-initiated event: attributed to the run's contributor with no API
+ * key (the schedules-sweep pattern); the run is identified in the payload. An
  * optional guard ties the insert to another statement in the same batch.
  * Also used by the runner protocol for daemon-initiated changes (no
  * ActorContext exists there either).
+ *
+ * The row lands once, in the stream of the project's owner (Tines/751): a
+ * member's run on a shared project writes to the owner's feed with the member
+ * as actor, never a second row in the member's own stream. Events with no
+ * project, and runner health events, stay in the contributor's stream.
  */
 export function supervisorEvent(
 	db: Kysely<Database>,
@@ -84,9 +89,14 @@ export function supervisorEvent(
 	const projectId = input.issueId
 		? sql`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
 		: sql`${input.projectId ?? null}`;
+	// Runner health (errored, rate-limited) is about the contributor's own
+	// runner, so it stays in the contributor's stream wherever the run was.
+	const streamUserId = input.type.startsWith('runner.')
+		? sql`${userId}`
+		: sql`coalesce((SELECT user_id FROM project WHERE id = ${projectId}), ${userId})`;
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
-		SELECT ${newId('evt')}, ${userId}, ${input.type}, ${userId}, ${null},
+		SELECT ${newId('evt')}, ${streamUserId}, ${input.type}, ${userId}, ${null},
 			${input.issueId ?? null}, ${projectId}, ${JSON.stringify(input.payload)}, ${now}
 		WHERE ${guard ?? sql`1`}`.compile(db);
 }
