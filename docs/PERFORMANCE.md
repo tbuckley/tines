@@ -203,10 +203,12 @@ navigation actually morphs, never one per list item.
 Headless Chromium has no GPU, so its absolute capture times are higher than
 a real browser's, but the cost still grows with the number of named elements.
 
-Row links go to the issue's canonical path (`/issues/<project id>/<number>`).
-A link by project name loads the page, then the page replaces the URL with
-the canonical one (`OwnerIssuePage.svelte`), a second navigation that loads
-the data again and cuts the first transition short.
+Row links go to the issue's canonical path (`/issues/<project id>/<number>`),
+so the morph finds its row. Links by project name still work and load once:
+`OwnerIssuePage.svelte` swaps the address for the canonical one with a shallow
+`replaceState`. Until 2026-09-26 it used `goto`, a second navigation that
+loaded the data again and cut the first transition short, so every issue
+opened by name cost two loads.
 
 ## What a page load may await
 

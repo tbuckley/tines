@@ -6,19 +6,23 @@ import { body, gotoHydrated, resetFocus } from './helpers';
 
 /**
  * Only the list row morphing to or from its issue page carries
- * view-transition names (lib/issue-morph.svelte.ts). The browser captures
+ * view-transition names (lib/issue-morph.ts). The browser captures
  * each named element before a transition starts, so naming every row made a
  * 100-row list take hundreds of milliseconds to leave.
  */
 
 let listUrl: string;
+let projectName: string;
+let projectId: string;
 let issues: IssueDetail[];
 
 test.beforeAll(async ({ apiFor, uniqueName }) => {
 	const api = apiFor(ALICE);
 	const name = uniqueName('issue-morph');
+	projectName = name;
 	listUrl = `/issues?project=${encodeURIComponent(name)}`;
 	const project = await body<Project>(await api.post('/api/v1/projects', { name }));
+	projectId = project.id;
 	issues = [];
 	for (const title of ['First morph issue', 'Second morph issue', 'Third morph issue']) {
 		issues.push(
@@ -93,4 +97,29 @@ test('only the row that morphs to or from its issue page is named', async ({ pag
 	// Leaving for another tab names nothing in the list.
 	const agents = page.locator('header nav a', { hasText: 'Agents' }).first();
 	expect((await captureOf(page, () => agents.click())).old).toBe(0);
+});
+
+test('an issue linked by project name loads once and shows its canonical address', async ({
+	page
+}) => {
+	await gotoHydrated(page, listUrl);
+	const loads: string[] = [];
+	page.on('request', (request) => {
+		const path = new URL(request.url()).pathname;
+		if (path.endsWith('/__data.json') && path.startsWith('/issues/')) loads.push(path);
+	});
+	// Run rows, schedule results and other panels still link by name.
+	const aliasPath = `/issues/${encodeURIComponent(projectName)}/${issues[0].number}`;
+	await page.evaluate((href) => {
+		const a = document.createElement('a');
+		a.href = href;
+		a.textContent = 'alias link';
+		document.querySelector('main')!.append(a);
+	}, aliasPath);
+	await page.getByRole('link', { name: 'alias link' }).click();
+
+	await expect(page).toHaveURL(new RegExp(`/issues/${projectId}/${issues[0].number}$`));
+	await expect(page.getByRole('heading', { level: 1 })).toContainText('First morph issue');
+	await page.waitForLoadState('networkidle');
+	expect(loads).toEqual([`${aliasPath}/__data.json`]);
 });
