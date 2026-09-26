@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { nextRunLabel, relativeTimeShort, runElapsedLabel, truncate, untilTime } from './format';
+import {
+	invitationExpiryLabel,
+	invitationStatus,
+	joinedDate,
+	nextRunLabel,
+	relativeTimeShort,
+	runElapsedLabel,
+	truncate,
+	untilTime
+} from './format';
 
 describe('truncate', () => {
 	it('leaves short values alone', () => {
@@ -141,5 +150,82 @@ describe('nextRunLabel', () => {
 	it('drops the prefix once past due, since "next 3h overdue" reads backwards', () => {
 		expect(nextRunLabel(NOW - 1, NOW)).toBe('due now');
 		expect(nextRunLabel(NOW - 3 * HOUR, NOW)).toBe('3h overdue');
+	});
+});
+
+describe('invitationStatus', () => {
+	const invite = (over: Partial<Parameters<typeof invitationStatus>[0]> = {}) => ({
+		accepted_at: null,
+		canceled_at: null,
+		expires_at: NOW + 7 * DAY,
+		delivery_status: 'sent',
+		...over
+	});
+
+	it('reads an open, delivered link as pending', () => {
+		expect(invitationStatus(invite(), NOW)).toBe('pending');
+		expect(invitationStatus(invite({ delivery_status: 'pending' }), NOW)).toBe('pending');
+	});
+
+	it('keeps a removed member as accepted, not canceled', () => {
+		expect(invitationStatus(invite({ accepted_at: NOW - DAY, canceled_at: NOW }), NOW)).toBe(
+			'accepted'
+		);
+	});
+
+	it('reads canceled before expired', () => {
+		expect(invitationStatus(invite({ canceled_at: NOW - DAY, expires_at: NOW - DAY }), NOW)).toBe(
+			'canceled'
+		);
+	});
+
+	it('expires at the instant the server does', () => {
+		expect(invitationStatus(invite({ expires_at: NOW }), NOW)).toBe('expired');
+		expect(invitationStatus(invite({ expires_at: NOW + 1 }), NOW)).toBe('pending');
+	});
+
+	it('reads a lapsed failed delivery as expired, a live one as failed', () => {
+		expect(
+			invitationStatus(invite({ delivery_status: 'failed', expires_at: NOW - HOUR }), NOW)
+		).toBe('expired');
+		expect(invitationStatus(invite({ delivery_status: 'failed' }), NOW)).toBe('failed');
+	});
+});
+
+describe('invitationExpiryLabel', () => {
+	it('phrases a live link in long-form days and hours', () => {
+		expect(invitationExpiryLabel(NOW + 7 * DAY - 5_000, NOW)).toBe('expires in 7 days');
+		expect(invitationExpiryLabel(NOW + DAY, NOW)).toBe('expires in 1 day');
+		expect(invitationExpiryLabel(NOW + 23.6 * HOUR, NOW)).toBe('expires in 1 day');
+		expect(invitationExpiryLabel(NOW + 5 * HOUR, NOW)).toBe('expires in 5 hours');
+		expect(invitationExpiryLabel(NOW + HOUR, NOW)).toBe('expires in 1 hour');
+		expect(invitationExpiryLabel(NOW + 20 * MINUTE, NOW)).toBe('expires in under an hour');
+	});
+
+	it('phrases a lapsed link in the past tense, with no cap', () => {
+		expect(invitationExpiryLabel(NOW, NOW)).toBe('expired under an hour ago');
+		expect(invitationExpiryLabel(NOW - 3 * HOUR, NOW)).toBe('expired 3 hours ago');
+		expect(invitationExpiryLabel(NOW - 2 * DAY, NOW)).toBe('expired 2 days ago');
+		expect(invitationExpiryLabel(NOW - 40 * DAY, NOW)).toBe('expired 40 days ago');
+	});
+});
+
+describe('joinedDate', () => {
+	it('omits the year for this year', () => {
+		const earlier = NOW - 30 * DAY;
+		expect(joinedDate(earlier, NOW)).toBe(
+			new Date(earlier).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+		);
+	});
+
+	it('names the year for an earlier year', () => {
+		const lastYear = NOW - 400 * DAY;
+		expect(joinedDate(lastYear, NOW)).toBe(
+			new Date(lastYear).toLocaleDateString(undefined, {
+				month: 'short',
+				day: 'numeric',
+				year: 'numeric'
+			})
+		);
 	});
 });

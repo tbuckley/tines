@@ -1,10 +1,15 @@
 <script lang="ts">
 	import { goto, invalidateAll } from '$app/navigation';
+	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
+	import IconClock from '@tabler/icons-svelte/icons/clock';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
+	import { formatDateTime, invitationExpiryLabel, invitationStatus, joinedDate } from '$lib/format';
 	let { data } = $props();
+	// An accepted invitation is a member now: it shows in the roster, not here.
+	const openInvitations = $derived(data.invitations.filter((i) => i.accepted_at === null));
 	let email = $state('');
 	let issueId = $state('');
 	let confirmSharing = $state(false);
@@ -77,7 +82,14 @@
 			</li>
 			{#each data.people.members as member (member.id)}
 				<li class="flex flex-wrap items-center justify-between gap-2">
-					<span>{member.name}{member.id === data.viewerId ? ' · You' : ''}</span>
+					<span
+						>{member.name}
+						<span class="text-muted-foreground"
+							>Member · joined {joinedDate(member.joined_at)}{member.id === data.viewerId
+								? ' · You'
+								: ''}</span
+						></span
+					>
 					{#if data.role === 'owner'}<Button
 							size="sm"
 							variant="outline"
@@ -128,21 +140,44 @@
 		</section>
 		<section class="mt-6 rounded-lg border p-4" aria-labelledby="invites-heading">
 			<h2 id="invites-heading" class="font-semibold">Invitations</h2>
-			{#if data.invitations.length === 0}<p class="mt-3">No invitations yet.</p>{:else}
+			{#if openInvitations.length === 0}<p class="mt-3">No pending invitations.</p>{:else}
 				<ul class="mt-3 space-y-4">
-					{#each data.invitations as invitation (invitation.id)}
+					{#each openInvitations as invitation (invitation.id)}
+						{@const status = invitationStatus(invitation)}
 						<li class="flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-sm">
-							<!-- Only the link expires: an accepted member stays until removed. -->
-							<span
-								>{invitation.email} · {invitation.accepted_at
-									? `Accepted · joined ${new Date(invitation.accepted_at).toLocaleDateString()}`
-									: invitation.canceled_at
-										? 'Canceled'
-										: `${
-												invitation.delivery_status === 'failed' ? 'Delivery failed' : 'Pending'
-											} · link expires ${new Date(invitation.expires_at).toLocaleString()}`}</span
-							>
-							{#if !invitation.accepted_at && !invitation.canceled_at}
+							<div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+								<span class="break-all">{invitation.email}</span>
+								{#if status === 'pending'}
+									<span
+										class="flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+										><IconClock size={12} stroke={2} /> Pending</span
+									>
+								{:else if status === 'failed'}
+									<span
+										class="bg-destructive/10 text-destructive flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
+										><IconAlertTriangle size={12} stroke={2} /> Delivery failed</span
+									>
+								{:else if status === 'expired'}
+									<span
+										class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs font-medium"
+										>Expired</span
+									>
+								{:else}
+									<span
+										class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs font-medium"
+										>Canceled</span
+									>
+								{/if}
+								{#if status !== 'canceled'}
+									<time
+										class="text-muted-foreground"
+										datetime={new Date(invitation.expires_at).toISOString()}
+										title={formatDateTime(invitation.expires_at)}
+										>{invitationExpiryLabel(invitation.expires_at)}</time
+									>
+								{/if}
+							</div>
+							{#if status !== 'canceled'}
 								<div class="flex gap-2">
 									<Button
 										size="sm"
