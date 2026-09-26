@@ -60,7 +60,8 @@ import {
 	resolveIssueAccess,
 	currentProjectWriterPredicate,
 	runStillBoundPredicate,
-	assertRunStillBound
+	assertRunStillBound,
+	runProjectActor
 } from './project-access';
 import { readSharedIssue } from './shared-issues';
 import { deriveRound, deriveSinceLastRun } from './handoff';
@@ -2644,7 +2645,8 @@ export async function createComment(
 	if (access.role === 'owner') {
 		const issue = await getIssueDetail(db, actor.userId, { id: issueId });
 		await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
-	} else if (actor.agentRunId) throw notFound();
+		// A member run comments on its admitted project (Tines/751); no other run does.
+	} else if (actor.agentRunId && !runProjectActor(actor, access.projectId)) throw notFound();
 	const text = requireString(body.body, 'body', { max: 100_000 });
 
 	const id = newId('cmt');

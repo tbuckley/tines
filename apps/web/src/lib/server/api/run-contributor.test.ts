@@ -47,6 +47,7 @@ import { supervisorEvent } from '../supervisor/engine';
 import { eventQuery, serializeEvent } from './events';
 import { listSharedEvents } from './shared-events';
 import { readSharedIssue } from './shared-issues';
+import { listSharedProjects } from './shared-projects';
 import { serializeSharedRun, sharedRunQuery } from './runs';
 import { sql } from 'kysely';
 import { GET as getJournal } from '../../../routes/api/v1/issues/[id]/journal/+server';
@@ -194,6 +195,18 @@ describe('a member run acts on its admitted project with the owner scope', () =>
 		expect(() => assertNotMember(scoped, 'Runners')).toThrow(
 			expect.objectContaining({ code: 'owner_only' })
 		);
+	});
+
+	it('lists only the admitted project, so a ref like project/number resolves', async () => {
+		const { t } = await setup();
+		t.sqlite.exec(`UPDATE project SET shared_at = ${NOW} WHERE id = 'prj_private';
+			INSERT INTO project_member (project_id, user_id, revision, joined_at, updated_at)
+			VALUES ('prj_private', 'u_member', 1, ${NOW}, ${NOW})`);
+		const listed = await listSharedProjects(t.db, await authenticate(t), 'all');
+		expect(listed.map((p) => p.id)).toEqual([PROJECT]);
+		// An owner run, or any other run key, lists no shared projects.
+		const owner = await ownerRunSetup();
+		expect(await listSharedProjects(owner.t.db, await authenticate(owner.t), 'all')).toEqual([]);
 	});
 
 	it('does not delegate anywhere else, so the owner’s other projects 404', async () => {

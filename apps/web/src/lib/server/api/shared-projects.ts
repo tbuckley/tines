@@ -1,7 +1,7 @@
 import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import type { ActorContext } from './core';
-import { resolveProjectAccess } from './project-access';
+import { resolveProjectAccess, runProjectActor } from './project-access';
 import { notFound } from './core';
 import { projectReadPredicate } from './permissions';
 
@@ -70,7 +70,12 @@ export async function listSharedProjects(
 	actor: ActorContext,
 	archived: 'false' | 'true' | 'all' = 'false'
 ) {
-	if (actor.agentRunId) return [];
+	// A member run lists only its admitted project, at the revision it was bound
+	// to (Tines/751), so refs like `<project>/<number>` resolve; other runs list none.
+	const memberRun = actor.runRestriction
+		? runProjectActor(actor, actor.runRestriction.projectId)?.member
+		: undefined;
+	if (actor.agentRunId && !memberRun) return [];
 	let query = db
 		.selectFrom('project as p')
 		.innerJoin('project_member as m', 'm.project_id', 'p.id')
@@ -103,6 +108,10 @@ export async function listSharedProjects(
 		.orderBy('p.created_at');
 	if (archived === 'false') query = query.where('p.archived_at', 'is', null);
 	if (archived === 'true') query = query.where('p.archived_at', 'is not', null);
+	if (memberRun)
+		query = query
+			.where('p.id', '=', memberRun.projectId)
+			.where('m.revision', '=', memberRun.membershipRevision);
 	const rows = await query.execute();
 	const current = await db
 		.selectFrom('project_member')
