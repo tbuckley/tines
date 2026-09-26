@@ -47,7 +47,7 @@ describe('mergeIssueOptions', () => {
 	});
 
 	it('drops an exact hit that is a duplicate', () => {
-		const dup = exact({ duplicate_of: { id: 'iss_1' } as Issue['duplicate_of'] });
+		const dup = exact({ duplicate_of: { id: 'iss_1' } as unknown as Issue['duplicate_of'] });
 		expect(mergeIssueOptions(dup, []).map((p) => p.id)).toEqual([]);
 	});
 
