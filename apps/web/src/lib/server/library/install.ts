@@ -109,12 +109,22 @@ export async function installWorkflowPackage(
 		return parseReceipt(prior.receipt_json);
 	}
 
-	const { document, resolved, witnessRaw } = await reconstructPackagePlan(
-		db,
-		actor,
-		request.document_json,
-		payload
-	);
+	let reconstructed: Awaited<ReturnType<typeof reconstructPackagePlan>>;
+	try {
+		reconstructed = await reconstructPackagePlan(db, actor, request.document_json, payload);
+	} catch (error) {
+		// A concurrent retry of this same plan can commit between the receipt
+		// read above and this destination read, and its own writes are what
+		// changed the destination. That is a retry to answer, not a stale plan.
+		const committed =
+			error instanceof ApiFail && error.code === 'plan_stale'
+				? await receiptRow(db, actor.userId, payload.id)
+				: undefined;
+		if (!committed) throw error;
+		assertMatchingReceipt(committed, payload, actorKey, requestDigest);
+		return parseReceipt(committed.receipt_json);
+	}
+	const { document, resolved, witnessRaw } = reconstructed;
 	const now = Date.now();
 	const executionNonce = newId('exe');
 	const receipt = packageReceipt(payload, resolved, document.main_workflow_id, now);

@@ -16,7 +16,7 @@
 import { appendFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Project } from '@tines/shared';
-import { ConcurrentD1Dialect } from '$lib/server/db';
+import { ConcurrentD1Dialect, withReadBatching } from '$lib/server/db';
 import { createTestDb, instrumentLatency, type TestDb } from './test-db';
 import type { LayoutServerData } from '../../../routes/(app)/$types';
 import {
@@ -182,7 +182,8 @@ async function measure(name: string, run: (env: Env, number: number) => Promise<
 	const { number } = seed(t);
 	const { env, sqls, conc, waves } = instrument(t);
 	const started = performance.now();
-	await run(env, number);
+	// As hooks.server.ts runs every request (lib/server/db.ts, read batching).
+	await withReadBatching(() => run(env, number));
 	const elapsed = performance.now() - started;
 	report(
 		`\n${name}\n  queries: ${sqls.length}\n  sequential waves (critical path): ${waves.max} (budget ${WAVE_BUDGET[name]})\n  modelled time @${LATENCY_MS}ms/query: ${elapsed.toFixed(0)}ms\n  peak concurrent queries: ${conc.max}`
