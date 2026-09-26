@@ -1,18 +1,23 @@
 import { error } from '@sveltejs/kit';
 import { truncate } from '$lib/format';
-import { listContextItems } from '$lib/server/api/context';
+import { listContextItems, listContextItemsForStates } from '$lib/server/api/context';
 import { ApiFail, sessionActor } from '$lib/server/api/core';
 import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
 import { listLabelsInternal } from '$lib/server/api/labels';
+import { listInclusionCandidates, listInclusions } from '$lib/server/api/guidance-inclusions';
 import { getProject } from '$lib/server/api/projects';
 import { actorForProject, resolveProjectAccess } from '$lib/server/api/project-access';
 import { readScheduleConsent } from '$lib/server/api/schedule-consent';
 import { redactForMember, scopeBlockersForMember } from '$lib/server/api/member-context';
 import { listRoutingRules } from '$lib/server/api/routing';
 import { listSchedules } from '$lib/server/api/schedules';
+import { isSharedProject, sharedExecutionEnabled } from '$lib/server/api/shared-execution';
 import { loadWorkflows } from '$lib/server/api/workflows';
 import { getDb } from '$lib/server/db';
 import { issuePagination, readIssuePage } from '$lib/server/issue-pagination';
+import type { Kysely } from 'kysely';
+import type { ContextItem, Workflow } from '@tines/shared';
+import type { Database } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals, platform, params, url }) => {
@@ -112,8 +117,15 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 				}))
 			)
 		: schedules;
+	const sharedGuidance =
+		!isMember &&
+		sharedExecutionEnabled(platform!.env) &&
+		isSharedProject({ shared_at: project.shared_at ?? null })
+			? await loadSharedGuidance(db, platform!.env, actor, project.id, contextItems, workflows)
+			: null;
 	return {
 		viewerRole: access.role,
+		sharedGuidance,
 		owner: isMember ? { id: ownerId, name: scopeActor.userName } : null,
 		routingRules: projectRules.length > 0 ? projectRules : fallbackRules,
 		project: { ...project, viewer_role: access.role },
@@ -133,3 +145,79 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		pagination: issuePagination(url, page, issues, hasMore)
 	};
 };
+
+/** Guidance kinds a shared project carries; env and artifact never travel. */
+const isGuidance = (item: ContextItem) => item.kind !== 'env' && item.kind !== 'artifact';
+
+/**
+ * The owner's "Shared guidance" block (Tines/752): what is included from the
+ * library, what could be, and a review of everything the project shares —
+ * its own items, and the workflow-stage guidance of every workflow its
+ * unfinished issues are in.
+ */
+async function loadSharedGuidance(
+	db: Kysely<Database>,
+	env: Env,
+	actor: Parameters<typeof listInclusions>[2],
+	projectId: string,
+	projectItems: ContextItem[],
+	workflows: Workflow[]
+) {
+	const [{ items: included }, candidates, active] = await Promise.all([
+		listInclusions(db, env, actor, projectId),
+		listInclusionCandidates(db, env, actor, projectId),
+		db
+			.selectFrom('issue')
+			.innerJoin('workflow_state as s', 's.id', 'issue.state_id')
+			.select('issue.workflow_id')
+			.distinct()
+			.where('issue.project_id', '=', projectId)
+			.where('s.category', '!=', 'done')
+			.execute()
+	]);
+	const activeWorkflows = workflows.filter((w) => active.some((a) => a.workflow_id === w.id));
+	// A state carries its inherited base states' guidance too (Tines/238).
+	const allStates = new Map(workflows.flatMap((w) => w.states).map((s) => [s.id, s]));
+	const chains = new Map(
+		activeWorkflows.map((workflow) => {
+			const names = new Map<string, string>();
+			for (const state of workflow.states) {
+				for (
+					let id: string | null = state.id;
+					id !== null && !names.has(id);
+					id = allStates.get(id)?.inherits_from ?? null
+				)
+					names.set(id, allStates.get(id)?.name ?? state.name);
+			}
+			return [workflow.id, names];
+		})
+	);
+	const stateItems = await listContextItemsForStates(db, actor.userId, [
+		...new Set([...chains.values()].flatMap((names) => [...names.keys()]))
+	]);
+	return {
+		included,
+		candidates,
+		projectItemCount: projectItems.filter(isGuidance).length,
+		workflows: activeWorkflows
+			.map((workflow) => {
+				const states = chains.get(workflow.id)!;
+				return {
+					id: workflow.id,
+					name: workflow.name,
+					items: stateItems
+						.filter(isGuidance)
+						.filter((i) => i.scope.issue_id === null)
+						.filter((i) => i.scope.project_id === null || i.scope.project_id === projectId)
+						.filter((i) => states.has(i.scope.workflow_state_id!))
+						.map((i) => ({
+							id: i.id,
+							kind: i.kind,
+							name: i.name,
+							state: states.get(i.scope.workflow_state_id!)!
+						}))
+				};
+			})
+			.filter((group) => group.items.length > 0)
+	};
+}
