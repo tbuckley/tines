@@ -43,6 +43,8 @@ import {
 	seedBase
 } from '../supervisor/test-fixtures';
 import { ownerIssueConsentPredicate } from '../supervisor/consent-admission';
+import { supervisorEvent } from '../supervisor/engine';
+import { eventQuery, serializeEvent } from './events';
 import { sql } from 'kysely';
 import { GET as getJournal } from '../../../routes/api/v1/issues/[id]/journal/+server';
 
@@ -513,9 +515,7 @@ describe('run-filed issues in shared projects are unapproved proposals', () => {
 		const filed = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
 			title: 'Follow-up'
 		});
-		expect(ownerOffRows(t, filed.id)).toEqual([
-			{ user_id: USER, value: 'off', current_epoch: 1 }
-		]);
+		expect(ownerOffRows(t, filed.id)).toEqual([{ user_id: USER, value: 'off', current_epoch: 1 }]);
 		expect(await ownerWouldRun(t, filed.id)).toBe(false);
 		expect(filed.permission_receipt).toMatchObject({
 			actor: 'key',
@@ -564,5 +564,58 @@ describe('run-filed issues in shared projects are unapproved proposals', () => {
 		expect(ownerOffRows(t, filed.id)).toEqual([]);
 		expect(await ownerWouldRun(t, filed.id)).toBe(true);
 		expect(filed.permission_receipt).toBeUndefined();
+	});
+});
+
+describe('a member run’s lifecycle events land once, in the owner’s stream', () => {
+	it('writes one owner-stream row credited to the member, with private fields hidden', async () => {
+		const { t, issueId, memberId, runId } = await setup();
+		const payload = {
+			run_id: runId,
+			status: 'completed',
+			outcome: 'success',
+			usage: { cost_usd: 1.25 },
+			error: 'secret failure',
+			provider_session_url: 'https://provider.example/session'
+		};
+		const q = supervisorEvent(t.db, memberId, { type: 'agent_run.ended', issueId, payload }, NOW);
+		t.sqlite.prepare(q.sql).run(...(q.parameters as never[]));
+		const health = supervisorEvent(
+			t.db,
+			memberId,
+			{ type: 'runner.errored', issueId, payload: { error: 'secret' } },
+			NOW
+		);
+		t.sqlite.prepare(health.sql).run(...(health.parameters as never[]));
+		expect(
+			t.sqlite
+				.prepare('SELECT user_id, actor_user_id, type FROM event WHERE issue_id = ? ORDER BY type')
+				.all(issueId)
+		).toEqual([
+			{ user_id: USER, actor_user_id: memberId, type: 'agent_run.ended' },
+			{ user_id: memberId, actor_user_id: memberId, type: 'runner.errored' }
+		]);
+		const [owner] = (
+			await eventQuery(t.db, USER).where('event.issue_id', '=', issueId).execute()
+		).map(serializeEvent);
+		expect(owner.actor).toMatchObject({ user_id: memberId, user_name: 'bob' });
+		expect(owner.payload).toEqual({ status: 'completed', outcome: 'success' });
+		// The contributor's own view of its runner health keeps the full payload.
+		const [mine] = (
+			await eventQuery(t.db, memberId).where('event.issue_id', '=', issueId).execute()
+		).map(serializeEvent);
+		expect(mine.payload).toEqual({ error: 'secret' });
+	});
+
+	it('leaves an owner run’s events unchanged', async () => {
+		const { t, issueId, runId } = await ownerRunSetup();
+		const payload = { run_id: runId, status: 'completed', usage: { cost_usd: 1 } };
+		const q = supervisorEvent(t.db, USER, { type: 'agent_run.ended', issueId, payload }, NOW);
+		t.sqlite.prepare(q.sql).run(...(q.parameters as never[]));
+		const rows = (await eventQuery(t.db, USER).where('event.issue_id', '=', issueId).execute()).map(
+			serializeEvent
+		);
+		expect(rows).toHaveLength(1);
+		expect(rows[0].payload).toEqual(payload);
 	});
 });

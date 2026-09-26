@@ -2,6 +2,7 @@ import type { Actor, ActorRun, TinesEvent } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely, type RawBuilder } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { ApiFail, attributedUserId, type ActorContext } from './core';
+import { sharedEventPayload } from './shared-events';
 
 export interface EventWindowFilters {
 	since?: number;
@@ -208,6 +209,7 @@ export function eventQuery(db: Kysely<Database>, userId: string) {
 				'event.project_id',
 				'event.payload',
 				'event.created_at',
+				'event.user_id as stream_user_id',
 				'event.actor_user_id',
 				'actor_user.name as actor_user_name',
 				'event.actor_api_key_id',
@@ -231,12 +233,30 @@ export function eventQuery(db: Kysely<Database>, userId: string) {
 
 type EventRow = Awaited<ReturnType<ReturnType<typeof eventQuery>['execute']>>[number];
 
+/**
+ * A run event in the owner's stream whose run belongs to another contributor
+ * (a member's run on a shared project, Tines/751). The owner sees its status
+ * and outcome, never the contributor's usage, cost, error or provider detail.
+ */
+function isForeignRunEvent(row: EventRow): boolean {
+	return (
+		row.actor_user_id !== row.stream_user_id &&
+		(row.type.startsWith('agent_run.') ||
+			row.type.startsWith('runner.') ||
+			row.type === 'issue.parked')
+	);
+}
+
 export function serializeEvent(row: EventRow): TinesEvent {
 	let payload: Record<string, unknown> = {};
-	try {
-		payload = JSON.parse(row.payload) as Record<string, unknown>;
-	} catch {
-		// Leave the payload empty if it somehow isn't valid JSON.
+	if (isForeignRunEvent(row)) {
+		payload = sharedEventPayload(row.type, row.payload);
+	} else {
+		try {
+			payload = JSON.parse(row.payload) as Record<string, unknown>;
+		} catch {
+			// Leave the payload empty if it somehow isn't valid JSON.
+		}
 	}
 	if (row.other_project_id && typeof payload.other_issue_id === 'string')
 		payload.other_project_id = row.other_project_id;

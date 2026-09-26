@@ -9,6 +9,7 @@ const baseRow = {
 	project_id: 'prj_1',
 	payload: '{"title":"Fix it"}',
 	created_at: 1723000000000,
+	stream_user_id: 'usr_1',
 	actor_user_id: 'usr_1',
 	actor_user_name: 'alice',
 	actor_api_key_id: null,
