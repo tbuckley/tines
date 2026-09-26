@@ -1541,6 +1541,27 @@ export interface EffectiveContext {
 }
 
 /** Per-kind counts of the currently effective context, post-dedupe. */
+/**
+ * A library item the owner included in one shared project's guidance
+ * (Tines/752): a global or label-only prompt, skill or repo. A reference to
+ * the live item, never a copy — later edits stay shared.
+ */
+export interface GuidanceInclusion {
+	item_id: string;
+	kind: 'prompt' | 'skill' | 'repo';
+	name: string;
+	scope_label: string;
+	version: number;
+	revision: number;
+	created_at: number;
+}
+
+/** `GET /api/v1/projects/:id/guidance-inclusions`. */
+export interface GuidanceInclusionList {
+	items: GuidanceInclusion[];
+	next_cursor: null;
+}
+
 export interface ContextSummary {
 	prompts: number;
 	skills: number;

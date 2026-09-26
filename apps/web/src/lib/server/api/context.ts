@@ -1751,6 +1751,31 @@ function matchingItemsQuery(
 		);
 }
 
+/**
+ * The shared projection (Tines/752), applied on top of `matchingItemsQuery`
+ * for a shared project: which of the owner's matching items everyone in the
+ * project may read. Project-, issue- and workflow-state-anchored items share
+ * automatically (the matcher already confines state items to the issue's
+ * chain); a global or label-only prompt, skill or repo shares only while the
+ * owner has included it in this project. Env and artifacts never do.
+ * Admissibility is re-checked on every read, so an inclusion row whose item
+ * was later rescoped is inert.
+ */
+export function sharedGuidancePredicate(projectId: string, issueId: string) {
+	return sql<boolean>`(context_item.kind NOT IN ('env', 'artifact') AND (
+		context_item.project_id = ${projectId}
+		OR context_item.issue_id = ${issueId}
+		OR context_item.workflow_state_id IS NOT NULL
+		OR (
+			context_item.project_id IS NULL AND context_item.issue_id IS NULL
+			AND context_item.workflow_state_id IS NULL
+			AND context_item.kind IN ('prompt', 'skill', 'repo')
+			AND EXISTS (SELECT 1 FROM project_guidance_inclusion g
+				WHERE g.project_id = ${projectId} AND g.context_item_id = context_item.id)
+		)
+	))`;
+}
+
 /** The label a same-rank tie orders by: name, then id for a dangling label. */
 function labelSortKey(row: ItemRow): string {
 	return (row.scope_label_name ?? '').toLowerCase() || (row.label_id ?? '');
