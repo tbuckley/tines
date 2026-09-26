@@ -51,8 +51,8 @@ test('the invite landing issue is picked by number or title, and errors sit unde
 	await test.step('empty focus lists the newest open issues, not done ones', async () => {
 		await landing.focus();
 		await expect(listbox.getByRole('option')).toHaveText([
-			`#${issue2.number}Pricing page copy`,
-			`#${issue1.number}Launch checklist`
+			`#${issue2.number} Pricing page copy`,
+			`#${issue1.number} Launch checklist`
 		]);
 	});
 
