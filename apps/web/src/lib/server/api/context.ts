@@ -45,6 +45,7 @@ import {
 	type UpdateContextItemRequest
 } from '@tines/shared';
 import { insertValues, type QueryGuard } from './query-guard';
+import { assertRunStillBound, runBoundGuard, runStillBoundPredicate } from './project-access';
 import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { artifactKeyPrefix, getArtifactStore } from '$lib/server/artifact-store';
@@ -1033,9 +1034,11 @@ export async function createContextItem(
 		fields,
 		scope,
 		position,
-		now
+		now,
+		guard: runBoundGuard(actor)
 	});
-	await runContextWrite(env, queries);
+	const results = await runContextWrite(env, queries);
+	if (!results[0]?.meta.changes) await assertRunStillBound(db, actor);
 	return getContextItem(db, actor, id);
 }
 
@@ -1328,6 +1331,7 @@ export async function updateContextItem(
 			.where(sql<boolean>`workflow_state_id IS ${row.workflow_state_id}`)
 			.where(sql<boolean>`label_id IS ${row.label_id}`)
 			.where(sql<boolean>`issue_id IS ${row.issue_id}`)
+			.where(runStillBoundPredicate(actor))
 			.compile()
 	);
 	if (filesChanged && files !== undefined) {
@@ -1355,6 +1359,7 @@ export async function updateContextItem(
 	);
 	const results = await runContextWrite(env, queries);
 	if ((results[0]?.meta.changes ?? 0) === 0) {
+		await assertRunStillBound(db, actor);
 		const fresh = await contextItemQuery(db, actor.userId)
 			.where('context_item.id', '=', id)
 			.executeTakeFirst();
@@ -1392,8 +1397,9 @@ export async function deleteContextItem(
 		}
 	);
 	await assertScopeWritable(db, actor, scope);
-	await runAtomic(env, [
-		db.deleteFrom('context_item_file').where('context_item_id', '=', id).compile(),
+	const bound = runStillBoundPredicate(actor);
+	const results = await runAtomic(env, [
+		db.deleteFrom('context_item_file').where('context_item_id', '=', id).where(bound).compile(),
 		db
 			.deleteFrom('artifact_version_file')
 			.where(
@@ -1401,15 +1407,17 @@ export async function deleteContextItem(
 				'in',
 				db.selectFrom('artifact_version').select('id').where('context_item_id', '=', id)
 			)
+			.where(bound)
 			.compile(),
-		db.deleteFrom('artifact_version').where('context_item_id', '=', id).compile(),
-		db.deleteFrom('context_item').where('id', '=', id).compile(),
+		db.deleteFrom('artifact_version').where('context_item_id', '=', id).where(bound).compile(),
+		db.deleteFrom('context_item').where('id', '=', id).where(bound).compile(),
 		eventInsert(db, actor, {
 			type: 'context.deleted',
 			...eventRefs(scope),
 			payload: { context_id: id, kind: row.kind, name: row.name, scope: scopeEventPayload(scope) }
 		})
 	]);
+	if (!results[3]?.meta.changes) await assertRunStillBound(db, actor);
 	if (row.kind === 'artifact') {
 		// D1 first, then best-effort R2 — an orphaned object is the accepted
 		// failure mode, never a row referencing a missing object.
@@ -1477,6 +1485,7 @@ export async function appendContextItem(
 				.set({ body: nextBody, version: newVersion, updated_at: now })
 				.where('id', '=', id)
 				.where('version', '=', row.version)
+				.where(runStillBoundPredicate(actor))
 				.compile(),
 			guardedContextEvent(
 				db,
@@ -1499,6 +1508,7 @@ export async function appendContextItem(
 			)
 		]);
 		if ((results[0]?.meta.changes ?? 0) > 0) return getContextItem(db, actor, id);
+		await assertRunStillBound(db, actor);
 		// Lost the race: with an explicit expectation that's a conflict;
 		// otherwise re-read and re-append onto the fresh body.
 		if (body.expected_version !== undefined || attempt >= 4) {

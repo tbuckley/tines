@@ -2,6 +2,7 @@ import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { ApiFail, notFound, type ActorContext } from './core';
 import { accessAllowed, requireAccess } from './permissions';
+import type { QueryGuard } from './query-guard';
 
 export type ProjectAccess = {
 	projectId: string;
@@ -162,6 +163,11 @@ export function runStillBoundPredicate(actor: ActorContext) {
 			AND k.id = ${actor.apiKeyId} AND k.revoked_at IS NULL
 			AND (k.expires_at IS NULL OR k.expires_at > ${Date.now()})
 			AND i.project_id = ${restriction.projectId} AND ${authority})`;
+}
+
+/** `runStillBoundPredicate` as a batch guard; undefined for non-run actors, whose writes stay unguarded. */
+export function runBoundGuard(actor: ActorContext): QueryGuard | undefined {
+	return actor.runRestriction ? { predicate: runStillBoundPredicate(actor) } : undefined;
 }
 
 /** Throws 401 `run_key_inactive` when a run key's binding lapsed before its write committed. */

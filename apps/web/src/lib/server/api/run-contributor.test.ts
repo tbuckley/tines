@@ -10,6 +10,15 @@ import {
 	updateIssue
 } from './issues';
 import { TEST_NOOP_DISPATCH_EFFECTS } from './test-dispatch-effects';
+import { createSiteLink, deleteArtifact, reaffirmArtifact, upsertArtifact } from './artifacts';
+import { addIssueLabels, removeIssueLabel } from './labels';
+import { addIssueLink, removeIssueLink } from './issue-links';
+import {
+	appendContextItem,
+	createContextItem,
+	deleteContextItem,
+	updateContextItem
+} from './context';
 import {
 	actorForIssue,
 	actorForProject,
@@ -25,6 +34,7 @@ import {
 	REVIEW,
 	USER,
 	addIssue,
+	addLabel,
 	addMemberContributorRun,
 	addRun,
 	addRunKey,
@@ -371,4 +381,97 @@ describe('GET /issues/:id/journal resolves the anchor before authorizing', () =>
 		expect(res.status).toBe(403);
 		expect(JSON.stringify(await res.json())).toContain('journal_anchor_unavailable');
 	});
+});
+
+function writeSnapshot(t: TestDb) {
+	const count = (table: string) =>
+		(t.sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
+	return {
+		events: count('event'),
+		items: count('context_item'),
+		versions: count('artifact_version'),
+		labels: count('issue_label'),
+		links: count('issue_link'),
+		bodies: t.sqlite.prepare('SELECT id, body, version FROM context_item ORDER BY id').all()
+	};
+}
+
+describe('standalone run writes re-check the binding at commit', () => {
+	// Transfer is refused at preflight (outside_run_project); the rest pass
+	// preflight on the stale actor and must be refused by the commit guard.
+	const commitRevocations = Object.entries(OWNER_REVOCATIONS).filter(
+		([name]) => name !== 'transferred'
+	);
+	for (const [name, revoke] of commitRevocations) {
+		it(`refuses artifact, label, link and context writes after: ${name}`, async () => {
+			const { t, issueId, runId, keyId } = await ownerRunSetup();
+			const other = addIssue(t, { state: OPEN, title: 'Other' });
+			const labelId = addLabel(t, 'bug');
+			addLabel(t, 'chore');
+			const fx = TEST_NOOP_DISPATCH_EFFECTS;
+			// Deletes need project `delete` in the key's stored policy.
+			t.sqlite
+				.prepare(
+					"UPDATE api_key SET permissions = json_set(permissions, '$.projects.access', 'delete')"
+				)
+				.run();
+			const actor = await authenticate(t);
+			// Seed with the live actor so every update/delete target exists.
+			await upsertArtifact(t.db, t.env, actor, issueId, 'report', {
+				type: 'text',
+				content: '<html></html>'
+			});
+			t.sqlite.prepare("UPDATE artifact_version SET content_type = 'text/html'").run();
+			await addIssueLabels(t.db, t.env, actor, fx, issueId, [labelId]);
+			const link = await addIssueLink(t.db, t.env, actor, fx, issueId, {
+				kind: 'blocks',
+				issue_id: other
+			});
+			const notes = await createContextItem(t.db, t.env, actor, {
+				kind: 'prompt',
+				name: 'notes',
+				body: 'first',
+				issue_id: issueId
+			});
+
+			revoke(t, { runId, keyId, issueId });
+			expect(await bound(t, actor)).toBe(false);
+			const before = writeSnapshot(t);
+			const inactive = { status: 401, code: 'run_key_inactive' };
+			const writes: Record<string, () => Promise<unknown>> = {
+				'artifact create': () =>
+					upsertArtifact(t.db, t.env, actor, issueId, 'late', { type: 'text', content: 'x' }),
+				'artifact version': () =>
+					upsertArtifact(t.db, t.env, actor, issueId, 'report', { content: 'v2' }),
+				'artifact description': () =>
+					upsertArtifact(t.db, t.env, actor, issueId, 'report', { description: 'late' }),
+				'artifact reaffirm': () => reaffirmArtifact(t.db, t.env, actor, issueId, 'report'),
+				'artifact delete': () => deleteArtifact(t.db, t.env, actor, issueId, 'report'),
+				'artifact site link': () =>
+					createSiteLink(t.db, t.env, actor, issueId, 'report', {
+						requestOrigin: 'http://test'
+					}),
+				'label assign': () => addIssueLabels(t.db, t.env, actor, fx, issueId, ['chore']),
+				'label remove': () => removeIssueLabel(t.db, t.env, actor, fx, issueId, labelId),
+				'link create': () =>
+					addIssueLink(t.db, t.env, actor, fx, issueId, { kind: 'duplicate_of', issue_id: other }),
+				'link remove': () => removeIssueLink(t.db, t.env, actor, fx, issueId, link.id),
+				'context create': () =>
+					createContextItem(t.db, t.env, actor, {
+						kind: 'prompt',
+						name: 'late',
+						body: 'x',
+						issue_id: issueId
+					}),
+				'context update': () =>
+					updateContextItem(t.db, t.env, actor, notes.id, { body: 'rewritten' }),
+				'context append': () => appendContextItem(t.db, t.env, actor, notes.id, { text: 'more' }),
+				'context delete': () => deleteContextItem(t.db, t.env, actor, notes.id)
+			};
+			for (const [op, write] of Object.entries(writes)) {
+				await expect(write(), op).rejects.toMatchObject(inactive);
+			}
+			expect(writeSnapshot(t)).toEqual(before);
+		});
+	}
 });

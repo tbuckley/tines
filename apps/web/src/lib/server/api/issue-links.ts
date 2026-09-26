@@ -11,6 +11,7 @@ import { ApiFail, notFound, requireString, runAtomic, type ActorContext } from '
 import { assertWritable } from './archive';
 import { eventInsert } from './events';
 import type { QueryGuard } from './query-guard';
+import { assertRunStillBound, runStillBoundPredicate } from './project-access';
 import { nextIssueNumber } from '../issue-address';
 import { requireAccess } from './permissions';
 
@@ -334,6 +335,7 @@ export function createIssueLinkAdmissionGuard(
 	return {
 		predicate: sql<boolean>`
 			${prospectiveOwned}
+			AND ${runStillBoundPredicate(actor)}
 			AND NOT EXISTS (
 				WITH RECURSIVE ${pendingCte(plan)}, ${reachableCte(actor)}
 				SELECT 1 FROM pending p
@@ -755,7 +757,13 @@ export async function addIssueLink(
 	const now = Date.now();
 	const batch = addIssueLinkQueries(db, actor, source, target, kind, id, now);
 	const results = await runAtomic(env, batch.queries);
-	assertCreateIssueLinksCommitted(batch.plan, results, batch);
+	try {
+		assertCreateIssueLinksCommitted(batch.plan, results, batch);
+	} catch (error) {
+		// The admission guard also carries the run binding (Tines/751).
+		await assertRunStillBound(db, actor);
+		throw error;
+	}
 	effects.signalDispatch();
 	return { id, kind, source_issue_id: source.id, target_issue_id: target.id, created_at: now };
 }
@@ -865,8 +873,12 @@ export async function removeIssueLink(
 				other_title: peer.title
 			}
 		});
-	await runAtomic(env, [
-		db.deleteFrom('issue_link').where('id', '=', link.id).compile(),
+	const results = await runAtomic(env, [
+		db
+			.deleteFrom('issue_link')
+			.where('id', '=', link.id)
+			.where(runStillBoundPredicate(actor))
+			.compile(),
 		eventFor(link.source_issue_id, link.source_project_id, 'source', {
 			id: link.target_issue_id,
 			project: link.target_project_name,
@@ -880,5 +892,6 @@ export async function removeIssueLink(
 			title: link.source_title
 		})
 	]);
+	if (!results[0]?.meta.changes) await assertRunStillBound(db, actor);
 	effects.signalDispatch();
 }
