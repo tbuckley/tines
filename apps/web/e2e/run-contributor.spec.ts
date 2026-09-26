@@ -25,7 +25,7 @@ test('a member run key writes only while its binding holds, on native D1', async
 	request,
 	uniqueName
 }) => {
-	test.setTimeout(180_000);
+	test.setTimeout(600_000);
 	const owner = apiClient(request, ALICE.apiKey);
 	const project = await body<{ id: string; name: string }>(
 		await owner.post('/api/v1/projects', { name: uniqueName('run-contributor') })
@@ -137,48 +137,143 @@ test('a member run key writes only while its binding holds, on native D1', async
 		).toBe(1);
 	}
 
+	// Every guarded write a member run makes, sent with optional race headers.
+	const target = await body<{ id: string }>(
+		await owner.post(`/api/v1/projects/${project.id}/issues`, {
+			title: 'Link target',
+			workflow_id: workflow.id
+		})
+	);
+	const writes = [
+		'comment',
+		'transition',
+		'context-create',
+		'context-update',
+		'journal-append',
+		'link',
+		'patch',
+		'create'
+	] as const;
+	type Write = (typeof writes)[number];
+	let journalId = '';
+	let ownerItemId = '';
+	/** Per-write fixture, made before any snapshot: the owner's item on the run's issue. */
+	async function prepare(write: Write, issue: { id: string }) {
+		if (write !== 'context-update') return;
+		ownerItemId = (
+			await body<{ id: string }>(
+				await owner.post('/api/v1/context', {
+					kind: 'prompt',
+					name: 'owner notes',
+					issue_id: issue.id,
+					body: 'owner'
+				})
+			)
+		).id;
+	}
+	async function send(
+		write: Write,
+		issue: { id: string },
+		headers: Record<string, string>,
+		text: string
+	) {
+		switch (write) {
+			case 'comment':
+				return request.post(`/api/v1/issues/${issue.id}/comments`, {
+					headers,
+					data: { body: text }
+				});
+			case 'transition':
+				return request.post(`/api/v1/issues/${issue.id}/transition`, {
+					headers,
+					data: { action: 'Review' }
+				});
+			case 'context-create':
+				return request.post('/api/v1/context', {
+					headers,
+					data: { kind: 'prompt', name: 'member notes', issue_id: issue.id, body: text }
+				});
+			case 'context-update':
+				return request.patch(`/api/v1/context/${ownerItemId}`, {
+					headers,
+					data: { body: text }
+				});
+			case 'journal-append':
+				return request.post(`/api/v1/context/${journalId}/append`, {
+					headers,
+					data: { text }
+				});
+			case 'link':
+				return request.post(`/api/v1/issues/${issue.id}/links`, {
+					headers,
+					data: { kind: 'blocks', issue_id: target.id }
+				});
+			case 'patch':
+				return request.patch(`/api/v1/issues/${issue.id}`, { headers, data: { title: text } });
+			case 'create':
+				return request.post(`/api/v1/projects/${project.id}/issues`, {
+					headers,
+					data: { title: text, workflow_id: workflow.id }
+				});
+		}
+	}
+	/** Rows any of the writes above would leave for `text` on `issue`. */
+	function landed(issue: { id: string }, text: string) {
+		const t = sqlLiteral(text);
+		return count(
+			`SELECT
+				(SELECT COUNT(*) FROM comment WHERE issue_id = ${sqlLiteral(issue.id)} AND body = ${t})
+				+ (SELECT COUNT(*) FROM context_item WHERE body = ${t} OR body LIKE ${sqlLiteral(`%${text}`)})
+				+ (SELECT COUNT(*) FROM issue_link WHERE source_issue_id = ${sqlLiteral(issue.id)})
+				+ (SELECT COUNT(*) FROM issue WHERE title = ${t})
+				+ (SELECT COUNT(*) FROM issue i JOIN workflow_state s ON s.id = i.state_id
+					WHERE i.id = ${sqlLiteral(issue.id)} AND s.name <> 'Working') AS n`
+		);
+	}
+
+	// Positive control: every write lands for a live member run. The journal
+	// is started through the CLI, in the owner's project and the launch state.
+	{
+		const { secret, ref } = await memberRun();
+		cli(secret, 'journal', 'append', ref, '- started');
+	}
+	journalId = d1<{ id: string }>(
+		`SELECT id FROM context_item WHERE project_id = ${sqlLiteral(project.id)}
+		AND name = 'journal' AND issue_id IS NULL`
+	)[0].id;
+	for (const write of writes) {
+		const { issue, secret } = await memberRun();
+		await prepare(write, issue);
+		const text = `live ${write}`;
+		const response = await send(write, issue, { authorization: `Bearer ${secret}` }, text);
+		expect(response.status(), `live ${write}: ${await response.text()}`).toBeLessThan(300);
+		expect(landed(issue, text), `live ${write}`).toBeGreaterThan(0);
+	}
+
 	const races = ['cancel-run', 'expire-key', 'remove', 'rejoin', 'transfer'] as const;
 	// A member run transitions on the owner path, so the commit guard is what refuses these.
-	for (const write of ['comment', 'transition'] as const) {
+	for (const write of writes) {
 		for (const race of races) {
 			const { issue, secret } = await memberRun();
+			await prepare(write, issue);
 			const events = count(
 				`SELECT COUNT(*) AS n FROM event WHERE issue_id = ${sqlLiteral(issue.id)}`
 			);
+			const allEvents = count('SELECT COUNT(*) AS n FROM event');
 			const headers: Record<string, string> = {
 				authorization: `Bearer ${secret}`,
 				'x-tines-e2e-member-write-race': race
 			};
 			if (race === 'transfer') headers['x-tines-e2e-member-race-target'] = elsewhere.id;
-			const response =
-				write === 'comment'
-					? await request.post(`/api/v1/issues/${issue.id}/comments`, {
-							headers,
-							data: { body: `late ${race}` }
-						})
-					: await request.post(`/api/v1/issues/${issue.id}/transition`, {
-							headers,
-							data: { action: 'Review' }
-						});
+			const text = `late ${write} ${race}`;
+			const response = await send(write, issue, headers, text);
 			expect([401, 404, 409], `${write} after ${race}`).toContain(response.status());
-			expect(
-				count(
-					`SELECT COUNT(*) AS n FROM comment WHERE issue_id = ${sqlLiteral(issue.id)}
-					AND body = ${sqlLiteral(`late ${race}`)}`
-				),
-				`${write} after ${race}`
-			).toBe(0);
-			expect(
-				d1<{ name: string }>(
-					`SELECT s.name FROM issue i JOIN workflow_state s ON s.id = i.state_id
-					WHERE i.id = ${sqlLiteral(issue.id)}`
-				)[0].name,
-				`${write} after ${race}`
-			).toBe('Working');
+			expect(landed(issue, text), `${write} after ${race}`).toBe(0);
 			expect(
 				count(`SELECT COUNT(*) AS n FROM event WHERE issue_id = ${sqlLiteral(issue.id)}`),
 				`${write} after ${race}`
 			).toBe(events);
+			expect(count('SELECT COUNT(*) AS n FROM event'), `${write} after ${race}`).toBe(allEvents);
 			if (race === 'remove') restoreMembership();
 		}
 	}
