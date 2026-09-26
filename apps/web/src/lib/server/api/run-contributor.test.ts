@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RequestEvent } from '@sveltejs/kit';
 import { createTestDb, type TestDb } from './test-db';
-import { requireActor, sha256Hex, type ActorContext } from './core';
+import { requireActor, sessionActor, sha256Hex, type ActorContext } from './core';
 import {
 	createComment,
 	createIssue,
@@ -45,6 +45,9 @@ import {
 import { ownerIssueConsentPredicate } from '../supervisor/consent-admission';
 import { supervisorEvent } from '../supervisor/engine';
 import { eventQuery, serializeEvent } from './events';
+import { listSharedEvents } from './shared-events';
+import { readSharedIssue } from './shared-issues';
+import { serializeSharedRun, sharedRunQuery } from './runs';
 import { sql } from 'kysely';
 import { GET as getJournal } from '../../../routes/api/v1/issues/[id]/journal/+server';
 
@@ -617,5 +620,82 @@ describe('a member run’s lifecycle events land once, in the owner’s stream',
 		);
 		expect(rows).toHaveLength(1);
 		expect(rows[0].payload).toEqual(payload);
+	});
+});
+
+describe('owner-scoped views show a foreign contributor’s run through the shared allowlist', () => {
+	function seedPrivateRunFields(t: TestDb, runId: string) {
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET outcome = 'success', usage = '{"cost_usd":3}', error = 'secret',
+					model = 'secret-model', provider_url = 'https://provider.example/s',
+					provider_session_id = 'sess_secret' WHERE id = ?`
+			)
+			.run(runId);
+	}
+
+	it('serializes a member run to exactly the shared fields', async () => {
+		const { t, runId, memberId } = await setup();
+		seedPrivateRunFields(t, runId);
+		const row = await sharedRunQuery(t.db)
+			.where('agent_run.id', '=', runId)
+			.executeTakeFirstOrThrow();
+		const shared = serializeSharedRun(row);
+		expect(Object.keys(shared).sort()).toEqual(
+			[
+				'contributor',
+				'ended_at',
+				'id',
+				'outcome',
+				'runner_name',
+				'stage',
+				'started_at',
+				'status'
+			].sort()
+		);
+		expect(shared).toMatchObject({
+			id: runId,
+			status: 'running',
+			outcome: 'success',
+			contributor: { id: memberId, name: 'bob' }
+		});
+		expect(JSON.stringify(shared)).not.toMatch(/secret|cost_usd|provider/);
+	});
+
+	it('gives a member reading the shared issue the latest run without private fields', async () => {
+		const { t, issueId, runId, memberId } = await setup();
+		seedPrivateRunFields(t, runId);
+		const issue = await readSharedIssue(t.db, sessionActor({ id: memberId, name: 'bob' }), {
+			id: issueId
+		});
+		expect(issue.latest_run).toMatchObject({
+			id: runId,
+			contributor: { id: memberId, name: 'bob' }
+		});
+		expect(JSON.stringify(issue.latest_run)).not.toMatch(/secret|cost_usd|provider/);
+	});
+
+	it('credits a member run’s events to the contributor in the members’ feed', async () => {
+		const { t, issueId, memberId, runId } = await setup();
+		const payload = { run_id: runId, status: 'completed', outcome: 'success', error: 'secret' };
+		const q = supervisorEvent(t.db, memberId, { type: 'agent_run.ended', issueId, payload }, NOW);
+		t.sqlite.prepare(q.sql).run(...(q.parameters as never[]));
+		const feed = await listSharedEvents(t.db, sessionActor({ id: memberId, name: 'bob' }), {
+			issueId,
+			limit: 10
+		});
+		expect(feed.items).toHaveLength(1);
+		expect(feed.items[0].actor).toEqual({
+			user_id: memberId,
+			user_name: 'bob',
+			api_key_id: null,
+			api_key_name: null
+		});
+		expect(feed.items[0].payload).toEqual({ status: 'completed', outcome: 'success' });
+		// A run key never reads the members' feed.
+		expect(await listSharedEvents(t.db, await authenticate(t), { limit: 10 })).toEqual({
+			items: [],
+			hasMore: false
+		});
 	});
 });
