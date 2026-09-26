@@ -91,6 +91,14 @@ export function viewportClass(): 'phone' | 'desktop' {
  * Timing: the latest `__data.json` for that path. It may have started before
  * `startedAt` (a preload), in which case the navigation only waited for
  * whatever of it was still in flight.
+ *
+ * It then clears the Resource Timing buffer, so the next navigation can only
+ * find its own request. Without that, a navigation whose request had not
+ * finished by mount (a streamed page like the issue page adds its entry only
+ * when the stream ends) picked up the same path's request from an earlier
+ * visit and reported `wait` 0 with that request's server time. It now
+ * reports -1 (unknown) instead. The buffer also stops recording at 250
+ * entries by default, which a tab left open all day reaches.
  */
 export function dataTiming(pathname: string, startedAt: number) {
 	const none = { wait: -1, app: -1, auth: -1, pre: 0 as 0 | 1 };
@@ -99,6 +107,7 @@ export function dataTiming(pathname: string, startedAt: number) {
 	const entries = performance
 		.getEntriesByType('resource')
 		.filter((e) => new URL(e.name).pathname === suffix) as PerformanceResourceTiming[];
+	performance.clearResourceTimings?.();
 	const entry = entries[entries.length - 1];
 	if (!entry) return none;
 	const server = (name: string) => entry.serverTiming?.find((t) => t.name === name)?.duration ?? -1;
