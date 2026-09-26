@@ -71,8 +71,20 @@ export function projectAccessFromRow(
 			membershipRevision: null,
 			archivedAt: row.archived_at
 		};
-	// A run key is never a human membership credential.
-	if (actor.agentRunId || row.shared_at === null || row.revision == null || row.revoked_at !== null)
+	// A run key is never a human membership credential: a member-contributor
+	// run is a member only of the project it was admitted to, at the revision
+	// it was admitted under.
+	const binding = actor.runRestriction?.binding;
+	if (
+		(actor.agentRunId &&
+			(actor.runRestriction?.projectId !== projectId ||
+				!binding ||
+				binding.membershipRevision === null ||
+				binding.membershipRevision !== row.revision)) ||
+		row.shared_at === null ||
+		row.revision == null ||
+		row.revoked_at !== null
+	)
 		throw notFound();
 	return {
 		projectId,
@@ -173,7 +185,9 @@ export async function resolveAccessibleProjectRef(
 		.execute();
 	const visible = rows.filter(
 		(row) =>
-			(!actor.agentRunId || row.owner_id === actor.userId) &&
+			(!actor.agentRunId ||
+				row.owner_id === actor.userId ||
+				row.id === actor.runRestriction?.projectId) &&
 			accessAllowed(
 				actor,
 				[{ domain: 'project', access: 'read', projectId: row.id }],
@@ -213,6 +227,7 @@ export async function actorForProject(
 	projectId: string
 ): Promise<ActorContext> {
 	if (actor.member) return actor;
+	if (actor.agentRunId) return runProjectActor(actor, projectId) ?? actor;
 	const owned = await db
 		.selectFrom('project')
 		.select('user_id')
@@ -220,7 +235,7 @@ export async function actorForProject(
 		.executeTakeFirst();
 	// Unknown projects and the actor's own fall through to the owner services,
 	// which keep their existing 404s and messages.
-	if (!owned || owned.user_id === actor.userId || actor.agentRunId) return actor;
+	if (!owned || owned.user_id === actor.userId) return actor;
 	const access = await resolveProjectAccess(db, actor, projectId);
 	if (access.role === 'owner') return actor;
 	const owner = await db
@@ -229,6 +244,40 @@ export async function actorForProject(
 		.where('id', '=', access.ownerId)
 		.executeTakeFirstOrThrow();
 	return memberActor(actor, access, owner.name);
+}
+
+/**
+ * A member-contributor run's delegated actor for its admitted project, or
+ * null (the caller keeps the run's own actor) for any other project, for a
+ * run the contributor's own project, and for non-run actors. Built from the
+ * immutable binding read at authentication — never a fresh membership read —
+ * so a removal and rejoin cannot revive the run. The key, run, runner and
+ * attribution stay the contributor's; only owner-scoped loaders see the
+ * owner's `userId`, and `member` makes every `assertNotMember` fence apply.
+ */
+export function runProjectActor(actor: ActorContext, projectId: string): ActorContext | null {
+	const restriction = actor.runRestriction;
+	const binding = restriction?.binding;
+	if (
+		actor.member ||
+		!restriction ||
+		!binding ||
+		restriction.projectId !== projectId ||
+		binding.projectOwnerId === binding.contributorUserId ||
+		binding.membershipRevision === null
+	)
+		return null;
+	return {
+		...actor,
+		userId: binding.projectOwnerId,
+		userName: binding.projectOwnerName,
+		member: {
+			userId: binding.contributorUserId,
+			userName: binding.contributorName,
+			projectId,
+			membershipRevision: binding.membershipRevision
+		}
+	};
 }
 
 /** `actorForProject`'s member branch, for a caller that already holds the access and owner name. */

@@ -491,6 +491,8 @@ export interface AgentRunTable {
 	admitted_project_id: string | null;
 	admitted_daemon_instance_id: string | null;
 	admitted_at: number | null;
+	/** The project_member revision a member-contributor run was admitted under (Tines/751). */
+	admitted_membership_revision: number | null;
 	admission_evidence: string | null;
 	cancel_requested_at: number | null;
 	cancel_requested_by_user_id: string | null;
