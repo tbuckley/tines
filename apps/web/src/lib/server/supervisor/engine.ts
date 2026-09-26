@@ -421,6 +421,12 @@ export async function claimRun(
 			AND st.category = 'active'
 			AND issue.needs_attention = 0
 			AND ${ownerIssueConsentPredicate(input.userId)}
+			-- A shared issue whose guidance bundle could not be admitted waits out
+			-- its backoff (Tines/752); the table is empty with the flag off.
+			AND NOT EXISTS (
+				SELECT 1 FROM issue_guidance_block b
+				WHERE b.issue_id = issue.id AND b.retry_after > ${input.now}
+			)
 			AND NOT EXISTS (
 				SELECT 1 FROM agent_run
 				WHERE issue_id = issue.id AND status IN (${sql.join(ACTIVE)})
@@ -462,6 +468,12 @@ export async function mintRunKeyAndFlip(
 		maxRunMinutes: number;
 		now: number;
 		localAdmission?: { runnerId: string; instanceId: string; ceiling: number };
+		/**
+		 * Extra admission predicate (the shared bundle's witness, Tines/752).
+		 * ANDed into the flip, and a key whose flip did not land is deleted in
+		 * the same batch, so a guard mismatch leaves no key row at all.
+		 */
+		guard?: RawBuilder<boolean>;
 	}
 ): Promise<{ keyId: string; secret: string } | null> {
 	const binding = await db
@@ -593,7 +605,19 @@ export async function mintRunKeyAndFlip(
 						) < ${admission.ceiling}
 				)`);
 			})
-			.compile()
+			.$if(input.guard !== undefined, (query) => query.where(input.guard!))
+			.compile(),
+		...(input.guard
+			? [
+					db
+						.deleteFrom('api_key')
+						.where('id', '=', keyId)
+						.where(
+							sql<boolean>`NOT EXISTS (SELECT 1 FROM agent_run WHERE id = ${input.runId} AND api_key_id = ${keyId})`
+						)
+						.compile()
+				]
+			: [])
 	]);
 	if ((flip?.meta.changes ?? 0) === 0) {
 		// The run was ended (canceled or swept) between the claim and this

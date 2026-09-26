@@ -2424,6 +2424,11 @@ export interface RunnerAssignment {
 	/** Minutes until the daemon must kill the harness. */
 	timeout_minutes: number;
 	/**
+	 * Present only for a run in a shared project (Tines/752): identifies the
+	 * shared guidance bundle `bundle` was projected from. Old daemons ignore it.
+	 */
+	shared_bundle?: { version: 1; digest: string };
+	/**
 	 * Present only when this run continues the previous run's conversation:
 	 * the daemon skips workspace materialization and cloning, launches the
 	 * harness in `workspace_path`, and resumes `provider_session_id`. The
