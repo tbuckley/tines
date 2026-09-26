@@ -3,7 +3,8 @@ import { createContextItem } from '../api/context';
 import type { ActorContext } from '../api/core';
 import { BUNDLE_ITEM_CAP } from '../api/shared-execution-bundle';
 import { createTestDb, type TestDb } from '../api/test-db';
-import { claimRun } from './engine';
+import { claimRun, launchClaimedRun } from './engine';
+import { createFakeAdapter } from './fake-adapter';
 import {
 	GUIDANCE_CHURN_BACKOFF_MS,
 	GUIDANCE_REFUSAL_BACKOFF_MS,
@@ -164,5 +165,50 @@ describe('admitSharedRun', () => {
 		expect(await admit(runId)).toEqual({ kind: 'lost' });
 		expect(keys(runId)).toHaveLength(0);
 		expect(blocks()).toEqual([]);
+	});
+});
+
+describe('managed launch in a shared project', () => {
+	const on = () => ({ ...t.env, SHARED_EXECUTION: 'on' }) as unknown as Env;
+	const launch = (runId: string, adapter: ReturnType<typeof createFakeAdapter>) =>
+		launchClaimedRun(t.db, on(), adapter, {
+			userId: USER,
+			runId,
+			issueId: issue,
+			projectId: PROJECT,
+			runner: t.all('SELECT * FROM runner WHERE id = ?', runner)[0] as never,
+			tier: 'balanced',
+			model: null,
+			now: NOW
+		});
+
+	it('hands the adapter the guarded material', async () => {
+		await prompt('house-rules');
+		const { runId } = await claim();
+		const adapter = createFakeAdapter();
+		expect(await launch(runId, adapter)).toBe('launched');
+		const material = adapter.launches[0]!.material!;
+		expect(material.launchPrompt).toContain('HOUSE-RULES');
+		expect(material.context.env).toEqual([]);
+		expect(material.digest).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	it('refuses an adapter that cannot take material, before any key exists', async () => {
+		const { runId } = await claim();
+		const adapter = { ...createFakeAdapter(), sharedMaterial: false };
+		expect(await launch(runId, adapter)).toBe('launch_failed');
+		expect(runRow(runId)).toMatchObject({
+			status: 'failed',
+			error: 'adapter does not support shared delivery'
+		});
+		expect(keys(runId)).toHaveLength(0);
+	});
+
+	it('keeps never-shared launches on the unguarded path', async () => {
+		t.sqlite.prepare('UPDATE project SET shared_at = NULL WHERE id = ?').run(PROJECT);
+		const { runId } = await claim();
+		const adapter = createFakeAdapter();
+		expect(await launch(runId, adapter)).toBe('launched');
+		expect(adapter.launches[0]).not.toHaveProperty('material');
 	});
 });
