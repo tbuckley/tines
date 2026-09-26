@@ -398,7 +398,7 @@ export function contextItemQuery(db: Kysely<Database>, userId: string) {
 		.where('context_item.user_id', '=', userId);
 }
 
-type ItemRow = Awaited<ReturnType<ReturnType<typeof contextItemQuery>['execute']>>[number];
+export type ItemRow = Awaited<ReturnType<ReturnType<typeof contextItemQuery>['execute']>>[number];
 
 function rowScope(row: ItemRow): ResolvedScope {
 	return {
@@ -1637,8 +1637,16 @@ export interface MatchTarget {
  * effective-context read, once inside `contextSummaryForIssue`, which must stay
  * one query. Change one and change the other.
  */
-async function resolveStateChain(db: Kysely<Database>, leafStateId: string): Promise<string[]> {
-	const rows = await db
+export async function resolveStateChain(
+	db: Kysely<Database>,
+	leafStateId: string
+): Promise<string[]> {
+	return stateChainFromRows(await stateChainQuery(db, leafStateId).execute(), leafStateId);
+}
+
+/** `resolveStateChain`'s query, for a caller that runs it inside a batch. */
+export function stateChainQuery(db: Kysely<Database>, leafStateId: string) {
+	return db
 		.withRecursive('state_chain', (cte) =>
 			cte
 				.selectFrom('workflow_state')
@@ -1661,8 +1669,14 @@ async function resolveStateChain(db: Kysely<Database>, leafStateId: string): Pro
 				)
 		)
 		.selectFrom('state_chain')
-		.select(['id', 'depth'])
-		.execute();
+		.select(['id', 'depth']);
+}
+
+/** Orders `stateChainQuery` rows root → leaf. */
+export function stateChainFromRows(
+	rows: { id: string; depth: number }[],
+	leafStateId: string
+): string[] {
 	// Keep each state at its shallowest depth, so the leaf stays last even if a
 	// hand-edited loop reached it again, then order root → leaf.
 	const depths = new Map<string, number>();
@@ -1702,7 +1716,7 @@ function projectRow(row: ItemRow, projection: MatchProjection | undefined): Item
 	};
 }
 
-function matchingItemsQuery(
+export function matchingItemsQuery(
 	db: Kysely<Database>,
 	userId: string,
 	target: MatchTarget,
@@ -1790,7 +1804,7 @@ function labelSortKey(row: ItemRow): string {
  * of a by-name dedupe is deterministic and explainable rather than whichever
  * item happened to be created first.
  */
-function sortMatched(rows: ItemRow[], stateChain: string[]): ItemRow[] {
+export function sortMatched(rows: ItemRow[], stateChain: string[]): ItemRow[] {
 	// Ancestors stitch before the state that inherits from them, inside the
 	// state dimension's existing rank: a tie-break, not a new layer. Inert for a
 	// parentless state — every matched row then names the one state in the chain.
@@ -1829,7 +1843,7 @@ function inheritedFrom(row: ItemRow, leafStateId: string): InheritedFrom | null 
  * issue, so an existing journal costs no extra query; only naming a base state
  * that has no journal yet needs one.
  */
-async function journalTarget(
+export async function journalTarget(
 	db: Kysely<Database>,
 	rows: ItemRow[],
 	target: MatchTarget
@@ -2080,14 +2094,38 @@ export async function effectiveContextForTarget(
 	target: MatchTarget,
 	{ skillFiles = true, projection }: { skillFiles?: boolean; projection?: MatchProjection } = {}
 ): Promise<EffectiveContext> {
-	const leafStateId = target.stateChain[target.stateChain.length - 1];
 	const rows = sortMatched(
 		(await matchingItemsQuery(db, userId, target, projection).execute()).map((row) =>
 			projectRow(row, projection)
 		),
 		target.stateChain
 	);
+	const fileMap = skillFiles
+		? await loadFiles(db, winningSkillIds(rows))
+		: new Map<string, ContextFile[]>();
+	return assembleEffectiveContext(rows, fileMap, target, await journalTarget(db, rows, target));
+}
 
+/** The skill items that win the by-name dedupe — the only ones whose files are delivered. */
+export function winningSkillIds(rows: ItemRow[]): string[] {
+	const byName = new Map<string, string>();
+	for (const r of rows) if (r.kind === 'skill') byName.set(r.name, r.id);
+	return [...byName.values()];
+}
+
+/**
+ * The post-query half of the effective context: prompt stitching, by-name
+ * dedupe and repo-dir conflicts over rows already matched and in layer order
+ * (`sortMatched`). Pure, so the shared execution bundle (Tines/752) assembles
+ * its own snapshot with exactly this precedence rather than a copy of it.
+ */
+export function assembleEffectiveContext(
+	rows: ItemRow[],
+	fileMap: Map<string, ContextFile[]>,
+	target: MatchTarget,
+	journal: EffectiveJournalTarget
+): EffectiveContext {
+	const leafStateId = target.stateChain[target.stateChain.length - 1];
 	const prompts = rows.filter((r) => r.kind === 'prompt');
 	const parts: EffectivePromptPart[] = prompts.map((r) => ({
 		item_id: r.id,
@@ -2126,12 +2164,6 @@ export async function effectiveContextForTarget(
 		};
 	});
 
-	const fileMap = skillFiles
-		? await loadFiles(
-				db,
-				skillDedupe.winners.map((r) => r.id)
-			)
-		: new Map<string, ContextFile[]>();
 	const skills: EffectiveSkill[] = skillDedupe.winners.map((r) => ({
 		item_id: r.id,
 		name: r.name,
@@ -2162,7 +2194,7 @@ export async function effectiveContextForTarget(
 		.map(([dir, item_ids]) => ({ kind: 'repo_dir', dir, item_ids }));
 
 	return {
-		prompt: { text, parts, journal: await journalTarget(db, rows, target) },
+		prompt: { text, parts, journal },
 		skills,
 		repos,
 		env: envEntries,
