@@ -482,3 +482,31 @@ updates may delegate only an effective subset of the manager's authority;
 permission updates use an expected-policy compare-and-swap and append an audit
 event. The old URL fence remains only during rollout and is removed after the
 semantic operation inventory has coverage.
+
+### Shared-project launch material (2026-09-26, Tines/752)
+
+Behind the `SHARED_EXECUTION` release flag (off in production and preview), a run
+whose issue is in a shared project is admitted differently from every other run.
+Everything else keeps the path above, byte for byte.
+
+- **Material before key.** `prepareLaunchMaterial` builds the shared guidance
+  bundle (`SharedExecutionBundleV1`), the contributor's env channel and both
+  rendered prompts before any run key exists. Env values never enter the bundle.
+- **Witness-guarded mint.** `mintRunKeyAndFlip` takes an optional `guard`, the
+  bundle's `bundleWitnessExpr(...) = :vector`. It is ANDed into the
+  `assigned → launching` flip, and a key whose flip did not land is deleted in the
+  same batch, so a stale bundle never leaves a key row.
+- **Bounded rebuild.** A lost flip whose witness moved rebuilds the material once
+  (2 attempts per delivery). Exhaustion, an item/size cap or a checkout-dir
+  conflict cancels the assigned run without a strike and upserts
+  `issue_guidance_block` (`retry_after` = now + 30 s for churn, + 10 min for a
+  cap or conflict). `claimRun` skips a held issue until then; a successful
+  admission deletes the row.
+- **Local delivery** sends the bundle's guidance as `bundle`, the material prompt,
+  the env channel (still only to `env_delivery` daemons) and an optional
+  `shared_bundle: { version: 1, digest }`. After the mint the path only
+  serializes; a throw there revokes the key and fails the run (`failLaunch`).
+- **Managed launch** passes `material` in `AdapterLaunchInput`; the Claude adapter
+  then makes none of its `/issues/:id`, `/prompt`, `/context` or
+  `/prompt?resume=1` fetches and reads no env itself. Adapters without
+  `sharedMaterial` are refused before any key is minted.

@@ -1541,6 +1541,27 @@ export interface EffectiveContext {
 }
 
 /** Per-kind counts of the currently effective context, post-dedupe. */
+/**
+ * A library item the owner included in one shared project's guidance
+ * (Tines/752): a global or label-only prompt, skill or repo. A reference to
+ * the live item, never a copy — later edits stay shared.
+ */
+export interface GuidanceInclusion {
+	item_id: string;
+	kind: 'prompt' | 'skill' | 'repo';
+	name: string;
+	scope_label: string;
+	version: number;
+	revision: number;
+	created_at: number;
+}
+
+/** `GET /api/v1/projects/:id/guidance-inclusions`. */
+export interface GuidanceInclusionList {
+	items: GuidanceInclusion[];
+	next_cursor: null;
+}
+
 export interface ContextSummary {
 	prompts: number;
 	skills: number;
@@ -1550,6 +1571,58 @@ export interface ContextSummary {
 	/** Distinct effective env variable names. */
 	envs: number;
 }
+
+/**
+ * The one coherent projection of a shared project's guidance (Tines/752):
+ * what every reader and every launch of the issue receives when shared
+ * execution is on. `digest` identifies the snapshot for transport and
+ * caching only; admission guards on the server-side witness vector.
+ */
+export interface SharedExecutionBundleV1 {
+	version: 1;
+	project: { id: string; name: string; owner: { id: string; name: string } };
+	issue: SharedLaunchIssueV1;
+	target: {
+		project_id: string;
+		workflow_id: string;
+		state_id: string;
+		state_chain: string[];
+		label_ids: string[];
+		launch_state_id: string | null;
+	};
+	/** `env` is always empty: env values travel on the launch channel, never in a bundle. */
+	guidance: EffectiveContext;
+	/** Empty until requirement declarations land (Tines/753). */
+	requirements: SharedRequirementV1[];
+	journal: {
+		scope_label: string;
+		anchor: 'run' | 'current';
+		item_id: string | null;
+		version: number | null;
+	};
+	digest: string;
+}
+
+/** The issue-block inputs of a shared bundle, redacted identically for every reader. */
+export interface SharedLaunchIssueV1 {
+	detail: IssueDetail;
+	artifacts: Artifact[];
+	/** Labels applicable to this project only, capped at 40. */
+	label_vocabulary: string[];
+}
+
+/** Placeholder for P3's requirement declarations; never populated yet. */
+export type SharedRequirementV1 = Record<string, never>;
+
+/** The shared-bundle marker a shared project's `/context` response carries. */
+export interface SharedBundleRef {
+	version: 1;
+	digest: string;
+	owner: { id: string; name: string };
+}
+
+/** `GET /api/v1/issues/:id/context`: the effective context, plus the marker in a shared project. */
+export type IssueContextResponse = EffectiveContext & { shared_bundle?: SharedBundleRef };
 
 /** `GET /api/v1/issues/:id/prompt` — stitched context plus the issue block. */
 export interface LaunchPromptResponse {
@@ -2350,6 +2423,11 @@ export interface RunnerAssignment {
 	env?: RunnerAssignmentEnv[];
 	/** Minutes until the daemon must kill the harness. */
 	timeout_minutes: number;
+	/**
+	 * Present only for a run in a shared project (Tines/752): identifies the
+	 * shared guidance bundle `bundle` was projected from. Old daemons ignore it.
+	 */
+	shared_bundle?: { version: 1; digest: string };
 	/**
 	 * Present only when this run continues the previous run's conversation:
 	 * the daemon skips workspace materialization and cloning, launches the

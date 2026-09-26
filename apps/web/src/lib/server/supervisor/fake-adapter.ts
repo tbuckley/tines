@@ -30,6 +30,7 @@ export function createFakeAdapter(): FakeAdapter {
 	let counter = 0;
 	const fake: FakeAdapter = {
 		launchMode: 'immediate',
+		sharedMaterial: true,
 		launches: [],
 		cancels: [],
 		polls: [],

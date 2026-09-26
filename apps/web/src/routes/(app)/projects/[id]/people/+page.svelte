@@ -123,6 +123,15 @@
 					>
 					<PersonalPermissionWarning role="owner" />
 				{/if}
+				{#if data.includedGuidance !== null}
+					<p class="text-muted-foreground text-sm">
+						Shares this project's guidance ({data.includedGuidance} included from your library){#if data.people.shared_at !== null}
+							· <a
+								class="text-primary underline-offset-4 hover:underline"
+								href={`/projects/${data.projectId}#shared-guidance`}>Review</a
+							>{/if}
+					</p>
+				{/if}
 				<Button type="submit" disabled={busy}>Send invitation</Button>
 			</form>
 		</section>

@@ -317,6 +317,15 @@ runner, a changed model or harness, or a workspace that is no longer on disk (th
 logs `resume workspace <path> is gone; launching fresh`). Nothing about a resumed run is
 required for correctness — it is only the clone and the re-exploration that are skipped.
 
+## Runs in shared projects
+
+When the server's shared-execution flag is on, an assignment for an issue in a shared
+project is built from that project's shared guidance: the owner's project, issue and
+workflow-stage guidance plus the library items the owner included, never their other
+private items. Such an assignment carries an optional `shared_bundle: { version: 1, digest }`
+naming the bundle it came from. The daemon needs no change and ignores the field; the
+prompt, `bundle` and `env` fields keep their usual shapes.
+
 ## Keep it running
 
 The runner is infrastructure: it runs under your OS's service manager so it survives logouts

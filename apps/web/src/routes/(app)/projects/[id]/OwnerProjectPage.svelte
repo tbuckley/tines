@@ -22,6 +22,7 @@
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
 	import ScheduleList from '$lib/components/ScheduleList.svelte';
+	import SharedGuidanceCard from '$lib/components/SharedGuidanceCard.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -529,6 +530,15 @@
 				</div>
 			{/if}
 		</div>
+	{/if}
+	{#if data.sharedGuidance}
+		<!-- Owner-only, shared projects only, behind the release flag (Tines/752). -->
+		<SharedGuidanceCard
+			projectId={data.project.id}
+			guidance={data.sharedGuidance}
+			editable={!archived}
+			onerror={showError}
+		/>
 	{/if}
 </div>
 

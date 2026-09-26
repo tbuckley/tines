@@ -6,7 +6,8 @@
  *
  * Worker-imported (via the engine): relative/package imports only, no `$lib`.
  */
-import type { AgentRunUsage, ModelTier } from '@tines/shared';
+import type { AgentRunUsage, EffectiveContext, IssueDetail, ModelTier } from '@tines/shared';
+import type { ResolvedEnvEntry } from '../api/context';
 import { createClaudeAdapter } from './claude-adapter';
 
 /** What launch() gets: everything identifying the run and its delivery. */
@@ -33,6 +34,23 @@ export interface AdapterLaunchInput {
 	 * egress-proxy header). Never logged, never stored beyond its hash.
 	 */
 	runKey: string;
+	/**
+	 * Launch material for a run in a shared project (Tines/752), built and
+	 * witness-guarded before the key was minted. When present the adapter
+	 * uses it for the issue, prompts, context and env and fetches none of
+	 * them itself. Only adapters with `sharedMaterial` are given shared runs.
+	 */
+	material?: AdapterLaunchMaterial;
+}
+
+export interface AdapterLaunchMaterial {
+	issue: IssueDetail;
+	context: EffectiveContext;
+	launchPrompt: string;
+	resumePrompt: string;
+	/** Resolved values; never inside `context`. */
+	env: ResolvedEnvEntry[];
+	digest: string;
 }
 
 export interface AdapterLaunchResult {
@@ -88,6 +106,8 @@ export interface RunnerAdapter {
 	 * poll-delivery, not here.
 	 */
 	launchMode: 'immediate' | 'poll';
+	/** Accepts `AdapterLaunchInput.material`; shared runs are refused otherwise. */
+	sharedMaterial?: boolean;
 	/**
 	 * Create the provider session for a claimed run. Throwing is a *launch
 	 * failure*: the error lands on the run, the runner backs off, and the

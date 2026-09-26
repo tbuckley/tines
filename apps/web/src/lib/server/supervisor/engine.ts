@@ -23,7 +23,12 @@ import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely, type RawBuilder } from 'kysely';
 import { sha256Hex } from '../crypto';
 import { getDb, newId, randomString, type Database } from '../db';
-import { buildAdapters, type AdapterRegistry, type RunnerAdapter } from './adapter';
+import {
+	buildAdapters,
+	type AdapterLaunchMaterial,
+	type AdapterRegistry,
+	type RunnerAdapter
+} from './adapter';
 import {
 	appendLogTail,
 	launchBackoffMs,
@@ -44,6 +49,7 @@ import { loadSealableRun, sealRunLog, spillEvicted, sweepRunLogs } from './run-l
 import { effectiveAutomationEnabled } from './settings';
 import { mergeEffortEvidence, type EffortMilestone } from './effort-evidence';
 import { ownerIssueConsentPredicate } from './consent-admission';
+import { admitSharedRun, usesSharedLaunch } from './shared-launch';
 
 const ACTIVE = [...ACTIVE_RUN_STATUSES];
 
@@ -421,6 +427,12 @@ export async function claimRun(
 			AND st.category = 'active'
 			AND issue.needs_attention = 0
 			AND ${ownerIssueConsentPredicate(input.userId)}
+			-- A shared issue whose guidance bundle could not be admitted waits out
+			-- its backoff (Tines/752); the table is empty with the flag off.
+			AND NOT EXISTS (
+				SELECT 1 FROM issue_guidance_block b
+				WHERE b.issue_id = issue.id AND b.retry_after > ${input.now}
+			)
 			AND NOT EXISTS (
 				SELECT 1 FROM agent_run
 				WHERE issue_id = issue.id AND status IN (${sql.join(ACTIVE)})
@@ -462,6 +474,12 @@ export async function mintRunKeyAndFlip(
 		maxRunMinutes: number;
 		now: number;
 		localAdmission?: { runnerId: string; instanceId: string; ceiling: number };
+		/**
+		 * Extra admission predicate (the shared bundle's witness, Tines/752).
+		 * ANDed into the flip, and a key whose flip did not land is deleted in
+		 * the same batch, so a guard mismatch leaves no key row at all.
+		 */
+		guard?: RawBuilder<boolean>;
 	}
 ): Promise<{ keyId: string; secret: string } | null> {
 	const binding = await db
@@ -593,7 +611,19 @@ export async function mintRunKeyAndFlip(
 						) < ${admission.ceiling}
 				)`);
 			})
-			.compile()
+			.$if(input.guard !== undefined, (query) => query.where(input.guard!))
+			.compile(),
+		...(input.guard
+			? [
+					db
+						.deleteFrom('api_key')
+						.where('id', '=', keyId)
+						.where(
+							sql<boolean>`NOT EXISTS (SELECT 1 FROM agent_run WHERE id = ${input.runId} AND api_key_id = ${keyId})`
+						)
+						.compile()
+				]
+			: [])
 	]);
 	if ((flip?.meta.changes ?? 0) === 0) {
 		// The run was ended (canceled or swept) between the claim and this
@@ -784,12 +814,51 @@ export async function launchClaimedRun(
 	}
 ): Promise<LaunchOutcome> {
 	const { runner } = ctx;
-	const minted = await mintRunKeyAndFlip(db, env, {
-		runId: ctx.runId,
-		userId: ctx.userId,
-		maxRunMinutes: runner.max_run_minutes,
-		now: ctx.now
-	});
+	// A shared project under the release flag gets witness-guarded material
+	// built before the key exists (Tines/752); every other launch is today's.
+	let material: AdapterLaunchMaterial | undefined;
+	let minted: { keyId: string; secret: string } | null;
+	if (await usesSharedLaunch(env, db, ctx.issueId)) {
+		if (!adapter.sharedMaterial) {
+			await failLaunch(db, env, {
+				userId: ctx.userId,
+				runId: ctx.runId,
+				runner,
+				error: 'adapter does not support shared delivery',
+				now: ctx.now
+			});
+			return 'launch_failed';
+		}
+		const run = await db
+			.selectFrom('agent_run')
+			.select(['id', 'user_id', 'issue_id', 'state_id_at_start'])
+			.where('id', '=', ctx.runId)
+			.executeTakeFirst();
+		if (!run) return 'lost';
+		const admission = await admitSharedRun(env, db, run, {
+			maxRunMinutes: runner.max_run_minutes,
+			now: ctx.now,
+			envChannel: true
+		});
+		if (admission.kind !== 'admitted') return 'lost';
+		minted = admission;
+		const { bundle } = admission.material;
+		material = {
+			issue: bundle.issue.detail,
+			context: bundle.guidance,
+			launchPrompt: admission.material.launchPrompt,
+			resumePrompt: admission.material.resumePrompt,
+			env: admission.material.env,
+			digest: bundle.digest
+		};
+	} else {
+		minted = await mintRunKeyAndFlip(db, env, {
+			runId: ctx.runId,
+			userId: ctx.userId,
+			maxRunMinutes: runner.max_run_minutes,
+			now: ctx.now
+		});
+	}
 	if (!minted) return 'lost';
 	const { secret } = minted;
 
@@ -848,7 +917,8 @@ export async function launchClaimedRun(
 						throw new Error('effort evidence changed repeatedly during managed launch');
 					}
 				: undefined,
-			runKey: secret
+			runKey: secret,
+			...(material ? { material } : {})
 		});
 		const startedAt = ctx.now;
 		// Guard the event on the flip landing: a run canceled mid-launch must

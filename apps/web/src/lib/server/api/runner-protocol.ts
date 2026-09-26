@@ -62,6 +62,7 @@ import {
 	retainResumeResource
 } from '$lib/server/supervisor/resume';
 import { effectiveAutomationEnabled } from '$lib/server/supervisor/settings';
+import { admitSharedRun, usesSharedLaunch } from '$lib/server/supervisor/shared-launch';
 import { priceCodexUsage } from '$lib/server/supervisor/codex-pricing';
 import { pricingCatalogFor } from '$lib/server/supervisor/user-rates';
 import { listArtifacts } from './artifacts';
@@ -825,6 +826,12 @@ async function deliverAssignedRun(
 		return null;
 	}
 
+	// A shared project under the release flag takes the guarded material
+	// path (Tines/752); every other run below is today's, byte for byte.
+	if (await usesSharedLaunch(env, db, run.issue_id)) {
+		return deliverSharedRun(db, env, runner, effects, run, now, caps, deliveryCapabilities);
+	}
+
 	// The guarded one-shot flip; a lost race means another poll (a second
 	// daemon sharing this token) already took it — degrade to skipping.
 	const minted = await mintRunKeyAndFlip(db, env, {
@@ -973,6 +980,121 @@ async function deliverAssignedRun(
 		...envField,
 		timeout_minutes: runner.max_run_minutes
 	};
+}
+
+function localAdmission(runner: RunnerRow) {
+	return runner.concurrency_instance_id && runner.concurrency_ceiling
+		? {
+				runnerId: runner.id,
+				instanceId: runner.concurrency_instance_id,
+				ceiling: runner.concurrency_ceiling
+			}
+		: undefined;
+}
+
+/**
+ * Delivery for a run in a shared project (flag on). The material — bundle,
+ * env channel and prompts — is built before the key exists and the mint is
+ * guarded on the bundle's witness (`admitSharedRun`). After a successful mint
+ * the rest only serializes; if it still throws, the key is revoked and the
+ * run failed rather than left `launching` with a live key.
+ */
+async function deliverSharedRun(
+	db: Kysely<Database>,
+	env: Env,
+	runner: RunnerRow,
+	effects: DispatchEffects,
+	run: Database['agent_run'],
+	now: number,
+	caps: { envDelivery: boolean },
+	deliveryCapabilities: EffortCapabilitiesV1 | null
+): Promise<RunnerAssignment | null> {
+	const admission = await admitSharedRun(env, db, run, {
+		maxRunMinutes: runner.max_run_minutes,
+		now,
+		envChannel: caps.envDelivery,
+		localAdmission: localAdmission(runner)
+	});
+	if (admission.kind === 'released') effects.signalDispatch();
+	if (admission.kind !== 'admitted') return null;
+	const { material, secret } = admission;
+	try {
+		const { guidance, issue } = material.bundle;
+		const issueRef = `${issue.detail.project_name}/${issue.detail.number}`;
+		let envField: { env: RunnerAssignment['env'] } | Record<string, never> = {};
+		if (caps.envDelivery && material.env.length > 0) {
+			envField = {
+				env: material.env.map(({ name, value, secret }) => ({ name, value, secret }))
+			};
+		}
+		const effortField =
+			run.resolved_effort && run.effort_source && run.effort_application_status === 'pending'
+				? {
+						effort: {
+							version: 1 as const,
+							value: run.resolved_effort,
+							source: JSON.parse(run.effort_source),
+							capability_digest: deliveryCapabilities!.catalog_digest,
+							...(deliveryCapabilities && supportedEfforts(deliveryCapabilities, run.model) === null
+								? { verification: 'asserted' as const }
+								: {})
+						}
+					}
+				: {};
+		const skills = guidance.skills.map(({ name, description }) => ({ name, description }));
+		const shared_bundle = { version: 1 as const, digest: material.bundle.digest };
+		const resume = await prepareResume(db, env, { runner, run, now });
+		if (resume) {
+			const preamble = buildResumePreamble({
+				variant: 'local',
+				runId: run.id,
+				runnerName: runner.name,
+				issueRef,
+				timeoutMinutes: runner.max_run_minutes,
+				skills,
+				previousRunId: resume.previous_run_id
+			});
+			return {
+				run: await serializedRun(db, run.user_id, run.id),
+				...effortField,
+				prompt: `${preamble}\n\n${material.resumePrompt}`,
+				bundle: guidance,
+				run_key: secret,
+				...envField,
+				timeout_minutes: runner.max_run_minutes,
+				resume,
+				shared_bundle
+			};
+		}
+		const preamble = buildSupervisorPreamble({
+			variant: 'local',
+			runId: run.id,
+			runnerName: runner.name,
+			issueRef,
+			timeoutMinutes: runner.max_run_minutes,
+			skills
+		});
+		return {
+			run: await serializedRun(db, run.user_id, run.id),
+			...effortField,
+			prompt: `${preamble}\n\n${material.launchPrompt}`,
+			bundle: guidance,
+			run_key: secret,
+			...envField,
+			timeout_minutes: runner.max_run_minutes,
+			shared_bundle
+		};
+	} catch (error) {
+		await failLaunch(db, env, {
+			userId: run.user_id,
+			runId: run.id,
+			runner,
+			error: error instanceof Error ? error.message : String(error),
+			now
+		});
+		effects.signalDispatch();
+		return null;
+	}
 }
 
 /**

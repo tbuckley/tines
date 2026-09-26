@@ -230,6 +230,36 @@ describe('claude adapter launch', () => {
 		({ t, runnerId } = await world());
 	});
 
+	it('uses shared launch material and fetches no issue, prompt or context itself', async () => {
+		const net = fakeNetwork();
+		const adapter = createClaudeAdapter(t.env, { fetch: net.fetch });
+		await adapter.launch({
+			...launchInput(runnerId),
+			material: {
+				issue: { id: 'iss_1', project_name: 'shared', number: 7 } as never,
+				context: {
+					prompt: { text: '', parts: [] },
+					skills: [],
+					repos: [],
+					env: [],
+					overridden: [],
+					conflicts: []
+				} as never,
+				launchPrompt: 'THE SHARED PROMPT',
+				resumePrompt: 'THE SHARED RESUME PROMPT',
+				env: [],
+				digest: 'd'.repeat(64)
+			}
+		});
+		expect(net.calls.filter((c) => c.path.startsWith('/api/v1/'))).toEqual([]);
+		const [session] = net.of('POST /v1/sessions');
+		const events = (session!.body as Record<string, unknown>)['initial_events'] as {
+			content: { text: string }[];
+		}[];
+		expect(events[0]!.content[0]!.text).toContain('THE SHARED PROMPT');
+		expect(events[0]!.content[0]!.text).toContain('shared/7');
+	});
+
 	it('provisions lazily, delivers the key via a per-run vault, and caps the session', async () => {
 		const net = fakeNetwork({
 			'GET /api/v1/issues/iss_1/context': () => ({
