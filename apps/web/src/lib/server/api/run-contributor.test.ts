@@ -699,3 +699,134 @@ describe('owner-scoped views show a foreign contributor’s run through the shar
 		});
 	});
 });
+
+describe('the owner/member/pending/outsider × scope × policy matrix', () => {
+	const POLICIES = {
+		full: {
+			version: 1,
+			projects: { access: 'write', scope: 'all' },
+			workspace: 'write',
+			control_plane: 'read'
+		},
+		'project-narrow': {
+			version: 1,
+			projects: { access: 'write', scope: [PROJECT] },
+			workspace: 'none',
+			control_plane: 'none'
+		},
+		'under-granted': {
+			version: 1,
+			projects: { access: 'read', scope: 'all' },
+			workspace: 'none',
+			control_plane: 'none'
+		}
+	} as const;
+	const SCOPES = ['issue', 'project', 'workspace'] as const;
+	const OUTSIDER_BEARER = 'run-contributor-outsider-key';
+
+	async function outcome(work: () => Promise<unknown>): Promise<string> {
+		try {
+			await work();
+			return 'ok';
+		} catch (e) {
+			const error = e as { status?: number; code?: string; details?: { reason?: string } };
+			if (error.status === undefined) throw e;
+			return [error.status, error.code, error.details?.reason].filter(Boolean).join(':');
+		}
+	}
+
+	async function operations(t: TestDb, actor: ActorContext, own: string, sibling: string) {
+		const read = (id: string) => async () =>
+			loadIssueForActor(t.db, await actorForIssue(t.db, actor, id), { id });
+		const update = (id: string) => async () =>
+			// As the PATCH route does: delegate for the issue, then write.
+			updateIssue(
+				t.db,
+				t.env,
+				await actorForIssue(t.db, actor, id),
+				TEST_NOOP_DISPATCH_EFFECTS,
+				id,
+				{ title: 'matrix' }
+			);
+		return {
+			'read own': await outcome(read(own)),
+			'read sibling': await outcome(read(sibling)),
+			'update own': await outcome(update(own)),
+			'update sibling': await outcome(update(sibling))
+		};
+	}
+
+	function configure(t: TestDb, keyId: string, runId: string, runScope: string, policy: object) {
+		t.sqlite
+			.prepare('UPDATE api_key SET permissions = ? WHERE id = ?')
+			.run(JSON.stringify(policy), keyId);
+		t.sqlite.prepare('UPDATE agent_run SET state_id_at_start = ? WHERE id = ?').run(OPEN, runId);
+		t.sqlite.prepare('UPDATE workflow_state SET run_scope = ? WHERE id = ?').run(runScope, OPEN);
+	}
+
+	for (const runScope of SCOPES) {
+		for (const [policyName, policy] of Object.entries(POLICIES)) {
+			it(`gives a member run exactly the owner run's outcomes: ${runScope} scope, ${policyName} policy`, async () => {
+				const owner = await ownerRunSetup();
+				const ownerSibling = addIssue(owner.t, { state: OPEN, title: 'Sibling' });
+				configure(owner.t, owner.keyId, owner.runId, runScope, policy);
+				const ownerResults = await operations(
+					owner.t,
+					await authenticate(owner.t),
+					owner.issueId,
+					ownerSibling
+				);
+
+				const member = await setup();
+				const memberSibling = addIssue(member.t, { state: OPEN, title: 'Sibling' });
+				configure(member.t, member.keyId, member.runId, runScope, policy);
+				const memberResults = await operations(
+					member.t,
+					await authenticate(member.t),
+					member.issueId,
+					memberSibling
+				);
+
+				// Delegation neither widens nor narrows the run ceiling or the stored policy.
+				expect(memberResults).toEqual(ownerResults);
+				// The bound issue is always readable; under-granted never writes.
+				expect(ownerResults['read own']).toBe('ok');
+				if (policyName === 'under-granted') expect(ownerResults['update own']).not.toBe('ok');
+				else expect(ownerResults['update own']).toBe('ok');
+				// An issue-scoped run never writes a sibling.
+				if (runScope === 'issue') expect(ownerResults['update sibling']).not.toBe('ok');
+			});
+		}
+	}
+
+	for (const role of ['pending invitee', 'outsider'] as const) {
+		it(`refuses a ${role}'s key on every operation as not found`, async () => {
+			const { t, issueId } = await setup();
+			const sibling = addIssue(t, { state: OPEN, title: 'Sibling' });
+			const stranger = 'u_stranger';
+			t.sqlite.exec(`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+				VALUES ('${stranger}', 'carol', 'carol@example.com', 1, ${NOW}, ${NOW})`);
+			if (role === 'pending invitee')
+				t.sqlite.exec(`INSERT INTO project_invitation
+					(id, project_id, email, token_hash, expires_at, created_by_user_id, created_at, updated_at)
+					VALUES ('inv_carol', '${PROJECT}', 'carol@example.com', 'hash_inv', ${NOW + 86_400_000},
+						'${USER}', ${NOW}, ${NOW})`);
+			t.sqlite
+				.prepare(
+					`INSERT INTO api_key (id, user_id, name, key_hash, key_prefix, permissions, created_at)
+					VALUES ('key_carol', ?, 'carol', ?, 'key_caro', ?, ?)`
+				)
+				.run(stranger, await sha256Hex(OUTSIDER_BEARER), JSON.stringify(POLICIES.full), NOW);
+			const actor = await requireActor({
+				locals: {},
+				platform: { env: t.env, ctx: { waitUntil: () => {} } },
+				request: new Request('http://test/api/v1/anything', {
+					headers: { authorization: `Bearer ${OUTSIDER_BEARER}` }
+				}),
+				url: new URL('http://test/api/v1/anything')
+			} as unknown as RequestEvent);
+			const results = await operations(t, actor, issueId, sibling);
+			for (const result of Object.values(results)) expect(result).toMatch(/^404/);
+		});
+	}
+});
