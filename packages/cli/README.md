@@ -64,16 +64,16 @@ tines issues list --all --show-duplicates --all-pages --json
 
 Issues are addressed as `<project>/<number>`; schedules as `<project>/<name>`; workflow
 states as `<workflow>/<state>`. Paginated `list` commands return one page — add
-`--all-pages` for the whole list. Four lists instead return the whole collection and take no
-pagination flags: `labels list`, `runners list`, `routing list`, and
+`--all-pages` for the whole list. Five lists instead return the whole collection and take no
+pagination flags: `labels list`, `runners list`, `routing list`, `api-keys list`, and
 `issues artifacts list`. Every leaf command except `login` and `logout` takes `--json` for
 machine-readable output. Complete list walks have a default 10,000-item safety ceiling. Use
 `--max-items <n>` with `--all-pages` to choose a different positive finite bound; exceeding
 it fails without printing a partial result. `--limit` remains the per-request page size. A
 larger bound keeps more output in memory and makes more requests, so increase it deliberately
 or narrow the list's filters.
-`tines <noun> --help` lists the rest: `workflows`, `context`, `journal`, `schedules`,
-`runners`, `runs`, `routing`, `supervisor`.
+`tines <noun> --help` lists the rest: `api-keys`, `workflows`, `labels`, `context`, `journal`,
+`schedules`, `runners`, `runs`, `routing`, `supervisor`, `usage`.
 
 `issues create` accepts repeatable `--blocked-by` and `--blocks` references plus one
 `--duplicate-of` reference. The issue and all initial relationships are created atomically.
