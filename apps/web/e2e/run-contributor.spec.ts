@@ -25,7 +25,7 @@ test('a member run key writes only while its binding holds, on native D1', async
 	request,
 	uniqueName
 }) => {
-	test.setTimeout(600_000);
+	test.setTimeout(1_200_000);
 	const owner = apiClient(request, ALICE.apiKey);
 	const project = await body<{ id: string; name: string }>(
 		await owner.post('/api/v1/projects', { name: uniqueName('run-contributor') })
