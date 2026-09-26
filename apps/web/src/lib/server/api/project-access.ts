@@ -132,6 +132,51 @@ export function currentMemberPredicate(projectId: string, userId: string, revisi
 		AND m.revoked_at IS NULL AND p.shared_at IS NOT NULL)`;
 }
 
+/**
+ * A run key's write still needs its binding at commit (Tines/751): the run is
+ * live and not cancel-requested, its key is unrevoked and unexpired, the run's
+ * issue is still in the bound project under the bound assignment token, and
+ * the contributor still owns the project or is a current member at the bound
+ * revision. Evaluated in the same D1 batch as the write. True for non-run actors.
+ */
+export function runStillBoundPredicate(actor: ActorContext) {
+	const restriction = actor.runRestriction;
+	if (!restriction) return sql<boolean>`1`;
+	const binding = restriction.binding;
+	if (!actor.apiKeyId) return sql<boolean>`0`;
+	// `requireActor` always binds a run key; an actor built without one (older
+	// test fixtures) still gets the liveness, key and project checks.
+	const authority = binding
+		? sql<boolean>`r.user_id = ${binding.contributorUserId}
+			AND (r.admitted_project_id IS NULL OR i.project_assignment_token = ${binding.assignmentToken})
+			AND (p.user_id = ${binding.contributorUserId} OR (p.shared_at IS NOT NULL
+				AND m.revoked_at IS NULL AND m.revision = ${binding.membershipRevision}))`
+		: sql<boolean>`1`;
+	return sql<boolean>`EXISTS (SELECT 1 FROM agent_run r
+		JOIN api_key k ON k.id = r.api_key_id
+		JOIN issue i ON i.id = r.issue_id
+		JOIN project p ON p.id = i.project_id
+		LEFT JOIN project_member m ON m.project_id = p.id AND m.user_id = r.user_id
+		WHERE r.id = ${restriction.runId} AND r.status IN ('launching','running')
+			AND r.cancel_requested_at IS NULL
+			AND k.id = ${actor.apiKeyId} AND k.revoked_at IS NULL
+			AND (k.expires_at IS NULL OR k.expires_at > ${Date.now()})
+			AND i.project_id = ${restriction.projectId} AND ${authority})`;
+}
+
+/** Throws 401 `run_key_inactive` when a run key's binding lapsed before its write committed. */
+export async function assertRunStillBound(
+	db: Kysely<Database>,
+	actor: ActorContext
+): Promise<void> {
+	if (!actor.runRestriction) return;
+	const row = await sql<{
+		bound: number;
+	}>`SELECT ${runStillBoundPredicate(actor)} AS bound`.execute(db);
+	if (!row.rows[0]?.bound)
+		throw new ApiFail(401, 'run_key_inactive', 'This run key is no longer active');
+}
+
 /** A write uses the revision seen at preflight, so removal/rejoin cannot reuse access. */
 export function currentProjectWriterPredicate(
 	projectId: string,
@@ -139,15 +184,16 @@ export function currentProjectWriterPredicate(
 	access: ProjectAccess,
 	issueId?: string
 ) {
+	const run = runStillBoundPredicate(actor);
 	return access.role === 'owner'
-		? sql<boolean>`EXISTS (SELECT 1 FROM project WHERE id = ${projectId} AND user_id = ${actor.userId}
+		? sql<boolean>`${run} AND EXISTS (SELECT 1 FROM project WHERE id = ${projectId} AND user_id = ${actor.userId}
 			AND (archived_at IS NULL OR ${
 				issueId && actor.agentRunId
 					? sql<boolean>`EXISTS (SELECT 1 FROM agent_run WHERE id = ${actor.agentRunId}
 					AND issue_id = ${issueId} AND status IN ('assigned','launching','running'))`
 					: sql<boolean>`0`
 			}))`
-		: sql<boolean>`EXISTS (SELECT 1 FROM project_member m JOIN project p ON p.id = m.project_id
+		: sql<boolean>`${run} AND EXISTS (SELECT 1 FROM project_member m JOIN project p ON p.id = m.project_id
 			WHERE m.project_id = ${projectId} AND m.user_id = ${actor.userId}
 			AND m.revision = ${access.membershipRevision} AND m.revoked_at IS NULL
 			AND p.shared_at IS NOT NULL AND p.archived_at IS NULL)`;
@@ -337,13 +383,14 @@ export function memberSelf(actor: ActorContext): ActorContext {
  * preflight and the write must not let it land. True for everyone else.
  */
 export function memberStillCurrentPredicate(actor: ActorContext) {
+	const run = runStillBoundPredicate(actor);
 	return actor.member
-		? currentMemberPredicate(
+		? sql<boolean>`${run} AND ${currentMemberPredicate(
 				actor.member.projectId,
 				actor.member.userId,
 				actor.member.membershipRevision
-			)
-		: sql<boolean>`1`;
+			)}`
+		: run;
 }
 
 /** Throws 404 when a delegated member was removed since their request began. */

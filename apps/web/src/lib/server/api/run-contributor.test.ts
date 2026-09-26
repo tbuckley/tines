@@ -2,18 +2,27 @@ import { describe, expect, it } from 'vitest';
 import type { RequestEvent } from '@sveltejs/kit';
 import { createTestDb, type TestDb } from './test-db';
 import { requireActor, sha256Hex, type ActorContext } from './core';
-import { loadIssueForActor } from './issues';
+import {
+	createComment,
+	getIssueDetail,
+	loadIssueForActor,
+	transitionIssue,
+	updateIssue
+} from './issues';
+import { TEST_NOOP_DISPATCH_EFFECTS } from './test-dispatch-effects';
 import {
 	actorForIssue,
 	actorForProject,
 	assertNotMember,
 	resolveProjectAccess,
-	runProjectActor
+	runProjectActor,
+	runStillBoundPredicate
 } from './project-access';
 import {
 	NOW,
 	OPEN,
 	PROJECT,
+	REVIEW,
 	USER,
 	addIssue,
 	addMemberContributorRun,
@@ -194,6 +203,125 @@ describe('a member run acts on its admitted project with the owner scope', () =>
 			.execute();
 		expect(runners).toHaveLength(1);
 	});
+});
+
+async function ownerRunSetup() {
+	const t = createTestDb();
+	seedBase(t);
+	const issueId = addIssue(t, { state: OPEN, title: 'Owner work' });
+	const runId = addRun(t, { issueId, runnerId: addRunner(t), status: 'running' });
+	const keyId = addRunKey(t, runId);
+	t.sqlite.prepare('UPDATE api_key SET key_hash = ?, permissions = ? WHERE id = ?').run(
+		await sha256Hex(BEARER),
+		JSON.stringify({
+			version: 1,
+			projects: { access: 'write', scope: 'all' },
+			workspace: 'write',
+			control_plane: 'read'
+		}),
+		keyId
+	);
+	return { t, issueId, runId, keyId };
+}
+
+function eventCount(t: TestDb, issueId: string): number {
+	return (
+		t.sqlite.prepare('SELECT count(*) AS n FROM event WHERE issue_id = ?').get(issueId) as {
+			n: number;
+		}
+	).n;
+}
+
+async function bound(t: TestDb, actor: ActorContext): Promise<boolean> {
+	const { sql } = await import('kysely');
+	const row = await sql<{
+		ok: number;
+	}>`SELECT ${runStillBoundPredicate(actor)} AS ok`.execute(t.db);
+	return !!row.rows[0]?.ok;
+}
+
+type Revoke = (t: TestDb, ids: { runId: string; keyId: string; issueId: string }) => void;
+
+const OWNER_REVOCATIONS: Record<string, Revoke> = {
+	'cancel requested': (t, { runId }) =>
+		t.sqlite.prepare('UPDATE agent_run SET cancel_requested_at = ? WHERE id = ?').run(NOW, runId),
+	'run ended': (t, { runId }) =>
+		t.sqlite.prepare("UPDATE agent_run SET status = 'completed' WHERE id = ?").run(runId),
+	'key revoked': (t, { keyId }) =>
+		t.sqlite.prepare('UPDATE api_key SET revoked_at = ? WHERE id = ?').run(NOW, keyId),
+	'key expired': (t, { keyId }) =>
+		t.sqlite.prepare('UPDATE api_key SET expires_at = ? WHERE id = ?').run(NOW, keyId),
+	transferred: (t, { issueId }) =>
+		t.sqlite.prepare("UPDATE issue SET project_id = 'prj_private' WHERE id = ?").run(issueId)
+};
+
+const MEMBER_REVOCATIONS: Record<string, Revoke> = {
+	...OWNER_REVOCATIONS,
+	'token changed': (t, { issueId }) =>
+		t.sqlite
+			.prepare("UPDATE issue SET project_assignment_token = 'tok_moved' WHERE id = ?")
+			.run(issueId),
+	removed: (t) => t.sqlite.prepare('UPDATE project_member SET revoked_at = ?').run(NOW),
+	rejoined: (t) => t.sqlite.prepare('UPDATE project_member SET revision = revision + 2').run(),
+	unshared: (t) => t.sqlite.prepare('UPDATE project SET shared_at = NULL').run()
+};
+
+describe('run-key writes re-check the binding at commit', () => {
+	it('holds for a live owner run and a live member run', async () => {
+		const owner = await ownerRunSetup();
+		expect(await bound(owner.t, await authenticate(owner.t))).toBe(true);
+		const member = await setup();
+		expect(await bound(member.t, await authenticate(member.t))).toBe(true);
+	});
+
+	for (const [name, revoke] of Object.entries(OWNER_REVOCATIONS)) {
+		it(`refuses an owner run's update and transition after: ${name}`, async () => {
+			const { t, issueId, runId, keyId } = await ownerRunSetup();
+			t.sqlite.exec(`INSERT OR IGNORE INTO project (id, user_id, name, created_at, updated_at)
+				VALUES ('prj_private', '${USER}', 'private', ${NOW}, ${NOW})`);
+			// Preflight: authenticated while the run was still bound.
+			const actor = await authenticate(t);
+			const action = (await getIssueDetail(t.db, USER, { id: issueId })).allowed_transitions.find(
+				(x) => x.to_state.id === REVIEW
+			)!.name;
+			revoke(t, { runId, keyId, issueId });
+			const events = eventCount(t, issueId);
+			expect(await bound(t, actor)).toBe(false);
+			// A transfer is also caught by the preflight run fence (403); the rest
+			// pass preflight on the stale actor and are refused by the commit guard.
+			const refused =
+				name === 'transferred'
+					? { status: 403, code: 'run_key_forbidden' }
+					: { status: 401, code: 'run_key_inactive' };
+			await expect(
+				updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issueId, { title: 'late' })
+			).rejects.toMatchObject(refused);
+			await expect(
+				transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issueId, { action })
+			).rejects.toMatchObject(refused);
+			const row = t.sqlite.prepare('SELECT title, state_id FROM issue WHERE id = ?').get(issueId);
+			expect(row).toEqual({ title: 'Owner work', state_id: OPEN });
+			expect(eventCount(t, issueId)).toBe(events);
+		});
+	}
+
+	for (const [name, revoke] of Object.entries(MEMBER_REVOCATIONS)) {
+		it(`refuses a member run's comment after: ${name}`, async () => {
+			const { t, issueId, runId, keyId } = await setup();
+			const actor = await authenticate(t);
+			revoke(t, { runId, keyId, issueId });
+			const events = eventCount(t, issueId);
+			expect(await bound(t, actor)).toBe(false);
+			await expect(
+				createComment(t.db, t.env, actor, issueId, { body: 'late' })
+			).rejects.toMatchObject({ status: expect.any(Number) });
+			expect(
+				t.sqlite.prepare('SELECT count(*) AS n FROM comment WHERE issue_id = ?').get(issueId)
+			).toEqual({ n: 0 });
+			expect(eventCount(t, issueId)).toBe(events);
+			expect((await getIssueDetail(t.db, USER, { id: issueId })).state.id).toBe(OPEN);
+		});
+	}
 });
 
 async function readJournal(t: TestDb, issueId: string): Promise<Response> {

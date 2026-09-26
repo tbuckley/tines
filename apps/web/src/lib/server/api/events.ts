@@ -34,6 +34,7 @@ export function applyEventWindow<Q>(query: Q, filters: EventWindowFilters): Q {
 	return q as Q;
 }
 import type { QueryGuard } from './query-guard';
+import { runStillBoundPredicate } from './project-access';
 
 export interface EventInput {
 	/** Stable batch allocation; ordinary callers omit these. */
@@ -88,25 +89,32 @@ export function eventInsert(
 	const projectId = input.issueId
 		? sql<string | null>`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
 		: sql<string | null>`${input.projectId ?? null}`;
-	if (!guard)
+	const guarded =
+		guard === undefined
+			? null
+			: 'predicate' in guard
+				? guard.predicate
+				: sql<boolean>`EXISTS (
+			SELECT 1 FROM issue
+			WHERE id = ${guard.issueId} AND state_id = ${guard.stateId} AND updated_at = ${guard.updatedAt}
+		)`;
+	// A run key's event commits only while its binding holds (Tines/751), so a
+	// write refused by the run guard never leaves an event behind.
+	const predicate = actor.runRestriction
+		? guarded
+			? sql<boolean>`${guarded} AND ${runStillBoundPredicate(actor)}`
+			: runStillBoundPredicate(actor)
+		: guarded;
+	if (!predicate)
 		return sql`
 			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 			VALUES (${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
 				${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at})`.compile(db);
-	if ('predicate' in guard)
-		return sql`
-			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
-			SELECT ${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
-				${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at}
-			WHERE ${guard.predicate}`.compile(db);
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
 			${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at}
-		WHERE EXISTS (
-			SELECT 1 FROM issue
-			WHERE id = ${guard.issueId} AND state_id = ${guard.stateId} AND updated_at = ${guard.updatedAt}
-		)`.compile(db);
+		WHERE ${predicate}`.compile(db);
 }
 
 /**

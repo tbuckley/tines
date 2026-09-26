@@ -58,7 +58,9 @@ import { actorOf, eventInsert, eventQuery, serializeEvent } from './events';
 import {
 	assertNotMember,
 	resolveIssueAccess,
-	currentProjectWriterPredicate
+	currentProjectWriterPredicate,
+	runStillBoundPredicate,
+	assertRunStillBound
 } from './project-access';
 import { readSharedIssue } from './shared-issues';
 import { deriveRound, deriveSinceLastRun } from './handoff';
@@ -1874,6 +1876,7 @@ export async function updateIssue(
 		})
 		.where('id', '=', id);
 	if (guarded) update = update.where('state_id', '=', current.state.id);
+	if (actor.runRestriction) update = update.where(runStillBoundPredicate(actor));
 	if (structural && structuralWitness)
 		update = update
 			.where('decision_revision', '=', structuralWitness.decision_revision)
@@ -1967,6 +1970,7 @@ export async function updateIssue(
 	}
 
 	const results = await runAtomic(env, queries);
+	if ((results[0]?.meta.changes ?? 0) === 0) await assertRunStillBound(db, actor);
 	if (guarded && (results[0]?.meta.changes ?? 0) === 0) {
 		const fresh = await getIssueDetail(db, actor.userId, { id });
 		throw new ApiFail(
@@ -2218,6 +2222,7 @@ async function transitionMemberIssue(
 		);
 	await beforeCommit?.();
 	const results = await runAtomic(env, writes);
+	if (!results[0]?.meta.changes) await assertRunStillBound(db, actor);
 	if (!results[0]?.meta.changes)
 		throw new ApiFail(409, 'decision_refresh_required', 'Issue changed; refresh and choose again', {
 			committed: false
@@ -2434,6 +2439,7 @@ export async function transitionIssue(
 		WHERE id = ${id} AND state_id = ${current.state.id}
 			AND project_id = ${decision.project_id}
 			AND project_assignment_token = ${decision.project_assignment_token}
+			AND ${runStillBoundPredicate(actor)}
 			AND EXISTS (SELECT 1 FROM workflow_transition wt
 				WHERE wt.id = ${target.transition_id} AND wt.workflow_id = issue.workflow_id
 					AND wt.from_state_id = ${current.state.id} AND wt.to_state_id = ${target.to_state.id})
@@ -2547,6 +2553,7 @@ export async function transitionIssue(
 	}
 	const results = await runAtomic(env, writeQueries);
 	if ((results[0]?.meta.changes ?? 0) === 0) {
+		await assertRunStillBound(db, actor);
 		const fresh = await getIssueDetail(db, actor.userId, { id });
 		throw new ApiFail(
 			409,
