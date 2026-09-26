@@ -819,6 +819,83 @@ export class ConcurrentD1Dialect extends D1Dialect {
 	}
 }
 
+type D1Database = Env['DB'];
+type D1Statement = ReturnType<D1Database['prepare']>;
+type D1AllResult = Awaited<ReturnType<D1Statement['all']>>;
+
+/** A read that can share a batch: a SELECT, or a WITH that writes nothing. */
+const BATCHABLE = /^\s*(select|with)\b/i;
+const WRITES = /\b(insert|update|delete|replace)\b/i;
+/** Well under D1's per-batch limits; a wider fan-out simply flushes twice. */
+export const MAX_BATCHED_READS = 50;
+
+/**
+ * D1 runs one database's statements one at a time, and every statement sent
+ * on its own pays a fixed request cost on top of its execution time, even
+ * when a `load` issues them together in `Promise.all`. Real users measured
+ * /agents (about 22 reads in 2 waves) at about 280 ms of server time against
+ * a modelled 40 ms (docs/PERFORMANCE.md). So Kysely's reads that start in the
+ * same tick are sent as one `batch()`: one request instead of one per read.
+ *
+ * A batch is all-or-nothing, so when it fails nothing in it applied and each
+ * statement is re-sent alone; each caller then gets its own result or error,
+ * exactly as without batching. Only reads are coalesced; writes keep their
+ * own request (multi-statement writes use `runAtomic()` anyway).
+ */
+export function batchingD1(database: D1Database): D1Database {
+	type Pending = {
+		statement: D1Statement;
+		resolve: (result: D1AllResult) => void;
+		reject: (error: unknown) => void;
+	};
+	let queue: Pending[] = [];
+	const alone = async (item: Pending) => {
+		try {
+			item.resolve(await item.statement.all());
+		} catch (e) {
+			item.reject(e);
+		}
+	};
+	const send = async (items: Pending[]) => {
+		if (items.length === 1) return alone(items[0]);
+		let results: D1AllResult[];
+		try {
+			results = (await database.batch(items.map((i) => i.statement))) as D1AllResult[];
+		} catch {
+			await Promise.all(items.map(alone));
+			return;
+		}
+		items.forEach((item, i) => item.resolve(results[i]));
+	};
+	const flush = () => {
+		const items = queue;
+		queue = [];
+		for (let i = 0; i < items.length; i += MAX_BATCHED_READS)
+			void send(items.slice(i, i + MAX_BATCHED_READS));
+	};
+	const enqueue = (statement: D1Statement) =>
+		new Promise<D1AllResult>((resolve, reject) => {
+			// A timer, not a microtask: Kysely reaches the driver several awaits
+			// deep, so reads started by one Promise.all land in different
+			// microtasks of the same task.
+			if (queue.length === 0) setTimeout(flush, 0);
+			queue.push({ statement, resolve, reject });
+		});
+	return {
+		prepare(query: string) {
+			const statement = database.prepare(query);
+			if (!BATCHABLE.test(query) || WRITES.test(query)) return statement;
+			return {
+				bind: (...values: unknown[]) => {
+					const bound = statement.bind(...values);
+					return { all: () => enqueue(bound) } as unknown as D1Statement;
+				}
+			} as unknown as D1Statement;
+		},
+		batch: (statements: D1Statement[]) => database.batch(statements)
+	} as unknown as D1Database;
+}
+
 const dbs = new WeakMap<object, Kysely<Database>>();
 
 /**
@@ -832,7 +909,7 @@ export function getDb(env: Env): Kysely<Database> {
 	if (!db) {
 		db = new Kysely<Database>({
 			dialect: new ConcurrentD1Dialect({
-				database: env.USAGE_SCALE_SQL_TRACE === '1' ? traceUsageScaleDb(env.DB) : env.DB
+				database: batchingD1(env.USAGE_SCALE_SQL_TRACE === '1' ? traceUsageScaleDb(env.DB) : env.DB)
 			})
 		});
 		dbs.set(env.DB, db);
