@@ -77,6 +77,38 @@ Read** in `CLOUDFLARE_ANALYTICS_TOKEN`; `--by version` compares deployments,
 `--by colo` shows where users are relative to D1, `--preview` reads the
 preview dataset.
 
+## PR previews: `pnpm --filter web perf:preview`
+
+A PR's own number, before it merges, on real Workers and D1:
+
+```sh
+PREVIEW_LOGIN_TOKEN=… pnpm --filter web perf:preview --pr 305 --base 299
+```
+
+`scripts/perf-preview.mjs` signs in to the preview as the probe user
+(`docs/preview-login.md`), makes sure that user owns a `perf-probe` project
+(250 issues, so the list is full and its counts cover more than one page; the
+newest has 30 comments and a text artifact), then clicks through the main
+transitions in Chromium: open an issue from the list, back, open it again, the
+Agents, Workflows and Issues tabs, a list filter, and Issues to Agents and
+back. Each
+number is the app's own navigation record, the same one real users report,
+captured in the browser rather than sent, so probes stay out of
+`perf:report --preview`.
+
+`--base N` measures a second preview in the same run, interleaving the two
+round by round, and prints the difference in p50. Pick the newest preview
+that predates the change, since every preview reads the one shared
+`tines-preview` database and only the code differs. `--rounds` (default 5)
+sets the number of tours per preview after one warm-up, and `--json FILE` keeps
+every sample.
+
+The timings are from wherever the script runs. It prints the Cloudflare
+location the preview was served from, so compare runs from the same place.
+A preview only answers the sign-in once it was uploaded after its
+`PREVIEW_LOGIN_TOKEN` secret was set and from a build that has the route
+(main after PR #299). The script says so on a 404.
+
 ## Loading states
 
 A placeholder is the exception, so each one is named in
