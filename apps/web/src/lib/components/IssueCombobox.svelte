@@ -115,6 +115,8 @@
 		selected = null;
 		open = true;
 		clearTimeout(timer);
+		// New text makes any in-flight search stale, even before the debounced one starts.
+		seq++;
 		if (!text.trim()) return showRecent();
 		status = 'loading';
 		const value = text;

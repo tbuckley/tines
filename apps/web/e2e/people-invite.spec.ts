@@ -151,6 +151,45 @@ test('the invite landing issue is picked by number or title, and errors sit unde
 	});
 });
 
+test('a search that answers after new typing cannot be picked', async ({
+	page,
+	request,
+	uniqueName
+}) => {
+	// A fake clock holds the 200 ms debounce shut, so the stale answer deterministically lands
+	// while the new text is still waiting to be searched.
+	await page.clock.install();
+	const { project } = await setup(page, request, uniqueName('people-invite-stale'));
+	await page.clock.pauseAt(Date.now() + 60_000);
+	const landing = page.getByRole('combobox', { name: 'Landing issue (optional)' });
+	const listbox = page.getByRole('listbox');
+
+	let releasePri!: () => Promise<void>;
+	const priHeld = new Promise<void>((resolve) => {
+		void page.route(
+			(url) =>
+				url.pathname === `/api/v1/projects/${project.id}/issues` &&
+				url.searchParams.get('q') === 'pri',
+			async (route) => {
+				const response = await route.fetch();
+				releasePri = () => route.fulfill({ response });
+				resolve();
+			}
+		);
+	});
+
+	await landing.fill('pri');
+	await page.clock.runFor(250);
+	await priHeld;
+	await landing.fill('launch');
+	await releasePri();
+	// Real time passes for the stale answer to render; the paused clock keeps "launch" unsearched.
+	await page.waitForTimeout(300);
+	await expect(listbox).toHaveText('Searching…');
+	await landing.press('Enter');
+	await expect(landing).toHaveValue('launch');
+});
+
 test('the landing issue list fits a phone screen', async ({ page, request, uniqueName }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	await setup(page, request, uniqueName('people-invite-phone'));
