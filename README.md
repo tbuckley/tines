@@ -644,7 +644,9 @@ its own D1 database (`tines-preview`), fully isolated from production data.
 Magic-link sign-in works on previews — `BETTER_AUTH_URL` is unset there, so
 auth derives its base URL from the request origin (preview URLs differ per
 PR). Google OAuth does not work on previews (Google doesn't allow
-wildcard redirect URIs).
+wildcard redirect URIs). Scripts and agents can sign in to a preview as a
+fixed test user with `POST /api/preview-login` once the preview worker has a
+`PREVIEW_LOGIN_TOKEN` secret; see `docs/preview-login.md`.
 
 One-time preview setup:
 

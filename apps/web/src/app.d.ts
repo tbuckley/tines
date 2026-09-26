@@ -14,6 +14,8 @@ import type { getAuth } from '$lib/server/auth';
 
 declare global {
 	const __TINES_DEPLOYMENT__: Readonly<import('@tines/shared').VersionResponse>;
+	/** True only in preview and e2e builds; gates /api/preview-login (lib/server/preview-login.ts). */
+	const __TINES_PREVIEW_LOGIN__: boolean;
 	/** Bindings and vars available on `platform.env` (see wrangler.jsonc). */
 	interface Env {
 		DB: D1Database;
@@ -27,6 +29,8 @@ declare global {
 		EMAIL_FROM?: string;
 		BETTER_AUTH_URL?: string;
 		BETTER_AUTH_SECRET?: string;
+		/** Preview worker secret only: bearer token for /api/preview-login (docs/preview-login.md). */
+		PREVIEW_LOGIN_TOKEN?: string;
 		GOOGLE_CLIENT_ID?: string;
 		GOOGLE_CLIENT_SECRET?: string;
 		/** Encrypts stored provider secrets (AES-GCM); see lib/server/crypto.ts. */
