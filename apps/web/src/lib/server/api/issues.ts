@@ -2441,6 +2441,8 @@ export async function transitionIssue(
 	const choiceChanged =
 		nextConsentValue !== null &&
 		(decision.consent_value !== nextConsentValue || decision.consent_source !== 'explicit_issue');
+	// A delegated member run's E2E race hook fires here, after every preflight read.
+	if (actor.member) await beforeMemberCommit?.();
 	const stateWrite = sql`
 		UPDATE issue SET state_id = ${target.to_state.id}, state_entered_at = ${now}, updated_at = ${now},
 			decision_revision = decision_revision + 1,
