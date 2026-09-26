@@ -815,42 +815,48 @@
 	{/if}
 	<div class="flex flex-wrap items-start justify-between gap-4">
 		<div class="min-w-0">
-			<p class="text-muted-foreground text-sm">
-				<a href="/projects/{data.issue.project_id}" class="hover:underline"
-					>{data.issue.project_name}</a
-				>
-				{#if canOfferFocus}
-					<button
-						class="hover:text-foreground ml-2 underline underline-offset-2"
-						onclick={focusIssueProject}
-						disabled={focusing}
-						title="Focus {data.issue.project_name}"
+			<div class="text-muted-foreground flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
+				<!-- The reference reads as one unit and never splits (Tines/770); a long
+				     project name truncates rather than widening the page (Tines/45). -->
+				<span class="inline-flex max-w-full min-w-0 items-baseline gap-1" data-testid="issue-ref">
+					<a href="/projects/{data.issue.project_id}" class="truncate hover:underline"
+						>{data.issue.project_name}</a
 					>
-						{focusing ? 'Focusing…' : `Focus ${data.issue.project_name}`}
-					</button>
-				{/if}
-				<button
-					class="hover:text-foreground ml-2 underline underline-offset-2"
-					onclick={() => (transferOpen = true)}
-					disabled={archived}
-					title={archived ? PROJECT_ARCHIVED_TOOLTIP : 'Move this issue to another project'}
-					data-testid="move-to-project"
-				>
-					Move to project…
-				</button>
-				<span class="font-mono">#{data.issue.number}</span>
+					<span class="shrink-0 font-mono">#{data.issue.number}</span>
+				</span>
 				{#if data.issue.scheduled_task_id}
 					<a
 						href="/projects/{data.issue.scheduled_task_project_id}?schedule={data.issue
 							.scheduled_task_id}"
-						class="bg-muted text-muted-foreground hover:text-foreground ml-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-middle text-xs"
+						class="bg-muted text-muted-foreground hover:text-foreground inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-middle text-xs"
 						title="Created by schedule “{data.issue.scheduled_task_name}”"
 					>
 						<IconRepeat size={12} stroke={1.75} />
 						{data.issue.scheduled_task_name}
 					</a>
 				{/if}
-			</p>
+				<span class="inline-flex max-w-full min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+					{#if canOfferFocus}
+						<button
+							class="hover:text-foreground max-w-full truncate underline underline-offset-2"
+							onclick={focusIssueProject}
+							disabled={focusing}
+							title="Focus {data.issue.project_name}"
+						>
+							{focusing ? 'Focusing…' : `Focus ${data.issue.project_name}`}
+						</button>
+					{/if}
+					<button
+						class="hover:text-foreground underline underline-offset-2"
+						onclick={() => (transferOpen = true)}
+						disabled={archived}
+						title={archived ? PROJECT_ARCHIVED_TOOLTIP : 'Move this issue to another project'}
+						data-testid="move-to-project"
+					>
+						Move to project…
+					</button>
+				</span>
+			</div>
 			{#if data.issue.schedule_origin}
 				<p class="text-muted-foreground mt-1 text-xs" data-testid="schedule-origin">
 					Created from schedule “{data.issue.schedule_origin.schedule_name}” using
