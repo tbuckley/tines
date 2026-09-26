@@ -138,7 +138,7 @@ test('a member run key writes only while its binding holds, on native D1', async
 	}
 
 	const races = ['cancel-run', 'expire-key', 'remove', 'rejoin', 'transfer'] as const;
-	// Member-run transitions are not delegated yet (transitionMemberIssue refuses runs).
+	// A member run transitions on the owner path, so the commit guard is what refuses these.
 	for (const write of ['comment', 'transition'] as const) {
 		for (const race of races) {
 			const { issue, secret } = await memberRun();

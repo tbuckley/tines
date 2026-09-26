@@ -2264,7 +2264,13 @@ export async function transitionIssue(
 		});
 	}
 	const access = await resolveIssueAccess(db, actor, id);
-	if (access.role === 'member') {
+	// A member-contributor run moves its admitted project's issues exactly as
+	// the owner's run would (Tines/751); the human member path stays for people.
+	if (access.role === 'member' && actor.agentRunId) {
+		const delegated = runProjectActor(actor, access.projectId);
+		if (!delegated) throw notFound();
+		actor = delegated;
+	} else if (access.role === 'member') {
 		requireAccess(
 			actor,
 			[{ domain: 'project', access: 'write', projectId: access.projectId }],

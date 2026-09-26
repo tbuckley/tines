@@ -29,6 +29,7 @@ import {
 	runStillBoundPredicate
 } from './project-access';
 import {
+	MEMBER,
 	NOW,
 	OPEN,
 	PROJECT,
@@ -352,7 +353,44 @@ describe('run-key writes re-check the binding at commit', () => {
 			expect(eventCount(t, issueId)).toBe(events);
 			expect((await getIssueDetail(t.db, USER, { id: issueId })).state.id).toBe(OPEN);
 		});
+
+		it(`refuses a member run's transition after: ${name}`, async () => {
+			const { t, issueId, runId, keyId } = await setup();
+			const actor = await authenticate(t);
+			const action = (await getIssueDetail(t.db, USER, { id: issueId })).allowed_transitions.find(
+				(x) => x.to_state.id === REVIEW
+			)!.name;
+			revoke(t, { runId, keyId, issueId });
+			const events = eventCount(t, issueId);
+			// Transfer and lost membership fail preflight (the run fence, then
+			// member access); run, key and token changes fail the commit guard.
+			await expect(
+				transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issueId, { action })
+			).rejects.toMatchObject(
+				['transferred', 'removed', 'rejoined', 'unshared'].includes(name)
+					? { status: expect.any(Number) }
+					: { status: 401, code: 'run_key_inactive' }
+			);
+			expect((await getIssueDetail(t.db, USER, { id: issueId })).state.id).toBe(OPEN);
+			expect(eventCount(t, issueId)).toBe(events);
+		});
 	}
+
+	it("moves a live member run's issue on the owner path, credited to the contributor", async () => {
+		const { t, issueId } = await setup();
+		const actor = await authenticate(t);
+		const action = (await getIssueDetail(t.db, USER, { id: issueId })).allowed_transitions.find(
+			(x) => x.to_state.id === REVIEW
+		)!.name;
+		await transitionIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issueId, { action });
+		expect((await getIssueDetail(t.db, USER, { id: issueId })).state.id).toBe(REVIEW);
+		const moved = t.sqlite
+			.prepare(
+				"SELECT user_id, actor_user_id FROM event WHERE issue_id = ? AND type = 'issue.transitioned'"
+			)
+			.all(issueId);
+		expect(moved).toEqual([{ user_id: USER, actor_user_id: MEMBER }]);
+	});
 });
 
 async function readJournal(t: TestDb, issueId: string): Promise<Response> {
