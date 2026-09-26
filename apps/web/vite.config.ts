@@ -1,4 +1,5 @@
 import adapter from '@sveltejs/adapter-cloudflare';
+import { playwright } from '@vitest/browser-playwright';
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { configDefaults, defineConfig } from 'vitest/config';
@@ -25,22 +26,63 @@ export default defineConfig({
 		// reload — wiping the "Check your email" state as it appeared.
 		watch: { ignored: ['**/.wrangler/**'] }
 	},
+	// Two suites, one command. `server` is everything that has always run
+	// here: plain modules under node. `client` mounts Svelte components in a
+	// real browser, which needs its own environment and resolution, so it
+	// cannot share a project with the first. `pnpm test` runs both;
+	// `--project=client` (or `=server`) picks one.
 	test: {
-		include: ['src/**/*.test.ts'],
-		// The navigation-cost probe is a measurement tool, not a gate: it spends
-		// seconds deliberately sleeping. `pnpm --filter web perf:nav` sets
-		// NAVPERF=1 to opt in.
-		exclude: [
-			...configDefaults.exclude,
-			...(process.env.NAVPERF === '1' ? [] : ['**/nav-perf.test.ts']),
-			...(process.env.STATSPERF === '1' ? [] : ['**/stats-perf.test.ts'])
-		],
-		environment: 'node',
-		// The unit-test DB is node:sqlite (src/lib/server/api/test-db.ts),
-		// which Node 22 still flags as experimental — once per worker, so a
-		// run printed it half a dozen times. Silence just that warning, just
-		// in the workers.
-		execArgv: ['--disable-warning=ExperimentalWarning']
+		projects: [
+			{
+				extends: true,
+				test: {
+					name: 'server',
+					include: ['src/**/*.test.ts'],
+					exclude: [
+						...configDefaults.exclude,
+						// `*.svelte.test.ts` also ends in `.test.ts`, so without this
+						// the component tests would run here too — in node, where
+						// mounting a component throws.
+						'**/*.svelte.test.ts',
+						// The navigation-cost probe is a measurement tool, not a gate:
+						// it spends seconds deliberately sleeping.
+						// `pnpm --filter web perf:nav` sets NAVPERF=1 to opt in.
+						...(process.env.NAVPERF === '1' ? [] : ['**/nav-perf.test.ts']),
+						...(process.env.STATSPERF === '1' ? [] : ['**/stats-perf.test.ts'])
+					],
+					environment: 'node',
+					// The unit-test DB is node:sqlite (src/lib/server/api/test-db.ts),
+					// which Node 22 still flags as experimental — once per worker, so a
+					// run printed it half a dozen times. Silence just that warning, just
+					// in the workers.
+					execArgv: ['--disable-warning=ExperimentalWarning']
+				}
+			},
+			{
+				extends: true,
+				test: {
+					name: 'client',
+					include: ['src/**/*.svelte.test.ts'],
+					setupFiles: ['./test/setup-client.ts'],
+					// Chromium headless, the same browser the Playwright suite
+					// drives — so a component under test lays out, computes styles
+					// and dispatches real events exactly as it does in `e2e/`. It
+					// is what makes an assertion about `scrollHeight` or a
+					// disabled button's click mean anything; jsdom has no layout
+					// and dispatches straight at the node.
+					browser: {
+						enabled: true,
+						provider: playwright(),
+						headless: true,
+						// No UI, no screenshot on failure: this project is meant to
+						// be as cheap as the node one, and a failure reports the
+						// element it could not find.
+						screenshotFailures: false,
+						instances: [{ browser: 'chromium' }]
+					}
+				}
+			}
+		]
 	},
 	plugins: [
 		...deploymentIdentityPlugins(deploymentIdentity),
