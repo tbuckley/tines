@@ -1,5 +1,7 @@
 import type { IssueDetail, Project } from '@tines/shared';
 import type { Locator, Page } from '@playwright/test';
+
+type Box = NonNullable<Awaited<ReturnType<Locator['boundingBox']>>>;
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { body, issuePath, resetFocus, runId } from './helpers';
@@ -49,7 +51,15 @@ async function overflow(page: Page): Promise<number> {
 	});
 }
 
-async function box(locator: Locator) {
+/**
+ * Whether two boxes sit on one line. Tops differ by a few px between the
+ * mono number and the sans links; a wrap moves a box down a whole 20px line.
+ */
+function sameLine(a: Box, b: Box): boolean {
+	return Math.abs(a.y + a.height / 2 - (b.y + b.height / 2)) < 8;
+}
+
+async function box(locator: Locator): Promise<Box> {
 	await expect(locator).toBeVisible();
 	const b = await locator.boundingBox();
 	expect(b).not.toBeNull();
@@ -66,7 +76,7 @@ test('on a phone the number stays on the line with its project', async ({ page }
 	const number = await box(ref.getByText(`#${issue.number}`, { exact: true }));
 
 	// Was: #n at x=16 on the second line, under the action links.
-	expect(Math.abs(number.y - link.y)).toBeLessThanOrEqual(1);
+	expect(sameLine(number, link)).toBe(true);
 	expect(number.x).toBeGreaterThan(link.x + link.width - 1);
 	expect(await overflow(page)).toBe(0);
 });
@@ -83,8 +93,8 @@ test('on a desktop the reference comes first, then the actions', async ({ page }
 
 	expect(number.x).toBeLessThan(focus.x);
 	expect(focus.x).toBeLessThan(move.x);
-	expect(Math.abs(focus.y - number.y)).toBeLessThanOrEqual(1);
-	expect(Math.abs(move.y - number.y)).toBeLessThanOrEqual(1);
+	expect(sameLine(focus, number)).toBe(true);
+	expect(sameLine(move, number)).toBe(true);
 });
 
 test('a 200-character project name does not widen the phone page', async ({ page }) => {
