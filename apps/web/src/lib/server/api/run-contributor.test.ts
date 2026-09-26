@@ -4,6 +4,7 @@ import { createTestDb, type TestDb } from './test-db';
 import { requireActor, sha256Hex, type ActorContext } from './core';
 import {
 	createComment,
+	createIssue,
 	getIssueDetail,
 	loadIssueForActor,
 	transitionIssue,
@@ -41,6 +42,8 @@ import {
 	addRunner,
 	seedBase
 } from '../supervisor/test-fixtures';
+import { ownerIssueConsentPredicate } from '../supervisor/consent-admission';
+import { sql } from 'kysely';
 import { GET as getJournal } from '../../../routes/api/v1/issues/[id]/journal/+server';
 
 const BEARER = 'run-contributor-test-key';
@@ -474,4 +477,92 @@ describe('standalone run writes re-check the binding at commit', () => {
 			expect(writeSnapshot(t)).toEqual(before);
 		});
 	}
+});
+
+async function sharedOwnerRunSetup(shared: boolean) {
+	const setup = await ownerRunSetup();
+	if (shared) {
+		setup.t.sqlite.prepare('UPDATE project SET shared_at = ? WHERE id = ?').run(NOW, PROJECT);
+	}
+	return setup;
+}
+
+function ownerOffRows(t: TestDb, issueId: string) {
+	return t.sqlite
+		.prepare(
+			`SELECT c.user_id, c.value, c.issue_epoch = i.consent_epoch AS current_epoch
+			FROM issue_personal_choice c JOIN issue i ON i.id = c.issue_id WHERE c.issue_id = ?`
+		)
+		.all(issueId);
+}
+
+async function ownerWouldRun(t: TestDb, issueId: string): Promise<boolean> {
+	const row = await t.db
+		.selectFrom('issue')
+		.innerJoin('project', 'project.id', 'issue.project_id')
+		.select(sql<number>`${ownerIssueConsentPredicate(USER)}`.as('ok'))
+		.where('issue.id', '=', issueId)
+		.executeTakeFirstOrThrow();
+	return Boolean(row.ok);
+}
+
+describe('run-filed issues in shared projects are unapproved proposals', () => {
+	it('creates an owner run’s issue with the owner’s agents off', async () => {
+		const { t, runId } = await sharedOwnerRunSetup(true);
+		const actor = await authenticate(t);
+		const filed = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Follow-up'
+		});
+		expect(ownerOffRows(t, filed.id)).toEqual([
+			{ user_id: USER, value: 'off', current_epoch: 1 }
+		]);
+		expect(await ownerWouldRun(t, filed.id)).toBe(false);
+		expect(filed.permission_receipt).toMatchObject({
+			actor: 'key',
+			message: expect.stringContaining('Agents stay off until a person allows them.')
+		});
+		expect(
+			t.sqlite.prepare('SELECT created_by_run_id FROM issue WHERE id = ?').get(filed.id)
+		).toEqual({ created_by_run_id: runId });
+	});
+
+	it('creates a member run’s issue, and a link-created child, with the owner’s agents off', async () => {
+		const { t, issueId } = await setup();
+		const actor = await actorForProject(t.db, await authenticate(t), PROJECT);
+		const filed = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Member follow-up'
+		});
+		const child = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Blocked child',
+			blocked_by: [issueId]
+		});
+		for (const id of [filed.id, child.id]) {
+			expect(ownerOffRows(t, id)).toEqual([{ user_id: USER, value: 'off', current_epoch: 1 }]);
+			expect(await ownerWouldRun(t, id)).toBe(false);
+		}
+		// The parent's consent never propagates to the child.
+		expect(ownerOffRows(t, issueId)).toEqual([]);
+	});
+
+	it('refuses a run key that tries to set consent on create', async () => {
+		const { t } = await sharedOwnerRunSetup(true);
+		const actor = await authenticate(t);
+		await expect(
+			createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+				title: 'Self-approved',
+				allow_my_agents: true
+			})
+		).rejects.toMatchObject({ code: 'consent_browser_required' });
+	});
+
+	it('leaves a never-shared project unchanged', async () => {
+		const { t } = await sharedOwnerRunSetup(false);
+		const actor = await authenticate(t);
+		const filed = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Private follow-up'
+		});
+		expect(ownerOffRows(t, filed.id)).toEqual([]);
+		expect(await ownerWouldRun(t, filed.id)).toBe(true);
+		expect(filed.permission_receipt).toBeUndefined();
+	});
 });

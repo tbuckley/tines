@@ -1579,9 +1579,10 @@ export async function createIssue(
 		}
 		if (linkPlan) await recheckCreateIssueLinkPlan(db, actor, linkPlan);
 	}
-	if (actor.member && project.shared_at !== null) {
-		// The owner's agents stay off a member's new issue until the owner
-		// allows them; an explicit off wins over the owner default.
+	if ((actor.member || actor.runRestriction) && project.shared_at !== null) {
+		// The owner's agents stay off a member's new issue, and off any
+		// run-filed issue (a proposal, whoever's run filed it), until the
+		// owner allows them; an explicit off wins over the owner default.
 		queries.push(
 			sql`INSERT INTO issue_personal_choice
 				(issue_id, user_id, value, revision, issue_epoch, membership_revision, source_kind, updated_at)
@@ -1658,7 +1659,11 @@ export async function createIssue(
 			actor: !actor.viaSession ? 'key' : actor.member ? 'member' : 'owner',
 			...(actor.viaSession
 				? {}
-				: { message: 'Permission unchanged; manage your permission in the browser.' })
+				: {
+						message: actor.runRestriction
+							? 'Permission unchanged; manage your permission in the browser. Agents stay off until a person allows them.'
+							: 'Permission unchanged; manage your permission in the browser.'
+					})
 		};
 	}
 	return response;
