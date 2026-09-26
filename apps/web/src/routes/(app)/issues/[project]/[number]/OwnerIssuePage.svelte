@@ -22,7 +22,7 @@
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
 	import { tick, untrack } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
-	import { afterNavigate, goto, invalidate, invalidateAll } from '$app/navigation';
+	import { afterNavigate, goto, invalidate, invalidateAll, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
@@ -67,15 +67,16 @@
 	let { data }: { data: PageData } = $props();
 
 	// Data requests cannot server-redirect without losing a fragment that only
-	// the browser knows. Replace the stale alias in place while retaining
-	// meaningful query/hash targets and keyboard focus.
+	// the browser knows. Swap the alias (an address by project name) for the
+	// canonical one in the address bar, keeping query and hash. The page is
+	// already loaded, so this is a shallow replaceState, not a navigation: a
+	// `goto` here loaded every issue opened by name twice and cut its view
+	// transition short. Shallow routing leaves `page.url` on the alias, so the
+	// address bar (`location`) is what says it is done.
 	$effect(() => {
 		if (page.url.pathname === data.canonicalPath) return;
-		void goto(`${data.canonicalPath}${page.url.search}${page.url.hash}`, {
-			replaceState: true,
-			keepFocus: true,
-			noScroll: true
-		});
+		if (location.pathname === data.canonicalPath) return;
+		replaceState(`${data.canonicalPath}${page.url.search}${page.url.hash}`, page.state);
 	});
 
 	// The project move lives on the page, not in the dialog: closing the dialog

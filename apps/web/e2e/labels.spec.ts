@@ -342,9 +342,9 @@ labelsUiTest.describe.serial('issue labels UI', () => {
 				};
 				return {
 					row: box(row),
-					state: box(row.querySelector('[style*="issue-state"]')),
+					state: box(row.querySelector('[data-issue-state]')),
 					strip: box(row.querySelector('[data-testid="label-strip"]')),
-					title: box(row.querySelector('[style*="issue-title"]'))
+					title: box(row.querySelector('[data-issue-title]'))
 				};
 			});
 			expect(line.strip.x).toBeGreaterThanOrEqual(line.state.right);
@@ -390,7 +390,7 @@ labelsUiTest.describe.serial('issue labels UI', () => {
 				expect(b.x + b.width).toBeLessThanOrEqual(desktopStrip.x + desktopStrip.width + 1);
 				expect(await chip.evaluate((e) => e.scrollWidth - e.clientWidth)).toBeLessThanOrEqual(1);
 			}
-			const titleText = crowdedRow.locator('[style*="issue-title"]');
+			const titleText = crowdedRow.locator('[data-issue-title]');
 			const titleCell = (await titleText.locator('..').boundingBox())!;
 			expect(titleCell.width).toBeGreaterThanOrEqual((await titleText.boundingBox())!.width - 1);
 			// This title fits the row, so it is not truncated at all: five labels

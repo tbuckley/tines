@@ -515,10 +515,9 @@ test.describe('schedules in the web UI', () => {
 		await expect(plainRow.getByText('paused', { exact: true })).toHaveCount(0);
 
 		await secondLink.click();
+		// The receipt links by project name; the issue page settles on the canonical id address.
 		await expect(page).toHaveURL(
-			new RegExp(
-				`/issues/${encodeURIComponent(secondCreated.project_name)}/${secondCreated.number}$`
-			)
+			new RegExp(`/issues/${secondCreated.project_id}/${secondCreated.number}$`)
 		);
 		await expect(page.getByRole('heading', { name: secondCreated.title })).toBeVisible();
 		await gotoHydrated(page, `/projects/${SCHED.projectId}`);
