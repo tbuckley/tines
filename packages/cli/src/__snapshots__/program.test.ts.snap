@@ -990,6 +990,7 @@ Commands:
   invite-cancel [options] <project> <invite-id>  Cancel an invitation
   remove-member [options] <project> <user-id>    Remove a project member
   leave [options] <project>                      Leave a shared project
+  guidance                                       Manage library items included in a shared project's guidance
   starters [options]                             List built-in project starters and their inputs
   list [options]                                 List projects
   create [options] <name>                        Create a project; nonblank starters supply a conventions template unless --prompt or --no-prompt overrides it
@@ -1065,6 +1066,52 @@ Options:
                                        \`tines login\`)
   --json                               output the raw JSON response
   -h, --help                           display help for command
+",
+  "tines projects guidance": "Usage: tines projects guidance [options] [command]
+
+Manage library items included in a shared project's guidance
+
+Options:
+  -h, --help                             display help for command
+
+Commands:
+  list [options] <project>               List a project's included library items
+  include [options] <project> <item-id>  Include a library item in a project's shared guidance
+  exclude [options] <project> <item-id>  Remove a library item from a project's shared guidance
+  help [command]                         display help for command
+",
+  "tines projects guidance exclude": "Usage: tines projects guidance exclude [options] <project> <item-id>
+
+Remove a library item from a project's shared guidance
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines projects guidance include": "Usage: tines projects guidance include [options] <project> <item-id>
+
+Include a library item in a project's shared guidance
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines projects guidance list": "Usage: tines projects guidance list [options] <project>
+
+List a project's included library items
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
 ",
   "tines projects invite": "Usage: tines projects invite [options] <project> <email>
 
