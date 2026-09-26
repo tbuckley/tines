@@ -1345,15 +1345,22 @@
 							{@render loadFailed("this issue's context")}
 						{/if}
 					</div>
-					{#if !isMember}<details class="group border-t pt-3">
+					{#if !isMember || (effectiveContextPanel.current.status === 'loaded' && effectiveContextPanel.current.value)}<details
+							class="group border-t pt-3"
+						>
 							<summary
 								class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none"
 							>
-								Effective context
-								<span class="text-xs">
-									— everything that applies while in
-									<span class="font-medium">{currentState.name}</span> (changes as the issue transitions)
-								</span>
+								{#if isMember}
+									View guidance
+									<span class="text-xs">— uses this project's guidance and workflows</span>
+								{:else}
+									Effective context
+									<span class="text-xs">
+										— everything that applies while in
+										<span class="font-medium">{currentState.name}</span> (changes as the issue transitions)
+									</span>
+								{/if}
 							</summary>
 							<div class="mt-3">
 								{#if effectiveContextPanel.current.status === 'pending'}
@@ -1361,7 +1368,20 @@
 										<Skeleton class="h-24 w-full" />
 									</LoadingState>
 								{:else if effectiveContextPanel.current.status === 'loaded' && effectiveContextPanel.current.value}
-									<EffectiveContextView context={effectiveContextPanel.current.value} />
+									{@const panel = effectiveContextPanel.current.value}
+									{#if panel.shared && !isMember}
+										<p class="text-muted-foreground mb-2 text-xs">
+											What agents receive in this shared project
+										</p>
+									{/if}
+									{#if panel.failure}
+										<p class="text-destructive text-sm" role="status">
+											Guidance can't be assembled: {panel.failure}. Agents won't start this issue
+											until the owner fixes it.
+										</p>
+									{:else if panel.context}
+										<EffectiveContextView context={panel.context} />
+									{/if}
 								{:else}
 									{@render loadFailed('the effective context')}
 								{/if}

@@ -4,6 +4,7 @@ import {
 	PROJECT,
 	STAGE_A,
 	STAGE_B,
+	MEMBER,
 	USER,
 	addComment,
 	addIssue,
@@ -18,6 +19,7 @@ import {
 	BUNDLE_ITEM_CAP,
 	bundleWitnessExpr,
 	loadSharedExecutionBundle,
+	readSharedBundle,
 	type BundleWitness
 } from './shared-execution-bundle';
 import { createTestDb, type TestDb } from './test-db';
@@ -282,5 +284,45 @@ describe('validation', () => {
 			details: { reason: 'churn' }
 		});
 		expect(n).toBe(2);
+	});
+});
+
+describe('readers', () => {
+	const human = (userId: string, userName: string): ActorContext => ({
+		userId,
+		userName,
+		apiKeyId: null,
+		apiKeyName: null,
+		viaSession: true
+	});
+	const on = () => ({ ...t.env, SHARED_EXECUTION: 'on' }) as unknown as Env;
+	const read = (actor: ActorContext, env: Env = on()) =>
+		readSharedBundle(env, t.db, actor, issue, [], { skillFiles: false });
+
+	beforeEach(() => {
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES
+				('${MEMBER}', 'bob', 'b@example.com', 1, ${NOW}, ${NOW}),
+				('u_out', 'eve', 'e@example.com', 1, ${NOW}, ${NOW});
+			INSERT INTO project_member (project_id, user_id, revision, joined_at, updated_at)
+				VALUES ('${PROJECT}', '${MEMBER}', 1, ${NOW}, ${NOW});
+		`);
+	});
+
+	it('keeps today’s path with the flag off or in a never-shared project', async () => {
+		expect(await read(session, t.env)).toBeNull();
+		t.sqlite.prepare('UPDATE project SET shared_at = NULL WHERE id = ?').run(PROJECT);
+		expect(await read(session)).toBeNull();
+	});
+
+	it('gives the owner and a member the same projection and digest, and an outsider 404', async () => {
+		await prompt('proj', { project_id: PROJECT });
+		await prompt('private-global');
+		const owner = await read(session);
+		const member = await read(human(MEMBER, 'bob'));
+		expect(owner?.bundle.digest).toBe(member?.bundle.digest);
+		expect(member?.bundle.guidance).toEqual(owner?.bundle.guidance);
+		expect(names(member!.bundle)).toEqual(['proj']);
+		await expect(read(human('u_out', 'eve'))).rejects.toMatchObject({ status: 404 });
 	});
 });

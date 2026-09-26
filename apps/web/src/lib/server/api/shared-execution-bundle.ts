@@ -34,8 +34,11 @@ import {
 	type ItemRow,
 	type MatchTarget
 } from './context';
-import { ApiFail, notFound, runAtomic } from './core';
+import { ApiFail, notFound, runAtomic, type ActorContext } from './core';
 import { getIssueDetail } from './issues';
+import { requireIssueAccess, type Requirement } from './permissions';
+import { actorForIssue } from './project-access';
+import { sharedExecutionEnabled } from './shared-execution';
 import { resolveScope, toContextScope } from './scope';
 
 /** More matched items than this and the bundle refuses rather than truncates. */
@@ -580,4 +583,28 @@ export async function issueSharedProject(
 	return row
 		? { projectId: row.project_id, ownerId: row.user_id, shared: row.shared_at !== null }
 		: null;
+}
+
+/**
+ * The reader path for `/context`, `/prompt` and the issue page: null (the
+ * caller keeps today's owner-only path, byte for byte) unless the flag is on
+ * and the issue's project is shared. Otherwise the caller is resolved to the
+ * project the way every shared read is — a member or member run reads as the
+ * owner's delegate — the same `context.read` checks apply, and everyone gets
+ * the one validated bundle.
+ */
+export async function readSharedBundle(
+	env: Env,
+	db: Kysely<Database>,
+	actor: ActorContext,
+	issueId: string,
+	extras: readonly Requirement[],
+	opts: { skillFiles: boolean }
+): Promise<{ bundle: SharedExecutionBundleV1; witness: BundleWitness } | null> {
+	if (!sharedExecutionEnabled(env)) return null;
+	const project = await issueSharedProject(db, issueId);
+	if (!project?.shared) return null;
+	const delegated = await actorForIssue(db, actor, issueId);
+	await requireIssueAccess(db, delegated, issueId, 'read', 'context.read', extras);
+	return loadSharedExecutionBundle(env, db, { issueId, skillFiles: opts.skillFiles });
 }

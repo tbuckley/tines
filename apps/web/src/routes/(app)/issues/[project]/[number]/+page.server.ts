@@ -10,6 +10,12 @@ import {
 	scopeIssueLinksForMember
 } from '$lib/server/api/member-context';
 import { SHARED_EVENT_TYPES, sharedEventPayload } from '$lib/server/api/shared-events';
+import { sharedExecutionEnabled } from '$lib/server/api/shared-execution';
+import {
+	bundleFailureText,
+	loadSharedExecutionBundle
+} from '$lib/server/api/shared-execution-bundle';
+import type { EffectiveContext } from '@tines/shared';
 import {
 	actorForProject,
 	memberActor,
@@ -28,6 +34,16 @@ import { explainDispatch } from '$lib/server/supervisor/explain';
 import { getDb } from '$lib/server/db';
 import { sessionActor } from '$lib/server/api/core';
 import type { PageServerLoad } from './$types';
+
+/**
+ * The guidance panel's value: the effective context, whether it is a shared
+ * project's projection (Tines/752), and why it could not be assembled.
+ */
+export interface IssueGuidancePanel {
+	context: EffectiveContext | null;
+	shared: boolean;
+	failure: string | null;
+}
 
 /**
  * Two D1 waves to first paint (Tines/32; regained after sharing added a
@@ -313,9 +329,30 @@ export const load: PageServerLoad = async ({
 			}),
 			// Display-only bundle: the panel shows skill file counts, never their
 			// contents, which can run to 100KB per skill on every page load.
-			effectiveContext: isMember
-				? ownerOnly(null)
-				: effectiveContextForIssue(db, userId, issue.id, { skillFiles: false }),
+			// In a shared project (flag on) owner and member both see the one
+			// projection agents receive; a bundle that cannot be delivered whole
+			// says why instead.
+			effectiveContext: (sharedExecutionEnabled(platform!.env)
+				? sharedPromise
+				: Promise.resolve(false)
+			).then((shared): Promise<IssueGuidancePanel | null> | null => {
+				if (shared)
+					return loadSharedExecutionBundle(platform!.env, db, {
+						issueId: issue.id,
+						skillFiles: false
+					}).then(
+						({ bundle }) => ({ context: bundle.guidance, shared: true, failure: null }),
+						(e: unknown) => {
+							if (e instanceof ApiFail && e.code.startsWith('bundle_'))
+								return { context: null, shared: true, failure: bundleFailureText(e) };
+							throw e;
+						}
+					);
+				if (isMember) return null;
+				return effectiveContextForIssue(db, userId, issue.id, { skillFiles: false }).then(
+					(context) => ({ context, shared: false, failure: null })
+				);
+			}),
 			// Routing and runner verdicts describe the owner's machines.
 			dispatch: isMember
 				? ownerOnly(null)

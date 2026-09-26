@@ -52,7 +52,7 @@ import type {
 	DeleteAnchorResponse,
 	DeleteRunnerRequest,
 	DispatchExplainer,
-	EffectiveContext,
+	IssueContextResponse,
 	IssueTransferPreview,
 	IssueTransferRequest,
 	IssueTransferResult,
@@ -520,7 +520,7 @@ export function createApiClient(options: ApiClientOptions) {
 			request<ContextItem>('POST', `/api/v1/context/${id}/append`, body),
 		/** Effective context for an issue: the assembled bundle. */
 		getIssueContext: (issueId: string) =>
-			get<EffectiveContext>(`/api/v1/issues/${issueId}/context`),
+			get<IssueContextResponse>(`/api/v1/issues/${issueId}/context`),
 		/**
 		 * Which journal this caller's `tines journal` commands target — the
 		 * run's launch state for a run key, the issue's current state otherwise.
