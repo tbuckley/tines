@@ -1,4 +1,5 @@
 import type { RunScope, StateCategory } from '@tines/shared';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Kysely, SqliteAdapter, type Generated } from 'kysely';
 import { D1Dialect } from 'kysely-d1';
 import { traceUsageScaleDb } from './usage-scale-trace';
@@ -829,13 +830,33 @@ const WRITES = /\b(insert|update|delete|replace)\b/i;
 /** Well under D1's per-batch limits; a wider fan-out simply flushes twice. */
 export const MAX_BATCHED_READS = 50;
 
+type PendingRead = {
+	statement: D1Statement;
+	resolve: (result: D1AllResult) => void;
+	reject: (error: unknown) => void;
+};
+/** One request's reads waiting to be sent, per binding. */
+const readBatchScope = new AsyncLocalStorage<Map<D1Database, PendingRead[]>>();
+
+/**
+ * Runs `fn` with read batching on (see `batchingD1`); `hooks.server.ts` wraps
+ * every request in it. Scoped per request because the Workers runtime cancels
+ * a request whose promise another request's I/O settles, and one isolate
+ * serves many requests with one `getDb` binding.
+ */
+export function withReadBatching<T>(fn: () => T): T {
+	return readBatchScope.run(new Map(), fn);
+}
+
 /**
  * D1 runs one database's statements one at a time, and every statement sent
  * on its own pays a fixed request cost on top of its execution time, even
  * when a `load` issues them together in `Promise.all`. Real users measured
  * /agents (about 22 reads in 2 waves) at about 280 ms of server time against
- * a modelled 40 ms (docs/PERFORMANCE.md). So Kysely's reads that start in the
- * same tick are sent as one `batch()`: one request instead of one per read.
+ * a modelled 40 ms (docs/PERFORMANCE.md). So inside `withReadBatching`,
+ * Kysely's reads that start in the same task are sent as one `batch()`: one
+ * request instead of one per read. Outside it (cron, queue handlers, tests
+ * that do not opt in) every read goes alone, as before.
  *
  * A batch is all-or-nothing, so when it fails nothing in it applied and each
  * statement is re-sent alone; each caller then gets its own result or error,
@@ -843,20 +864,14 @@ export const MAX_BATCHED_READS = 50;
  * own request (multi-statement writes use `runAtomic()` anyway).
  */
 export function batchingD1(database: D1Database): D1Database {
-	type Pending = {
-		statement: D1Statement;
-		resolve: (result: D1AllResult) => void;
-		reject: (error: unknown) => void;
-	};
-	let queue: Pending[] = [];
-	const alone = async (item: Pending) => {
+	const alone = async (item: PendingRead) => {
 		try {
 			item.resolve(await item.statement.all());
 		} catch (e) {
 			item.reject(e);
 		}
 	};
-	const send = async (items: Pending[]) => {
+	const send = async (items: PendingRead[]) => {
 		if (items.length === 1) return alone(items[0]);
 		let results: D1AllResult[];
 		try {
@@ -867,18 +882,22 @@ export function batchingD1(database: D1Database): D1Database {
 		}
 		items.forEach((item, i) => item.resolve(results[i]));
 	};
-	const flush = () => {
-		const items = queue;
-		queue = [];
-		for (let i = 0; i < items.length; i += MAX_BATCHED_READS)
-			void send(items.slice(i, i + MAX_BATCHED_READS));
-	};
-	const enqueue = (statement: D1Statement) =>
+	const enqueue = (queues: Map<D1Database, PendingRead[]>, statement: D1Statement) =>
 		new Promise<D1AllResult>((resolve, reject) => {
-			// A timer, not a microtask: Kysely reaches the driver several awaits
-			// deep, so reads started by one Promise.all land in different
-			// microtasks of the same task.
-			if (queue.length === 0) setTimeout(flush, 0);
+			let queue = queues.get(database);
+			if (!queue) {
+				queue = [];
+				queues.set(database, queue);
+				// A timer, not a microtask: Kysely reaches the driver several
+				// awaits deep, so reads started by one Promise.all land in
+				// different microtasks of the same task.
+				setTimeout(() => {
+					const items = queues.get(database) ?? [];
+					queues.delete(database);
+					for (let i = 0; i < items.length; i += MAX_BATCHED_READS)
+						void send(items.slice(i, i + MAX_BATCHED_READS));
+				}, 0);
+			}
 			queue.push({ statement, resolve, reject });
 		});
 	return {
@@ -888,7 +907,12 @@ export function batchingD1(database: D1Database): D1Database {
 			return {
 				bind: (...values: unknown[]) => {
 					const bound = statement.bind(...values);
-					return { all: () => enqueue(bound) } as unknown as D1Statement;
+					return {
+						all: () => {
+							const queues = readBatchScope.getStore();
+							return queues ? enqueue(queues, bound) : bound.all();
+						}
+					} as unknown as D1Statement;
 				}
 			} as unknown as D1Statement;
 		},
