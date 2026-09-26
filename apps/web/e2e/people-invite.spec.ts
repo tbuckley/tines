@@ -104,7 +104,8 @@ test('the invite landing issue is picked by number or title, and errors sit unde
 		await email.fill('invitee-767-blocked@example.com');
 		await landing.fill('xyz');
 		await expect(listbox).toContainText('No open issues match');
-		await send.click();
+		// Enter with nothing to pick is not intercepted, so it submits the form.
+		await landing.press('Enter');
 		await expect(page.locator('#invite-landing-error')).toHaveText(
 			'Choose an issue from the list, or clear this field.'
 		);
