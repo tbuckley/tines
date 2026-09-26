@@ -324,8 +324,8 @@ export interface SharedRun {
 	id: string;
 	status: RunStatus;
 	outcome: RunEndOutcome | null;
-	started_at: string | null;
-	ended_at: string | null;
+	started_at: number | null;
+	ended_at: number | null;
 	contributor: { id: string; name: string | null };
 	runner_name: string | null;
 	stage: string | null;
@@ -360,8 +360,8 @@ export function serializeSharedRun(row: {
 	id: string;
 	status: string;
 	outcome: string | null;
-	started_at: string | null;
-	ended_at: string | null;
+	started_at: number | null;
+	ended_at: number | null;
 	contributor_id: string;
 	contributor_name: string | null;
 	runner_name: string | null;

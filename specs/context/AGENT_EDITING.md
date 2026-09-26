@@ -516,7 +516,7 @@ change.
 | `POST /api/v1/context/:id/append` | New. `{ text, expected_version? }`; prompts only; atomic; cap-checked; returns the updated item. |
 | everywhere items serialize | `version` included (list rows, detail, effective-context entries). |
 | `GET /api/v1/issues/:id/prompt` | Issue block gains the `### Journal` section and the names-only shared-context footnote. |
-| `GET /api/v1/issues/:id/journal` | New. Read-only; resolves which journal the caller owns — `{ scope, anchor: 'run' \| 'current', note, item }`, run-anchored for run keys. |
+| `GET /api/v1/issues/:id/journal` | New. Read-only; resolves which journal the caller owns — `{ scope, anchor: 'run' \| 'current', note, item }`, run-anchored for run keys. Resolves the anchor first, then authorizes `journal.read` against it (bound-journal for run keys; Tines/751, 2026-09-26). |
 
 ## CLI
 

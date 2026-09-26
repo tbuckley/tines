@@ -53,3 +53,12 @@ Tom chose "owner default on":
   delivery guard.
 - A member's transition signals a dispatch pass for the owner, so the owner's
   agents pick up the new state promptly.
+
+## Amendment 2026-09-26 — run-filed issues (Tines/751)
+
+An issue created by a run key in a shared project — by an owner run or a
+member run, directly or as a link-created child — is written with an owner
+`off` row at the current epoch, in the same batch as the issue. It is an
+unapproved proposal until a person turns it on in the browser. Parent consent
+never propagates; key consent fields still fail with
+`consent_browser_required`. Never-shared projects keep the default, on.

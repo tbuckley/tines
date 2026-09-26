@@ -12,6 +12,26 @@ uses it.
   admitted run records project owner and project ID separately. None of these
   identities may be replaced by another identity merely to reuse an owner
   loader.
+- **Run identity (Tines/751, implemented).** A run key is bound to its
+  contributor, runner, admitted project, the issue's assignment token and,
+  for a member run, `agent_run.admitted_membership_revision`. Authentication
+  fails closed with `401 run_key_inactive` on any mismatch, on a cancellation
+  request, a transfer, or a membership change (removal, rejoin, unshare, or no
+  recorded revision). A member run reads its admitted project's data through
+  `runProjectActor`, which uses the owner-scoped data view for that one project
+  only; the actor, key, run, runner, usage and `actor_user_id` stay the
+  contributor's. Every run-reachable write re-checks the binding in the same
+  D1 batch (`runStillBoundPredicate`). Member admission (Tines/670) must write
+  `admitted_membership_revision`, or the run is refused.
+- **Run-filed issues.** An issue a run key files in a shared project is created
+  with the owner's `off` row: a proposal a person must allow in the browser.
+- **Run events and rows.** `supervisorEvent` writes one row per lifecycle event
+  in the project owner's stream, with `actor_user_id` = the contributor;
+  `runner.*` health stays in the contributor's own stream. An owner viewing a
+  foreign contributor's `agent_run.*`/`issue.parked` event sees only status and
+  outcome. Any owner-scoped view of another contributor's run uses
+  `serializeSharedRun` (status, outcome, times, contributor, runner name,
+  stage) — never usage, cost, error, model, provider session/URL or log.
 - A member's issue or schedule choice is a personal record, bound to that
   person's current membership revision. It never conveys runner, context,
   credential, or project administration access. Browser session authority is
