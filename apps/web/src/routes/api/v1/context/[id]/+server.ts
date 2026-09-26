@@ -7,6 +7,7 @@ import {
 	contextScopeProject,
 	redactForMember
 } from '$lib/server/api/member-context';
+import { memberWriteRace } from '$lib/server/api/member-e2e-race';
 import type { RequestHandler } from './$types';
 
 // Items in a shared project are the members' to work on too (member-context.ts).
@@ -30,7 +31,14 @@ export const PATCH: RequestHandler = api(async (event) => {
 		})) !== actor.member.projectId
 	)
 		throw notFound();
-	const item = await updateContextItem(db, env, actor, event.params.id, body);
+	const item = await updateContextItem(
+		db,
+		env,
+		actor,
+		event.params.id,
+		body,
+		memberWriteRace(event.request, db, actor)
+	);
 	return json(redactForMember(actor, item));
 });
 

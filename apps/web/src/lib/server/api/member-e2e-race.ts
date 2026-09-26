@@ -2,16 +2,21 @@ import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import type { ActorContext } from './core';
 
-/** Isolated E2E hook: change one authoritative predicate after service preflight. */
+/**
+ * Isolated E2E hook: change one authoritative predicate after service preflight.
+ * Races target `issueId`, or the run's own issue for writes that name none
+ * (context items, issue create) — the issue a run key's binding hangs on.
+ */
 export function memberWriteRace(
 	request: Request,
 	db: Kysely<Database>,
 	actor: ActorContext,
-	issueId: string
+	issueId = actor.runRestriction?.issueId
 ): (() => Promise<void>) | undefined {
 	if (import.meta.env.VITE_TINES_E2E !== '1') return;
 	const action = request.headers.get('x-tines-e2e-member-write-race');
 	if (!action) return;
+	if (!issueId) throw new Error('E2E member write race needs an issue');
 	// A delegated run actor carries the owner's ID; the person is the member.
 	const personId = actor.member?.userId ?? actor.userId;
 	return async () => {

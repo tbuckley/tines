@@ -451,7 +451,7 @@ function writeSnapshot(t: TestDb) {
 		versions: count('artifact_version'),
 		labels: count('issue_label'),
 		links: count('issue_link'),
-		bodies: t.sqlite.prepare('SELECT id, body, version FROM context_item ORDER BY id').all()
+		bodies: t.sqlite.prepare('SELECT id, body, description, version, updated_at FROM context_item ORDER BY id').all()
 	};
 }
 

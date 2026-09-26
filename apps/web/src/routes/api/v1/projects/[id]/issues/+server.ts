@@ -8,6 +8,7 @@ import { getProject } from '$lib/server/api/projects';
 import { assertWritable } from '$lib/server/api/archive';
 import { actorForProject, resolveProjectAccess } from '$lib/server/api/project-access';
 import { listSharedIssues } from '$lib/server/api/shared-issues';
+import { memberWriteRace } from '$lib/server/api/member-e2e-race';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
@@ -106,6 +107,15 @@ export const POST: RequestHandler = api(async (event) => {
 		return json(issue, { status: 201 });
 	}
 	const body = await readJson<CreateIssueRequest>(event);
-	const issue = await createIssue(db, env, actor, effects, event.params.id, body);
+	const issue = await createIssue(
+		db,
+		env,
+		actor,
+		effects,
+		event.params.id,
+		body,
+		[],
+		memberWriteRace(event.request, db, actor)
+	);
 	return json(issue, { status: 201 });
 });

@@ -6,6 +6,7 @@ import { readSharedIssue } from '$lib/server/api/shared-issues';
 import { actorForIssue, resolveIssueAccess } from '$lib/server/api/project-access';
 import { removeMember } from '$lib/server/api/invitations';
 import { scopeIssueLinksForMember } from '$lib/server/api/member-context';
+import { memberWriteRace } from '$lib/server/api/member-e2e-race';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = api(async (event) => {
@@ -49,6 +50,14 @@ export const PATCH: RequestHandler = api(async (event) => {
 	// Members edit shared issues with the owner's scope (project-access.ts).
 	const actor = await actorForIssue(db, requester, event.params.id);
 	const body = await readJson<UpdateIssueRequest>(event);
-	const issue = await updateIssue(db, env, actor, effects, event.params.id, body);
+	const issue = await updateIssue(
+		db,
+		env,
+		actor,
+		effects,
+		event.params.id,
+		body,
+		memberWriteRace(event.request, db, actor, event.params.id)
+	);
 	return json(await scopeIssueLinksForMember(db, actor, issue));
 });

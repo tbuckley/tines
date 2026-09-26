@@ -1703,7 +1703,8 @@ export async function updateIssue(
 	actor: ActorContext,
 	effects: DispatchEffects,
 	id: string,
-	body: UpdateIssueRequest
+	body: UpdateIssueRequest,
+	beforeCommit?: () => Promise<void>
 ): Promise<IssueDetail> {
 	assertConsentFieldsSupported(actor, body);
 	assertPinFieldsAllowed(actor, body);
@@ -1975,6 +1976,7 @@ export async function updateIssue(
 		);
 	}
 
+	await beforeCommit?.();
 	const results = await runAtomic(env, queries);
 	if ((results[0]?.meta.changes ?? 0) === 0) await assertRunStillBound(db, actor);
 	if (guarded && (results[0]?.meta.changes ?? 0) === 0) {

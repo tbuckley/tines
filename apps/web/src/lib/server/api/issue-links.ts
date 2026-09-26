@@ -711,7 +711,8 @@ export async function addIssueLink(
 	actor: ActorContext,
 	effects: DispatchEffects,
 	issueId: string,
-	body: AddIssueLinkRequest
+	body: AddIssueLinkRequest,
+	beforeCommit?: () => Promise<void>
 ): Promise<IssueLink> {
 	const kindInput = requireString(body.kind, 'kind', { max: 20 }) as (typeof LINK_KINDS)[number];
 	if (!LINK_KINDS.includes(kindInput)) {
@@ -756,6 +757,7 @@ export async function addIssueLink(
 	const id = newId('lnk');
 	const now = Date.now();
 	const batch = addIssueLinkQueries(db, actor, source, target, kind, id, now);
+	await beforeCommit?.();
 	const results = await runAtomic(env, batch.queries);
 	try {
 		assertCreateIssueLinksCommitted(batch.plan, results, batch);

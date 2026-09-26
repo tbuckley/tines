@@ -987,7 +987,8 @@ export async function createContextItem(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext,
-	body: CreateContextItemRequest
+	body: CreateContextItemRequest,
+	beforeCommit?: () => Promise<void>
 ): Promise<ContextItem> {
 	const fields = validateContextCreateFields(body);
 	const { kind, name } = fields;
@@ -1037,6 +1038,7 @@ export async function createContextItem(
 		now,
 		guard: runBoundGuard(actor)
 	});
+	await beforeCommit?.();
 	const results = await runContextWrite(env, queries);
 	if (!results[0]?.meta.changes) await assertRunStillBound(db, actor);
 	return getContextItem(db, actor, id);
@@ -1086,6 +1088,7 @@ export async function updateContextItem(
 	actor: ActorContext,
 	id: string,
 	body: UpdateContextItemRequest & { kind?: unknown },
+	beforeCommit?: () => Promise<void>,
 	/** Internal: lost-race retry count for last-write-wins updates. */
 	attempt = 0
 ): Promise<ContextItem> {
@@ -1357,6 +1360,7 @@ export async function updateContextItem(
 			newVersion
 		)
 	);
+	await beforeCommit?.();
 	const results = await runContextWrite(env, queries);
 	if ((results[0]?.meta.changes ?? 0) === 0) {
 		await assertRunStillBound(db, actor);
@@ -1367,7 +1371,7 @@ export async function updateContextItem(
 		// An explicit expectation surfaces the conflict; otherwise this is
 		// last-write-wins, so re-apply the merge-patch onto the fresh row.
 		if (body.expected_version !== undefined || attempt >= 3) throw versionConflict(fresh);
-		return updateContextItem(db, env, actor, id, body, attempt + 1);
+		return updateContextItem(db, env, actor, id, body, undefined, attempt + 1);
 	}
 	return getContextItem(db, actor, id);
 }
@@ -1438,7 +1442,8 @@ export async function appendContextItem(
 	env: Env,
 	actor: ActorContext,
 	id: string,
-	body: AppendContextRequest
+	body: AppendContextRequest,
+	beforeCommit?: () => Promise<void>
 ): Promise<ContextItem> {
 	const text = requireString(body.text, 'text', { max: PROMPT_MAX_BYTES }).trim();
 	for (let attempt = 0; ; attempt++) {
@@ -1479,6 +1484,7 @@ export async function appendContextItem(
 		);
 		const newVersion = row.version + 1;
 		const now = Date.now();
+		if (attempt === 0) await beforeCommit?.();
 		const results = await runAtomic(env, [
 			db
 				.updateTable('context_item')
