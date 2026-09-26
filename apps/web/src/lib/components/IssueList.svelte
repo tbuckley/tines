@@ -76,7 +76,7 @@
 			{@const state = issue.effective_state}
 			<li animate:flip={{ duration: dur() }} in:fade={{ duration: dur() }}>
 				<a
-					href="/issues/{encodeURIComponent(issue.project_name)}/{issue.number}"
+					href="/issues/{encodeURIComponent(issue.project_id)}/{issue.number}"
 					class="hover:bg-accent/50 flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2.5 transition-[opacity,background-color] duration-200 sm:h-10 sm:flex-nowrap sm:py-0 {issue.duplicate_of
 						? 'opacity-60'
 						: ''}"
@@ -84,10 +84,12 @@
 					<span class="w-full min-w-0 text-sm font-medium sm:order-3 sm:w-auto sm:flex-[1_1_auto]">
 						<!-- The transition name sits on the text itself: on desktop an
 						     inline-block that hugs the title, so the morph to the detail
-						     heading keeps its proportions. -->
+						     heading keeps its proportions. Only the morphing row gets it
+						     (lib/issue-morph.ts). -->
 						<span
 							class="vt-shared title"
-							style:view-transition-name="issue-title-{issue.id}"
+							data-issue-title
+							data-vt-name="issue-title-{issue.id}"
 							style:view-transition-class="vt-fit"
 							title={issue.title}
 						>
@@ -106,7 +108,8 @@
 						<span
 							class="vt-shared flex min-w-0 shrink items-center gap-1.5 text-xs font-medium max-sm:max-w-36 sm:order-1 sm:w-28 sm:shrink-0"
 							style:color={categoryVar(state.category)}
-							style:view-transition-name="issue-state-{issue.id}"
+							data-issue-state
+							data-vt-name="issue-state-{issue.id}"
 							style:view-transition-class="vt-fit"
 							title="{state.name} · {CATEGORY_LABELS[state.category] ?? state.category}"
 						>

@@ -18,6 +18,7 @@
 	import { authClient } from '$lib/auth-client';
 	import ProjectSwitcher from '$lib/components/ProjectSwitcher.svelte';
 	import { focusHint } from '$lib/focus.svelte';
+	import { morphingIssueHref, nameMorphingRow } from '$lib/issue-morph';
 	import { resolveClientFocus } from '$lib/focus';
 	import { prefersReducedMotion } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
@@ -125,10 +126,16 @@
 			document.documentElement.dataset.tabSlide = to > from ? 'forward' : 'back';
 		}
 
+		// Name only the list row this navigation morphs, on the old page now and
+		// on the new one before its capture (lib/issue-morph.ts).
+		const morph = morphingIssueHref(navigation.from, navigation.to);
+		nameMorphingRow(morph);
+
 		return new Promise((resolve) => {
 			const transition = document.startViewTransition(async () => {
 				resolve();
 				await navigation.complete;
+				nameMorphingRow(morph);
 			});
 			transition.finished.finally(() => {
 				delete document.documentElement.dataset.tabSlide;

@@ -182,6 +182,32 @@ issue by id. Since then (#296 and after):
 | `/projects` | 1 (1) |
 | `/activity` | 3 (3) |
 
+## What a view transition captures
+
+`onNavigate` in `(app)/+layout.svelte` wraps each navigation in a view
+transition. Before the browser runs the update, it snapshots the old page:
+the root and every element with a `view-transition-name`, each separately,
+and the page is frozen while it does. That time counts toward every
+navigation leaving the page, so the number of named elements is a
+navigation cost.
+
+Measured 2026-09-26 on a 100-row issue list in headless Chromium: 205 named
+elements (a title and a state per row, plus the chrome) took 410–550 ms to
+capture; with the rows unnamed, 20 ms. Rendering the rows themselves took
+about 10 ms. So list rows are named only when they morph: `issueMorph`
+(`lib/issue-morph.svelte.ts`) holds the issue page a navigation enters or
+leaves, the layout sets it and flushes before starting the transition, and
+`IssueList` names only that row. Keep new shared-element names to what one
+navigation actually morphs, never one per list item.
+
+Headless Chromium has no GPU, so its absolute capture times are higher than
+a real browser's, but the cost still grows with the number of named elements.
+
+Row links go to the issue's canonical path (`/issues/<project id>/<number>`).
+A link by project name loads the page, then the page replaces the URL with
+the canonical one (`OwnerIssuePage.svelte`), a second navigation that loads
+the data again and cuts the first transition short.
+
 ## What a page load may await
 
 SvelteKit runs a client navigation's `load` before anything changes on
