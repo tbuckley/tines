@@ -22,6 +22,7 @@ import {
 	addRunner,
 	seedBase
 } from '../supervisor/test-fixtures';
+import { GET as getJournal } from '../../../routes/api/v1/issues/[id]/journal/+server';
 
 const BEARER = 'run-contributor-test-key';
 
@@ -192,5 +193,54 @@ describe('a member run acts on its admitted project with the owner scope', () =>
 			.where('user_id', '=', actor.userId)
 			.execute();
 		expect(runners).toHaveLength(1);
+	});
+});
+
+async function readJournal(t: TestDb, issueId: string): Promise<Response> {
+	const url = new URL(`http://test/api/v1/issues/${issueId}/journal`);
+	return getJournal({
+		locals: {},
+		platform: { env: t.env, ctx: { waitUntil: () => {} } },
+		request: new Request(url, { headers: { authorization: `Bearer ${BEARER}` } }),
+		params: { id: issueId },
+		url
+	} as unknown as Parameters<typeof getJournal>[0]);
+}
+
+describe('GET /issues/:id/journal resolves the anchor before authorizing', () => {
+	it('lets an owner run read its bound journal', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const issueId = addIssue(t, { state: OPEN, title: 'Owner work' });
+		const runId = addRun(t, { issueId, runnerId: addRunner(t), status: 'running' });
+		const keyId = addRunKey(t, runId);
+		t.sqlite.prepare('UPDATE api_key SET key_hash = ?, permissions = ? WHERE id = ?').run(
+			await sha256Hex(BEARER),
+			JSON.stringify({
+				version: 1,
+				projects: { access: 'write', scope: 'all' },
+				workspace: 'write',
+				control_plane: 'read'
+			}),
+			keyId
+		);
+		const res = await readJournal(t, issueId);
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({ anchor: 'run' });
+	});
+
+	it('lets a member run read its bound journal in the owner’s project', async () => {
+		const { t, issueId } = await setup();
+		const res = await readJournal(t, issueId);
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({ anchor: 'run', note: null });
+	});
+
+	it('refuses a journal the run is not anchored to', async () => {
+		const { t } = await setup();
+		const sibling = addIssue(t, { state: OPEN, title: 'Someone else’s issue' });
+		const res = await readJournal(t, sibling);
+		expect(res.status).toBe(403);
+		expect(JSON.stringify(await res.json())).toContain('journal_anchor_unavailable');
 	});
 });

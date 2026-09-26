@@ -56,6 +56,7 @@ import {
 	optionalString,
 	requireString,
 	runAtomic,
+	attributedUserId,
 	sessionActor,
 	type ActorContext,
 	runKeyForbidden,
@@ -1931,7 +1932,8 @@ export async function launchStateForRun(
 			'start_state.id as start_state_id'
 		])
 		.where('agent_run.id', '=', actor.agentRunId)
-		.where('agent_run.user_id', '=', actor.userId)
+		// A delegated member run's `userId` is the project owner's; the run is the contributor's.
+		.where('agent_run.user_id', '=', attributedUserId(actor))
 		.executeTakeFirst();
 	// The run's key is revoked in the same batch that ends the run, so a live
 	// key implies a live run; a missing row can only be stale data.
