@@ -196,8 +196,9 @@ increments a tombstone revision, clears issue and schedule choices, revokes
 project run keys and requests cancellation of admitted member work. Sharing
 mode remains on even after the last member leaves.
 
-The People page lists active names and membership revisions. Pending invitees
-and outsiders cannot read project content. Member project and issue pages load
+The People page lists active members with their role and join date. Its
+Invitations list shows pending, expired, failed-delivery and canceled links; an
+accepted invitation appears only as a member. Pending invitees and outsiders cannot read project content. Member project and issue pages load
 only explicit shared projections before any owner context, runner, routing,
 usage or workflow-library loader starts. Shared reads include project and issue
 identity, safe workflow/state descriptors, comments, filtered history,
