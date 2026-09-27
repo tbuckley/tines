@@ -45,11 +45,16 @@ export function bundleRace(request: Request): BeforeSharedMint | undefined {
 				if (!target) throw new Error('E2E bundle race needs x-tines-e2e-bundle-race-item');
 				await sql`DELETE FROM context_item WHERE id = ${target}`.execute(db);
 				break;
-			case 'rescope':
-				if (!target) throw new Error('E2E bundle race needs x-tines-e2e-bundle-race-item');
-				await sql`UPDATE context_item SET project_id = NULL, version = version + 1,
+			case 'rescope': {
+				// Into another test-owned project, never global: a global item would
+				// leak into every later spec that reads the owner's library.
+				const into = request.headers.get('x-tines-e2e-bundle-race-project');
+				if (!target || !into)
+					throw new Error('E2E bundle rescope needs x-tines-e2e-bundle-race-item and -project');
+				await sql`UPDATE context_item SET project_id = ${into}, version = version + 1,
 					updated_at = ${now} WHERE id = ${target}`.execute(db);
 				break;
+			}
 		}
 	};
 }

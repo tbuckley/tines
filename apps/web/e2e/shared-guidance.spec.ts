@@ -1,7 +1,7 @@
 import type { APIRequestContext } from '@playwright/test';
 import type { IssueDetail, Project, RunnerTokenResponse } from '@tines/shared';
 import { expect, test } from './fixtures';
-import { ALICE, BASE_URL } from './constants.mjs';
+import { ALICE, BASE_URL, BOB } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
 import { apiClient, body, fireSweep, signedSessionCookie } from './helpers';
 
@@ -65,16 +65,21 @@ async function sharedRunner(request: APIRequestContext, name: string) {
 		expect(run?.status).toBe('assigned');
 		return { issue, run };
 	};
+	// A second test-owned project the rescope race moves an item into.
+	const elsewhere = await body<Project>(await key.post('/api/v1/projects', { name: `${name}-2` }));
 	const cleanup = async () => {
 		// Delivered runs never start here; end them so they free the owner's slots.
 		d1(`UPDATE agent_run SET status = 'canceled', ended_at = ${Date.now()}
 			WHERE ended_at IS NULL AND issue_id IN
 			(SELECT id FROM issue WHERE project_id = ${sqlLiteral(project.id)})`);
+		// Every item this test made or raced in, so no later spec sees ALICE's library grow.
+		d1(`DELETE FROM context_item WHERE project_id IN
+			(${sqlLiteral(project.id)}, ${sqlLiteral(elsewhere.id)})`);
 		await key.put('/api/v1/supervisor/settings', { enabled: false });
 		await key.delete(`/api/v1/routing-rules/${rule.id}`);
 		await key.delete(`/api/v1/runners/${runner.id}`);
 	};
-	return { key, project, poll, assignedIssue, cleanup };
+	return { key, project, elsewhere, poll, assignedIssue, cleanup };
 }
 
 const keyCount = (runId: string) =>
@@ -119,7 +124,8 @@ test.describe.serial('native D1 shared launch material', () => {
 				const delivered = await body<Delivered>(
 					await f.poll({
 						'x-tines-e2e-bundle-race': `${action}-once`,
-						'x-tines-e2e-bundle-race-item': item.id
+						'x-tines-e2e-bundle-race-item': item.id,
+						'x-tines-e2e-bundle-race-project': f.elsewhere.id
 					})
 				);
 				expect(delivered.assignments).toHaveLength(1);
@@ -178,4 +184,81 @@ test.describe.serial('native D1 shared launch material', () => {
 			await f.cleanup();
 		}
 	});
+});
+
+// One projection for every reader (Tines/752): owner and member read the same
+// shared guidance through /context, /prompt and /prompt?resume=1. The owner's
+// un-included global prompt must be absent even for the owner — that is what
+// proves the owner reads the shared path, not the full library — and env
+// values never ride in any of them.
+test('owner and member read the same permitted guidance, without canaries', async ({
+	request,
+	uniqueName
+}) => {
+	const owner = apiClient(request, ALICE.apiKey);
+	const project = await body<Project>(
+		await owner.post('/api/v1/projects', { name: uniqueName('bundle-readers') })
+	);
+	const labelName = uniqueName('bundle-readers-label');
+	const created: string[] = [];
+	const item = async (data: Record<string, unknown>) => {
+		const made = await body<{ id: string }>(await owner.post('/api/v1/context', data));
+		created.push(made.id);
+		return made;
+	};
+	try {
+		const now = Date.now();
+		d1(
+			`UPDATE project SET shared_at = ${now}, sharing_revision = 1 WHERE id = ${sqlLiteral(project.id)}`
+		);
+		d1(`INSERT INTO project_member (project_id, user_id, revision, joined_at, updated_at)
+			VALUES (${sqlLiteral(project.id)}, ${sqlLiteral(BOB.id)}, 1, ${now}, ${now})`);
+		const issue = await body<IssueDetail>(
+			await owner.post(`/api/v1/projects/${project.id}/issues`, {
+				title: 'Shared readers',
+				labels: [labelName]
+			})
+		);
+		const label = issue.labels.find((l) => l.name === labelName)!;
+		await item({
+			kind: 'prompt',
+			name: uniqueName('uninc-global'),
+			body: 'UNINCLUDED_GLOBAL_CANARY'
+		});
+		const included = await item({
+			kind: 'prompt',
+			name: uniqueName('included-label'),
+			body: 'INCLUDED_LABEL_GUIDANCE',
+			label_id: label.id
+		});
+		await item({
+			kind: 'env',
+			name: 'BUNDLE_READERS_ENV',
+			value: 'ENV_VALUE_CANARY',
+			project_id: project.id
+		});
+		expect(
+			(
+				await owner.post(`/api/v1/projects/${project.id}/guidance-inclusions`, {
+					item_id: included.id
+				})
+			).status()
+		).toBe(201);
+
+		for (const reader of [ALICE, BOB]) {
+			for (const path of ['context', 'prompt', 'prompt?resume=1']) {
+				const res = await request.get(`/api/v1/issues/${issue.id}/${path}`, {
+					headers: { authorization: `Bearer ${reader.apiKey}` }
+				});
+				const text = await res.text();
+				expect(res.status(), `${reader.name} ${path}`).toBe(200);
+				expect(text, `${reader.name} ${path}`).toContain('INCLUDED_LABEL_GUIDANCE');
+				expect(text, `${reader.name} ${path}`).not.toContain('UNINCLUDED_GLOBAL_CANARY');
+				expect(text, `${reader.name} ${path}`).not.toContain('ENV_VALUE_CANARY');
+			}
+		}
+	} finally {
+		// The global canary would otherwise grow ALICE's library for later specs.
+		for (const id of created) await owner.delete(`/api/v1/context/${id}`).catch(() => undefined);
+	}
 });
