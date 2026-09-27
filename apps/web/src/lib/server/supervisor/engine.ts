@@ -849,7 +849,8 @@ export async function launchClaimedRun(
 			launchPrompt: admission.material.launchPrompt,
 			resumePrompt: admission.material.resumePrompt,
 			env: admission.material.env,
-			digest: bundle.digest
+			digest: bundle.digest,
+			guidanceDigest: admission.material.guidanceDigest
 		};
 	} else {
 		minted = await mintRunKeyAndFlip(db, env, {

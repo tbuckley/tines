@@ -18,6 +18,7 @@ import {
 	type ResolvedEnvEntry
 } from '../api/context';
 import { ApiFail } from '../api/core';
+import { sha256Hex } from '../crypto';
 import {
 	BUNDLE_ATTEMPTS,
 	bundleFailure,
@@ -43,6 +44,25 @@ export interface LaunchMaterialV1 {
 	env: ResolvedEnvEntry[];
 	launchPrompt: string;
 	resumePrompt: string;
+	/** The resume fingerprint's guidance field: see `sharedGuidanceDigest`. */
+	guidanceDigest: string;
+}
+
+/**
+ * Digest of the guidance alone — prompt text, skills, repos. Unlike the
+ * bundle digest it does not move with comments, transitions or artifacts,
+ * so a shared-project run can still resume; a guidance change launches fresh.
+ */
+export async function sharedGuidanceDigest(
+	guidance: SharedExecutionBundleV1['guidance']
+): Promise<string> {
+	return sha256Hex(
+		JSON.stringify({
+			prompt: guidance.prompt.text,
+			skills: guidance.skills,
+			repos: guidance.repos
+		})
+	);
 }
 
 type AdmitRun = Pick<Database['agent_run'], 'id' | 'user_id' | 'issue_id' | 'state_id_at_start'>;
@@ -88,7 +108,13 @@ export async function prepareLaunchMaterial(
 			issue.artifacts,
 			issue.label_vocabulary
 		),
-		resumePrompt: buildResumePrompt(guidance, issue.detail, issue.artifacts, issue.label_vocabulary)
+		resumePrompt: buildResumePrompt(
+			guidance,
+			issue.detail,
+			issue.artifacts,
+			issue.label_vocabulary
+		),
+		guidanceDigest: await sharedGuidanceDigest(guidance)
 	};
 }
 

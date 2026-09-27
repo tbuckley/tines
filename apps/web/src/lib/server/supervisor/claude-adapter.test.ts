@@ -248,7 +248,8 @@ describe('claude adapter launch', () => {
 				launchPrompt: 'THE SHARED PROMPT',
 				resumePrompt: 'THE SHARED RESUME PROMPT',
 				env: [],
-				digest: 'd'.repeat(64)
+				digest: 'd'.repeat(64),
+				guidanceDigest: 'g'.repeat(64)
 			}
 		});
 		expect(net.calls.filter((c) => c.path.startsWith('/api/v1/'))).toEqual([]);

@@ -51,6 +51,8 @@ export interface AdapterLaunchMaterial {
 	/** Resolved values; never inside `context`. */
 	env: ResolvedEnvEntry[];
 	digest: string;
+	/** Guidance-only digest for the resume fingerprint (`sharedGuidanceDigest`). */
+	guidanceDigest: string;
 }
 
 export interface AdapterLaunchResult {

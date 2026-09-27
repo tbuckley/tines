@@ -1043,7 +1043,19 @@ async function deliverSharedRun(
 				: {};
 		const skills = guidance.skills.map(({ name, description }) => ({ name, description }));
 		const shared_bundle = { version: 1 as const, digest: material.bundle.digest };
-		const resume = await prepareResume(db, env, { runner, run, now });
+		// Local runs have no provider meta of their own: it carries the
+		// guidance digest to the end-of-run retain, which fingerprints with it.
+		await db
+			.updateTable('agent_run')
+			.set({ provider_meta: JSON.stringify({ guidance_digest: material.guidanceDigest }) })
+			.where('id', '=', run.id)
+			.execute();
+		const resume = await prepareResume(db, env, {
+			runner,
+			run,
+			now,
+			guidanceDigest: material.guidanceDigest
+		});
 		if (resume) {
 			const preamble = buildResumePreamble({
 				variant: 'local',
@@ -1112,7 +1124,13 @@ async function deliverSharedRun(
 async function prepareResume(
 	db: Kysely<Database>,
 	env: Env,
-	input: { runner: RunnerRow; run: Database['agent_run']; now: number }
+	input: {
+		runner: RunnerRow;
+		run: Database['agent_run'];
+		now: number;
+		/** Shared-project runs only; see `resumeFingerprint`. */
+		guidanceDigest?: string;
+	}
 ): Promise<RunnerAssignmentResume | null> {
 	const { runner, run, now } = input;
 	const config = parseRunnerConfig(runner.config);
@@ -1158,6 +1176,8 @@ async function prepareResume(
 		harness: String(config.harness ?? 'claude_code'),
 		model: run.model,
 		effort: run.effort_application_status === 'pending' ? run.resolved_effort : null,
+		contributorId: run.user_id,
+		guidanceDigest: input.guidanceDigest ?? null,
 		preambleVariant: 'local'
 	});
 	const verdict = resumeEligibility({
@@ -1717,6 +1737,17 @@ function validateTurnCount(value: unknown, field: string): number | undefined {
 	return value;
 }
 
+/** The guidance digest a shared-project local run was admitted with, if any. */
+function localGuidanceDigest(providerMeta: string | null): string | null {
+	if (!providerMeta) return null;
+	try {
+		const digest = (JSON.parse(providerMeta) as { guidance_digest?: unknown }).guidance_digest;
+		return typeof digest === 'string' ? digest : null;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Retention: a run that advanced its issue into an awaiting state on a
  * resume-enabled runner leaves its session and workspace claimable until the
@@ -1735,6 +1766,7 @@ async function retainAwaitingSession(
 			model: string | null;
 			resolved_effort: string | null;
 			effort_application_status: string | null;
+			provider_meta: string | null;
 		};
 		runId: string;
 		providerSessionId: string | null;
@@ -1774,6 +1806,8 @@ async function retainAwaitingSession(
 				input.run.effort_application_status === 'accepted_unconfirmed'
 					? input.run.resolved_effort
 					: null,
+			contributorId: input.run.user_id,
+			guidanceDigest: localGuidanceDigest(input.run.provider_meta),
 			preambleVariant: 'local'
 		}),
 		expiresAt: input.now + runner.resume_window_hours * 60 * 60 * 1000,

@@ -80,6 +80,8 @@ export interface ClaudeRunMeta {
 	gc_done?: boolean;
 	/** Digest of the env items the vault was built for (names/versions, no values). */
 	env_digest?: string;
+	/** Shared-project runs: the guidance digest the session launched with. */
+	guidance_digest?: string;
 	/**
 	 * Set when the end finalizer retained this run's session for a resume:
 	 * the session is deliberately left idle and its vault alive, so the GC
@@ -837,6 +839,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			model: input.model,
 			effort: input.effort,
 			envDigest: currentEnvDigest,
+			guidanceDigest: material?.guidanceDigest ?? null,
 			now: Date.now()
 		});
 		if (resume) {
@@ -915,6 +918,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 					credential_id: resume.credential_id,
 					// The fingerprint matched, so the retained vault holds exactly this env set.
 					...(currentEnvDigest ? { env_digest: currentEnvDigest } : {}),
+					...(material ? { guidance_digest: material.guidanceDigest } : {}),
 					// Start the log after the predecessor's last rendered event, so
 					// its conversation does not replay into this run's log — and so
 					// its `end_turn` cannot be read as this run completing.
@@ -1006,7 +1010,8 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		const meta: ClaudeRunMeta = {
 			vault_id: vaultId,
 			credential_id: credentialId,
-			...(currentEnvDigest ? { env_digest: currentEnvDigest } : {})
+			...(currentEnvDigest ? { env_digest: currentEnvDigest } : {}),
+			...(material ? { guidance_digest: material.guidanceDigest } : {})
 		};
 		return {
 			provider_session_id: session.id,
@@ -1134,6 +1139,8 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				model: input.model,
 				effort: input.effort,
 				envDigest: meta.env_digest ?? null,
+				contributorId: input.user_id,
+				guidanceDigest: meta.guidance_digest ?? null,
 				preambleVariant: 'claude_managed'
 			}),
 			expiresAt,

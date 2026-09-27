@@ -76,8 +76,16 @@ export function resumeFingerprint(input: {
 	 * and takes the cold-launch path, which builds a fresh vault.
 	 */
 	envDigest?: string | null;
+	/**
+	 * Shared-project runs only: who the run acts for and a digest of the
+	 * shared guidance it launched with (never the whole bundle digest, which
+	 * moves with every comment). Serialized only when given, so never-shared
+	 * fingerprints stay byte-identical.
+	 */
+	contributorId?: string | null;
+	guidanceDigest?: string | null;
 }): string {
-	if (input.effort || input.envDigest) {
+	if (input.effort || input.envDigest || input.guidanceDigest) {
 		return JSON.stringify({
 			version: 2,
 			runner_id: input.runnerId,
@@ -85,7 +93,10 @@ export function resumeFingerprint(input: {
 			model: input.model,
 			effort: input.effort ?? null,
 			preamble_variant: input.preambleVariant,
-			...(input.envDigest ? { env_digest: input.envDigest } : {})
+			...(input.envDigest ? { env_digest: input.envDigest } : {}),
+			...(input.guidanceDigest
+				? { contributor_id: input.contributorId ?? null, guidance_digest: input.guidanceDigest }
+				: {})
 		});
 	}
 	return [
@@ -453,6 +464,8 @@ export async function prepareManagedResume(
 		model: string | null;
 		effort?: string | null;
 		envDigest?: string | null;
+		/** Shared-project runs only; see `resumeFingerprint`. */
+		guidanceDigest?: string | null;
 		now: number;
 	}
 ): Promise<{
@@ -518,6 +531,8 @@ export async function prepareManagedResume(
 			model: input.model,
 			effort: input.effort,
 			envDigest: input.envDigest,
+			contributorId: input.userId,
+			guidanceDigest: input.guidanceDigest,
 			preambleVariant: 'claude_managed'
 		})
 	});
