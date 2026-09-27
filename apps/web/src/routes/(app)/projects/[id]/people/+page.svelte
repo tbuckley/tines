@@ -1,16 +1,37 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
+	import IssueCombobox from '$lib/components/IssueCombobox.svelte';
 	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
+	import type { IssuePick } from '$lib/issue-picker';
 	let { data } = $props();
 	let email = $state('');
-	let issueId = $state('');
+	let landing = $state<IssuePick | null>(null);
+	let landingText = $state('');
+	let emailInput = $state<HTMLInputElement | null>(null);
+	let landingInput = $state<HTMLInputElement | null>(null);
+	/** Invite errors, each shown under the field it belongs to. */
+	let errors = $state<{ email?: string; landing?: string; form?: string }>({});
+	const EMAIL_CODES = new Set(['invalid_email', 'self_invite', 'already_member', 'invite_pending']);
+	// A new pick or new text makes the landing error stale.
+	$effect(() => {
+		void landing;
+		void landingText;
+		untrack(() => (errors.landing = undefined));
+	});
 	let confirmSharing = $state(false);
 	let busy = $state(false);
 	let message = $state<string | null>(null);
-	async function request(path: string, method: string, body: object) {
+	/** With `onerror`, a failure goes to the caller instead of the page-level status line. */
+	async function request(
+		path: string,
+		method: string,
+		body: object,
+		onerror?: (code: string | null, message: string) => void
+	) {
 		busy = true;
 		message = null;
 		try {
@@ -20,11 +41,18 @@
 				body: JSON.stringify(body)
 			});
 			const value = response.status === 204 ? null : await response.json();
-			if (!response.ok) throw new Error(value?.error?.message ?? 'Request failed');
+			if (!response.ok) {
+				const text = value?.error?.message ?? 'Request failed';
+				if (!onerror) throw new Error(text);
+				onerror(value?.error?.code ?? null, text);
+				return null;
+			}
 			await invalidateAll();
 			return value;
 		} catch (error) {
-			message = error instanceof Error ? error.message : 'Request failed';
+			const text = error instanceof Error ? error.message : 'Request failed';
+			if (onerror) onerror(null, text);
+			else message = text;
 			return null;
 		} finally {
 			busy = false;
@@ -32,15 +60,38 @@
 	}
 	async function invite(event: SubmitEvent) {
 		event.preventDefault();
-		const result = await request(`/api/v1/projects/${data.projectId}/invitations`, 'POST', {
-			email,
-			...(issueId.trim() ? { landing_issue_id: issueId.trim() } : {}),
-			confirm_sharing: confirmSharing,
-			expected_sharing_revision: data.project.sharing_revision
-		});
+		errors = {};
+		// Typed text that was never picked is not an issue; never send it.
+		if (!landing && landingText.trim()) {
+			errors = { landing: 'Choose an issue from the list, or clear this field.' };
+			landingInput?.focus();
+			return;
+		}
+		const result = await request(
+			`/api/v1/projects/${data.projectId}/invitations`,
+			'POST',
+			{
+				email,
+				...(landing ? { landing_issue_id: landing.id } : {}),
+				confirm_sharing: confirmSharing,
+				expected_sharing_revision: data.project.sharing_revision
+			},
+			(code, text) => {
+				if (code && EMAIL_CODES.has(code)) {
+					errors = { email: text };
+					emailInput?.focus();
+				} else if (code === 'invalid_landing_issue') {
+					errors = {
+						landing: 'That issue is no longer in this project. Pick another, or clear the field.'
+					};
+					landingInput?.focus();
+				} else errors = { form: text };
+			}
+		);
 		if (result) {
 			email = '';
-			issueId = '';
+			landing = null;
+			landingText = '';
 			message =
 				result.delivery_status === 'sent'
 					? 'Invitation sent.'
@@ -101,12 +152,45 @@
 		<section class="mt-6 rounded-lg border p-4" aria-labelledby="invite-heading">
 			<h2 id="invite-heading" class="font-semibold">Invite someone</h2>
 			<form class="mt-3 space-y-4" onsubmit={invite}>
-				<label class="block"
-					>Verified email<Input class="mt-1" type="email" bind:value={email} required /></label
-				>
-				<label class="block"
-					>Landing issue ID (optional)<Input class="mt-1" bind:value={issueId} /></label
-				>
+				<div>
+					<label class="block" for="invite-email">Verified email</label>
+					<Input
+						id="invite-email"
+						class="mt-1"
+						type="email"
+						bind:value={email}
+						bind:ref={emailInput}
+						required
+						aria-describedby={errors.email ? 'invite-email-error' : undefined}
+						aria-invalid={errors.email ? true : undefined}
+						oninput={() => (errors.email = undefined)}
+					/>
+					{#if errors.email}<p id="invite-email-error" class="text-destructive mt-1 text-sm">
+							{errors.email}
+						</p>{/if}
+				</div>
+				<div>
+					<label class="block" for="invite-landing">Landing issue (optional)</label>
+					<p id="invite-landing-hint" class="text-muted-foreground text-sm">
+						Leave empty and they start on the project's open issues.
+					</p>
+					<div class="mt-1">
+						<IssueCombobox
+							projectId={data.projectId}
+							id="invite-landing"
+							bind:selected={landing}
+							bind:text={landingText}
+							bind:ref={landingInput}
+							describedby={errors.landing
+								? 'invite-landing-hint invite-landing-error'
+								: 'invite-landing-hint'}
+							invalid={!!errors.landing}
+						/>
+					</div>
+					{#if errors.landing}<p id="invite-landing-error" class="text-destructive mt-1 text-sm">
+							{errors.landing}
+						</p>{/if}
+				</div>
 				{#if data.people.shared_at === null}
 					<label class="flex items-start gap-3 text-sm"
 						><input
@@ -123,6 +207,7 @@
 					>
 					<PersonalPermissionWarning role="owner" />
 				{/if}
+				{#if errors.form}<p class="text-destructive text-sm" role="alert">{errors.form}</p>{/if}
 				<Button type="submit" disabled={busy}>Send invitation</Button>
 			</form>
 		</section>
