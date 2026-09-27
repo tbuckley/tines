@@ -4,7 +4,15 @@ import type { Locator, Page } from '@playwright/test';
 type Box = NonNullable<Awaited<ReturnType<Locator['boundingBox']>>>;
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { body, clickIssueAction, issuePath, openIssueActions, resetFocus, runId } from './helpers';
+import {
+	body,
+	clickIssueAction,
+	gotoHydrated,
+	issuePath,
+	openIssueActions,
+	resetFocus,
+	runId
+} from './helpers';
 
 /**
  * The line above the issue title (Tines/770). It used to print project →
@@ -73,7 +81,7 @@ async function truncated(locator: Locator): Promise<boolean> {
 
 test('on a phone the reference line is `Project #n` alone', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issuePath(projectName, issue.number));
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 
 	const ref = page.getByTestId('issue-ref');
 	const linkLocator = ref.getByRole('link', { name: projectName });
@@ -92,7 +100,7 @@ test('on a phone the reference line is `Project #n` alone', async ({ page }) => 
 
 test('the ⋯ menu sits right of Back, on its line, and holds both actions', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issuePath(projectName, issue.number));
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 
 	const back = await box(page.getByTestId('issue-back'));
 	const trigger = await box(page.getByRole('button', { name: 'Issue actions' }));
@@ -115,7 +123,7 @@ test('the ⋯ menu sits right of Back, on its line, and holds both actions', asy
 
 test('on a desktop the ⋯ menu is at the far right of the Back row', async ({ page }) => {
 	await page.setViewportSize(DESKTOP);
-	await page.goto(issuePath(projectName, issue.number));
+	await gotoHydrated(page, issuePath(projectName, issue.number));
 
 	const back = await box(page.getByTestId('issue-back'));
 	const trigger = await box(page.getByRole('button', { name: 'Issue actions' }));
@@ -128,7 +136,7 @@ test('on a desktop the ⋯ menu is at the far right of the Back row', async ({ p
 
 test('a 200-character project name does not widen the phone page', async ({ page }) => {
 	await page.setViewportSize(PHONE);
-	await page.goto(issuePath(longName, longIssue.number));
+	await gotoHydrated(page, issuePath(longName, longIssue.number));
 	await expect(page.getByTestId('issue-ref')).toBeVisible();
 
 	expect(await overflow(page)).toBe(0);
