@@ -65,7 +65,7 @@ for (const viewport of VIEWPORTS) {
 				await expect(opener).toBeFocused();
 
 				await opener.click();
-				await dialog.getByRole('textbox', { name: 'Search your library' }).fill(itemName);
+				await dialog.getByLabel('Search your library').fill(itemName);
 				const includeButton = dialog.getByRole('button', { name: `Include ${itemName}` });
 				await expect(includeButton).toBeVisible();
 				const box = await includeButton.boundingBox();
@@ -100,7 +100,7 @@ for (const viewport of VIEWPORTS) {
 				await expect(included).toHaveCount(0);
 				await expect(card.getByText('Nothing included.')).toBeVisible();
 			} finally {
-				await api.delete(`/api/v1/context/${item.id}`);
+				await api.delete(`/api/v1/context/${item.id}`).catch(() => undefined);
 			}
 		});
 	});
