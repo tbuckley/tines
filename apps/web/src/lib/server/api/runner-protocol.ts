@@ -63,6 +63,7 @@ import {
 } from '$lib/server/supervisor/resume';
 import { effectiveAutomationEnabled } from '$lib/server/supervisor/settings';
 import { admitSharedRun, usesSharedLaunch } from '$lib/server/supervisor/shared-launch';
+import type { BeforeSharedMint } from '$lib/server/supervisor/bundle-e2e-race';
 import { priceCodexUsage } from '$lib/server/supervisor/codex-pricing';
 import { pricingCatalogFor } from '$lib/server/supervisor/user-rates';
 import { listArtifacts } from './artifacts';
@@ -377,7 +378,9 @@ export async function pollRunner(
 	effects: DispatchEffects,
 	body: RunnerPollRequest,
 	now: number = Date.now(),
-	reconcileAttempt = 0
+	reconcileAttempt = 0,
+	/** E2E only: the shared-launch race hook (`bundle-e2e-race.ts`). */
+	beforeSharedMint?: BeforeSharedMint
 ): Promise<PollOutcome> {
 	const owned = new Set(validateOwnedRuns(body));
 	const instanceId = validateInstanceId(body);
@@ -556,7 +559,16 @@ export async function pollRunner(
 				.where('runner_token_hash', '=', runner.runner_token_hash)
 				.executeTakeFirst();
 			if (current && (instanceId === undefined || current.daemon_instance_id === instanceId)) {
-				return pollRunner(db, env, current, effects, body, now, reconcileAttempt + 1);
+				return pollRunner(
+					db,
+					env,
+					current,
+					effects,
+					body,
+					now,
+					reconcileAttempt + 1,
+					beforeSharedMint
+				);
 			}
 		}
 		throw new ApiFail(
@@ -704,9 +716,16 @@ export async function pollRunner(
 	if (runner.status === 'active') {
 		for (const run of active) {
 			if (run.status !== 'assigned') continue;
-			const assignment = await deliverAssignedRun(db, env, runner, effects, run, now, {
-				envDelivery: body.env_delivery === 1
-			});
+			const assignment = await deliverAssignedRun(
+				db,
+				env,
+				runner,
+				effects,
+				run,
+				now,
+				{ envDelivery: body.env_delivery === 1 },
+				beforeSharedMint
+			);
 			if (assignment) assignments.push(assignment);
 		}
 	}
@@ -750,7 +769,8 @@ async function deliverAssignedRun(
 	effects: DispatchEffects,
 	run: Database['agent_run'],
 	now: number,
-	caps: { envDelivery: boolean } = { envDelivery: false }
+	caps: { envDelivery: boolean } = { envDelivery: false },
+	beforeSharedMint?: BeforeSharedMint
 ): Promise<RunnerAssignment | null> {
 	const [eligibility, settings] = await Promise.all([
 		db
@@ -829,7 +849,17 @@ async function deliverAssignedRun(
 	// A shared project under the release flag takes the guarded material
 	// path (Tines/752); every other run below is today's, byte for byte.
 	if (await usesSharedLaunch(env, db, run.issue_id)) {
-		return deliverSharedRun(db, env, runner, effects, run, now, caps, deliveryCapabilities);
+		return deliverSharedRun(
+			db,
+			env,
+			runner,
+			effects,
+			run,
+			now,
+			caps,
+			deliveryCapabilities,
+			beforeSharedMint
+		);
 	}
 
 	// The guarded one-shot flip; a lost race means another poll (a second
@@ -1007,13 +1037,17 @@ async function deliverSharedRun(
 	run: Database['agent_run'],
 	now: number,
 	caps: { envDelivery: boolean },
-	deliveryCapabilities: EffortCapabilitiesV1 | null
+	deliveryCapabilities: EffortCapabilitiesV1 | null,
+	beforeSharedMint?: BeforeSharedMint
 ): Promise<RunnerAssignment | null> {
 	const admission = await admitSharedRun(env, db, run, {
 		maxRunMinutes: runner.max_run_minutes,
 		now,
 		envChannel: caps.envDelivery,
-		localAdmission: localAdmission(runner)
+		localAdmission: localAdmission(runner),
+		...(beforeSharedMint
+			? { beforeMint: (attempt: number) => beforeSharedMint(db, run.issue_id, attempt) }
+			: {})
 	});
 	if (admission.kind === 'released') effects.signalDispatch();
 	if (admission.kind !== 'admitted') return null;
