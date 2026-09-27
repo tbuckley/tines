@@ -510,3 +510,15 @@ Everything else keeps the path above, byte for byte.
   then makes none of its `/issues/:id`, `/prompt`, `/context` or
   `/prompt?resume=1` fetches and reads no env itself. Adapters without
   `sharedMaterial` are refused before any key is minted.
+- **Resume fingerprint (decided 2026-09-27).** Shared-project runs add
+  `contributor_id` and `guidance_digest` to the v2 fingerprint, serialized only
+  when a guidance digest is present so every never-shared fingerprint stays
+  byte-identical. The digest is `sharedGuidanceDigest`: a hash of the guidance
+  alone (prompt text, skills, repos), not the bundle digest, which moves with
+  every comment, transition and artifact and would make shared runs never
+  resume. It is recorded at admission (`provider_meta.guidance_digest`, local
+  and managed alike) and reused by the end-of-run retain. A guidance change,
+  including a journal append, therefore launches fresh.
+- **D1 limit.** Native D1 refuses a compound SELECT of more than five terms, so
+  the witness carries the issue inputs (`m:`) on its target row. Keep new
+  witness inputs inside the existing five `UNION ALL` terms.

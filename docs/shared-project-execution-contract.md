@@ -78,3 +78,18 @@ warning on Issues. Tines/712 must not treat a named key's general project
 write permission as personal consent authority. Both integrations must rerun
 the owner/member/key/run/pending/outsider matrix and native D1 claim, delivery,
 removal, and cancellation races after changing these boundaries.
+
+## Guidance delivery (Tines/752)
+
+With `SHARED_EXECUTION` on, a shared project's execution guidance is delivered,
+not just described. One `SharedExecutionBundleV1` projection serves the issue
+page, `/issues/:id/context`, `/issues/:id/prompt`, local delivery and managed
+launch, and owner and member reads see one digest. Launch material is built
+before any run key exists. The key mint is guarded on the bundle's revision
+witness, so a stale bundle never launches and never leaves a key. Managed
+adapters take the material in `AdapterLaunchInput.material` and fetch nothing
+themselves. The optional `shared_bundle` field on a runner assignment is
+additive, so no daemon change is needed. Shared-project resumes are keyed on the
+contributor and a guidance-only digest. Member execution remains disabled:
+`ownerIssueConsentPredicate` and the `loadEligibleIssues` owner filter are
+unchanged. The flag is off in production and preview.

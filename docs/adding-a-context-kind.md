@@ -53,6 +53,12 @@ a kind accepts arbitrary payload.
    refuse, same posture as `repo_dir`.
 4. **Caps.** Every payload is byte-capped (UTF-8), enforced at the API
    layer with structured 422s. Pick the cap when you pick the shape.
+5. **Sharing.** Decide whether the kind can reach a shared project's bundle
+   (Tines/752). It is shared automatically when anchored to the project, issue
+   or a workflow state; say whether a global or label-only item may be
+   *included* by the owner. Kinds carrying secrets or per-person data stay out,
+   as `env` and `artifact` do. Update `sharedGuidancePredicate` and the
+   inclusion admissibility check in `guidance-inclusions.ts` to match.
 
 Write these down as a short section in `specs/context/SPEC.md` (payload
 shape, caps, merge rule, bundle form) as part of the change.

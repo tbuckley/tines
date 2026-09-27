@@ -636,3 +636,11 @@ The proposal convention remains the human workflow, but API enforcement now back
 operations require every populated scope domain, env writes additionally require control-plane
 write, and a run key may write only its exact launch-state-root journal. A missing launch anchor
 fails closed; it never falls through to another state or issue. See `specs/api-keys/SPEC.md`.
+
+## Decision update — 2026-09-27 journal in shared projects (Tines/752)
+
+In a shared project the journal target travels inside the shared bundle
+(`bundle.journal`: scope label, anchor, item id, version), anchored to the
+launch state, so a resumed run writes the journal its predecessor read.
+Members read it through the projection. They append only through the bound
+journal from Tines/751, never by editing the owner's item.
