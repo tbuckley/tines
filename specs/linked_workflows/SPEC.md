@@ -244,19 +244,34 @@ also applies to the owner's runs.
 The test for where an item belongs: *would a collaborator's agent working in
 this project need it too?* If yes, it is project context or a pack.
 
-**Stitch order:** user → workflow → project → issue. Within the project
-layer: packs in the order they were added, then the project's own items. The
-existing dimension-weight ordering (`specs/context/SPEC.md`) still orders
-items within a layer. This moves project-wide items *after* state items,
-where today `project` (weight 1) stitches before `state` (weight 2); the
-layer is now decided by owner first.
+**Stitch order:** user → project → workflow → issue, which is today's
+dimension-weight order (`specs/context/SPEC.md`) with user context where the
+global scope sits now and workflow context in the `state` slot:
 
-**Replacement across layers:**
+1. user context;
+2. project-wide items: added packs in the order they were added, then the
+   project's own items (`project`, weight 1);
+3. the workflow's own state context, bases before the state
+   (`state`, weight 2);
+4. project items narrowed to a state (`project ∧ state`, weight 3) — so a
+   project's additions for a stage, and its journal, sit directly after the
+   workflow's instructions for that stage;
+5. label, then issue layers, unchanged.
 
-- **Skills and repos** replace by name — a later layer's item with the same
-  kind and name wins, as today. A project can therefore replace a linked
-  workflow's or pack's skill or repo without detaching. When an update changes
-  an item the project replaces, the update screen flags it.
+Launch prompts for existing items therefore keep their order through the
+migration.
+
+**Replacement across layers.** Stitch order decides where prompts appear;
+replacement by name is decided by **owner**, so that it does not depend on
+how narrowly an item is scoped: issue beats project (including packs), which
+beats workflow, which beats user.
+
+- **Skills and repos** replace by name — a project item with the same kind
+  and name as a workflow's item wins, even when the project item is
+  project-wide. A project can therefore replace a linked workflow's or pack's
+  skill or repo without detaching. Within one owner the existing rule stands
+  (the later layer wins). When an update changes an item the project
+  replaces, the update screen flags it.
 - **Prompts** always append. Changing a workflow's own prompts means
   detaching.
 - Two packs carrying the same skill name: adding the second shows the clash
@@ -269,6 +284,25 @@ other projects from there or from the cloud, and updated, reverted and
 detached exactly like a workflow. Its items carry no project-specific scope —
 they cannot reference any project's states, labels or issues — so they are
 portable.
+
+**Env variables in workflows and packs.**
+
+- A **secret** env item travels only as a *declaration* (name, description,
+  hint). The project supplies the value when adding the linkable, as with
+  declared variables. Until it is supplied the linkable is added but flagged
+  *needs setup*, and a run whose context needs the missing value is not
+  admitted.
+- A **non-secret** env item travels with its value by default, and applies
+  only where the linkable that carries it applies: a workflow's value only to
+  issues in that workflow, a pack's value only where the pack applies (its
+  narrowing, decision 10). It never becomes a project-wide variable. The
+  project may override the value, which is a project-side setting and
+  survives updates.
+
+**Journals are always per project.** A journal (the prompt named `journal`,
+`specs/context/AGENT_EDITING.md`) is project context. Workflows and packs
+cannot carry one, publishing refuses content that contains one, and a
+journal's entries never leave the project.
 
 ### 10. Where a pack applies inside a project
 
@@ -318,9 +352,11 @@ is a project-side setting on the link and survives updates.
    | empty (global) | the user's **Personal** pack in My Workflows, linked into every project with auto-update |
    | label only | a **Personal · \<label\>** pack, linked into every project with auto-update and narrowed to that label |
 
-   Nothing lands in user context automatically, so every launch prompt keeps
-   its content; the user moves the truly personal items across deliberately.
-   The stitch-order change in decision 8 is the one visible difference.
+   A `journal` is never moved into workflow context or a pack: one without a
+   project in its scope is copied into project context in each project that
+   uses its state. Nothing lands in user context automatically, so every
+   launch prompt keeps its content and order; the user moves the truly
+   personal items across deliberately.
 
 ## Data model sketch
 
@@ -357,8 +393,4 @@ Illustrative, not binding; a migration plan comes with implementation.
   carries its bases (the export closure already does), materialized as
   read-only bases owned by the link; a Standard base becomes a link to the
   built-in.
-- **Env items in packs.** Secret values should not travel. Proposed: packs
-  carry env *declarations*; values are project-side, like variable values.
-- **Journals on a linked workflow's states** are project context, so they
-  survive updates; confirm that agents' journal handles in the launch prompt
-  resolve to the project-side item.
+- **One link per source per project** (decision 2) — under discussion.
