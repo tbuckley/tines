@@ -150,7 +150,15 @@ export function bundleWitnessExpr(
 			sql<string>`'t:' || issue.project_id || ',' || issue.state_id || ',' || issue.workflow_id
 				|| ',' || issue.project_assignment_token || ',' || issue.updated_at
 				|| ',' || issue.decision_revision || ',' || project.user_id || ',' || project.name
-				|| ',' || coalesce(project.shared_at, '') || ',' || ${w.launchStateId ?? ''}`.as('v')
+				|| ',' || coalesce(project.shared_at, '') || ',' || ${w.launchStateId ?? ''}
+				|| '|m:' || (SELECT count(*) || ',' || coalesce(max(coalesce(cm.updated_at, cm.created_at)), '')
+					FROM comment cm WHERE cm.issue_id = issue.id)
+				|| ',' || (SELECT count(av.id) || ',' || coalesce(max(av.version), '')
+					|| ',' || count(DISTINCT ci.id) || ',' || coalesce(max(ci.updated_at), '')
+					FROM context_item ci LEFT JOIN artifact_version av ON av.context_item_id = ci.id
+					WHERE ci.issue_id = issue.id AND ci.kind = 'artifact')
+				|| ',' || (SELECT count(*) FROM issue_link il
+					WHERE il.source_issue_id = issue.id OR il.target_issue_id = issue.id)`.as('v')
 		);
 	const s = db
 		.selectFrom('workflow_state')
@@ -183,21 +191,10 @@ export function bundleWitnessExpr(
 			sql<string>`'n:' || project_guidance_inclusion.context_item_id
 				|| ',' || project_guidance_inclusion.revision`.as('v')
 		);
-	const m = db
-		.selectFrom('issue')
-		.where('issue.id', '=', w.issueId)
-		.select(
-			sql<string>`'m:' || (SELECT count(*) || ',' || coalesce(max(coalesce(cm.updated_at, cm.created_at)), '')
-					FROM comment cm WHERE cm.issue_id = issue.id)
-				|| ',' || (SELECT count(av.id) || ',' || coalesce(max(av.version), '')
-					|| ',' || count(DISTINCT ci.id) || ',' || coalesce(max(ci.updated_at), '')
-					FROM context_item ci LEFT JOIN artifact_version av ON av.context_item_id = ci.id
-					WHERE ci.issue_id = issue.id AND ci.kind = 'artifact')
-				|| ',' || (SELECT count(*) FROM issue_link il
-					WHERE il.source_issue_id = issue.id OR il.target_issue_id = issue.id)`.as('v')
-		);
 	const vector = db
-		.selectFrom(t.unionAll(s).unionAll(l).unionAll(c).unionAll(n).unionAll(m).as('u'))
+		// D1 refuses a compound SELECT of more than five terms, so the issue
+		// inputs (`m:`) ride on the target row rather than as a sixth.
+		.selectFrom(t.unionAll(s).unionAll(l).unionAll(c).unionAll(n).as('u'))
 		.select('u.v')
 		.orderBy('u.v');
 	return sql<string>`(SELECT coalesce(group_concat(o.v, '|'), '') FROM ${vector.as('o')})`;

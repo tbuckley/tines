@@ -256,6 +256,12 @@ describe('witness', () => {
 			t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(STAGE_B, issue)
 		);
 	});
+	it('stays within D1’s five-term compound SELECT limit', async () => {
+		// Native D1 refuses a sixth UNION ALL term; SQLite here would accept it.
+		const { witness } = await load({ validate: false });
+		const compiled = t.db.selectNoFrom(bundleWitnessExpr(t.db, witness).as('v')).compile().sql;
+		expect(compiled.match(/union all/gi)?.length ?? 0).toBeLessThanOrEqual(4);
+	});
 });
 
 describe('validation', () => {
