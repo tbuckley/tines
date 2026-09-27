@@ -38,7 +38,8 @@ export interface ProjectGuidanceInclusionTable {
 export interface IssueGuidanceBlockTable {
 	issue_id: string;
 	code: 'bundle_too_large' | 'bundle_unavailable';
-	reason: 'item_cap' | 'size_cap' | 'repo_dir_conflict' | 'churn';
+	/** `env_unavailable`: the env channel failed to resolve (e.g. a secret no longer decrypts). */
+	reason: 'item_cap' | 'size_cap' | 'repo_dir_conflict' | 'churn' | 'env_unavailable';
 	retry_after: number;
 	created_at: number;
 }

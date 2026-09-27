@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createContextItem } from '../api/context';
 import type { ActorContext } from '../api/core';
+import { encryptSecret } from '../crypto';
 import { BUNDLE_ITEM_CAP } from '../api/shared-execution-bundle';
 import { createTestDb, type TestDb } from '../api/test-db';
 import { claimRun, launchClaimedRun } from './engine';
@@ -157,6 +158,36 @@ describe('admitSharedRun', () => {
 				retry_after: NOW + GUIDANCE_REFUSAL_BACKOFF_MS
 			}
 		]);
+	});
+
+	it('holds the issue back when the env channel cannot decrypt a secret', async () => {
+		t.env.SECRET_ENCRYPTION_KEY = 'rotated-key';
+		t.sqlite
+			.prepare(
+				`INSERT INTO context_item
+				(id, user_id, kind, name, description, env_value_enc, position, version, created_at, updated_at)
+				VALUES ('ctx_broken_env', ?, 'env', 'GH_TOKEN', '', ?, 0, 1, 0, 0)`
+			)
+			.run(USER, await encryptSecret('private-value', 'original-key'));
+		const { runId } = await claim();
+		const released = await admitSharedRun(t.env, t.db, runRow(runId) as never, {
+			maxRunMinutes: 30,
+			now: NOW,
+			envChannel: true
+		});
+		expect(released.kind).toBe('released');
+		expect(runRow(runId)).toMatchObject({ status: 'canceled', api_key_id: null });
+		expect(keys(runId)).toHaveLength(0);
+		expect(blocks()).toMatchObject([
+			{
+				issue_id: issue,
+				code: 'bundle_unavailable',
+				reason: 'env_unavailable',
+				retry_after: NOW + GUIDANCE_REFUSAL_BACKOFF_MS
+			}
+		]);
+		// Without the hold the next poll re-claims the issue and fails again.
+		expect((await claim(NOW)).id).toBe(false);
 	});
 
 	it('stands down when another poll already took the flip', async () => {

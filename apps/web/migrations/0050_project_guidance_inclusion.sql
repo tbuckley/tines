@@ -14,7 +14,7 @@ CREATE INDEX IF NOT EXISTS project_guidance_inclusion_item ON project_guidance_i
 CREATE TABLE IF NOT EXISTS issue_guidance_block (
   issue_id TEXT PRIMARY KEY REFERENCES issue(id) ON DELETE CASCADE,
   code TEXT NOT NULL,            -- bundle_too_large | bundle_unavailable
-  reason TEXT NOT NULL,          -- item_cap | size_cap | repo_dir_conflict | churn
+  reason TEXT NOT NULL,          -- item_cap | size_cap | repo_dir_conflict | churn | env_unavailable
   retry_after INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );

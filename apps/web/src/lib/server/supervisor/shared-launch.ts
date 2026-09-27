@@ -10,7 +10,7 @@
  */
 import type { SharedExecutionBundleV1 } from '@tines/shared';
 import { sql, type Kysely } from 'kysely';
-import type { Database } from '../db';
+import type { Database, IssueGuidanceBlockTable } from '../db';
 import {
 	buildLaunchPrompt,
 	buildResumePrompt,
@@ -153,9 +153,16 @@ export async function admitSharedRun(
 				break;
 			}
 			// Env decrypt (or any other preparation) failure: no key exists yet,
-			// so releasing the claim is the whole cleanup.
+			// so release the claim and hold the issue back — without the hold the
+			// next poll re-claims it and fails the same way, forever.
 			const error = e instanceof Error ? e.message : String(e);
-			await releaseAssigned(env, db, run, error, input.now);
+			if (!(await releaseAssigned(env, db, run, error, input.now))) return { kind: 'lost' };
+			await holdIssue(db, run.issue_id, {
+				code: 'bundle_unavailable',
+				reason: 'env_unavailable',
+				retryAfter: input.now + GUIDANCE_REFUSAL_BACKOFF_MS,
+				now: input.now
+			});
 			return { kind: 'released', error };
 		}
 		await input.beforeMint?.(attempt);
@@ -168,7 +175,13 @@ export async function admitSharedRun(
 			guard: sql<boolean>`${bundleWitnessExpr(db, material.witness)} = ${material.witness.vector}`
 		});
 		if (minted) {
-			await db.deleteFrom('issue_guidance_block').where('issue_id', '=', run.issue_id).execute();
+			// The key is live now; a failed cleanup must not strand it, and a
+			// leftover row only delays the next claim until `retry_after`.
+			await db
+				.deleteFrom('issue_guidance_block')
+				.where('issue_id', '=', run.issue_id)
+				.execute()
+				.catch(() => undefined);
 			return { kind: 'admitted', ...minted, material };
 		}
 		const live = await db
@@ -181,16 +194,35 @@ export async function admitSharedRun(
 	const { reason, error } = failure ?? { reason: 'churn', error: 'guidance bundle unavailable' };
 	const released = await releaseAssigned(env, db, run, error, input.now);
 	if (!released) return { kind: 'lost' };
-	const failed = bundleFailure(reason);
+	await holdIssue(db, run.issue_id, {
+		code: bundleFailure(reason).code as 'bundle_too_large' | 'bundle_unavailable',
+		reason,
+		retryAfter:
+			input.now + (reason === 'churn' ? GUIDANCE_CHURN_BACKOFF_MS : GUIDANCE_REFUSAL_BACKOFF_MS),
+		now: input.now
+	});
+	return { kind: 'released', error };
+}
+
+/** Holds a shared issue back from `claimRun` until `retryAfter`. */
+async function holdIssue(
+	db: Kysely<Database>,
+	issueId: string,
+	hold: {
+		code: IssueGuidanceBlockTable['code'];
+		reason: IssueGuidanceBlockTable['reason'];
+		retryAfter: number;
+		now: number;
+	}
+): Promise<void> {
 	await db
 		.insertInto('issue_guidance_block')
 		.values({
-			issue_id: run.issue_id,
-			code: failed.code as 'bundle_too_large' | 'bundle_unavailable',
-			reason,
-			retry_after:
-				input.now + (reason === 'churn' ? GUIDANCE_CHURN_BACKOFF_MS : GUIDANCE_REFUSAL_BACKOFF_MS),
-			created_at: input.now
+			issue_id: issueId,
+			code: hold.code,
+			reason: hold.reason,
+			retry_after: hold.retryAfter,
+			created_at: hold.now
 		})
 		.onConflict((oc) =>
 			oc.column('issue_id').doUpdateSet((eb) => ({
@@ -201,7 +233,6 @@ export async function admitSharedRun(
 			}))
 		)
 		.execute();
-	return { kind: 'released', error };
 }
 
 /** The no-strike cancel the delivery eligibility re-check uses. */
