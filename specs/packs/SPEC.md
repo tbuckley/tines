@@ -86,8 +86,8 @@ can apply its update (decision 5).
 
 | Term | Meaning |
 | --- | --- |
-| **Project content** | The workflows and context a project owns directly. Always editable by the project; never shared. |
-| **Pack** | A named bundle of zero or more **workflows** plus **context items** (prompts, skills, repos, env). Belongs to exactly one project. Either **standalone** (editable, and can be a source) or **linked** (a read-only copy of a source). |
+| **Pack** | A named bundle of zero or more **workflows** plus **context items** (prompts, skills, repos, env). Belongs to exactly one project. Either **standalone** (editable, and can be a source) or **linked** (a read-only copy of a source). Every workflow and every shareable context item is in a pack from the moment it is created (decision 1). |
+| **Project-local content** | Context that only makes sense in one project and so is never in a pack: journals, issue-scoped items, and additions attached to a linked pack's workflows or states. |
 | **Source** | What a linked pack pulls from: a standalone or linked pack in **another project**, or a **cloud** listing. |
 | **Link** | The record that a project's pack follows a source: its mode, the snapshot it last applied, and its history. |
 | **Detach** | Remove the link. The pack becomes standalone and editable in this project, keeping its current content, under a new identity. Irreversible. |
@@ -96,16 +96,36 @@ can apply its update (decision 5).
 
 ## Decisions
 
-### 1. Everything lives in a project
+### 1. Everything lives in a project, and everything shareable is a pack
 
-`workflow.user_id` is replaced by ownership by a project: a workflow is
-either project content or part of a pack, and a pack belongs to a project.
-There is no user-level library; "my packs" means "the packs in projects I can
-read", and My Workflows is simply the project the migration puts them in.
+`workflow.user_id` is replaced by ownership by a project, through a pack. A
+pack belongs to a project. There is no user-level library; "my packs" means
+"the packs in projects I can read", and My Workflows is simply the project
+the migration puts them in.
 
-To share something that is project content, create a standalone pack in that
-project and move the workflows and items into it. A standalone pack is live in
-its own project: editing it there changes that project immediately.
+**Packs are automatic.** Nobody has to create a pack before they can share:
+
+- Creating a **workflow** creates a standalone pack holding it. Context added
+  to that workflow's states, or to the whole workflow, goes into the same pack
+  (state or pack-workflows reach, decision 9).
+- Creating a **project-wide context item** (a prompt, skill, repo or env item
+  for the whole project, optionally narrowed by label) creates a standalone
+  pack holding just that item.
+- Everything else is **project-local content**: journals, issue-scoped items,
+  and items a project attaches to the workflows or states of a *linked* pack,
+  which cannot be edited.
+
+A pack of one is shown as the thing it holds — *Code change* (workflow),
+*conventions* (prompt) — with no pack chrome, and takes its name from it, so
+single workflows and prompts can be added to another project without anyone
+thinking about packs.
+
+**Grouping.** Users, or their agents, organize related packs into one pack to
+share them together: *merge* moves the contents of several standalone packs in
+one project into a single pack; *split* moves items out into packs of their
+own. Both are ordinary edits of standalone packs, so projects following them
+see the change as an update (decision 14). A standalone pack is live in its
+own project: editing it there changes that project immediately.
 
 ### 2. Adding a pack to a project
 
@@ -143,7 +163,7 @@ copy:
 | **`run_scope`** of each state (decision 7) | Label narrowing of the pack's project-wide items (decision 9) |
 | Context items and their **reach** (decision 9) | Values for secret env declarations; overrides of non-secret values |
 | Declared variables (names, types, defaults) | Variable **values** |
-| | Project content scoped to the pack's workflows or states, including journals |
+| | Project-local content attached to the pack's workflows or states, including journals |
 | | Schedules, and labels that point at the pack's states |
 | | The pack's precedence among the project's packs (decision 10) |
 
@@ -187,7 +207,7 @@ workflow — that holds issues in this project, each such state must be mapped
 to a state that exists after the update; the update does not apply until
 every occupied removed state is mapped. Cloud versions declare a mapping,
 which pre-fills the screen. A link to a project cannot declare one, so the
-person applying supplies it. Project content scoped to a removed state moves
+person applying supplies it. Project-local content on a removed state moves
 with the same mapping. Runs already in progress finish on the context they
 launched with (the launch snapshot, `0040_run_key_stage_snapshot`).
 
@@ -251,10 +271,10 @@ reviewed instead:
 | Layer | Owned by | Applies | Visible to |
 | --- | --- | --- | --- |
 | **User** | a user | runs by *that user's* agents, in every project | that user |
-| **Project** | a project: its project content plus its packs | that project's issues, by reach and scope | project members |
+| **Project** | a project: its packs plus its project-local content | that project's issues, by reach and scope | project members |
 
 A workflow's instructions are no longer a separate owner: they are context
-items in the pack (or project content) that holds the workflow, with a reach
+items in the pack that holds the workflow, with a reach
 naming the workflow or one of its states.
 
 **User context is about who is running, not what is being worked on.** It
@@ -268,10 +288,12 @@ shared project see a content-free notice that the owner's personal context
 also applies to the owner's runs.
 
 The test for where an item belongs: *would a collaborator's agent working in
-this project need it too?* If yes, it is project content or a pack.
+this project need it too?* If yes, it belongs in a pack or in project-local
+content.
 
 **Journals are always per project.** A journal (the prompt named `journal`,
-`specs/context/AGENT_EDITING.md`) is project content, scoped to a state.
+`specs/context/AGENT_EDITING.md`) is project-local content, scoped to a
+state.
 Packs cannot carry one, publishing refuses a pack that contains one, and a
 journal's entries never leave the project.
 
@@ -314,11 +336,10 @@ dimension-weight order (`specs/context/SPEC.md`) with user context where the
 global scope sits now:
 
 1. user context;
-2. project-reach items: packs in precedence order, then project content with
-   no narrower scope;
+2. project-reach items, packs in precedence order;
 3. *pack workflows* items for the issue's workflow;
 4. *state* items for the issue's state;
-5. project content narrowed to that state, including the journal — so a
+5. project-local content on that state, including the journal — so a
    project's additions for a stage sit directly after the pack's
    instructions for it;
 6. label, then issue layers, unchanged.
@@ -334,12 +355,12 @@ these rules in order:
 
 | # | Situation | Winner | Choice needed? | How people see it |
 | --- | --- | --- | --- | --- |
-| 1 | Issue-scoped project content vs anything | the issue item | no | issue context view |
-| 2 | Project content vs a pack item | project content, whatever either item's scope | no | the pack item shows *replaced in this project by …*; an update that changes it is flagged |
+| 1 | Issue-scoped project-local content vs anything | the issue item | no | issue context view |
+| 2 | Other project-local content vs a pack item | project-local content | no | the pack item shows *replaced in this project by …*; an update that changes it is flagged |
 | 3 | Two items in different packs, one with narrower reach (state or pack workflows) than the other (project) | the narrower one, within its reach; the broader one elsewhere | no | the broader item shows *replaced in workflow … by pack …* |
-| 4 | Two items in different packs with the same reach level | the pack with higher **precedence** | **yes**: adding the second pack, or applying an update that creates the clash, asks which pack wins | both items show the outcome; the pack page lists all its clashes |
+| 4 | Two items in different packs with the same reach level | the pack with higher **precedence** | **yes** when adding or updating a *linked* pack creates the clash: the person applying chooses which pack wins. **No** when editing a *standalone* pack in this project creates it: that is a deliberate local replacement, and the edited pack moves above the other | both items show the outcome; the pack page lists all its clashes |
 | 5 | Two items in the same pack | — | cannot happen: names are unique per kind within a pack, checked when authoring and when validating a published version | — |
-| 6 | Any pack or project item vs user context | the project's item | no | effective context lists the user item as overridden |
+| 6 | Any pack or project-local item vs user context | the project's item | no | effective context lists the user item as overridden |
 
 Pack precedence is a project-side order over the project's packs, set by
 those choices and editable on the Packs page. Two packs may each contain a
@@ -394,7 +415,7 @@ workflows* reach instead. The migration flattens existing inheritance
    keys are assigned to the workflow and its states.
 4. For every project whose issues, default workflow or schedules use one of
    those workflows, **add** a linked copy of its pack with **auto-update**,
-   repointing issues, schedules, routing and project content to the copy's
+   repointing issues, schedules, routing and project-local content to the copy's
    states. This preserves today's "edit once, applies everywhere". Other
    workflows are no longer offered in that project until their pack is
    added. A project can detach its copy to make it the root for that
@@ -405,16 +426,35 @@ workflows* reach instead. The migration flattens existing inheritance
 
    | Scope today | Becomes |
    | --- | --- |
-   | project, alone or with state / label | project content |
-   | issue (with anything) | project content on that issue |
-   | empty (global) | a **Personal** pack in My Workflows (project reach), added to every project with auto-update |
-   | label only | a **Personal · \<label\>** pack (project reach), added to every project with auto-update and narrowed to that label |
+   | project, alone or with label | a standalone pack of one in that project (project reach, label narrowing kept) |
+   | project ∧ state (not a journal) | added to the workflow's pack if the project's copy is detached; otherwise project-local content on that state |
+   | issue (with anything) | project-local content on that issue |
+   | empty (global) | a pack of one in My Workflows (project reach), added to every project with auto-update |
+   | label only | a pack of one in My Workflows (project reach), added to every project with auto-update and narrowed to that label |
 
-   A `journal` is never moved into a pack: one without a project in its scope
-   is copied into project content in each project that uses its state.
-   Nothing lands in user context automatically, so every launch prompt keeps
-   its content and order; the user moves the truly personal items across
+   A `journal` is never moved into a pack: it becomes project-local content,
+   and one without a project in its scope is copied into each project that
+   uses its state. Nothing lands in user context automatically, so every
+   launch prompt keeps its content and order; the user, or their agent, moves
+   the truly personal items across and groups the rest into larger packs
    deliberately.
+
+### 14. Grouping packs that others follow (proposed)
+
+Merging and splitting change what a pack contains, so they reach every
+project following it:
+
+- **Merge.** Merging packs X and Y into Y removes X from its project and
+  records X's origin on Y. Each project following X sees an update: *X moved
+  into Y*. Applying it replaces the link to X with a link to Y — the review
+  shows everything Y adds beyond X as new content, so auto-update pauses for
+  it — or, if the project already follows Y, simply removes the X link. The
+  alternative offered on the same screen is to detach X and keep it as it is.
+- **Split.** Moving items out of Y into a new pack Z gives Z a new origin.
+  Projects following Y see those items removed in the next update, with an
+  offer to add Z alongside.
+- The once-per-project rule (decision 2) counts absorbed origins: a project
+  that follows Y cannot also add X.
 
 ## Data model sketch
 
@@ -422,10 +462,13 @@ Illustrative, not binding; a migration plan comes with implementation.
 
 - `pack` — `id`, `project_id`, `origin_id`, `name`, `description`,
   `published_listing_id`; `UNIQUE (project_id, origin_id)`.
+- `pack_absorbed_origin` — origins merged into a pack, for the
+  once-per-project check and for redirecting followers.
 - `workflow` gains `project_id` and nullable `pack_id` (replacing `user_id`)
   and `key`; `workflow_state.key`.
 - `context_item` gains an owner — exactly one of `user_id`, `project_id`
-  (project content, with the existing state / label / issue scope columns),
+  (project-local content, with the existing state / label / issue scope
+  columns),
   or `pack_id` — and, for pack items, a `reach` (`state` | `workflows` |
   `project`) with the state or workflow it names.
 - `pack_link` — `pack_id`, `source_kind` (`project` | `cloud`), `source_id`,
