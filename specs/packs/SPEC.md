@@ -439,7 +439,7 @@ workflows* reach instead. The migration flattens existing inheritance
    the truly personal items across and groups the rest into larger packs
    deliberately.
 
-### 14. Grouping packs that others follow (proposed)
+### 14. Grouping packs that others follow
 
 Merging and splitting change what a pack contains, so they reach every
 project following it:
@@ -448,8 +448,10 @@ project following it:
   records X's origin on Y. Each project following X sees an update: *X moved
   into Y*. Applying it replaces the link to X with a link to Y — the review
   shows everything Y adds beyond X as new content, so auto-update pauses for
-  it — or, if the project already follows Y, simply removes the X link. The
-  alternative offered on the same screen is to detach X and keep it as it is.
+  it and each project decides whether it wants Y's additional workflows and
+  context — or, if the project already follows Y, simply removes the X link.
+  The alternative offered on the same screen is to detach X and keep it as it
+  is.
 - **Split.** Moving items out of Y into a new pack Z gives Z a new origin.
   Projects following Y see those items removed in the next update, with an
   offer to add Z alongside.
