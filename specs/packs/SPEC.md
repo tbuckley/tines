@@ -507,6 +507,30 @@ it trusts its sources through its link mode.
 - **Add** and **update** reviews show `run_scope`, reach, replacements and
   conflicts as described in decisions 7, 9 and 10.
 
+### 17. Rollout: everyone moves at once
+
+All accounts move to packs in the same release; there is no per-user opt-in
+and no period where both models serve different users.
+
+Migrations run before the new worker deploys, and merging to `main` is the
+release, so the change still lands in backward-compatible steps:
+
+1. **Expand** — a migration adds the new tables and columns (`pack`,
+   `pack_link`, keys, owners, reach) alongside the old ones. The deployed
+   worker ignores them.
+2. **Backfill** — the decision 13 migration fills them for every account in
+   one pass.
+3. **Switch** — the release that reads and writes packs. Old columns stay in
+   place, so reverting the code is still possible while the release settles.
+4. **Contract** — a later migration drops `workflow.user_id`, the old scope
+   ownership and the inheritance pointer.
+
+**Release gate.** Before the switch ships, a dry run of the backfill against
+a copy of production computes the launch prompt of every non-done issue under
+both models and fails on any difference. The check runs across all accounts
+at once and blocks the release, never individual users. The result is kept
+as a receipt under `docs/receipts/`.
+
 ## Data model sketch
 
 Illustrative, not binding; a migration plan comes with implementation.
