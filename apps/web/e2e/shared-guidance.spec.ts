@@ -220,14 +220,12 @@ test('owner and member read the same permitted guidance, without canaries', asyn
 			})
 		);
 		const label = issue.labels.find((l) => l.name === labelName)!;
-		await item({
-			kind: 'prompt',
-			name: uniqueName('uninc-global'),
-			body: 'UNINCLUDED_GLOBAL_CANARY'
-		});
+		const canaryName = uniqueName('uninc-global');
+		await item({ kind: 'prompt', name: canaryName, body: 'UNINCLUDED_GLOBAL_CANARY' });
+		const includedName = uniqueName('included-label');
 		const included = await item({
 			kind: 'prompt',
-			name: uniqueName('included-label'),
+			name: includedName,
 			body: 'INCLUDED_LABEL_GUIDANCE',
 			label_id: label.id
 		});
@@ -252,8 +250,12 @@ test('owner and member read the same permitted guidance, without canaries', asyn
 				});
 				const text = await res.text();
 				expect(res.status(), `${reader.name} ${path}`).toBe(200);
-				expect(text, `${reader.name} ${path}`).toContain('INCLUDED_LABEL_GUIDANCE');
+				// The resume prompt names guidance rather than repeating its body.
+				expect(text, `${reader.name} ${path}`).toContain(
+					path.endsWith('resume=1') ? includedName : 'INCLUDED_LABEL_GUIDANCE'
+				);
 				expect(text, `${reader.name} ${path}`).not.toContain('UNINCLUDED_GLOBAL_CANARY');
+				expect(text, `${reader.name} ${path}`).not.toContain(canaryName);
 				expect(text, `${reader.name} ${path}`).not.toContain('ENV_VALUE_CANARY');
 			}
 		}
