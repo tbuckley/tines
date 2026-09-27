@@ -458,6 +458,55 @@ project following it:
 - The once-per-project rule (decision 2) counts absorbed origins: a project
   that follows Y cannot also add X.
 
+### 15. What agents can do with packs
+
+Agents are expected to create and organize packs, and edits are not assumed
+to be reviewed by a human before they spread. Each project decides how much
+it trusts its sources through its link mode.
+
+- **Editing followed packs is ordinary editing.** A run may edit any
+  standalone pack its `run_scope` reaches — `project` scope covers the
+  packs in its own project, including ones other projects follow. The edit
+  reaches followers as an update. A project on auto-update has chosen to
+  accept its source's edits, human or agent, unreviewed; the auto-update
+  control says so when it is turned on. A project in review mode sees the
+  diff first.
+- **Organizing.** Within its scope a run may create, edit, merge, split and
+  detach packs, and add packs from projects it can read.
+- **Human only.** No run key can add a pack from the cloud, apply or revert
+  an update, turn auto-update on, approve a `run_scope` widening, or
+  publish. These require a signed-in person in a browser session, like
+  personal consent (`docs/shared-projects.md`); the CLI prints a link to the
+  browser screen instead.
+- **Browse and suggest.** Runs can search the cloud catalog, read listings and
+  diffs, and see which of the project's packs have updates available. The
+  API returns a browser link for each review or add screen, so an agent can
+  hand the user exactly the page to act on — in a comment or an
+  awaiting-human state.
+
+### 16. Where packs appear in the UI
+
+- **Project → Packs** lists every pack in the project: standalone and linked,
+  with source, mode, applied version and any *Update available* or *needs
+  setup* badge, plus the precedence order and each pack's replacements and
+  conflicts. **Add** opens *Create new / From my projects / From the cloud*.
+- **Workflows and Context pages** in a project keep listing workflows and
+  items directly. A pack of one appears as its item; an item from a larger
+  pack shows the pack's name. Items from linked packs are locked, with
+  **Detach** in place of Edit.
+- **Editing a followed item** shows *Used in N projects* beside Save — a
+  label, not a confirmation.
+- **Updates are grouped by source project** — *6 updates from My Workflows* —
+  with one combined review screen that still lists each pack's diff,
+  mapping, scope, reach and conflicts separately, and lets each be applied
+  or skipped.
+- **Settings → My context** holds user context. It is the only place user
+  context is shown or edited.
+- **My packs** replaces today's global Context page: the packs in every
+  project you can read, with where each is used and its followers.
+- **Add** and **update** reviews show `run_scope`, reach, replacements and
+  conflicts as described in decisions 7, 9 and 10.
+
 ## Data model sketch
 
 Illustrative, not binding; a migration plan comes with implementation.
