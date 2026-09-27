@@ -194,13 +194,13 @@ test('two accounts join and read without owner-private payloads, then removal re
 				})
 			).status()
 		).toBe(404);
-		expect(
-			(
-				await request.get(`/api/v1/issues/${issue.id}/context`, {
-					headers: { authorization: `Bearer ${BOB.apiKey}` }
-				})
-			).status()
-		).toBe(404);
+		// Under SHARED_EXECUTION a member reads the shared projection (Tines/752),
+		// never the owner's private library item.
+		const memberContext = await request.get(`/api/v1/issues/${issue.id}/context`, {
+			headers: { authorization: `Bearer ${BOB.apiKey}` }
+		});
+		expect(memberContext.status()).toBe(200);
+		expect(await memberContext.text()).not.toContain(privateContextId);
 		// Members mint site links like the owner.
 		expect(
 			(
