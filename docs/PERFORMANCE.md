@@ -222,10 +222,10 @@ navigation cost.
 Measured 2026-09-26 on a 100-row issue list in headless Chromium: 205 named
 elements (a title and a state per row, plus the chrome) took 410–550 ms to
 capture; with the rows unnamed, 20 ms. Rendering the rows themselves took
-about 10 ms. So list rows are named only when they morph: `issueMorph`
-(`lib/issue-morph.svelte.ts`) holds the issue page a navigation enters or
-leaves, the layout sets it and flushes before starting the transition, and
-`IssueList` names only that row. Keep new shared-element names to what one
+about 10 ms. So list rows are named only when they morph: rows carry their
+name in `data-vt-name`, and before starting the transition the layout uses
+`morphingIssueHref()` and `nameMorphingRow()` (`lib/issue-morph.ts`) to find
+the issue page a navigation enters or leaves and name only that row. Keep new shared-element names to what one
 navigation actually morphs, never one per list item.
 
 Headless Chromium has no GPU, so its absolute capture times are higher than
@@ -256,7 +256,7 @@ anything it streams is not. The issue page is the worked example:
   returned as promises under `data.deferred`. They render a `Skeleton` (with a
   retry on failure) only until their first value arrives: refreshes replace
   the deferred promises wholesale, so the page tracks the latest value per
-  panel (`streamed()` in `+page.svelte`) and keeps the previous one on screen
+  panel (`streamed()` in `OwnerIssuePage.svelte`) and keeps the previous one on screen
   while a replacement is in flight, instead of `{#await}` collapsing the
   panel back to a skeleton on every resync.
 
