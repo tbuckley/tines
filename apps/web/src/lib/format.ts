@@ -117,6 +117,59 @@ export function nextRunLabel(nextRunAt: number, now = Date.now()): string {
 	return nextRunAt >= now ? `next ${until}` : until;
 }
 
+export type InvitationStatus = 'accepted' | 'canceled' | 'expired' | 'failed' | 'pending';
+
+/**
+ * What an invitation row means to the owner. Order matters: an accepted invite
+ * later canceled by removing the member is still "accepted" (a member, not an
+ * invite), and a failed delivery whose link has lapsed is "expired". Mirrors
+ * the server's `expires_at <= now` test in invitationLanding.
+ */
+export function invitationStatus(
+	invitation: {
+		accepted_at: number | null;
+		canceled_at: number | null;
+		expires_at: number;
+		delivery_status: string;
+	},
+	now = Date.now()
+): InvitationStatus {
+	if (invitation.accepted_at !== null) return 'accepted';
+	if (invitation.canceled_at !== null) return 'canceled';
+	if (invitation.expires_at <= now) return 'expired';
+	if (invitation.delivery_status === 'failed') return 'failed';
+	return 'pending';
+}
+
+/**
+ * An invitation link's lifetime in words: "expires in 7 days" or "expired 2
+ * hours ago". Rounds through hours so 23.6h reads "1 day", and treats
+ * `expiresAt === now` as expired to agree with invitationStatus.
+ */
+export function invitationExpiryLabel(expiresAt: number, now = Date.now()): string {
+	const diff = expiresAt - now;
+	const span = durationWords(Math.abs(diff));
+	return diff > 0 ? `expires in ${span}` : `expired ${span} ago`;
+}
+
+function durationWords(ms: number): string {
+	const hours = Math.round(ms / 3_600_000);
+	if (hours < 1) return 'under an hour';
+	if (hours < 24) return hours === 1 ? '1 hour' : `${hours} hours`;
+	const days = Math.round(hours / 24);
+	return days === 1 ? '1 day' : `${days} days`;
+}
+
+/** A member's join day ("Sep 26"), with the year only when it is not this year. */
+export function joinedDate(ms: number, now = Date.now()): string {
+	const sameYear = new Date(ms).getFullYear() === new Date(now).getFullYear();
+	return new Date(ms).toLocaleDateString(undefined, {
+		month: 'short',
+		day: 'numeric',
+		...(sameYear ? {} : { year: 'numeric' })
+	});
+}
+
 /** Date only, in the user's locale — for banners that name a day, not a moment. */
 export function formatDate(ms: number): string {
 	return new Date(ms).toLocaleString(undefined, {
