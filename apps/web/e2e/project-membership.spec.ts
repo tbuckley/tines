@@ -385,6 +385,68 @@ test('resend replaces the old link and expiry blocks acceptance', async ({
 	await expect(page.getByText('No issues match these filters.')).toBeVisible();
 });
 
+test('People page lists each person once and shows invitation status', async ({
+	request,
+	page,
+	uniqueName
+}) => {
+	const owner = apiClient(request, ALICE.apiKey);
+	const project = await body<{ id: string }>(
+		await owner.post('/api/v1/projects', { name: uniqueName('people-status') })
+	);
+	const bobInvite = await body<{ id: string }>(
+		await owner.post(`/api/v1/projects/${project.id}/invitations`, {
+			email: BOB.email,
+			confirm_sharing: true,
+			expected_sharing_revision: 0
+		})
+	);
+	const bobUrl = (
+		await body<{ url: string }>(await request.get(`/api/v1/__e2e/invitation-email/${bobInvite.id}`))
+	).url;
+	const accepted = await request.post('/api/v1/invitations/accept', {
+		headers: {
+			cookie: `better-auth.session_token=${signedSessionCookie(BOB.sessionToken)}`,
+			origin: BASE_URL
+		},
+		data: { token: bobUrl.split('/').at(-1) }
+	});
+	expect(accepted.ok()).toBe(true);
+	const { sharing_revision } = await body<{ sharing_revision: number }>(
+		await owner.get(`/api/v1/projects/${project.id}`)
+	);
+	for (const email of [CAROL.email, `expired-${Date.now()}@e2e.test`]) {
+		await body(
+			await owner.post(`/api/v1/projects/${project.id}/invitations`, {
+				email,
+				confirm_sharing: true,
+				expected_sharing_revision: sharing_revision
+			})
+		);
+	}
+	d1(
+		`UPDATE project_invitation SET expires_at = 1 WHERE project_id = ${sqlLiteral(project.id)} AND email LIKE 'expired-%'`
+	);
+
+	await signIn(page.context(), ALICE.sessionToken);
+	await page.goto(`/projects/${project.id}/people`);
+	const roster = page.getByRole('region', { name: 'Project members' });
+	const bobRow = roster.getByRole('listitem').filter({ hasText: BOB.name });
+	await expect(bobRow).toContainText('Member · joined');
+	const invites = page.getByRole('region', { name: 'Invitations' });
+	await expect(invites).toBeVisible();
+	await expect(invites).not.toContainText(BOB.email);
+	const carolRow = invites.getByRole('listitem').filter({ hasText: CAROL.email });
+	await expect(carolRow).toContainText('Pending');
+	await expect(carolRow).toContainText('expires in 7 days');
+	await expect(carolRow.locator('time')).toHaveAttribute('title', /\S/);
+	const expiredRow = invites.getByRole('listitem').filter({ hasText: 'expired-' });
+	await expect(expiredRow).toContainText('Expired');
+	await expect(expiredRow.locator('time')).toContainText(/^expired .* ago$/);
+	await expect(expiredRow.getByRole('button', { name: 'Resend' })).toBeVisible();
+	await expect(expiredRow.getByRole('button', { name: 'Cancel' })).toBeVisible();
+});
+
 test('magic-link sign-in returns to the invitation before acceptance', async ({
 	request,
 	page,
