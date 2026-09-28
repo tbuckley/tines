@@ -52,7 +52,8 @@ columns are null.
   three-way merge, and no agent-assisted rebase in this version.
 - **State inheritance** inside packs (decision 12).
 - **Sharing with specific people.** Cloud visibility is private or public.
-- **Schedules inside packs.** Schedules stay project-side (see Future).
+- **Packs running schedules.** A pack only *recommends* schedules; every
+  running schedule belongs to a project (decision 18).
 - **Fine-grained member permissions** for applying, reverting or detaching.
 
 ## How we got here
@@ -164,7 +165,7 @@ copy:
 | Context items and their **reach** (decision 9) | Values for secret env declarations; overrides of non-secret values |
 | Declared variables (names, types, defaults) | Variable **values** |
 | | Project-local content attached to the pack's workflows or states, including journals |
-| | Schedules, and labels that point at the pack's states |
+| Recommended schedules (decision 18) | Schedules, including ones set up from a recommendation, and labels that point at the pack's states |
 | | The pack's precedence among the project's packs (decision 10) |
 
 To change anything in the left column, **detach**.
@@ -531,6 +532,39 @@ both models and fails on any difference. The check runs across all accounts
 at once and blocks the release, never individual users. The result is kept
 as a receipt under `docs/receipts/`.
 
+### 18. Recommended schedules
+
+A pack does not run anything on its own schedule. It can carry **recommended
+schedules** — *we suggest a recurring issue in this workflow, at this
+frequency, with this title and description; ignore or adjust it*.
+
+- **Contents.** A recommendation holds a name, the title and description
+  templates, the target workflow and start state (by stable key, and only a
+  workflow in the same pack), a recommended recurrence (preset or cron), and
+  the "only when the previous issue is closed" gate. It has no timezone; the
+  project supplies one, defaulting to the owner's.
+- **Adding a pack never creates a schedule.** The add review lists the pack's
+  recommendations; the project's schedules section shows them as
+  *Recommended by <pack>* with **Set up** and **Dismiss**.
+- **Set up** creates an ordinary project-local schedule from the
+  recommendation, pre-filled and fully editable — frequency, templates,
+  gate, timezone — and enabled only when the person setting it up chooses.
+  From then on it is the project's own schedule. Admission of agents to the
+  issues it creates follows the existing future-instance permission.
+- **Recommendation updates are suggestions.** When a pack update changes a
+  recommendation a project has set up, the schedule shows *<pack> now
+  recommends …* with the difference and an **Apply suggestion** action; the
+  schedule itself never changes on its own, whatever the link's mode. A
+  recommendation the pack removes leaves the schedule running, with a note.
+  A new recommendation appears as another *Set up / Dismiss* card.
+- **Authoring.** A schedule whose workflow is in a standalone pack in this
+  project can be marked **Recommend in pack**, which copies its current
+  definition into the pack as a recommendation. This is explicit, not
+  automatic: many schedules are specific to one project.
+- **Migration.** Existing schedules stay project-local schedules, pointing at
+  the linked copies of their workflows, with no change to when they run.
+  Recommendations start empty.
+
 ## Data model sketch
 
 Illustrative, not binding; a migration plan comes with implementation.
@@ -549,6 +583,9 @@ Illustrative, not binding; a migration plan comes with implementation.
 - `pack_link` — `pack_id`, `source_kind` (`project` | `cloud`), `source_id`,
   `mode` (`review` | `auto`), `applied_snapshot_id`, `paused_reason`.
 - `pack_snapshot` — immutable applied content per link, for diff and revert.
+- `pack_schedule_recommendation` — template, target keys, recurrence, gate;
+  `scheduled_task` gains a nullable reference to the recommendation it was
+  set up from, and a record of dismissals.
 - `project_pack_settings` — precedence, label narrowing, env values and
   overrides, variable values.
 - Cloud versions extend `workflow_publication` with a listing identity, a
@@ -556,8 +593,6 @@ Illustrative, not binding; a migration plan comes with implementation.
 
 ## Future
 
-- **Schedules in packs**: a publisher may ship an optional schedule with a
-  recommended frequency; the project decides whether to enable it.
 - **Permissions** for who may add, apply, revert and detach.
 - **Specific-people visibility** for cloud listings.
 - **Re-link a detached pack** to a newer source, with an agent porting the
