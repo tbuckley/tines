@@ -15,11 +15,13 @@
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
+	import IconDots from '@tabler/icons-svelte/icons/dots';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
+	import { DropdownMenu } from 'bits-ui';
 	import { tick, untrack } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
 	import { afterNavigate, goto, invalidate, invalidateAll, replaceState } from '$app/navigation';
@@ -796,14 +798,58 @@
 {/snippet}
 
 <div class="mb-6">
-	<a
-		href={backList.href}
-		data-testid="issue-back"
-		class="text-muted-foreground hover:text-foreground mb-3 inline-flex max-w-full min-w-0 items-center gap-1 text-sm"
-	>
-		<IconChevronLeft size={16} class="shrink-0" />
-		<span class="truncate">{backList.label}</span>
-	</a>
+	<!-- Back on the left, the issue's actions behind a menu on the right, so
+	     the reference line below reads `Project #n` alone (Tines/770). -->
+	<div class="mb-3 flex items-center justify-between gap-2">
+		<a
+			href={backList.href}
+			data-testid="issue-back"
+			class="text-muted-foreground hover:text-foreground inline-flex min-w-0 items-center gap-1 text-sm"
+		>
+			<IconChevronLeft size={16} class="shrink-0" />
+			<span class="truncate">{backList.label}</span>
+		</a>
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger
+				class="text-muted-foreground hover:text-foreground hover:bg-accent flex size-8 shrink-0 items-center justify-center rounded-md transition-colors"
+				aria-label="Issue actions"
+				title="Issue actions"
+				data-testid="issue-actions"
+			>
+				<IconDots size={18} stroke={2} />
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Portal>
+				<DropdownMenu.Content
+					side="bottom"
+					align="end"
+					sideOffset={4}
+					collisionPadding={8}
+					aria-label="Issue actions"
+					class="bg-popover text-popover-foreground ring-foreground/10 z-50 w-64 max-w-[calc(100vw-1rem)] rounded-lg p-1 text-sm shadow-md ring-1 outline-none"
+				>
+					{#if canOfferFocus}
+						<DropdownMenu.Item
+							class="data-highlighted:bg-accent data-highlighted:text-accent-foreground block w-full cursor-default truncate rounded-md px-2 py-1.5 outline-none data-disabled:opacity-50"
+							onSelect={focusIssueProject}
+							disabled={focusing}
+							title="Focus {data.issue.project_name}"
+						>
+							{focusing ? 'Focusing…' : `Focus ${data.issue.project_name}`}
+						</DropdownMenu.Item>
+					{/if}
+					<DropdownMenu.Item
+						class="data-highlighted:bg-accent data-highlighted:text-accent-foreground block w-full cursor-default rounded-md px-2 py-1.5 outline-none data-disabled:opacity-50"
+						onSelect={() => (transferOpen = true)}
+						disabled={archived}
+						title={archived ? PROJECT_ARCHIVED_TOOLTIP : 'Move this issue to another project'}
+						data-testid="move-to-project"
+					>
+						Move to project…
+					</DropdownMenu.Item>
+				</DropdownMenu.Content>
+			</DropdownMenu.Portal>
+		</DropdownMenu.Root>
+	</div>
 	{#if transferNotice}
 		<p class="text-sm" role="status" data-testid="transfer-notice">
 			{transferNotice}
@@ -815,42 +861,26 @@
 	{/if}
 	<div class="flex flex-wrap items-start justify-between gap-4">
 		<div class="min-w-0">
-			<p class="text-muted-foreground text-sm">
-				<a href="/projects/{data.issue.project_id}" class="hover:underline"
-					>{data.issue.project_name}</a
-				>
-				{#if canOfferFocus}
-					<button
-						class="hover:text-foreground ml-2 underline underline-offset-2"
-						onclick={focusIssueProject}
-						disabled={focusing}
-						title="Focus {data.issue.project_name}"
+			<div class="text-muted-foreground flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
+				<!-- A long project name truncates rather than widening the page (Tines/45). -->
+				<span class="inline-flex max-w-full min-w-0 items-baseline gap-1" data-testid="issue-ref">
+					<a href="/projects/{data.issue.project_id}" class="truncate hover:underline"
+						>{data.issue.project_name}</a
 					>
-						{focusing ? 'Focusing…' : `Focus ${data.issue.project_name}`}
-					</button>
-				{/if}
-				<button
-					class="hover:text-foreground ml-2 underline underline-offset-2"
-					onclick={() => (transferOpen = true)}
-					disabled={archived}
-					title={archived ? PROJECT_ARCHIVED_TOOLTIP : 'Move this issue to another project'}
-					data-testid="move-to-project"
-				>
-					Move to project…
-				</button>
-				<span class="font-mono">#{data.issue.number}</span>
+					<span class="shrink-0 font-mono">#{data.issue.number}</span>
+				</span>
 				{#if data.issue.scheduled_task_id}
 					<a
 						href="/projects/{data.issue.scheduled_task_project_id}?schedule={data.issue
 							.scheduled_task_id}"
-						class="bg-muted text-muted-foreground hover:text-foreground ml-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-middle text-xs"
+						class="bg-muted text-muted-foreground hover:text-foreground inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-middle text-xs"
 						title="Created by schedule “{data.issue.scheduled_task_name}”"
 					>
 						<IconRepeat size={12} stroke={1.75} />
 						{data.issue.scheduled_task_name}
 					</a>
 				{/if}
-			</p>
+			</div>
 			{#if data.issue.schedule_origin}
 				<p class="text-muted-foreground mt-1 text-xs" data-testid="schedule-origin">
 					Created from schedule “{data.issue.schedule_origin.schedule_name}” using
