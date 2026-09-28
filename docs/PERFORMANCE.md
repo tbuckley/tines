@@ -182,33 +182,31 @@ issue by id. Since then (#296 and after):
 | `/projects` | 1 (1) |
 | `/activity` | 3 (3) |
 
-## Reads go to D1 in batches
+## Batching reads: tried and reverted
 
-The wave count above assumes that reads issued together cost one round trip.
-On D1 they do not quite: one database runs its statements one at a time, and
-every statement sent on its own pays a request cost on top of its execution.
-Real users in Newark saw /agents (about 22 reads in 2 waves) take about 280 ms
-of server time at p75, against 40 ms modelled.
+The wave count above assumes reads issued together cost one round trip. On
+2026-09-26, Newark real users saw /agents (about 22 reads in 2 waves) take
+about 280 ms of server time at p75, against 40 ms modelled, so PR #313 sent a
+request's same-tick Kysely reads to D1 as one `DB.batch()`.
 
-So every request runs inside `withReadBatching` (`hooks.server.ts`), and
-`batchingD1` (`lib/server/db.ts`) sends the Kysely reads a request starts in
-the same task as one `DB.batch()`. Writes, and reads outside a request (cron,
-queues), still go alone. A failed batch re-sends each read alone, so errors
-stay with the query that caused them. The scope is per request because the
-Workers runtime cancels a request whose promise is settled by another
-request's I/O, and one isolate serves many requests through one binding.
+On the PR previews (39 interleaved full data requests per page, served from
+ORD) server time fell at p50: /agents 236 -> 156 ms, issue page 165 -> 122,
+/issues 176 -> 153. Real users disagreed. Comparing the day before the merge
+with the 36 hours after:
 
-Measured on the PR previews (2026-09-26, 39 interleaved full data requests
-each, probe user, served from ORD), server time at p50:
+| Page (p50)          | Before        | After         |
+| ------------------- | ------------- | ------------- |
+| /issues, Newark     | server 49 ms  | server 63 ms  |
+| /issues, Sydney     | 730 ms (54)   | 882 ms (94)   |
+| Issue page, Sydney  | 603 ms (44)   | 907 ms (77)   |
 
-| Page       | Before | After |
-| ---------- | ------ | ----- |
-| /agents    | 236 ms | 156 ms |
-| Issue page | 165 ms | 122 ms |
-| /issues    | 176 ms | 153 ms |
-
-`perf:nav` counts a batch as one round trip, so its wave numbers are
-unchanged; its "peak concurrent queries" now reads 1.
+So batching was reverted. The cause was not established; the next attempt
+should first add per-query Server-Timing entries and compare a batched and
+an unbatched read on the same production request, rather than trusting a
+preview measured from the sandbox. Two things learned stay true: a batch
+queue must be per request (a shared one hung Workers requests, which cancel
+a request whose promise another request's I/O settles), and concurrent
+package-install retries needed a receipt re-read (kept, `library/install.ts`).
 
 ## What a view transition captures
 
