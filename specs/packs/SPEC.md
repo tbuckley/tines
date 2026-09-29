@@ -593,8 +593,177 @@ Illustrative, not binding; a migration plan comes with implementation.
 
 ## Future
 
-- **Permissions** for who may add, apply, revert and detach.
+- **Permissions** for who may add, apply, revert and detach: a member role
+  that can work issues and take decisions but cannot add, apply, detach or
+  edit packs (decision 19).
 - **Specific-people visibility** for cloud listings.
 - **Re-link a detached pack** to a newer source, with an agent porting the
   local edits — the original "agent re-applies my modifications" idea.
 - **Move all links to a new root** after detaching.
+
+## Decision update — 2026-09-29 principles review
+
+Recorded from a review of the decisions above against the principles they
+serve. Where an item below disagrees with an earlier decision, this is the
+newer decision; the earlier text stays as written.
+
+### Principles
+
+- **Packs are the apps of Tines.** They are how a workflow or a role is
+  shared so that the people using it do not have to think about what is
+  inside. A pack of one is still an app; it just has a small surface.
+- **Private reuse and public sharing are both supported.** Many people want
+  one workflow across their own projects and never want to publish it. Some
+  want to publish and support a workflow for others. Neither path is the
+  special case.
+- **Improvements flow to the projects using a pack**, and people will often
+  rely on their agents to make those improvements. Both must be possible.
+- **Once you have a pack it cannot be taken away.** Every project holds a full
+  copy. If the source disappears or access is lost, the project keeps what it
+  has. Customizing means detaching, or creating a detached copy.
+- **Security is review plus flags.** Public packs get automated checks for
+  malicious instructions. Beyond that, people review what they add to their
+  projects, and Tines flags the parts that deserve a second look: context that
+  reaches beyond the pack's workflows, states with broader access, and the
+  other permissions listed in decision 21.
+
+### 19. Members are co-owners
+
+For this release a project's members are co-owners of it. Wherever decisions
+4, 5 and 7 say *project owner* — turning auto-update on, adding a pack from
+the cloud, approving a `run_scope` widening — read *any member, in a browser
+session*. The boundary that stays is the one `0047` set: no API key or run key
+can do any of those. Finer roles, such as members who can work issues but not
+change workflows or context, are future work (see Future).
+
+Auto-update still *runs* as the project owner through the existing project
+actor (`actorForProject`); decision 20 says what that means for a source the
+owner cannot read.
+
+### 20. Default link mode follows ownership
+
+Decision 4 made review the default for every link. Replaced:
+
+- A link whose source project has the **same owner** as this project defaults
+  to **auto-update**. This is the "edit once, applies everywhere" case, and
+  the migration's auto default (decision 13, step 4) is an instance of it.
+- Any other source — another person's project, or the cloud — defaults to
+  **review**.
+
+A member may link a source only they can read. That link starts in review,
+and only people who can read the source see its diffs and apply them
+(decision 5). Turning auto-update on for it pauses immediately with *source
+not accessible*, as decision 4 already says, because auto-update runs as the
+owner. Nothing runs an update that nobody in the project could have seen.
+
+### 21. A pack's permissions are reviewed at add and on every change
+
+The add review shows the pack's complete **permission set**, in one screen:
+
+1. states whose `run_scope` is `project` or `workspace` (decision 7);
+2. context items with project reach (decision 9);
+3. **secret** env declarations the project must fill (decision 9);
+4. **repo slots** the project must fill, and repos that travel with a URL
+   (decision 25);
+5. **non-secret env values** that travel with the pack, since they can point
+   an agent at a different endpoint;
+6. recommended schedules (decision 18).
+
+An update review shows what changed in that set, beside the content diff. In
+auto mode, any change that **widens** the set pauses the update into review:
+a new or wider `run_scope`, a new or broader reach, a new secret or repo slot,
+a new or changed repo URL, or a new or changed non-secret env value. A new or
+changed recommended schedule does not pause auto, because decision 18 already
+keeps recommendations from changing a project's schedules on their own.
+
+The list is one place, on purpose: it is the pack's *permissions* in the
+sense an app store means, and a person who reads it knows what the pack can
+reach without reading its prompts.
+
+### 22. Agents do what a person can, within their scope
+
+Decision 15 stands and is sharpened:
+
+- **Editing a linked pack is refused at the API** for people and runs alike,
+  with an error naming the source. It is not merely discouraged. `run_scope`
+  on a standalone pack's states stays browser-only, as `0047` set.
+- **Detaching through a run key requires explicit confirmation** in the
+  request. The launch guidance tells agents that a linked workflow is
+  read-only, names its source, and says not to detach unless the issue asks
+  for it.
+- **Improving a followed workflow follows the run's scope**, exactly as it
+  would for a person with the same access. A `workspace` run edits the source
+  in the project that holds it, and followers take that as an update under
+  their link mode. A `project` run cannot reach another project's pack, so it
+  files a context-change proposal in the source project
+  (`specs/context/AGENT_EDITING.md`) or comments, and a person or a
+  `workspace` run applies it. The guidance names which path applies.
+
+### 23. Losing access keeps the link
+
+Decision 6 stands. Added: when read access returns, updates resume on the
+same link with no action from the project. Detach exists for editing, not for
+recovery.
+
+### 24. Project-side controls: a bounded overlay
+
+The non-goals say *no overlay*, and decision 3 lists a state's category and a
+workflow's initial state as travelling read-only. Revised: a project holds a
+small set of **controls** on each linked workflow, keyed by stable state key,
+that survive updates. They are settings *about* the pack, not edits *to* it,
+and the pack's content stays read-only. The point is to start with more checks
+in place and move toward more automation over time without detaching.
+
+| Control | On | Choices | Default |
+| --- | --- | --- | --- |
+| **Initial state** | the workflow | any of its states | the pack's initial state |
+| **Review mode** | each `awaiting_human` state | **human** (as authored), **agent** (the state runs as `active`, offered only when the state carries instructions), **skip** (transitions into the state are rerouted to its one outgoing target; offered only when it has exactly one) | human |
+| **Schedule frequency, timezone and gate** | each schedule set up from a recommendation | as decision 18 | the recommendation |
+| **Precedence** | the project's packs | an order, advanced | see below |
+
+Rules:
+
+- A control survives every update. When an update changes the source's own
+  value for something a control overrides, the review says *source changed;
+  your setting kept*.
+- An update that removes a state a control names drops the control, with a
+  note, on the same mapping screen decision 4 describes.
+- A review-mode change is a real change to the project's workflow, not a plain
+  settings write: switching a state's effective category goes through the
+  same paths a workflow edit does today (decision revisions and consent
+  resets, `docs/shared-projects.md`; schedule resets for a starting state;
+  the supervisor's category-based dispatch). Building it as an override that
+  those paths do not see would reintroduce the problems they close.
+- **Precedence is advanced.** Decision 10, rule 4, no longer stops an add or
+  update for a choice. The pack being added or updated wins within its reach,
+  the review says so in one line, and the order is editable afterwards on the
+  Packs page.
+
+### 25. Hard requirements at add
+
+The only inputs an add cannot proceed without are the ones the pack cannot
+work without: **secret values** (decision 9) and **repo slots**. Everything
+else has a default and can be changed later.
+
+A **repo slot** is a repo item that travels as a declaration — name,
+description, optional default URL and branch — instead of a fixed URL. The
+project supplies the URL when adding the pack; the value is project-side and
+survives updates, like a secret value. A repo item with a fixed URL still
+travels as today and is listed in the permission set (decision 21). Authors
+choose which form each repo takes.
+
+An update may also require a **state mapping** (decision 4) before it
+applies. That is the only other hard requirement, and it arises only when an
+occupied state is removed.
+
+### Data model notes for this update
+
+- `pack_link` gains `created_by` (the member who made the link) and the
+  default-mode rule in decision 20 is computed from the source project's
+  owner at link time, then stored.
+- `project_pack_settings` gains the controls in decision 24: effective initial
+  state and per-state review mode, keyed by stable state key, beside the
+  precedence order it already holds.
+- `context_item` repo items gain a `slot` form (declaration only); the
+  project-side URL lives with the other supplied values in
+  `project_pack_settings`.
