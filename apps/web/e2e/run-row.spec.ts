@@ -13,7 +13,7 @@
 import type { Workflow } from '@tines/shared';
 import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
-import { ALICE, RUNROW, RUNROW_ESTIMATED, RUNROW_FAILED } from './constants.mjs';
+import { ALICE, RUNROW, RUNROW_ESTIMATED, RUNROW_FAILED, RUNROW_STALLED } from './constants.mjs';
 import { apiClient, body, gotoHydrated, resetFocus, signIn } from './helpers';
 
 test.describe('shared run row', () => {
@@ -66,6 +66,44 @@ test.describe('shared run row', () => {
 		const runnerCard = page.locator('div.rounded-lg', { hasText: RUNROW.runnerName }).first();
 		await expect(runnerCard).toContainText('1 consecutive failure');
 		await expect(runnerCard).not.toContainText('1 consecutive failures');
+	});
+
+	test('leads ended runs with the Activity feed outcome glyph and color on both surfaces', async ({
+		page
+	}) => {
+		const expected = [
+			{ runner: RUNROW.runnerName, icon: /tabler-icon-circle-check/, color: /text-emerald-600/ },
+			{ runner: RUNROW_FAILED.runnerName, icon: /tabler-icon-circle-x/, color: /text-destructive/ },
+			{
+				runner: RUNROW_STALLED.runnerName,
+				icon: /tabler-icon-alert-triangle/,
+				color: /text-amber-700/
+			}
+		];
+		for (const surface of ['issue', 'agents'] as const) {
+			if (surface === 'issue') {
+				await gotoHydrated(
+					page,
+					`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`
+				);
+			} else {
+				await gotoHydrated(page, '/agents');
+				await page.getByLabel('Show ended runs').check();
+			}
+			for (const { runner, icon, color } of expected) {
+				const row = page.locator('li:not([inert])', { hasText: runner });
+				const glyph = row.getByTestId('run-outcome-icon');
+				await expect(glyph, `${surface}: ${runner}`).toHaveClass(color);
+				await expect(glyph.locator('svg'), `${surface}: ${runner}`).toHaveClass(icon);
+				await expect(row.getByTestId('run-status'), `${surface}: ${runner}`).toHaveClass(color);
+				await expect(row.getByTestId('run-live-dot')).toHaveCount(0);
+			}
+			await expect(
+				page
+					.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName })
+					.getByTestId('run-error')
+			).toHaveClass(/text-destructive/);
+		}
 	});
 
 	test('distinguishes an empty ended log from a live wait', async ({ page, request }) => {

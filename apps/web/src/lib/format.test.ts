@@ -6,6 +6,8 @@ import {
 	nextRunLabel,
 	relativeTimeShort,
 	runElapsedLabel,
+	runOutcomePresentation,
+	runStatusClass,
 	truncate,
 	untilTime
 } from './format';
@@ -227,5 +229,59 @@ describe('joinedDate', () => {
 				year: 'numeric'
 			})
 		);
+	});
+});
+
+describe('runOutcomePresentation', () => {
+	it.each([
+		['completed', 'advanced', 'success'],
+		['completed', null, 'success'],
+		['completed', undefined, 'success'],
+		['completed', 'stalled', 'warning'],
+		['completed', 'interrupted', 'warning'],
+		['failed', 'advanced', 'failure'],
+		['failed', 'stalled', 'failure'],
+		['failed', null, 'failure'],
+		['failed', 'interrupted', 'warning'],
+		['timed_out', null, 'warning'],
+		['canceled', 'advanced', 'warning']
+	])('%s · %s → %s', (status, outcome, tone) => {
+		expect(runOutcomePresentation(status, outcome)?.tone).toBe(tone);
+	});
+
+	it.each([
+		['running', null],
+		['assigned', null],
+		['launching', null],
+		['completed', 'bogus'],
+		['completed', 7],
+		[42, null]
+	])('%s · %s → null', (status, outcome) => {
+		expect(runOutcomePresentation(status, outcome)).toBeNull();
+	});
+
+	it('colors each tone as the Activity feed does', () => {
+		expect(runOutcomePresentation('completed', 'advanced')?.colorClass).toBe(
+			'text-emerald-600 dark:text-emerald-400'
+		);
+		expect(runOutcomePresentation('completed', 'stalled')?.colorClass).toBe(
+			'text-amber-700 dark:text-amber-400'
+		);
+		expect(runOutcomePresentation('failed', null)?.colorClass).toBe('text-destructive');
+	});
+});
+
+describe('runStatusClass', () => {
+	it('keeps live statuses on their phase colors', () => {
+		expect(runStatusClass('running')).toBe('text-emerald-600 dark:text-emerald-400');
+		expect(runStatusClass('launching')).toBe('text-emerald-600 dark:text-emerald-400');
+		expect(runStatusClass('assigned')).toBe('text-sky-600 dark:text-sky-400');
+	});
+
+	it('colors ended statuses by outcome', () => {
+		expect(runStatusClass('completed', 'advanced')).toBe('text-emerald-600 dark:text-emerald-400');
+		expect(runStatusClass('completed', 'stalled')).toBe('text-amber-700 dark:text-amber-400');
+		expect(runStatusClass('failed', 'stalled')).toBe('text-destructive');
+		expect(runStatusClass('completed', 'bogus')).toBe('text-muted-foreground');
 	});
 });

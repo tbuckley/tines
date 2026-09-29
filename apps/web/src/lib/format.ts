@@ -1,5 +1,5 @@
 import type { AgentRun } from '@tines/shared';
-import { isActiveRun } from '@tines/shared';
+import { RUN_END_OUTCOMES, isActiveRun } from '@tines/shared';
 
 /** Absolute fallback for timestamps too far out to phrase as a duration. */
 function shortDate(ms: number): string {
@@ -219,12 +219,51 @@ export function prefersReducedMotion(): boolean {
 }
 
 /** Text color for a run status, shared by every run row rendering. */
-export function runStatusClass(status: string): string {
+export type RunOutcomeTone = 'success' | 'warning' | 'failure';
+
+const RUN_OUTCOME_CLASSES: Record<RunOutcomeTone, string> = {
+	success: 'text-emerald-600 dark:text-emerald-400',
+	warning: 'text-amber-700 dark:text-amber-400',
+	failure: 'text-destructive'
+};
+
+const TERMINAL_RUN_STATUSES = ['completed', 'failed', 'timed_out', 'canceled'];
+
+/**
+ * How an ended run's outcome reads on every surface (Activity feed, run rows):
+ * green check = advanced, amber warning = stalled/interrupted/timed out/canceled,
+ * red X = failed. Accepts `unknown` because event payloads are untyped.
+ * Null for active or unrecognised input — callers fall back to muted.
+ */
+export function runOutcomePresentation(
+	status: unknown,
+	outcome: unknown
+): { tone: RunOutcomeTone; colorClass: string } | null {
+	if (
+		typeof status !== 'string' ||
+		!TERMINAL_RUN_STATUSES.includes(status) ||
+		(outcome !== undefined &&
+			outcome !== null &&
+			(typeof outcome !== 'string' || !(RUN_END_OUTCOMES as readonly string[]).includes(outcome)))
+	)
+		return null;
+	const tone: RunOutcomeTone =
+		outcome === 'interrupted'
+			? 'warning'
+			: status === 'failed'
+				? 'failure'
+				: outcome === 'stalled' || status !== 'completed'
+					? 'warning'
+					: 'success';
+	return { tone, colorClass: RUN_OUTCOME_CLASSES[tone] };
+}
+
+/** The run status word's color: live states by phase, ended ones by outcome. */
+export function runStatusClass(status: string, outcome?: unknown): string {
 	if (status === 'running' || status === 'launching')
 		return 'text-emerald-600 dark:text-emerald-400';
 	if (status === 'assigned') return 'text-sky-600 dark:text-sky-400';
-	if (status === 'completed') return 'text-muted-foreground';
-	return 'text-amber-700 dark:text-amber-400';
+	return runOutcomePresentation(status, outcome)?.colorClass ?? 'text-muted-foreground';
 }
 
 /** Clamps user- or URL-supplied text before it lands in a message. */

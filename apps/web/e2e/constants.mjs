@@ -149,6 +149,18 @@ export const RUNROW_FAILED = {
 	runKeyName: 'run:runrow-failed'
 };
 
+/**
+ * Seeded *completed · stalled* run (Alice's), on the same issue as RUNROW: the
+ * run that ended without advancing the issue, which run rows once showed as a
+ * plain "completed" while the Activity feed showed an amber warning. Own
+ * paused runner, for the same one-row selectors as RUNROW_FAILED.
+ */
+export const RUNROW_STALLED = {
+	runnerId: 'rnr_e2e_runrow_stalled',
+	runnerName: 'runrow-stalled',
+	runId: 'run_e2e_runrow_stalled'
+};
+
 export const RUNROW_ESTIMATED = {
 	runnerId: 'rnr_e2e_runrow_estimated',
 	runnerName: 'runrow-codex-priced',
