@@ -195,8 +195,8 @@ saying what the scope is.
 	 field (the invite landing-issue picker) scroll the field under the header on
 	 open and cap their height to end above the bottom bar and the on-screen
 	 keyboard; the bar is marked `data-bottom-chrome` for that measurement.
-	 Browser coverage sweeps both sides of
-	 the 40rem and 48rem edges so overflow cannot hide at a breakpoint.
+	 Browser coverage sweeps both sides of the 40rem and 48rem edges so overflow
+	 cannot hide at a breakpoint.
 7. **Available at every project count.** With no live projects the control
 	 offers Manage projects and New project without an empty radio group. With
 	 one, it also offers All projects and that project, but does not focus it

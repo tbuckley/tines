@@ -216,6 +216,14 @@ test('the landing issue list fits a phone screen', async ({ page, request, uniqu
 		expect(await bottom(options.last())).toBeLessThanOrEqual((await bottom(listbox)) + 0.5);
 	};
 
+	const underHeader = async () => {
+		const t = await top(landing);
+		return t >= 56 && t <= 120;
+	};
+	// Start each open from the top of the page, so the field has to scroll up to reach the header.
+	const scrollToTop = () => page.evaluate(() => window.scrollTo(0, 0));
+
+	await scrollToTop();
 	await landing.focus();
 	await expect(options).toHaveCount(8);
 	const box = (await listbox.boundingBox())!;
@@ -225,16 +233,26 @@ test('the landing issue list fits a phone screen', async ({ page, request, uniqu
 		true
 	);
 	// The field scrolls up under the header, and the list ends above the tab bar.
-	await expect.poll(() => top(landing)).toBeGreaterThanOrEqual(56);
+	await expect.poll(underHeader).toBe(true);
 	await expect.poll(async () => (await bottom(listbox)) <= (await top(tabBar))).toBe(true);
+	// Re-measured after the scroll: all eight fit without scrolling inside the list.
+	await expect.poll(() => listbox.evaluate((el) => el.scrollHeight <= el.clientHeight)).toBe(true);
 	await lastOptionFits();
+
+	// Keyboard stand-in: the viewport shrinks while the list is open, and the cap follows it.
+	await page.setViewportSize({ width: 390, height: 300 });
+	await expect(options).toHaveCount(8);
+	await expect.poll(async () => (await bottom(listbox)) <= (await top(tabBar))).toBe(true);
+	await page.setViewportSize({ width: 390, height: 844 });
 
 	// Little room left: the list caps its height and scrolls inside itself.
 	await landing.blur();
 	await expect(listbox).toHaveCount(0);
 	await page.setViewportSize({ width: 390, height: 360 });
+	await scrollToTop();
 	await landing.focus();
 	await expect(options).toHaveCount(8);
+	await expect.poll(underHeader).toBe(true);
 	await expect.poll(async () => (await bottom(listbox)) <= (await top(tabBar))).toBe(true);
 	expect(await listbox.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
 	await lastOptionFits();
