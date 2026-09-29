@@ -191,7 +191,11 @@ saying what the scope is.
 	 header at 48rem (`md`); below that width they remain in the bottom bar so the
 	 switcher and account control keep a valid width budget. Main content and
 	 workflow import/export action bars reserve the bottom bar's full height and
-	 safe-area inset on the same boundary. Browser coverage sweeps both sides of
+	 safe-area inset on the same boundary. In-page popovers that open below a
+	 field (the invite landing-issue picker) scroll the field under the header on
+	 open and cap their height to end above the bottom bar and the on-screen
+	 keyboard; the bar is marked `data-bottom-chrome` for that measurement.
+	 Browser coverage sweeps both sides of
 	 the 40rem and 48rem edges so overflow cannot hide at a breakpoint.
 7. **Available at every project count.** With no live projects the control
 	 offers Manage projects and New project without an empty radio group. With
