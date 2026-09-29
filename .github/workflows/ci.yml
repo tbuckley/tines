@@ -46,6 +46,28 @@ jobs:
 
       - run: pnpm format:check
 
+      # `pnpm test` now includes the `client` Vitest project, which mounts
+      # components in Chromium (apps/web/vite.config.ts). Same shell, same
+      # cache key and same reasoning as the e2e job below — nothing here is
+      # headed or records video, so the full Chromium and its ffmpeg would be
+      # dead weight, and the browser build is pinned by the Playwright
+      # version rather than by anything in the diff.
+      - name: Resolve the Playwright version
+        id: playwright
+        working-directory: apps/web
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v6
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install Chromium headless shell
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        working-directory: apps/web
+        run: pnpm exec playwright install --only-shell chromium
+
       - run: pnpm test
 
       # The navigation probe (docs/PERFORMANCE.md) is opt-in for `pnpm test`;
