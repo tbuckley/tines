@@ -5,7 +5,8 @@
 
 	let {
 		runId,
-		runError = null
+		runError = null,
+		errorClass = 'text-amber-700 dark:text-amber-400'
 	}: {
 		runId: string;
 		/**
@@ -15,6 +16,8 @@
 		 * expands, including when the log fetch itself fails.
 		 */
 		runError?: string | null;
+		/** Matches the row's error color (red for a failure, amber otherwise). */
+		errorClass?: string;
 	} = $props();
 
 	let detail = $state<AgentRunDetail | null>(null);
@@ -56,7 +59,7 @@
 <div class="mt-1 w-full min-w-0">
 	{#if runError}
 		<p
-			class="mb-1 text-xs break-words whitespace-pre-wrap text-amber-700 dark:text-amber-400"
+			class="mb-1 text-xs break-words whitespace-pre-wrap {errorClass}"
 			data-testid="run-error-full"
 		>
 			{runError}

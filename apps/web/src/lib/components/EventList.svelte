@@ -2,9 +2,7 @@
 	import type { TinesEvent } from '@tines/shared';
 	import IconArrowRight from '@tabler/icons-svelte/icons/arrow-right';
 	import IconBan from '@tabler/icons-svelte/icons/ban';
-	import IconCircleCheck from '@tabler/icons-svelte/icons/circle-check';
 	import IconCirclePlus from '@tabler/icons-svelte/icons/circle-plus';
-	import IconCircleX from '@tabler/icons-svelte/icons/circle-x';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
 	import IconFolder from '@tabler/icons-svelte/icons/folder';
 	import IconKey from '@tabler/icons-svelte/icons/key';
@@ -20,7 +18,14 @@
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import { fade, slide } from 'svelte/transition';
 	import StateBadge from '$lib/components/StateBadge.svelte';
-	import { describeEvent, displayActor, prefersReducedMotion, relativeTime } from '$lib/format';
+	import { RUN_OUTCOME_ICONS } from '$lib/components/RunOutcomeIcon.svelte';
+	import {
+		describeEvent,
+		displayActor,
+		prefersReducedMotion,
+		relativeTime,
+		runOutcomePresentation
+	} from '$lib/format';
 
 	let {
 		events,
@@ -68,42 +73,10 @@
 		}
 
 		if (ev.type === 'agent_run.ended') {
-			const status = ev.payload.status;
-			const outcome = ev.payload.outcome;
-			const terminalStatuses = ['completed', 'failed', 'timed_out', 'canceled'];
-			const knownOutcomes = ['advanced', 'stalled', 'interrupted'];
-
-			if (
-				typeof status !== 'string' ||
-				!terminalStatuses.includes(status) ||
-				(outcome !== undefined &&
-					outcome !== null &&
-					(typeof outcome !== 'string' || !knownOutcomes.includes(outcome)))
-			) {
-				return { Icon: IconRobot, colorClass: 'text-muted-foreground' };
-			}
-
-			if (outcome === 'interrupted') {
-				return {
-					Icon: IconAlertTriangle,
-					colorClass: 'text-amber-700 dark:text-amber-400'
-				};
-			}
-			if (status === 'failed') {
-				return { Icon: IconCircleX, colorClass: 'text-destructive' };
-			}
-			if (outcome === 'stalled' || status === 'timed_out' || status === 'canceled') {
-				return {
-					Icon: IconAlertTriangle,
-					colorClass: 'text-amber-700 dark:text-amber-400'
-				};
-			}
-			if (status === 'completed') {
-				return {
-					Icon: IconCircleCheck,
-					colorClass: 'text-emerald-600 dark:text-emerald-400'
-				};
-			}
+			const p = runOutcomePresentation(ev.payload.status, ev.payload.outcome);
+			return p
+				? { Icon: RUN_OUTCOME_ICONS[p.tone], colorClass: p.colorClass }
+				: { Icon: IconRobot, colorClass: 'text-muted-foreground' };
 		}
 
 		return { Icon: icon(ev), colorClass: 'text-muted-foreground' };
