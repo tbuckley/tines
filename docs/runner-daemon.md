@@ -105,8 +105,9 @@ from the working branch the agent creates for its fix.
 
 Rotating a token: `tines runners rotate-token <name>` invalidates the old token and prints
 the new one once. Run it on the daemon machine and the stored token is updated in place —
-just restart the daemon; elsewhere, the daemon exits with a clear 401 message until the new
-token is dropped into its config.
+just restart the daemon. If you rotated it elsewhere, the daemon's next poll gets a 401: it drops
+the stored token and exits, and a restart then fails with "no stored runner token". Restart it
+with `TINES_API_KEY` set, which re-registers the same runner by name.
 
 ## Codex permissions
 
@@ -255,7 +256,7 @@ written by the daemon and by the harness, in this order:
 
    ```
    $ claude -p --output-format stream-json --verbose --model 'claude-sonnet-5' < '/…/prompt.md'
-   # tines runner: harness=claude_code model=claude-sonnet-5 timeout=30m cli=0.0.84 workspace=/…/arun_xxx
+   # tines runner: harness=claude_code model=claude-sonnet-5 effort=(provider-default) timeout=30m cli=0.0.84 workspace=/…/arun_xxx
    ```
 
    The first line is exactly what was executed: for `claude_code` and `custom` it is the
@@ -268,7 +269,7 @@ written by the daemon and by the harness, in this order:
 
 4. The harness's stdout and stderr. Claude Code and Codex both run in structured JSON mode,
 	 which the daemon renders as readable `[agent]`, `[tool]`, `[session]`, and `[error]` lines.
-	 For Claude Code, `--raw` fetches the unrendered NDJSON.
+	 For Claude Code, `tines runs show <id> --logs --raw` fetches the unrendered NDJSON.
 5. The **exit line**: `# tines runner: exit code=0 after 3m12s`, or `signal=SIGTERM` when
    something killed it, with `(timed out)` when that something was the daemon's own
    timeout. A run canceled by the supervisor has no exit line — the daemon stops logging
