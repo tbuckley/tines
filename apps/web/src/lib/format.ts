@@ -218,7 +218,6 @@ export function prefersReducedMotion(): boolean {
 	);
 }
 
-/** Text color for a run status, shared by every run row rendering. */
 export type RunOutcomeTone = 'success' | 'warning' | 'failure';
 
 const RUN_OUTCOME_CLASSES: Record<RunOutcomeTone, string> = {

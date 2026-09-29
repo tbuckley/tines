@@ -350,6 +350,8 @@ test.describe('failed run error', () => {
 		// Whole, and readable without hovering or scrolling a log to its end.
 		const full = row.getByTestId('run-error-full');
 		await expect(full).toHaveText(FULL);
+		// A failed run's error reads red here too, matching its ⊗ glyph.
+		await expect(full).toHaveClass(/text-destructive/);
 
 		// First line of the disclosure: ahead of the log tail, not below it.
 		// `Node.DOCUMENT_POSITION_FOLLOWING` (4) only exists in the page.
