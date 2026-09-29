@@ -111,7 +111,7 @@
 	}
 </script>
 
-<main class="mx-auto max-w-3xl">
+<div class="mx-auto max-w-3xl">
 	<a
 		class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-sm"
 		href={`/projects/${data.projectId}`}><IconChevronLeft size={16} />{data.project.name}</a
@@ -294,4 +294,4 @@
 			{/if}
 		</section>
 	{/if}
-</main>
+</div>
