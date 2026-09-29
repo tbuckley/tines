@@ -6,7 +6,12 @@ import { apiClient, body, gotoHydrated, signIn } from './helpers';
 const invitePost = (projectId: string) => (r: Request) =>
 	r.method() === 'POST' && r.url().endsWith(`/api/v1/projects/${projectId}/invitations`);
 
-async function setup(page: Page, request: Parameters<typeof apiClient>[0], name: string) {
+async function setup(
+	page: Page,
+	request: Parameters<typeof apiClient>[0],
+	name: string,
+	extraOpen = 0
+) {
 	const owner = apiClient(request, ALICE.apiKey);
 	const project = await body<{ id: string }>(await owner.post('/api/v1/projects', { name }));
 	const workflow = await body<{ id: string }>(
@@ -28,6 +33,7 @@ async function setup(page: Page, request: Parameters<typeof apiClient>[0], name:
 	const issue2 = await create('Pricing page copy');
 	const issue3 = await create('Old retro');
 	await body(await owner.post(`/api/v1/issues/${issue3.id}/transition`, { action: 'Finish' }));
+	for (let i = 1; i <= extraOpen; i++) await create(`Filler issue ${i}`);
 	await signIn(page.context(), ALICE.sessionToken);
 	await gotoHydrated(page, `/projects/${project.id}/people`);
 	return { project, issue1, issue2, issue3 };
@@ -192,15 +198,63 @@ test('a search that answers after new typing cannot be picked', async ({
 
 test('the landing issue list fits a phone screen', async ({ page, request, uniqueName }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
-	await setup(page, request, uniqueName('people-invite-phone'));
-	await page.getByRole('combobox', { name: 'Landing issue (optional)' }).focus();
+	// Eight options: tall enough to run under the tab bar if the field stayed where it was.
+	await setup(page, request, uniqueName('people-invite-phone'), 6);
+	const landing = page.getByRole('combobox', { name: 'Landing issue (optional)' });
 	const listbox = page.getByRole('listbox');
-	await expect(listbox.getByRole('option')).toHaveCount(2);
-	const box = await listbox.boundingBox();
-	expect(box).not.toBeNull();
-	expect(box!.x).toBeGreaterThanOrEqual(0);
-	expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+	const options = listbox.getByRole('option');
+	const tabBar = page.locator('nav[aria-label="Primary"]');
+	const top = async (l: typeof landing) => (await l.boundingBox())!.y;
+	const bottom = async (l: typeof landing) => {
+		const b = (await l.boundingBox())!;
+		return b.y + b.height;
+	};
+	const lastOptionFits = async () => {
+		await options.last().scrollIntoViewIfNeeded();
+		const barTop = await top(tabBar);
+		expect(await bottom(options.last())).toBeLessThanOrEqual(barTop);
+		expect(await bottom(options.last())).toBeLessThanOrEqual((await bottom(listbox)) + 0.5);
+	};
+
+	await landing.focus();
+	await expect(options).toHaveCount(8);
+	const box = (await listbox.boundingBox())!;
+	expect(box.x).toBeGreaterThanOrEqual(0);
+	expect(box.x + box.width).toBeLessThanOrEqual(390);
 	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
 		true
 	);
+	// The field scrolls up under the header, and the list ends above the tab bar.
+	await expect.poll(() => top(landing)).toBeGreaterThanOrEqual(56);
+	await expect.poll(async () => (await bottom(listbox)) <= (await top(tabBar))).toBe(true);
+	await lastOptionFits();
+
+	// Little room left: the list caps its height and scrolls inside itself.
+	await landing.blur();
+	await expect(listbox).toHaveCount(0);
+	await page.setViewportSize({ width: 390, height: 360 });
+	await landing.focus();
+	await expect(options).toHaveCount(8);
+	await expect.poll(async () => (await bottom(listbox)) <= (await top(tabBar))).toBe(true);
+	expect(await listbox.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+	await lastOptionFits();
+});
+
+test('focusing the landing issue on desktop does not scroll the page', async ({
+	page,
+	request,
+	uniqueName
+}) => {
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await setup(page, request, uniqueName('people-invite-desktop'));
+	const landing = page.getByRole('combobox', { name: 'Landing issue (optional)' });
+	await landing.scrollIntoViewIfNeeded();
+	const before = await page.evaluate(() => window.scrollY);
+	await landing.focus();
+	await expect(page.getByRole('listbox').getByRole('option')).toHaveCount(2);
+	// Give a scroll scheduled for the next frame the chance to happen.
+	await page.evaluate(
+		() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+	);
+	expect(await page.evaluate(() => window.scrollY)).toBe(before);
 });
