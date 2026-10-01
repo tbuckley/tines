@@ -259,8 +259,8 @@ Things worth knowing about a move:
   either project is archived. Nothing is drained or cancelled on your behalf.
 - Only a human session or an ordinary named key may move an issue. A run key may read the
   review — that is how an agent argues for a move — but never commits one.
-- A project that owns an issue's old address cannot be deleted, even with `--force-context`;
-  archive it instead. Its old refs must keep working.
+- A project that owns an issue's old address cannot be deleted, even with
+  `"force_delete_context": true`; archive it instead. Its old refs must keep working.
 - Activity keeps its history honest: the source project's feed retains the events recorded
   there, the destination's feed picks up the move and everything after it, and the issue's own
   feed stays complete.
