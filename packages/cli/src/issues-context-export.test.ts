@@ -40,6 +40,8 @@ const scope = {
 
 let skills: Array<Record<string, unknown>> = [];
 let repos: Array<Record<string, unknown>> = [];
+let sharedBundle: Record<string, unknown> | undefined;
+let bundleError: Record<string, unknown> | undefined;
 let server: Server;
 let baseUrl: string;
 const dirs: string[] = [];
@@ -53,6 +55,10 @@ beforeAll(async () => {
 		}
 		if (url.pathname === '/api/v1/projects/prj_1/issues/1') return res.end(JSON.stringify(issue));
 		if (url.pathname === '/api/v1/issues/iss_1/context') {
+			if (bundleError) {
+				res.statusCode = 409;
+				return res.end(JSON.stringify({ error: bundleError }));
+			}
 			return res.end(
 				JSON.stringify({
 					prompt: { text: 'PROMPT', parts: [] },
@@ -60,7 +66,8 @@ beforeAll(async () => {
 					repos,
 					env: [],
 					overridden: [],
-					conflicts: []
+					conflicts: [],
+					...(sharedBundle ? { shared_bundle: sharedBundle } : {})
 				})
 			);
 		}
@@ -75,6 +82,8 @@ afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
 afterEach(() => {
 	skills = [];
 	repos = [];
+	sharedBundle = undefined;
+	bundleError = undefined;
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -142,5 +151,28 @@ describe('issues context --out', () => {
 		expect(result.stderr).toContain('overlaps generated skill directory');
 		expect(existsSync(join(dir, 'prompt.md'))).toBe(false);
 		expect(existsSync(join(dir, '.agents'))).toBe(false);
+	});
+});
+
+describe('issues context in a shared project', () => {
+	it('names the owner on stderr and keeps stdout the prompt alone', async () => {
+		sharedBundle = { version: 1, digest: 'd', owner: { id: 'u1', name: 'Alice' } };
+		const result = await cli(['issues', 'context', 'demo/1']);
+		expect(result.code).toBe(0);
+		expect(result.stdout.trim()).toBe('PROMPT');
+		expect(result.stderr).toContain("Shared guidance from Alice's project");
+	});
+
+	it('relays a bundle that cannot be delivered whole', async () => {
+		bundleError = {
+			code: 'bundle_unavailable',
+			message: 'Two shared repos check out into the same directory',
+			details: { reason: 'repo_dir_conflict' }
+		};
+		const result = await cli(['issues', 'context', 'demo/1']);
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain(
+			'shared guidance unavailable: Two shared repos check out into the same directory'
+		);
 	});
 });

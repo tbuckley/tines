@@ -922,6 +922,57 @@ describe('pollRunner', () => {
 		);
 	});
 
+	it('delivers a shared-project run from the guarded bundle only with the flag on', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { name: 'laptop-m4' });
+		const issue = addIssue(t);
+		t.sqlite
+			.prepare('UPDATE project SET shared_at = ?, sharing_revision = 1 WHERE id = ?')
+			.run(NOW, PROJECT);
+		const insert = t.sqlite.prepare(
+			`INSERT INTO context_item (id, user_id, kind, name, description, project_id, body, position, version, created_at, updated_at)
+			 VALUES (?, ?, 'prompt', ?, '', ?, ?, 0, 1, 0, 0)`
+		);
+		insert.run('ctx_proj', USER, 'house', PROJECT, 'PROJECT GUIDANCE');
+		insert.run('ctx_global', USER, 'private', null, 'PRIVATE GLOBAL PROMPT');
+		const deliver = async (env: Env) => {
+			const runId = addRun(t, { issueId: issue, runnerId });
+			t.sqlite
+				.prepare(
+					`UPDATE agent_run SET claim_owner_id = ?, claim_sharing_revision = 1,
+						claim_consent_epoch = 0, claim_consent_revision = 0 WHERE id = ?`
+				)
+				.run(USER, runId);
+			const { response } = await pollRunner(
+				t.db,
+				env,
+				await runnerRow(t, runnerId),
+				TEST_NOOP_DISPATCH_EFFECTS,
+				{ owned_runs: [] },
+				NOW + 1
+			);
+			t.sqlite
+				.prepare("UPDATE agent_run SET status = 'completed', ended_at = ? WHERE id = ?")
+				.run(NOW + 2, runId);
+			return response.assignments[0]!;
+		};
+
+		const legacy = await deliver(t.env);
+		expect(legacy).not.toHaveProperty('shared_bundle');
+		expect(legacy.prompt).toContain('PRIVATE GLOBAL PROMPT');
+
+		const shared = await deliver({ ...t.env, SHARED_EXECUTION: 'on' } as unknown as Env);
+		expect(shared.shared_bundle).toEqual({
+			version: 1,
+			digest: expect.stringMatching(/^[0-9a-f]{64}$/)
+		});
+		expect(shared.prompt).toContain('# Supervisor run');
+		expect(shared.prompt).toContain('PROJECT GUIDANCE');
+		expect(shared.prompt).not.toContain('PRIVATE GLOBAL PROMPT');
+		expect(shared.bundle.prompt.parts.map((part) => part.name)).toEqual(['house']);
+		expect(shared.run_key).toMatch(/^tines_/);
+	});
+
 	it('delivers an assigned run exactly once: prompt, bundle, run key, launching flip', async () => {
 		const t = world();
 		const runnerId = addRunner(t, { name: 'laptop-m4' });

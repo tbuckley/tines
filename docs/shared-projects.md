@@ -247,3 +247,26 @@ through current membership and an explicit type/payload allowlist. Historical
 events do not grant access after removal or transfer. Owner private fields,
 run logs, key metadata, and arbitrary context payloads stay out of shared
 projections.
+
+## Shared guidance (Tines/752, behind `SHARED_EXECUTION`)
+
+With the flag on, every agent run and every reader in a shared project gets one
+projection of the **owner's** guidance. That covers the issue page (owner and
+member), `tines issues context` and `tines issues prompt`, local runner delivery
+and managed launch.
+
+- **Shared automatically:** items anchored to the project, the issue, or a
+  workflow stage the issue is in.
+- **Private until included:** the owner's global and label-only prompts, skills
+  and repos. Include them with `tines projects guidance include <project>
+  <item-id>` or the project page's **Include from library**, and remove them with
+  `exclude`. Only the owner can do this.
+- **Never shared:** env items and artifacts. Env values reach only the owner's
+  own runs, beside the bundle and never inside it.
+- **Fail closed:** more than 250 items, a bundle over 1 MiB, or two repos
+  checking out into one directory refuses the bundle. The issue page says why,
+  and agents do not start that issue until the owner fixes it. A launch whose
+  guidance changes mid-admission rebuilds once, then backs off for 30 s. A cap or
+  conflict backs off for 10 min. Neither counts as a strike.
+- Member execution is still disabled. Members can read the guidance but their
+  agents are never admitted.

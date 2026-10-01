@@ -28,6 +28,22 @@ export interface ProjectMemberTable {
 	last_request_token: string | null;
 }
 
+export interface ProjectGuidanceInclusionTable {
+	project_id: string;
+	context_item_id: string;
+	revision: Generated<number>;
+	created_at: number;
+}
+
+export interface IssueGuidanceBlockTable {
+	issue_id: string;
+	code: 'bundle_too_large' | 'bundle_unavailable';
+	/** `env_unavailable`: the env channel failed to resolve (e.g. a secret no longer decrypts). */
+	reason: 'item_cap' | 'size_cap' | 'repo_dir_conflict' | 'churn' | 'env_unavailable';
+	retry_after: number;
+	created_at: number;
+}
+
 export interface ProjectInvitationTable {
 	id: string;
 	project_id: string;
@@ -748,6 +764,8 @@ export interface Database {
 	project: ProjectTable;
 	project_member: ProjectMemberTable;
 	project_invitation: ProjectInvitationTable;
+	project_guidance_inclusion: ProjectGuidanceInclusionTable;
+	issue_guidance_block: IssueGuidanceBlockTable;
 	workflow: WorkflowTable;
 	workflow_state: WorkflowStateTable;
 	workflow_transition: WorkflowTransitionTable;

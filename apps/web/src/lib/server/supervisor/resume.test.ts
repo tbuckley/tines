@@ -327,4 +327,28 @@ describe('resumeFingerprint', () => {
 			resumeFingerprint({ ...base, effort: 'high' })
 		);
 	});
+
+	it('keys shared-project runs on contributor and guidance digest, never-shared unchanged', () => {
+		// A contributor without a guidance digest is a never-shared run: unchanged.
+		expect(resumeFingerprint({ ...base, contributorId: 'usr_1', guidanceDigest: null })).toBe(
+			resumeFingerprint(base)
+		);
+		const shared = resumeFingerprint({ ...base, contributorId: 'usr_1', guidanceDigest: 'g1' });
+		expect(JSON.parse(shared)).toEqual({
+			version: 2,
+			runner_id: 'rnr_1',
+			harness: 'claude_managed',
+			model: 'claude-sonnet-5',
+			effort: null,
+			preamble_variant: 'claude_managed',
+			contributor_id: 'usr_1',
+			guidance_digest: 'g1'
+		});
+		expect(shared).not.toBe(
+			resumeFingerprint({ ...base, contributorId: 'usr_2', guidanceDigest: 'g1' })
+		);
+		expect(shared).not.toBe(
+			resumeFingerprint({ ...base, contributorId: 'usr_1', guidanceDigest: 'g2' })
+		);
+	});
 });

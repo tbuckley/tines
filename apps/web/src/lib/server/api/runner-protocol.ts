@@ -62,6 +62,8 @@ import {
 	retainResumeResource
 } from '$lib/server/supervisor/resume';
 import { effectiveAutomationEnabled } from '$lib/server/supervisor/settings';
+import { admitSharedRun, usesSharedLaunch } from '$lib/server/supervisor/shared-launch';
+import type { BeforeSharedMint } from '$lib/server/supervisor/bundle-e2e-race';
 import { priceCodexUsage } from '$lib/server/supervisor/codex-pricing';
 import { pricingCatalogFor } from '$lib/server/supervisor/user-rates';
 import { listArtifacts } from './artifacts';
@@ -376,7 +378,9 @@ export async function pollRunner(
 	effects: DispatchEffects,
 	body: RunnerPollRequest,
 	now: number = Date.now(),
-	reconcileAttempt = 0
+	reconcileAttempt = 0,
+	/** E2E only: the shared-launch race hook (`bundle-e2e-race.ts`). */
+	beforeSharedMint?: BeforeSharedMint
 ): Promise<PollOutcome> {
 	const owned = new Set(validateOwnedRuns(body));
 	const instanceId = validateInstanceId(body);
@@ -555,7 +559,16 @@ export async function pollRunner(
 				.where('runner_token_hash', '=', runner.runner_token_hash)
 				.executeTakeFirst();
 			if (current && (instanceId === undefined || current.daemon_instance_id === instanceId)) {
-				return pollRunner(db, env, current, effects, body, now, reconcileAttempt + 1);
+				return pollRunner(
+					db,
+					env,
+					current,
+					effects,
+					body,
+					now,
+					reconcileAttempt + 1,
+					beforeSharedMint
+				);
 			}
 		}
 		throw new ApiFail(
@@ -703,9 +716,16 @@ export async function pollRunner(
 	if (runner.status === 'active') {
 		for (const run of active) {
 			if (run.status !== 'assigned') continue;
-			const assignment = await deliverAssignedRun(db, env, runner, effects, run, now, {
-				envDelivery: body.env_delivery === 1
-			});
+			const assignment = await deliverAssignedRun(
+				db,
+				env,
+				runner,
+				effects,
+				run,
+				now,
+				{ envDelivery: body.env_delivery === 1 },
+				beforeSharedMint
+			);
 			if (assignment) assignments.push(assignment);
 		}
 	}
@@ -749,7 +769,8 @@ async function deliverAssignedRun(
 	effects: DispatchEffects,
 	run: Database['agent_run'],
 	now: number,
-	caps: { envDelivery: boolean } = { envDelivery: false }
+	caps: { envDelivery: boolean } = { envDelivery: false },
+	beforeSharedMint?: BeforeSharedMint
 ): Promise<RunnerAssignment | null> {
 	const [eligibility, settings] = await Promise.all([
 		db
@@ -823,6 +844,22 @@ async function deliverAssignedRun(
 			if (ended.ended) effects.signalDispatch();
 		}
 		return null;
+	}
+
+	// A shared project under the release flag takes the guarded material
+	// path (Tines/752); every other run below is today's, byte for byte.
+	if (await usesSharedLaunch(env, db, run.issue_id)) {
+		return deliverSharedRun(
+			db,
+			env,
+			runner,
+			effects,
+			run,
+			now,
+			caps,
+			deliveryCapabilities,
+			beforeSharedMint
+		);
 	}
 
 	// The guarded one-shot flip; a lost race means another poll (a second
@@ -975,6 +1012,137 @@ async function deliverAssignedRun(
 	};
 }
 
+function localAdmission(runner: RunnerRow) {
+	return runner.concurrency_instance_id && runner.concurrency_ceiling
+		? {
+				runnerId: runner.id,
+				instanceId: runner.concurrency_instance_id,
+				ceiling: runner.concurrency_ceiling
+			}
+		: undefined;
+}
+
+/**
+ * Delivery for a run in a shared project (flag on). The material — bundle,
+ * env channel and prompts — is built before the key exists and the mint is
+ * guarded on the bundle's witness (`admitSharedRun`). After a successful mint
+ * the rest only serializes; if it still throws, the key is revoked and the
+ * run failed rather than left `launching` with a live key.
+ */
+async function deliverSharedRun(
+	db: Kysely<Database>,
+	env: Env,
+	runner: RunnerRow,
+	effects: DispatchEffects,
+	run: Database['agent_run'],
+	now: number,
+	caps: { envDelivery: boolean },
+	deliveryCapabilities: EffortCapabilitiesV1 | null,
+	beforeSharedMint?: BeforeSharedMint
+): Promise<RunnerAssignment | null> {
+	const admission = await admitSharedRun(env, db, run, {
+		maxRunMinutes: runner.max_run_minutes,
+		now,
+		envChannel: caps.envDelivery,
+		localAdmission: localAdmission(runner),
+		...(beforeSharedMint
+			? { beforeMint: (attempt: number) => beforeSharedMint(db, run.issue_id, attempt) }
+			: {})
+	});
+	if (admission.kind === 'released') effects.signalDispatch();
+	if (admission.kind !== 'admitted') return null;
+	const { material, secret } = admission;
+	try {
+		const { guidance, issue } = material.bundle;
+		const issueRef = `${issue.detail.project_name}/${issue.detail.number}`;
+		let envField: { env: RunnerAssignment['env'] } | Record<string, never> = {};
+		if (caps.envDelivery && material.env.length > 0) {
+			envField = {
+				env: material.env.map(({ name, value, secret }) => ({ name, value, secret }))
+			};
+		}
+		const effortField =
+			run.resolved_effort && run.effort_source && run.effort_application_status === 'pending'
+				? {
+						effort: {
+							version: 1 as const,
+							value: run.resolved_effort,
+							source: JSON.parse(run.effort_source),
+							capability_digest: deliveryCapabilities!.catalog_digest,
+							...(deliveryCapabilities && supportedEfforts(deliveryCapabilities, run.model) === null
+								? { verification: 'asserted' as const }
+								: {})
+						}
+					}
+				: {};
+		const skills = guidance.skills.map(({ name, description }) => ({ name, description }));
+		const shared_bundle = { version: 1 as const, digest: material.bundle.digest };
+		// Local runs have no provider meta of their own: it carries the
+		// guidance digest to the end-of-run retain, which fingerprints with it.
+		await db
+			.updateTable('agent_run')
+			.set({ provider_meta: JSON.stringify({ guidance_digest: material.guidanceDigest }) })
+			.where('id', '=', run.id)
+			.execute();
+		const resume = await prepareResume(db, env, {
+			runner,
+			run,
+			now,
+			guidanceDigest: material.guidanceDigest
+		});
+		if (resume) {
+			const preamble = buildResumePreamble({
+				variant: 'local',
+				runId: run.id,
+				runnerName: runner.name,
+				issueRef,
+				timeoutMinutes: runner.max_run_minutes,
+				skills,
+				previousRunId: resume.previous_run_id
+			});
+			return {
+				run: await serializedRun(db, run.user_id, run.id),
+				...effortField,
+				prompt: `${preamble}\n\n${material.resumePrompt}`,
+				bundle: guidance,
+				run_key: secret,
+				...envField,
+				timeout_minutes: runner.max_run_minutes,
+				resume,
+				shared_bundle
+			};
+		}
+		const preamble = buildSupervisorPreamble({
+			variant: 'local',
+			runId: run.id,
+			runnerName: runner.name,
+			issueRef,
+			timeoutMinutes: runner.max_run_minutes,
+			skills
+		});
+		return {
+			run: await serializedRun(db, run.user_id, run.id),
+			...effortField,
+			prompt: `${preamble}\n\n${material.launchPrompt}`,
+			bundle: guidance,
+			run_key: secret,
+			...envField,
+			timeout_minutes: runner.max_run_minutes,
+			shared_bundle
+		};
+	} catch (error) {
+		await failLaunch(db, env, {
+			userId: run.user_id,
+			runId: run.id,
+			runner,
+			error: error instanceof Error ? error.message : String(error),
+			now
+		});
+		effects.signalDispatch();
+		return null;
+	}
+}
+
 /**
  * The resume decision at delivery. Reads the newest ended run for this issue
  * on this runner, its retained resource and the runner's policy, runs the
@@ -990,7 +1158,13 @@ async function deliverAssignedRun(
 async function prepareResume(
 	db: Kysely<Database>,
 	env: Env,
-	input: { runner: RunnerRow; run: Database['agent_run']; now: number }
+	input: {
+		runner: RunnerRow;
+		run: Database['agent_run'];
+		now: number;
+		/** Shared-project runs only; see `resumeFingerprint`. */
+		guidanceDigest?: string;
+	}
 ): Promise<RunnerAssignmentResume | null> {
 	const { runner, run, now } = input;
 	const config = parseRunnerConfig(runner.config);
@@ -1036,6 +1210,8 @@ async function prepareResume(
 		harness: String(config.harness ?? 'claude_code'),
 		model: run.model,
 		effort: run.effort_application_status === 'pending' ? run.resolved_effort : null,
+		contributorId: run.user_id,
+		guidanceDigest: input.guidanceDigest ?? null,
 		preambleVariant: 'local'
 	});
 	const verdict = resumeEligibility({
@@ -1595,6 +1771,17 @@ function validateTurnCount(value: unknown, field: string): number | undefined {
 	return value;
 }
 
+/** The guidance digest a shared-project local run was admitted with, if any. */
+function localGuidanceDigest(providerMeta: string | null): string | null {
+	if (!providerMeta) return null;
+	try {
+		const digest = (JSON.parse(providerMeta) as { guidance_digest?: unknown }).guidance_digest;
+		return typeof digest === 'string' ? digest : null;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Retention: a run that advanced its issue into an awaiting state on a
  * resume-enabled runner leaves its session and workspace claimable until the
@@ -1613,6 +1800,7 @@ async function retainAwaitingSession(
 			model: string | null;
 			resolved_effort: string | null;
 			effort_application_status: string | null;
+			provider_meta: string | null;
 		};
 		runId: string;
 		providerSessionId: string | null;
@@ -1652,6 +1840,8 @@ async function retainAwaitingSession(
 				input.run.effort_application_status === 'accepted_unconfirmed'
 					? input.run.resolved_effort
 					: null,
+			contributorId: input.run.user_id,
+			guidanceDigest: localGuidanceDigest(input.run.provider_meta),
 			preambleVariant: 'local'
 		}),
 		expiresAt: input.now + runner.resume_window_hours * 60 * 60 * 1000,

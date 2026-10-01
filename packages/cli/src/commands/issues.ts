@@ -974,8 +974,17 @@ export function register(program: Command): void {
 	).action(async (ref: string, opts: CommonOpts & { out?: string; force?: boolean }) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
-		const context = await api.getIssueContext(issue.id);
+		const context = await api.getIssueContext(issue.id).catch((e: unknown) => {
+			// A shared project refuses a bundle it cannot deliver whole; say why
+			// rather than printing a partial one.
+			if (e instanceof ApiError && e.code.startsWith('bundle_'))
+				die(`shared guidance unavailable: ${e.message}`);
+			throw e;
+		});
 		if (opts.json && !opts.out) return printJson(context);
+		// Stderr, so a piped prompt and the --out files stay the bundle alone.
+		if (context.shared_bundle)
+			console.error(`Shared guidance from ${context.shared_bundle.owner.name}'s project`);
 		if (opts.out === undefined) {
 			if (context.prompt.text) console.log(context.prompt.text);
 			if (context.skills.length > 0) {
