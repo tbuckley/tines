@@ -249,7 +249,7 @@ else in the non-goals list (membership, per-project labels, nesting) stands.
    highest-numbered issue away cannot free its number for reuse. Old refs
    resolve for reads and authorized writes; old browser URLs canonicalize.
 3. **Deletion.** A project that owns a historical address refuses deletion with
-   `422 project_has_issue_aliases`, `--force-context` included, and offers
+   `422 project_has_issue_aliases`, `"force_delete_context": true` included, and offers
    archive instead.
 4. **Authority.** Human sessions and ordinary named keys commit; a run key may
    read the preview and always gets `403 run_key_forbidden` on the POST.
