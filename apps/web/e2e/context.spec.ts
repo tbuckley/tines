@@ -1027,7 +1027,7 @@ test("changing the project in the context editor drops the old project's issue r
 	}
 });
 
-for (const size of [DESKTOP, PHONE, { width: 1280, height: 720 }, { width: 390, height: 480 }]) {
+for (const size of [DESKTOP, PHONE, { width: 1280, height: 720 }, { width: 390, height: 280 }]) {
 	test(`the context editor's issue list is reachable without scrolling by hand at ${size.width}x${size.height}`, async ({
 		context,
 		page
@@ -1051,7 +1051,8 @@ for (const size of [DESKTOP, PHONE, { width: 1280, height: 720 }, { width: 390, 
 		await scope.fill('Page issue');
 		await expect(options).toHaveCount(8);
 		await expect.poll(() => hittable(options.first())).toBe(true);
-		// A list taller than the dialog body can only show its top rows at once.
+		// At 280px the list is taller than the dialog body, which can only show
+		// its top rows at once; the arrow keys below must scroll the rest in.
 		if (size.height >= 720) await expect.poll(() => hittable(options.last())).toBe(true);
 
 		for (let i = 1; i < 8; i += 1) {

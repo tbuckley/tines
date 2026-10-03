@@ -133,12 +133,16 @@ describe('findProjectByName', () => {
 	const projects = [
 		{ id: 'prj_lower', name: 'tines' },
 		{ id: 'prj_title', name: 'Tines' },
-		{ id: 'prj_seed', name: 'pagination-seed' }
+		{ id: 'prj_seed', name: 'pagination-seed' },
+		{ id: 'prj_mixed', name: 'Mixed-Case' }
 	];
 
 	it('ignores the case the name was typed in', () => {
 		expect(findProjectByName(projects, 'PAGINATION-SEED')?.id).toBe('prj_seed');
 		expect(findProjectByName(projects, 'TINES')?.id).toBe('prj_lower');
+		// The stored name is folded too, not only the typed one.
+		expect(findProjectByName(projects, 'mixed-case')?.id).toBe('prj_mixed');
+		expect(findProjectByName(projects, 'MIXED-CASE')?.id).toBe('prj_mixed');
 	});
 
 	it('prefers the exact-case name when two differ only by case', () => {
