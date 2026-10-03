@@ -340,6 +340,16 @@ export const TRANSFER_RUNTIME = {
 	ruleId: 'rrl_e2e_transfer_destination'
 };
 
+/** Never focused on a project: 101 global prompts for Context page pagination. */
+export const CONTEXT_PAGINATION = {
+	id: 'usr_e2e_context_pagination',
+	name: 'Context Pagination E2E',
+	email: 'context-pagination@e2e.test',
+	apiKey: 'tines_e2econtextpagination00000000000000000000000',
+	apiKeyName: 'context-pagination-key',
+	sessionToken: 'e2e-session-context-pagination'
+};
+
 /** Isolated 205-row population for issue-list pagination. */
 export const PAGINATION = {
 	user: {
