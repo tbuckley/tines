@@ -393,8 +393,7 @@ test.describe.serial('issue links', () => {
 
 			// Already linked, so it is no longer offered.
 			await picker.fill(`${PAGINATION.projectName}/1`);
-			await expect(card.getByRole('listbox')).toContainText('Page issue 1');
-			await expect(options.filter({ hasText: /Page issue 1$/ })).toHaveCount(0);
+			await expect(card.getByRole('listbox')).toHaveText('No issues match');
 		} finally {
 			await api.delete(`/api/v1/projects/${project.id}`).catch(() => undefined);
 		}
