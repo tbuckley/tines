@@ -220,6 +220,16 @@ test('the landing issue list fits a phone screen', async ({ page, request, uniqu
 		const t = await top(landing);
 		return t >= 56 && t <= 120;
 	};
+	// A tall viewport can run out of page before the field reaches the header (how much page sits
+	// below the field depends on the platform's text wrapping), so there the scroll may stop at the
+	// page's end instead. The short viewport below always has room, and pins the header clearance.
+	const underHeaderOrAtPageEnd = async () =>
+		(await underHeader()) ||
+		(await page.evaluate(
+			() =>
+				window.scrollY > 0 &&
+				window.scrollY >= document.documentElement.scrollHeight - window.innerHeight - 1
+		));
 	// Start each open from the top of the page, so the field has to scroll up to reach the header.
 	const scrollToTop = () => page.evaluate(() => window.scrollTo(0, 0));
 
@@ -233,7 +243,7 @@ test('the landing issue list fits a phone screen', async ({ page, request, uniqu
 		true
 	);
 	// The field scrolls up under the header, and the list ends above the tab bar.
-	await expect.poll(underHeader).toBe(true);
+	await expect.poll(underHeaderOrAtPageEnd).toBe(true);
 	await expect.poll(async () => (await bottom(listbox)) <= (await top(tabBar))).toBe(true);
 	// Re-measured after the scroll: all eight fit without scrolling inside the list.
 	await expect.poll(() => listbox.evaluate((el) => el.scrollHeight <= el.clientHeight)).toBe(true);
