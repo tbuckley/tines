@@ -98,6 +98,9 @@ export async function listSharedContextItems(
 	page: Page
 ): Promise<{ items: ContextItem[]; hasMore: boolean }> {
 	const projects = await listSharedProjects(db, requester, filters.archived ?? 'false');
+	// Only the dimensions a member may filter by: a caller's wider filter
+	// object (`exact`, `project`, `issue`) must not narrow or widen the fence.
+	const { kind, state, label, q } = filters;
 	const pages = await Promise.all(
 		projects.map(async (project) => {
 			try {
@@ -107,7 +110,7 @@ export async function listSharedContextItems(
 				const { items, hasMore } = await listContextItems(
 					db,
 					actor,
-					{ ...filters, touchesProjectId: project.id },
+					{ kind, state, label, q, touchesProjectId: project.id },
 					page
 				);
 				await assertMemberStillCurrent(db, actor);
