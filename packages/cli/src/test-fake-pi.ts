@@ -13,6 +13,11 @@ export interface FakePiConfig {
 	rpc?: 'serve' | 'exit' | 'hang';
 	/** `selectable: false` makes `set_model` fail, as a model without credentials does. */
 	models?: Array<{ provider: string; id: string; levels: string[]; selectable?: boolean }>;
+	/**
+	 * `--list-models` prints `models` only when this variable is set, as a
+	 * provider whose key comes from the environment does. Unset: always.
+	 */
+	modelsNeedEnv?: string;
 	/** `--mode json`: the stream lines to replay, as events. */
 	stream?: unknown[];
 	/** `--mode json`: stay alive this long after the stream, to be killed. */
@@ -31,6 +36,14 @@ const put = (record) => process.stdout.write(JSON.stringify(record) + '\\n');
 
 if (args[0] === '--version') {
 	console.log(config.version ?? '0.99.2');
+} else if (args[0] === '--list-models') {
+	const visible = !config.modelsNeedEnv || process.env[config.modelsNeedEnv];
+	const models = visible ? (config.models ?? []) : [];
+	if (models.length === 0) console.log('No models available. Use /login to log into a provider via OAuth or API key.');
+	else {
+		console.log('provider  model  context  max-out  thinking  images');
+		for (const m of models) console.log(m.provider + '  ' + m.id + '  128K  16K  yes  no');
+	}
 } else if (args.includes('rpc')) {
 	if (config.rpc === 'exit') process.exit(3);
 	if (config.rpc === 'hang') setInterval(() => {}, 1000);

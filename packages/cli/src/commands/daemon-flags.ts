@@ -43,7 +43,7 @@ export function withDaemonFlags(cmd: Command): Command {
 			'--name <name>',
 			'runner name, unique per user; name it machine-plus-harness, e.g. macbook-claude (default: this hostname)'
 		)
-		.option('--harness <harness>', 'claude-code | codex | custom', 'claude-code')
+		.option('--harness <harness>', 'claude-code | codex | pi | custom', 'claude-code')
 		.option(
 			'--command <template>',
 			'custom harness command template ({prompt_file}, {workspace}, {model}, {effort})'
@@ -82,7 +82,7 @@ export function withDaemonFlags(cmd: Command): Command {
 export function parseDaemonFlags(opts: DaemonFlagValues): DaemonSettings {
 	const harness = opts.harness.replaceAll('-', '_') as HarnessKind;
 	if (!HARNESS_KINDS.includes(harness)) {
-		die(`--harness must be claude-code, codex, or custom, got "${opts.harness}"`);
+		die(`--harness must be claude-code, codex, pi, or custom, got "${opts.harness}"`);
 	}
 	if (harness === 'custom' && !opts.command) {
 		die(

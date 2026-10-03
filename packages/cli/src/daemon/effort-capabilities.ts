@@ -17,6 +17,8 @@ export const EFFORT_CAPABILITIES_TTL_MS = 10 * 60_000;
 const MIN_CLAUDE_EFFORT_VERSION = [2, 1, 258] as const;
 /** The `pi` whose JSON event and RPC shapes this daemon parses (Tines/900). */
 const MIN_PI_VERSION = [0, 99, 2] as const;
+/** The same floor, as `tines runner install` names it. */
+export const PI_VERSION_FLOOR = MIN_PI_VERSION.join('.');
 /** One RPC round trip per model, so Pi's probe gets longer than the others. */
 const PI_DEADLINE_MS = 20_000;
 
