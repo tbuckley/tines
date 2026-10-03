@@ -15,7 +15,12 @@ export default defineConfig({
 	// The suite shares one local D1 database; a single worker keeps state
 	// deterministic (fixtures.ts allocates worker-namespaced runtime names).
 	workers: 1,
-	reporter: [['list']],
+	// CI also keeps a machine-readable copy: ci.yml uploads it from every
+	// shard, the aggregate job's summary and scripts/flake-ledger.mjs read it
+	// (e2e/README.md, "Recording a flake").
+	reporter: process.env.CI
+		? [['list'], ['json', { outputFile: 'test-results/results.json' }]]
+		: [['list']],
 	use: {
 		baseURL: BASE_URL,
 		// Reduced motion is the suite default. Every Svelte transition in the app
