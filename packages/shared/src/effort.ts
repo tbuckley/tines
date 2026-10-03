@@ -36,7 +36,7 @@ export interface EffortModelCapability {
 export interface EffortCapabilitiesV1 {
 	version: 1;
 	daemon_version: string;
-	harness: 'claude_code' | 'codex';
+	harness: 'claude_code' | 'codex' | 'pi';
 	harness_version: string;
 	catalog_revision?: string;
 	catalog_digest: string;

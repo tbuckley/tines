@@ -193,6 +193,8 @@ export function priceCodexUsage(
 		usage: AgentRunUsage;
 		evidence?: CodexPricingEvidenceV1;
 		now: number;
+		/** Why measured tokens with no evidence stay unpriced; `harness_unpriced` for pi. */
+		missingEvidenceReason?: RunPricingReason;
 	},
 	catalog: readonly CodexRate[] = CODEX_RATES
 ): AgentRunUsage {
@@ -209,7 +211,9 @@ export function priceCodexUsage(
 	if (!evidence) {
 		if (usage.cost_usd !== undefined) return usage;
 		const measured = CLASSES.some((field) => usage[field] !== undefined);
-		return measured ? unpriced(usage, undefined, now, 'pricing_evidence_missing') : usage;
+		return measured
+			? unpriced(usage, undefined, now, input.missingEvidenceReason ?? 'pricing_evidence_missing')
+			: usage;
 	}
 	if (evidence.session_mode === 'resumed' || run.resumed_from_run_id)
 		return unpriced(usage, evidence, now, 'attempt_scope_unknown');
