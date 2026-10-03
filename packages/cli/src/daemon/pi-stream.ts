@@ -169,6 +169,60 @@ function classifyFailure(detail: string): HarnessOutcome {
 	return { kind: 'error', detail };
 }
 
+/** Stream lines the raw-log upload leaves out: they repeat, per token or per chunk, what `message_end` and `tool_execution_end` say once. */
+const UNSPOOLED_PI_EVENTS = new Set(['message_update', 'message_start', 'tool_execution_update']);
+
+/**
+ * One stream line as the raw-log upload keeps it, or null to drop it.
+ * `agent_end` repeats every message of the run, so only its marker survives.
+ * Anything that is not a recognizable event is kept as it came.
+ */
+export function spooledPiLine(line: string): string | null {
+	// Pi writes `type` first; the parse is only for a line that does not.
+	let type = /^\s*\{"type":"([A-Za-z_]+)"/.exec(line)?.[1];
+	if (type === undefined && line.trimStart().startsWith('{')) {
+		try {
+			const event = JSON.parse(line) as PiStreamEvent | null;
+			if (typeof event?.type === 'string') type = event.type;
+		} catch {
+			return line;
+		}
+	}
+	if (type === undefined) return line;
+	if (UNSPOOLED_PI_EVENTS.has(type)) return null;
+	return type === 'agent_end' ? '{"type":"agent_end"}' : line;
+}
+
+/**
+ * Filters Pi's stdout for the raw spool, line by line across chunk
+ * boundaries. Without it the per-token `message_update` lines would fill the
+ * upload's size cap and leave only the tail of the run.
+ */
+export class PiRawSpoolFilter {
+	private pending = '';
+
+	/** Feeds a chunk in; returns the complete lines to spool, newline-terminated. */
+	write(chunk: string): string {
+		this.pending += chunk;
+		let out = '';
+		let nl = this.pending.indexOf('\n');
+		while (nl !== -1) {
+			const kept = spooledPiLine(this.pending.slice(0, nl));
+			if (kept !== null) out += `${kept}\n`;
+			this.pending = this.pending.slice(nl + 1);
+			nl = this.pending.indexOf('\n');
+		}
+		return out;
+	}
+
+	/** The trailing partial line, if the stream ended without a newline. */
+	end(): string {
+		const last = this.pending;
+		this.pending = '';
+		return last ? (spooledPiLine(last) ?? '') : '';
+	}
+}
+
 export interface PiStreamOptions {
 	/**
 	 * Called once, with the thinking level the first successful assistant

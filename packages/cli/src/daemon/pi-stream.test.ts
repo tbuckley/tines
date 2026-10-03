@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { PiStreamRenderer, renderPiEvent, type PiStreamEvent } from './pi-stream';
+import {
+	PiRawSpoolFilter,
+	PiStreamRenderer,
+	renderPiEvent,
+	spooledPiLine,
+	type PiStreamEvent
+} from './pi-stream';
 
 /**
  * Fixtures are the streams `pi --mode json` 0.99.2 wrote against a mock model
@@ -492,5 +498,54 @@ describe('PiStreamRenderer', () => {
 
 	it('ignores a session id that could not be a resume handle', () => {
 		expect(run([session('bad\u0000id')]).summary.providerSessionId).toBeUndefined();
+	});
+});
+
+describe('raw spool filter', () => {
+	const line = (event: unknown) => JSON.stringify(event);
+
+	it('drops the per-token and per-chunk lines and empties agent_end', () => {
+		expect(spooledPiLine(line({ type: 'message_update', usage: ZERO_USAGE }))).toBeNull();
+		expect(spooledPiLine(line({ type: 'message_start', message: userMessage }))).toBeNull();
+		expect(spooledPiLine(line({ type: 'tool_execution_update', toolName: 'bash' }))).toBeNull();
+		expect(spooledPiLine(line({ type: 'agent_end', messages: [userMessage] }))).toBe(
+			'{"type":"agent_end"}'
+		);
+		// A line that does not lead with `type` is still recognized.
+		expect(spooledPiLine(line({ usage: ZERO_USAGE, type: 'message_update' }))).toBeNull();
+	});
+
+	it('keeps everything else exactly as it came', () => {
+		for (const kept of [
+			line(session()),
+			line({ type: 'message_end', message: userMessage }),
+			line({ type: 'tool_execution_end', toolName: 'bash', isError: false }),
+			line({ type: 'turn_end' }),
+			line({ note: 'no type' }),
+			'Warning: not json',
+			'{not json',
+			''
+		]) {
+			expect(spooledPiLine(kept)).toBe(kept);
+		}
+	});
+
+	it('filters whole lines across chunk boundaries and flushes a trailing one', () => {
+		const filter = new PiRawSpoolFilter();
+		const update = line({ type: 'message_update', delta: 'a line\u2028separator' });
+		const end = line({ type: 'message_end', message: userMessage });
+		const stream = `${line(session())}\n${update}\n${end}\n${update}\n${line({ type: 'agent_end', messages: [userMessage] })}`;
+		let out = '';
+		// Three-character chunks: every line is split somewhere inside it.
+		for (let i = 0; i < stream.length; i += 3) out += filter.write(stream.slice(i, i + 3));
+		expect(out).toBe(`${line(session())}\n${end}\n`);
+		expect(filter.end()).toBe('{"type":"agent_end"}');
+		expect(filter.end()).toBe('');
+	});
+
+	it('drops a trailing partial line that would have been dropped whole', () => {
+		const filter = new PiRawSpoolFilter();
+		expect(filter.write(line({ type: 'message_update' }))).toBe('');
+		expect(filter.end()).toBe('');
 	});
 });
