@@ -62,6 +62,7 @@ import {
 	AMBIENT_CLI,
 	buildHarnessInvocation,
 	buildSpawnEnv,
+	classifyExit,
 	SecretRedactor,
 	redactSecrets,
 	CliRefresher,
@@ -887,43 +888,18 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				if (closing) run.batcher.append(closing);
 				// A supervisor-canceled run is already settled: finishAndCleanup
 				// degrades to cleanup-only, reporting nothing.
-				if (run.timedOut) {
-					void table.finishAndCleanup(
-						run,
-						'failed',
-						`run exceeded the ${assignment.timeout_minutes}m timeout; harness killed`
-					);
-				} else if (code === 0) {
-					void table.finishAndCleanup(run, 'completed');
-				} else {
-					// A non-zero exit whose cause was the provider refusing on a
-					// usage limit is the runner's condition, not the issue's
-					// fault: report it without a strike and say when the window
-					// reopens, so the supervisor can hold the runner until then.
-					// A signal is our own kill, so it keeps its existing report.
-					const limited = signal ? null : (run.limiter?.signal() ?? null);
-					const providerError = signal ? null : (run.limiter?.providerError() ?? null);
-					if (limited) {
-						const detail = redactSecrets(limited.detail, secretEnvValues);
-						log(`run ${runId}: harness rate limited (${detail}); reporting without a strike`);
-						void table.finishAndCleanup(run, 'failed', `rate limited: ${detail}`, {
-							judgment: 'rate_limited',
-							...(limited.resumeAt !== null ? { resume_at: limited.resumeAt } : {})
-						});
-					} else if (providerError) {
-						const detail = redactSecrets(providerError.detail, secretEnvValues);
-						log(`run ${runId}: transient provider error (${detail}); reporting without a strike`);
-						void table.finishAndCleanup(run, 'failed', `provider error: ${detail}`, {
-							judgment: 'interrupted'
-						});
-					} else {
-						void table.finishAndCleanup(
-							run,
-							'failed',
-							signal ? `harness killed by ${signal}` : `harness exited with code ${code}`
-						);
-					}
-				}
+				const { status, error, note, ...judgment } = classifyExit({
+					harness: opts.harness,
+					code,
+					signal,
+					timedOut: run.timedOut,
+					timeoutMinutes: assignment.timeout_minutes,
+					limited: run.limiter?.signal() ?? null,
+					providerError: run.limiter?.providerError() ?? null,
+					secrets: secretEnvValues
+				});
+				if (note) log(`run ${runId}: ${note}; reporting without a strike`);
+				void table.finishAndCleanup(run, status, error, judgment.judgment ? judgment : undefined);
 			});
 		} catch (err) {
 			void table.finishAndCleanup(
