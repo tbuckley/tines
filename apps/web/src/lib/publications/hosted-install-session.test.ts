@@ -111,9 +111,10 @@ describe('hosted install session', () => {
 		const h = await prepared();
 		const before = h.session.state;
 		const emitted = h.changes.length;
-		const check = h.session.recheck();
+		void h.session.recheck();
 		h.statuses[1].resolve(status());
-		await check;
+		// Settle rather than await the check, so a recheck that starts a reload fails here by assertion.
+		await h.settle();
 		// Identity, not equality: nothing was reassigned, so the page has nothing to reset.
 		expect(h.session.state).toBe(before);
 		expect(h.session.state.plan).toBe(h.plan);
@@ -211,9 +212,9 @@ describe('hosted install session', () => {
 	it('accepts a held prepare that completes after an unchanged successful recheck', async () => {
 		const h = await loaded();
 		const preparing = h.session.prepare(CHOICES);
-		const check = h.session.recheck();
+		void h.session.recheck();
 		h.statuses[1].resolve(status());
-		await check;
+		await h.settle();
 		expect(h.session.state.phase).toBe('preparing');
 		const plan = planFor('plan_held');
 		h.prepares[0].resolve(plan);
