@@ -2,6 +2,7 @@ import type { ContextItem } from '@tines/shared';
 import { AGENT_GUIDELINES_NAME } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import { createTestDb } from '$lib/server/api/test-db';
+import type { IssuePagination } from '$lib/server/issue-pagination';
 import { NOW, PROJECT, USER, addIssue, seedBase } from '$lib/server/supervisor/test-fixtures';
 import { load } from './+page.server';
 
@@ -67,8 +68,15 @@ function event(t: TestDb, query = '') {
 	} as unknown as Parameters<typeof load>[0];
 }
 
-const run = async (t: TestDb, query = '') => (await load(event(t, query)))!;
-const ids = (result: { items: ContextItem[] }) => result.items.map((item) => item.id);
+/** The loader's return, narrowed: SvelteKit's generated type widens it to a record. */
+interface Loaded {
+	items: ContextItem[];
+	filters: { kind?: string };
+	hasAgentGuidelines: boolean;
+	pagination: IssuePagination;
+}
+const run = async (t: TestDb, query = '') => (await load(event(t, query))) as unknown as Loaded;
+const ids = (result: Loaded) => result.items.map((item) => item.id);
 const queryOf = (href: string | null) => new URL(href!, 'http://test').search;
 
 describe('Context page load', () => {
@@ -82,7 +90,7 @@ describe('Context page load', () => {
 	it('lists artifacts when asked for them, and says there are more', async () => {
 		const result = await run(buriedPrompt(), '?kind=artifact');
 		expect(result.items).toHaveLength(100);
-		expect(result.items.every((item: ContextItem) => item.kind === 'artifact')).toBe(true);
+		expect(result.items.every((item) => item.kind === 'artifact')).toBe(true);
 		expect(ids(result)[0]).toBe('ctx_art_101');
 		expect(result.pagination.nextHref).toContain('after=');
 	});
