@@ -74,6 +74,15 @@ Transitions: **Submit for review** (`Open → Human Review`), **Send back** (`Hu
 - Renaming states or transitions, adding states, and adding transitions are always allowed. Issues reference states by id, so renames never break references.
 - Removing a transition is allowed (it doesn't invalidate any issue's current state), but the API warns when it leaves a non-terminal state with no outgoing transitions.
 
+**2026-10-03 amendment (Tines/608) — revision-checked saves.** "No versioning" above still holds for issues: there is no history, rollback or per-issue snapshot. A workflow does now carry a save revision, so one editor cannot silently overwrite another:
+
+- Every workflow read returns `revision`, a positive integer that starts at 1 and advances by exactly one on every committed `PATCH /api/v1/workflows/:id` — including one that changes nothing, which still records its event. It is not the graph revision that issue permission receipts call `workflow_revision`; that one moves only when the graph's meaning changes.
+- A save commits only against the definition it read. The request may carry `expected_revision`, the revision the caller read and edited; a value that is not the current revision is refused before anything is written. A request that omits it is still checked against the server's own read at the start of the request, so a save can never commit a definition assembled from a read another save has since replaced.
+- A refused save returns `409 workflow_conflict` with `details: { committed: false, expected_revision, current_revision, remedy: "reload_workflow" }` and writes nothing: no state, transition, context item, event or dispatch signal. `expected_revision` in the details is the caller's value, or the revision the request read when the caller sent none. The server never retries; the caller re-reads, reviews and saves again.
+- A save writes only what differs from the definition it read. A field the request omits is not written, and a state whose name, category and position are unchanged is not written, so a description-only PATCH cannot revert someone else's rename or reorder.
+- Only a workflow save advances `revision`. Changing a state's run scope, and another workflow's save clearing an inheritance pointer onto this one, do not: neither is part of the save payload.
+- Two cross-table races are refused whole rather than by revision: a workflow deleted mid-save answers `404`, and an issue entering a state the save removes answers `409 conflict`. Neither writes anything.
+
 ### Issue
 
 The unit of work. An issue has:
@@ -285,7 +294,7 @@ Phase one is done when this loop works end-to-end:
 Formerly open, now decided:
 
 - **Standard workflow initial state**: named **Open** — implies "ready to be taken on / being worked" without a separate backlog state.
-- **`workflow.updated` payload**: a **summary diff** — a compact record of what changed (rename, states added/removed by name, transition count deltas, initial-state change), computed at update time. Workflows stay mutable (live-referenced, no versioning), so the event payload is the change record.
+- **`workflow.updated` payload**: a **summary diff** — a compact record of what changed (rename, states added/removed by name, transition count deltas, initial-state change), computed at update time. Workflows stay mutable (live-referenced, no versioning), so the event payload is the change record. Since Tines/608 (2026-10-03) the payload also carries `base_revision` and `revision`: the diff is computed against the definition at `base_revision`, and the save commits only if the workflow was still at that revision, so the summary describes exactly the step `base_revision → revision`.
 - **Issue description edits**: event only (`issue.updated`), no revision history in phase one.
 - **Graph rendering (superseded 2026-09-20)**: the original hand-rolled layered geometry was replaced by Dagre behind a pure synchronous adapter after action labels overlapped nodes and one another. Tines retains its Svelte/SVG renderer, category styling, transition animation, form-only editing, and unstored automatic positions. Complete state/action text boxes are reserved before layout; compact previews still elide action labels. All fitted surfaces keep their behavior, while the public snapshot graph retains its intrinsic 1.3× horizontal-scroller exception.
 - **Compact edge geometry (2026-09-20)**: compact Dagre edges reserve a 1×1 hidden geometry box with rank length 1 to avoid degenerate routes. Action labels remain elided in compact previews; full diagrams retain their real label geometry.

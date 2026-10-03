@@ -270,6 +270,12 @@ export interface Workflow {
 	transitions: WorkflowTransition[];
 	/** Issues currently bound to this workflow. */
 	issue_count: number;
+	/**
+	 * Definition revision; advances by one on every committed save. Not the
+	 * same as `workflow_revision` on issue permission receipts, which is the
+	 * graph `decision_revision`.
+	 */
+	revision: number;
 	created_at: number;
 	updated_at: number;
 }
@@ -330,9 +336,20 @@ export interface CreateWorkflowRequest {
 /**
  * Updates replace what they include: when `states` is present, existing
  * states not listed (by id) are deleted, subject to the editing rules; when
- * `transitions` is present, the transition set is replaced wholesale.
+ * `transitions` is present, the transition set is replaced wholesale. What is
+ * omitted is not written.
+ *
+ * A save commits only against the definition it read: if the workflow's
+ * `revision` moves before the write lands, the request fails with
+ * `409 workflow_conflict` and nothing is written.
  */
 export interface UpdateWorkflowRequest {
+	/**
+	 * The `Workflow.revision` the caller read and edited. A mismatch is
+	 * refused with `409 workflow_conflict` before anything is written. Omitted,
+	 * the save is still checked against the server's own read of the workflow.
+	 */
+	expected_revision?: number;
 	name?: string;
 	description?: string;
 	initial_state?: string;

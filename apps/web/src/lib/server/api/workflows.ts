@@ -759,6 +759,7 @@ export async function loadWorkflows(
 				...(t.requirements ? { requires: JSON.parse(t.requirements) as ArtifactRequirement[] } : {})
 			})),
 			issue_count: Number(row.issue_count ?? 0),
+			revision: row.definition_revision,
 			created_at: row.created_at,
 			updated_at: row.updated_at,
 			warnings: deadEndWarnings({
@@ -1036,6 +1037,36 @@ export async function createWorkflow(
 	return loadWorkflow(db, actor.userId, id);
 }
 
+/**
+ * A save refused because the definition moved after the caller (or this
+ * request's own read) saw it. Nothing was written. `expectedRevision` is the
+ * caller's `expected_revision`, or the revision this request read when the
+ * caller sent none.
+ */
+export function workflowConflict(expectedRevision: number, currentRevision: number): ApiFail {
+	return new ApiFail(
+		409,
+		'workflow_conflict',
+		'This workflow changed after you read it. Reload it, review the changes, then save again.',
+		{
+			committed: false,
+			expected_revision: expectedRevision,
+			current_revision: currentRevision,
+			remedy: 'reload_workflow'
+		}
+	);
+}
+
+/**
+ * Revision-checked (Tines/608): the batch opens by claiming `revision` R →
+ * R + 1 with an absolute value, so a competing save that already moved the
+ * row trips the `workflow_definition_revision_step` trigger and D1 rolls the
+ * whole batch back — every later statement is covered without a guard of its
+ * own. Only what differs from the read at R is written, so a field the
+ * request omitted is never reconstructed over someone else's edit. There is
+ * no automatic retry, and a caller that sends no `expected_revision` is
+ * still checked against this request's own read.
+ */
 export async function updateWorkflow(
 	db: Kysely<Database>,
 	env: Env,
@@ -1053,6 +1084,24 @@ export async function updateWorkflow(
 			'The standard workflow is read-only; copy it into your library to make changes'
 		);
 	}
+	const baseRevision = current.revision;
+	if (body.expected_revision !== undefined) {
+		if (!Number.isInteger(body.expected_revision) || body.expected_revision < 1) {
+			throw new ApiFail(422, 'invalid_field', '"expected_revision" must be a positive integer', {
+				field: 'expected_revision'
+			});
+		}
+		if (body.expected_revision !== baseRevision) {
+			throw workflowConflict(body.expected_revision, baseRevision);
+		}
+	}
+	// True only once this batch's claim has landed: a workflow deleted
+	// mid-save leaves the claim touching no row (so the trigger cannot fire),
+	// and the events must not outlive it.
+	const claimed: QueryGuard = {
+		predicate: sql<boolean>`EXISTS (SELECT 1 FROM workflow WHERE id = ${id}
+			AND definition_revision = ${baseRevision + 1})`
+	};
 
 	const name =
 		body.name !== undefined ? requireString(body.name, 'name', { max: 200 }).trim() : current.name;
@@ -1153,7 +1202,8 @@ export async function updateWorkflow(
 		actor,
 		attachedContext,
 		body.force_delete_context === true,
-		`remove state${removedStates.length === 1 ? ` "${removedStates[0].name}"` : 's'} from workflow "${current.name}"`
+		`remove state${removedStates.length === 1 ? ` "${removedStates[0].name}"` : 's'} from workflow "${current.name}"`,
+		claimed
 	);
 
 	const inh = await resolveInheritance(db, actor.userId, { id, name }, def.states, current.states);
@@ -1243,7 +1293,14 @@ export async function updateWorkflow(
 				.execute()
 		: [];
 
-	const payload: Record<string, unknown> = { workflow_id: id, name };
+	// The diff is against the read at `baseRevision`; the claim proves the row
+	// was still there at commit, so that read is the committed base.
+	const payload: Record<string, unknown> = {
+		workflow_id: id,
+		name,
+		base_revision: baseRevision,
+		revision: baseRevision + 1
+	};
 	if (name !== current.name) payload.renamed = { from: current.name, to: name };
 	if (description !== current.description) payload.description_changed = true;
 	if (statesAdded.length) payload.states_added = statesAdded;
@@ -1273,8 +1330,15 @@ export async function updateWorkflow(
 
 	const now = Date.now();
 	const queries: CompiledQuery[] = [];
-	// Swept context goes first: those items hold foreign keys onto states
-	// about to be deleted.
+	// The claim goes first, as an absolute value: against a row a competing
+	// save already moved to R + 1 it is a step of zero, the trigger raises, and
+	// nothing after it runs. It must not set `initial_state_id`, which can
+	// point at a state inserted later in the batch.
+	queries.push(
+		sql`UPDATE workflow SET definition_revision = ${baseRevision + 1} WHERE id = ${id}`.compile(db)
+	);
+	// Swept context next: those items hold foreign keys onto states about to
+	// be deleted.
 	queries.push(...contextSweep.queries);
 	// Old transitions next: they hold foreign keys onto states about to be
 	// deleted. Transition ids are not referenced elsewhere, so the set is
@@ -1313,6 +1377,15 @@ export async function updateWorkflow(
 					.compile()
 			);
 		} else {
+			// Kept states are written only where they differ from the base.
+			const before = currentById.get(s.id);
+			if (
+				before &&
+				before.name === s.name &&
+				before.category === s.category &&
+				before.position === s.position
+			)
+				continue;
 			queries.push(
 				db
 					.updateTable('workflow_state')
@@ -1363,21 +1436,23 @@ export async function updateWorkflow(
 				.compile()
 		);
 	}
+	const initialChanged = def.initialStateId !== current.initial_state_id;
 	queries.push(
+		// Never `definition_revision`: the claim above already advanced it, and
+		// a second step would trip the trigger.
 		db
 			.updateTable('workflow')
 			.set({
-				name,
-				description,
-				initial_state_id: def.initialStateId,
+				...(name !== current.name ? { name } : {}),
+				...(description !== current.description ? { description } : {}),
+				...(initialChanged ? { initial_state_id: def.initialStateId } : {}),
 				updated_at: now,
 				...(semanticChanged ? { decision_revision: sql<number>`decision_revision + 1` } : {})
 			})
 			.where('id', '=', id)
 			.compile(),
-		eventInsert(db, actor, { type: 'workflow.updated', payload })
+		eventInsert(db, actor, { type: 'workflow.updated', payload }, claimed)
 	);
-	const initialChanged = def.initialStateId !== current.initial_state_id;
 	const changedCategoryIds = def.states
 		.filter(
 			(state) => currentById.get(state.id)?.category !== state.category && currentById.has(state.id)
@@ -1431,7 +1506,30 @@ export async function updateWorkflow(
 			);
 		}
 	}
-	await runAtomic(env, queries);
+	try {
+		await runAtomic(env, queries);
+	} catch (e) {
+		const message = e instanceof Error ? e.message : '';
+		const stale = message.includes('workflow_definition_conflict');
+		// Cross-table races (an issue entering a state this save removes, the
+		// workflow deleted under a save that adds states) roll back on a
+		// foreign key rather than on the revision.
+		if (!stale && !message.includes('FOREIGN KEY constraint failed')) throw e;
+		const row = await db
+			.selectFrom('workflow')
+			.select('definition_revision')
+			.where('id', '=', id)
+			.executeTakeFirst();
+		if (!row) throw notFound();
+		if (stale) {
+			throw workflowConflict(body.expected_revision ?? baseRevision, row.definition_revision);
+		}
+		throw new ApiFail(
+			409,
+			'conflict',
+			'The workflow or its issues changed while saving; reload and try again'
+		);
+	}
 	if (categoriesChanged.some((change) => change.to === 'active')) effects.signalDispatch();
 	const updated = await loadWorkflow(db, actor.userId, id);
 	if (contextSweep.deleted.length > 0) updated.deleted_context = contextSweep.deleted;

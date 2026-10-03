@@ -218,6 +218,7 @@ const issue: IssueDetail = {
 		states: [],
 		transitions: [],
 		issue_count: 1,
+		revision: 1,
 		created_at: 0,
 		updated_at: 0
 	},
