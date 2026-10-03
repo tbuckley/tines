@@ -12,10 +12,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CLI_BIN, NODE } from './test-bin.js';
+import { installFakePi } from './test-fake-pi.js';
 
 const run = promisify(execFile);
 const NAME = 'box-e2e';
@@ -219,6 +220,69 @@ describe('tines runner install', () => {
 		});
 		expect(recordedCalls().filter((c) => c.startsWith('systemctl'))).toEqual([]);
 	}, 60_000);
+
+	const PI_INSTALL = [
+		'runner',
+		'install',
+		'--name',
+		NAME,
+		'--harness',
+		'pi',
+		'--service-manager',
+		'systemd'
+	];
+	// The unit's PATH starts with node's own directory, so a real `pi`
+	// installed beside the node running the tests would be the one checked,
+	// not the fake. These need a node with no `pi` next to it (CI has none).
+	const piIt = it.skipIf(existsSync(join(dirname(NODE), 'pi')));
+	const PI_MODELS = [{ provider: 'local', id: 'qwen3-coder', levels: ['off', 'low'] }];
+
+	piIt(
+		'refuses a pi older than the supported floor before registering anything',
+		async () => {
+			installFakePi(root, { version: '0.98.9', models: PI_MODELS });
+			await expect(cli(PI_INSTALL, { TINES_API_KEY: 'tines_user_key' })).rejects.toMatchObject({
+				code: 1,
+				stderr: expect.stringMatching(/is pi 0\.98\.9, older than 0\.99\.2/)
+			});
+			expect(registrations).toBe(0);
+			expect(recordedCalls()).toEqual([]);
+			expect(existsSync(join(home, '.config', 'systemd', 'user'))).toBe(false);
+		},
+		60_000
+	);
+
+	piIt(
+		'warns when pi lists no models without the shell variables the service will not have',
+		async () => {
+			// The key is in the installing shell, and the service gets only PATH and HOME.
+			installFakePi(root, { models: PI_MODELS, modelsNeedEnv: 'FAKE_PI_KEY' });
+			const { stdout } = await cli(PI_INSTALL, {
+				TINES_API_KEY: 'tines_user_key',
+				FAKE_PI_KEY: 'set-in-the-shell'
+			});
+			expect(stdout).toContain("warning: `pi --list-models` lists no models in the service's");
+			expect(stdout).toContain('docs/runner-daemon.md');
+			// A warning, not a refusal: the unit is written and the daemon comes up.
+			expect(registrations).toBe(1);
+			expect(stdout).toContain('is up under systemd');
+			const unit = join(home, '.config', 'systemd', 'user', `tines-runner-${NAME}.service`);
+			expect(readFileSync(unit, 'utf8')).toContain(`--name ${NAME} --harness pi`);
+			expect(readFileSync(unit, 'utf8')).toContain(fakeBin);
+		},
+		60_000
+	);
+
+	piIt(
+		'says how many models the service will see when pi lists some',
+		async () => {
+			installFakePi(root, { version: '1.0.1', models: PI_MODELS });
+			const { stdout } = await cli(PI_INSTALL, { TINES_API_KEY: 'tines_user_key' });
+			expect(stdout).toContain("pi lists 1 model in the service's environment");
+			expect(stdout).not.toContain('warning:');
+		},
+		60_000
+	);
 
 	it('restart and uninstall drive the unit, and uninstall keeps the token', async () => {
 		await expect(

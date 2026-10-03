@@ -1284,7 +1284,7 @@ Options:
   --name <name>                  runner name, unique per user; name it
                                  machine-plus-harness, e.g. macbook-claude
                                  (default: this hostname)
-  --harness <harness>            claude-code | codex | custom (default:
+  --harness <harness>            claude-code | codex | pi | custom (default:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},
                                  {workspace}, {model}, {effort})
@@ -1322,7 +1322,7 @@ Options:
   --name <name>                  runner name, unique per user; name it
                                  machine-plus-harness, e.g. macbook-claude
                                  (default: this hostname)
-  --harness <harness>            claude-code | codex | custom (default:
+  --harness <harness>            claude-code | codex | pi | custom (default:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},
                                  {workspace}, {model}, {effort})

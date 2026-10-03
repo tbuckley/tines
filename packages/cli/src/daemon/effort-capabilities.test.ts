@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import type { EffortCapabilitiesV1, RunnerAssignment } from '@tines/shared';
@@ -7,9 +7,12 @@ import {
 	assignmentEffortRejection,
 	claudeEffortVersionSupported,
 	discoverEffortCapabilities,
+	discoverPi,
 	EFFORT_CAPABILITIES_TTL_MS,
-	EffortCapabilityRefresher
+	EffortCapabilityRefresher,
+	piVersionSupported
 } from './effort-capabilities.js';
+import { installFakePi, type FakePiConfig } from '../test-fake-pi.js';
 
 const capabilities: EffortCapabilitiesV1 = {
 	version: 1,
@@ -82,6 +85,14 @@ describe('capability refresh', () => {
 		expect(claudeEffortVersionSupported('2.1.258 (Claude Code)')).toBe(true);
 		expect(claudeEffortVersionSupported('2.2.0')).toBe(true);
 		expect(claudeEffortVersionSupported('unknown')).toBe(false);
+	});
+
+	it('enforces the probed Pi minimum version', () => {
+		expect(piVersionSupported('0.99.1')).toBe(false);
+		expect(piVersionSupported('0.98.12')).toBe(false);
+		expect(piVersionSupported('0.99.2')).toBe(true);
+		expect(piVersionSupported('1.0.1')).toBe(true);
+		expect(piVersionSupported('')).toBe(false);
 	});
 
 	it('caches within the TTL, coalesces refreshes, and supports a launch reprobe', async () => {
@@ -163,5 +174,94 @@ describe('Codex discovery against a broken app-server', () => {
 		expect(report && 'discovery_error' in report ? report.discovery_error : '').toMatch(
 			/^Codex app-server (exited \(code 3\) before listing models|stdin: write EPIPE)$/
 		);
+	});
+});
+
+describe('Pi discovery over RPC', () => {
+	let dir: string | null = null;
+	const originalPath = process.env.PATH;
+
+	function fakePi(config: FakePiConfig): string {
+		dir = mkdtempSync(join(tmpdir(), 'tines-pi-probe-'));
+		const bin = installFakePi(dir, config);
+		process.env.PATH = `${bin}${delimiter}${originalPath ?? ''}`;
+		return bin;
+	}
+
+	afterEach(() => {
+		process.env.PATH = originalPath;
+		if (dir) rmSync(dir, { recursive: true, force: true });
+		dir = null;
+	});
+
+	it('lists each model with its recognized thinking levels, one command at a time', async () => {
+		const bin = fakePi({
+			rpc: 'serve',
+			models: [
+				{ provider: 'mock', id: 'think', levels: ['off', 'minimal', 'low', 'medium', 'high'] },
+				{ provider: 'mock', id: 'plain', levels: ['off'] },
+				{ provider: 'hosted', id: 'no-key', levels: ['low'], selectable: false },
+				{ provider: 'mock', id: 'think', levels: ['max'] },
+				{ provider: 'mock', id: 'deep', levels: ['high', 'xhigh', 'max'] }
+			]
+		});
+		const report = await discoverEffortCapabilities('pi', 'test');
+		// `off` and `minimal` are Pi levels but not efforts Tines routes; a
+		// model with none is still listed, a model Pi cannot select is not.
+		expect(report).toMatchObject({
+			version: 1,
+			harness: 'pi',
+			harness_version: '0.99.2',
+			models: [
+				{ model: 'mock/think', efforts: ['low', 'medium', 'high'] },
+				{ model: 'mock/plain', efforts: [] },
+				{ model: 'mock/deep', efforts: ['high', 'xhigh', 'max'] }
+			]
+		});
+		expect(report).not.toHaveProperty('discovery_error');
+		// The catalog is the machine's whole model list, so nothing is asserted beyond it.
+		expect(report).not.toHaveProperty('accepts_asserted_effort');
+		// Every level above belongs to the model selected just before it was
+		// asked for, and the fake saw no command arrive while one was open.
+		expect(existsSync(join(bin, 'burst'))).toBe(false);
+	});
+
+	it('reports an empty catalog, not an error, when Pi has no models', async () => {
+		fakePi({ rpc: 'serve', models: [] });
+		const report = await discoverEffortCapabilities('pi', 'test');
+		expect(report).toMatchObject({ harness: 'pi', models: [] });
+		expect(report).not.toHaveProperty('discovery_error');
+	});
+
+	it('refuses a pi below the version floor without starting RPC', async () => {
+		const bin = fakePi({ version: '0.98.4', rpc: 'serve', models: [] });
+		const report = await discoverEffortCapabilities('pi', 'test');
+		expect(report).toMatchObject({
+			harness: 'pi',
+			models: [],
+			discovery_error: 'installed pi 0.98.4 predates the supported 0.99.2'
+		});
+		expect(existsSync(join(bin, 'burst'))).toBe(false);
+	});
+
+	it('reports a pi that exits without answering, without waiting out the deadline', async () => {
+		fakePi({ rpc: 'exit' });
+		const started = Date.now();
+		const report = await discoverEffortCapabilities('pi', 'test');
+		expect(Date.now() - started).toBeLessThan(5000);
+		// As for Codex, the write's EPIPE can beat the close event.
+		expect(report && 'discovery_error' in report ? report.discovery_error : '').toMatch(
+			/^pi rpc (exited \(code 3\) before listing models|stdin: write EPIPE)$/
+		);
+	});
+
+	it('gives up at its deadline on a pi that never answers', async () => {
+		fakePi({ rpc: 'hang' });
+		const report = await discoverPi('test', 400);
+		expect(report).toMatchObject({
+			harness: 'pi',
+			models: [],
+			discovery_error: 'pi model discovery timed out'
+		});
 	});
 });
