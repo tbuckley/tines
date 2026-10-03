@@ -10,6 +10,7 @@ import {
 	resolveRule,
 	resolveRoute,
 	resolveEffort,
+	tiersApply,
 	isRoutedCandidate,
 	queueVerdict,
 	speakingTarget,
@@ -267,6 +268,32 @@ describe('resolveTier', () => {
 		expect(resolved).toEqual({ tier: 'smartest', model: null, effort: null });
 	});
 
+	it('pi has no built-in table: an override names the model, a blank tier leaves it to Pi', () => {
+		const runner = local(
+			{ harness: 'pi' },
+			{ tiers: JSON.stringify({ balanced: { model: 'ollama/qwen3:32b', effort: 'high' } }) }
+		);
+		expect(builtinTierModels(runner)).toBeNull();
+		expect(resolveTier(runner, 'balanced')).toEqual({
+			tier: 'balanced',
+			model: 'ollama/qwen3:32b',
+			effort: 'high'
+		});
+		expect(resolveTier(runner, 'smartest')).toEqual({
+			tier: 'smartest',
+			model: null,
+			effort: null
+		});
+	});
+
+	it('tiers apply to every runner except a local custom harness', () => {
+		expect(tiersApply(local({ harness: 'pi' }))).toBe(true);
+		expect(tiersApply(local({ harness: 'codex' }))).toBe(true);
+		expect(tiersApply(local({}))).toBe(true);
+		expect(tiersApply({ type: 'claude_managed', config: '{}' })).toBe(true);
+		expect(tiersApply(local({ harness: 'custom', command: 'run {prompt_file}' }))).toBe(false);
+	});
+
 	it('keeps Codex object and legacy string overrides exact while unlisted tiers improve', () => {
 		const runner = local(
 			{ harness: 'codex' },
@@ -329,6 +356,22 @@ describe('resolveEffort', () => {
 		version: 1,
 		accepts_asserted_effort: true,
 		models: [{ model: 'gpt-5.6', efforts: ['low', 'medium', 'ultra'] }]
+	});
+
+	it('asks a pi runner to name a model before effort can route to an unnamed tier', () => {
+		const unnamed = { tier: 'balanced' as const, model: null, effort: null };
+		const pi = { ...local(capabilities), config: JSON.stringify({ harness: 'pi' }) };
+		expect(resolveEffort(pi, unnamed, 'high')).toMatchObject({
+			compatible: false,
+			deliveryMode: 'none',
+			reason: 'model_required: name a model for this tier on the runner to route effort to it'
+		});
+		const custom = { ...local(null), config: JSON.stringify({ harness: 'custom' }) };
+		expect(resolveEffort(custom, unnamed, 'high').reason).toBe(
+			'unsupported_harness: this harness has no model effort control'
+		);
+		// No effort asked for: an unnamed pi tier is fine and runs on Pi's default.
+		expect(resolveEffort(pi, unnamed, null)).toMatchObject({ compatible: true, resolved: null });
 	});
 
 	it('prefers routed effort and checks the exact final model', () => {

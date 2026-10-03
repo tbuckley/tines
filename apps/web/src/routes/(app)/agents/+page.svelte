@@ -419,6 +419,7 @@
 	const HARNESS_SLUG: Record<string, string> = {
 		'claude-code': 'claude',
 		codex: 'codex',
+		pi: 'pi',
 		custom: 'agent'
 	};
 	const namePlaceholder = $derived(`macbook-${HARNESS_SLUG[runnerHarness] ?? 'agent'}`);
@@ -671,7 +672,13 @@
 	}
 
 	/** Tiers apply unless the runner has a fixed configuration (custom harness). */
-	const editTiersApply = $derived(editTarget !== null && editTarget.tier_models !== null);
+	const editTiersApply = $derived(editTarget !== null && editTarget.tiers_apply);
+	/** Pi has no built-in tier table: a blank tier runs on Pi's own default model. */
+	const editIsPi = $derived(editTarget?.type === 'local' && editTarget.config.harness === 'pi');
+	/** The models the Pi daemon's probe listed on its machine, offered as suggestions. */
+	const editCatalogModels = $derived(
+		editIsPi ? Object.keys(editTarget?.effort_models ?? {}).sort() : []
+	);
 
 	type EffortChoices = {
 		choices: string[];
@@ -2082,6 +2089,7 @@
 							<Select id="runner-harness" bind:value={runnerHarness}>
 								<option value="claude-code">Claude Code</option>
 								<option value="codex">codex</option>
+								<option value="pi">pi</option>
 								<option value="custom">Custom command</option>
 							</Select>
 						</div>
@@ -2126,6 +2134,33 @@
 									rel="noreferrer">OpenAI configuration reference</a
 								>
 							</div>
+						</section>
+					{/if}
+					{#if runnerHarness === 'pi'}
+						<section
+							class="bg-muted/50 space-y-2 rounded-md border p-3 text-xs"
+							aria-labelledby="pi-setup-heading"
+						>
+							<h3 class="text-sm font-medium" id="pi-setup-heading">
+								Set up Pi before starting the runner
+							</h3>
+							<ul class="text-muted-foreground list-disc space-y-1 pl-4">
+								<li>
+									The runner machine needs <code class="bg-muted rounded px-1 py-0.5">pi</code> 0.99.2
+									or newer.
+								</li>
+								<li>
+									The runner runs as a service, which does not have your shell's variables. Model
+									credentials must be readable by <code class="bg-muted rounded px-1 py-0.5"
+										>pi</code
+									> without them.
+								</li>
+								<li>Pi has no sandbox. It runs tools as your user on that machine.</li>
+								<li>
+									After it connects, name a model for each tier on the runner, and raise its run
+									timeout if your local models are slow.
+								</li>
+							</ul>
 						</section>
 					{/if}
 					{#if runnerHarness === 'custom'}
@@ -2343,9 +2378,21 @@
 					</p>
 				{:else}
 					<p class="text-muted-foreground text-xs">
-						Leave a tier blank to use the built-in (it silently improves as models ship); an
-						override stays frozen until touched.
+						{#if editIsPi}
+							Leave a tier blank to run it on Pi's default model. Name a model as provider/id to
+							pick one; effort needs a named model.
+						{:else}
+							Leave a tier blank to use the built-in (it silently improves as models ship); an
+							override stays frozen until touched.
+						{/if}
 					</p>
+					{#if editIsPi}
+						<datalist id="edit-pi-models">
+							{#each editCatalogModels as model (model)}
+								<option value={model}></option>
+							{/each}
+						</datalist>
+					{/if}
 					<div
 						class="hidden min-w-0 gap-2 text-sm font-medium sm:grid {editTarget.type ===
 							'claude_managed' || editTarget.type === 'local'
@@ -2380,7 +2427,12 @@
 									<Input
 										id={`edit-model-${tier}`}
 										class="w-full min-w-0"
-										placeholder={builtin ? `${builtin} (built-in)` : 'model id'}
+										placeholder={editIsPi
+											? "Pi's default model"
+											: builtin
+												? `${builtin} (built-in)`
+												: 'model id'}
+										list={editIsPi ? 'edit-pi-models' : undefined}
 										aria-label={`Model override for ${tier}`}
 										value={editTierModels[tier] ?? ''}
 										oninput={(e) =>
@@ -2421,7 +2473,9 @@
 										<p class="text-muted-foreground pl-0 text-xs sm:col-span-2 sm:pl-22">
 											{choices.assertable
 												? `Tines can't confirm ${choices.model} supports effort. An unsupported value fails the run.`
-												: "Upgrade this runner's daemon to set effort on new models."}
+												: editIsPi
+													? `Pi did not list ${choices.model} on this machine, so effort can't be set on it.`
+													: "Upgrade this runner's daemon to set effort on new models."}
 										</p>
 									{/if}
 								{/if}
