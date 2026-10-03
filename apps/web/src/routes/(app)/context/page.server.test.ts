@@ -1,9 +1,10 @@
+import { isHttpError } from '@sveltejs/kit';
 import type { ContextItem } from '@tines/shared';
 import { AGENT_GUIDELINES_NAME } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import { createTestDb } from '$lib/server/api/test-db';
 import type { IssuePagination } from '$lib/server/issue-pagination';
-import { NOW, PROJECT, USER, addIssue, seedBase } from '$lib/server/supervisor/test-fixtures';
+import { NOW, OPEN, PROJECT, USER, addIssue, seedBase } from '$lib/server/supervisor/test-fixtures';
 import { load } from './+page.server';
 
 type TestDb = ReturnType<typeof createTestDb>;
@@ -21,23 +22,27 @@ function addItem(
 		kind?: string;
 		name?: string;
 		updatedAt: number;
+		user?: string;
 		project?: string;
+		state?: string;
 		issue?: string;
 		label?: string;
 	}
 ): void {
 	t.sqlite
 		.prepare(
-			`INSERT INTO context_item (id, user_id, kind, name, description, project_id, issue_id,
-				label_id, body, config, position, version, created_at, updated_at)
-			VALUES (?, ?, ?, ?, '', ?, ?, ?, 'b', ?, 0, 1, ?, ?)`
+			`INSERT INTO context_item (id, user_id, kind, name, description, project_id,
+				workflow_state_id, issue_id, label_id, body, config, position, version, created_at,
+				updated_at)
+			VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, 'b', ?, 0, 1, ?, ?)`
 		)
 		.run(
 			item.id,
-			USER,
+			item.user ?? USER,
 			item.kind ?? 'prompt',
 			item.name ?? item.id,
 			item.project ?? null,
+			item.state ?? null,
 			item.issue ?? null,
 			item.label ?? null,
 			item.kind === 'artifact' ? JSON.stringify({ artifact_type: 'text' }) : null,
@@ -142,6 +147,20 @@ describe('Context page load', () => {
 		expect((await run(t)).hasAgentGuidelines).toBe(false);
 	});
 
+	it("counts only the user's own global prompt of that exact name as the starter guidance", async () => {
+		const t = fixture();
+		t.sqlite.exec(`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+			VALUES ('u2', 'bob', 'b@example.com', 1, ${NOW}, ${NOW});`);
+		const issue = addIssue(t);
+		const named = { name: AGENT_GUIDELINES_NAME, updatedAt: NOW };
+		addItem(t, { id: 'ctx_other_name', name: 'house-style', updatedAt: NOW });
+		addItem(t, { id: 'ctx_other_user', user: 'u2', ...named });
+		addItem(t, { id: 'ctx_skill', kind: 'skill', ...named });
+		addItem(t, { id: 'ctx_state', state: OPEN, ...named });
+		addItem(t, { id: 'ctx_issue', issue, ...named });
+		expect((await run(t)).hasAgentGuidelines).toBe(false);
+	});
+
 	it('sends a cursor minted under another focus back to the first page, filters kept', async () => {
 		const t = fixture();
 		for (let n = 1; n <= 101; n += 1) addItem(t, { id: `ctx_p_${pad(n)}`, updatedAt: NOW + n });
@@ -156,7 +175,39 @@ describe('Context page load', () => {
 		});
 	});
 
-	it('rejects an empty cursor', async () => {
-		await expect(run(fixture(), '?after=')).rejects.toMatchObject({ status: 400 });
+	it("under a project focus, hides that project's issue artifacts by default and pages them on request", async () => {
+		const t = fixture();
+		const issue = addIssue(t);
+		addItem(t, { id: 'ctx_global', updatedAt: NOW });
+		addItem(t, { id: 'ctx_project', project: PROJECT, updatedAt: NOW });
+		for (let n = 1; n <= 101; n += 1) {
+			addItem(t, { id: `ctx_art_${pad(n)}`, kind: 'artifact', issue, updatedAt: NOW + n });
+		}
+		t.sqlite.exec(`INSERT INTO user_preference
+			(user_id, focused_project_id, last_project_id, updated_at)
+			VALUES ('${USER}', '${PROJECT}', '${PROJECT}', ${NOW});`);
+
+		const byDefault = await run(t);
+		expect(ids(byDefault)).toEqual(['ctx_project']);
+		expect(byDefault.pagination.nextHref).toBeNull();
+
+		const first = await run(t, '?kind=artifact');
+		expect(first.items).toHaveLength(100);
+		expect(ids(first)[0]).toBe('ctx_art_101');
+		expect(queryOf(first.pagination.nextHref)).toContain(`page_scope=${PROJECT}`);
+
+		const second = await run(t, queryOf(first.pagination.nextHref));
+		expect(ids(second)).toEqual(['ctx_art_001']);
+		expect(second.pagination.nextHref).toBeNull();
+		expect(second.pagination.previousHref).not.toBeNull();
+	});
+
+	it('rejects an empty cursor with a 400 page, not an unexpected error', async () => {
+		const rejection = await run(fixture(), '?after=').then(
+			() => undefined,
+			(e: unknown) => e
+		);
+		expect(isHttpError(rejection, 400)).toBe(true);
+		expect(rejection).toMatchObject({ body: { message: 'Malformed pagination cursor' } });
 	});
 });
