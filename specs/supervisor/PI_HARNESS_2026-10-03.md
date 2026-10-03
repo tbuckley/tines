@@ -83,6 +83,11 @@ reset time, so there is no `resume_at` and the server's default backoff applies.
   observed, so the daemon sends `observed_effort` with a Pi mismatch.
 - The estimate line is written only when the model answered at least once.
 - An effort mismatch is a plain failure and takes a strike.
+- A stream that ended on a rate limit or provider error keeps that judgment when Pi exits
+  non-zero too. Only exit 0 was observed on 0.99.2, but a runner's 429 must not cost the
+  issue a strike if a later Pi starts exiting 1.
+- Workflow-package tier routing counts a Pi runner as supplying a tier (`tiersApply`), with
+  the model shown as unnamed when the tier has no override.
 - Pi with no models reports an empty catalog rather than a discovery error; the install
   warning is where the operator hears about it. A model whose `set_model` fails (no
   credentials) is left out of the catalog.

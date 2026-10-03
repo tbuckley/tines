@@ -238,7 +238,8 @@ Local models are slow. Two limits matter:
 - **Outcome.** Pi exits 0 when the model call fails, so the daemon judges the run from the
   stream. A final answer that failed with a 429 fails the run as rate limited (no strike,
   runner backs off); a 5xx or a refused connection fails it as interrupted (no strike); any
-  other model error fails it as `pi: <detail>`.
+  other model error fails it as `pi: <detail>`. The rate-limited and interrupted readings
+  hold on a non-zero exit as well.
 - **Tokens.** Summed from each answer's `usage` when the model server reports it. When it
   reports none, nothing is recorded and the log carries one line with a rough estimate:
   `[usage] the model server reported no token usage; rough estimate ~N input / ~M output

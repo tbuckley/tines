@@ -16,7 +16,7 @@ import { normalizeLabelName } from '../api/labels';
 import { validateContextCreateFields } from '../api/context';
 import { validateWorkflowCreateFields } from '../api/workflows';
 import { validateScheduleCreateFields } from '../api/schedules';
-import { resolveRoute, resolveTier, builtinTierModels } from '../supervisor/logic';
+import { resolveRoute, resolveTier, tiersApply } from '../supervisor/logic';
 import { sqliteNoCase, type PackageDestination, type DestinationSelection } from './destination';
 
 const fail = (code: string, message: string, id: string): never => {
@@ -322,7 +322,7 @@ export function resolvePackageDestination(
 				if (!runner) return null;
 				const supported =
 					runner.status === 'active' &&
-					builtinTierModels(runner) !== null &&
+					tiersApply(runner) &&
 					(runner.type === 'local' || runner.has_api_key === 1);
 				return {
 					runner_id: runner.id,

@@ -203,6 +203,32 @@ describe('destination package resolution (read-only)', () => {
 		f.t.sqlite.exec(`UPDATE runner SET status='paused' WHERE id='${runner}'`);
 		await expect(f.resolve(choices)).rejects.toMatchObject({ code: 'routing_unavailable' });
 	});
+	it('counts a pi runner as supplying a tier, with or without a named model, but never a custom one', async () => {
+		const f = await fixture();
+		f.doc.routing = [{ id: 'routing:1', scope: { state_id: 'state:1' }, tier: 'smartest' }];
+		f.allocation.records['routing:1'] = { id: 'rul_planned', event_id: 'evt_planned' };
+		const choices = { ...f.choices, routing: { 'routing:1': 'smartest' } };
+		const runner = addRunner(f.t, { type: 'local', config: { harness: 'pi' } });
+		f.t.sqlite
+			.prepare(
+				'INSERT INTO routing_rule(id,user_id,targets,created_at,updated_at) VALUES(?,?,?,1,1)'
+			)
+			.run('global', USER, JSON.stringify([{ runner_id: runner }]));
+		// No override: pi launches its own default model, which the plan cannot name.
+		expect((await f.resolve(choices)).routing[0].targets).toMatchObject([
+			{ runner_id: runner, supported: true, model: null }
+		]);
+		f.t.sqlite
+			.prepare('UPDATE runner SET tiers=? WHERE id=?')
+			.run(JSON.stringify({ smartest: { model: 'omlx/qwen3-coder' } }), runner);
+		expect((await f.resolve(choices)).routing[0].targets).toMatchObject([
+			{ runner_id: runner, supported: true, model: 'omlx/qwen3-coder' }
+		]);
+		f.t.sqlite
+			.prepare('UPDATE runner SET config=? WHERE id=?')
+			.run(JSON.stringify({ harness: 'custom' }), runner);
+		await expect(f.resolve(choices)).rejects.toMatchObject({ code: 'routing_unavailable' });
+	});
 	it('uses literal input values once and applies post-render ordinary limits', async () => {
 		const f = await fixture();
 		f.doc.inputs[0] = { ...f.doc.inputs[0], type: 'text' };

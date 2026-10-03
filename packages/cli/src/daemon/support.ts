@@ -302,7 +302,8 @@ export interface ExitVerdict extends RunJudgment {
  *
  * `pi` is the exception to "exit 0 is success": it exits 0 when the model
  * call failed (429, 500, connection refused), so its verdict comes from the
- * stream. Pi reports no reset time, so a rate limit carries no `resume_at`
+ * stream. A stream that ended on a rate limit or provider error keeps that
+ * judgment on a non-zero exit too; any other non-zero exit is a plain failure. Pi reports no reset time, so a rate limit carries no `resume_at`
  * and the supervisor's default backoff applies.
  */
 export function classifyExit(facts: ExitFacts): ExitVerdict {
@@ -316,6 +317,9 @@ export function classifyExit(facts: ExitFacts): ExitVerdict {
 	if (facts.effortMismatch) return { status: 'failed', error: mask(facts.effortMismatch) };
 	// A signal is our own kill, so it keeps its plain report.
 	if (facts.signal) return { status: 'failed', error: `harness killed by ${facts.signal}` };
+	// The stream's account of a refused or unreachable provider holds whatever
+	// pi exits with: it is the runner's condition either way, never a strike.
+	const outcome = facts.harness === 'pi' ? facts.harnessOutcome : undefined;
 	if (facts.code !== 0) {
 		if (facts.limited) {
 			const detail = mask(facts.limited.detail);
@@ -336,30 +340,45 @@ export function classifyExit(facts: ExitFacts): ExitVerdict {
 				note: `transient provider error (${detail})`
 			};
 		}
-		return { status: 'failed', error: `harness exited with code ${facts.code}` };
+		return (
+			(outcome && providerVerdict(outcome, mask)) ?? {
+				status: 'failed',
+				error: `harness exited with code ${facts.code}`
+			}
+		);
 	}
-	const outcome = facts.harness === 'pi' ? facts.harnessOutcome : undefined;
 	if (outcome && outcome.kind !== 'ok') {
-		const detail = mask(outcome.detail);
-		if (outcome.kind === 'rate_limited') {
-			return {
-				status: 'failed',
-				error: `rate limited: ${detail}`,
-				judgment: 'rate_limited',
-				note: `harness rate limited (${detail})`
-			};
-		}
-		if (outcome.kind === 'provider_error') {
-			return {
-				status: 'failed',
-				error: `provider error: ${detail}`,
-				judgment: 'interrupted',
-				note: `transient provider error (${detail})`
-			};
-		}
-		return { status: 'failed', error: `pi: ${detail}` };
+		return (
+			providerVerdict(outcome, mask) ?? { status: 'failed', error: `pi: ${mask(outcome.detail)}` }
+		);
 	}
 	return { status: 'completed' };
+}
+
+/** The no-strike verdict for a stream that ended on the provider's refusal or failure. */
+function providerVerdict(
+	outcome: HarnessOutcome,
+	mask: (text: string) => string
+): ExitVerdict | null {
+	if (outcome.kind === 'rate_limited') {
+		const detail = mask(outcome.detail);
+		return {
+			status: 'failed',
+			error: `rate limited: ${detail}`,
+			judgment: 'rate_limited',
+			note: `harness rate limited (${detail})`
+		};
+	}
+	if (outcome.kind === 'provider_error') {
+		const detail = mask(outcome.detail);
+		return {
+			status: 'failed',
+			error: `provider error: ${detail}`,
+			judgment: 'interrupted',
+			note: `transient provider error (${detail})`
+		};
+	}
+	return null;
 }
 
 // ---------------------------------------------------------------------------

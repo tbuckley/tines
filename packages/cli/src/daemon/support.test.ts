@@ -515,8 +515,33 @@ describe('classifyExit', () => {
 			{ status: 'failed', error: 'pi: pi ended without an assistant message' }
 		],
 		[
-			'pi non-zero exit is a plain failure: the stream is only consulted on exit 0',
+			'pi non-zero exit on a 429 is still rate_limited: the stream names the cause',
 			{ harness: 'pi', code: 1, harnessOutcome: { kind: 'rate_limited', detail: '429: x' } },
+			{
+				status: 'failed',
+				error: 'rate limited: 429: x',
+				judgment: 'rate_limited',
+				note: 'harness rate limited (429: x)'
+			}
+		],
+		[
+			'pi non-zero exit on a provider error is still interrupted',
+			{ harness: 'pi', code: 1, harnessOutcome: { kind: 'provider_error', detail: '503: down' } },
+			{
+				status: 'failed',
+				error: 'provider error: 503: down',
+				judgment: 'interrupted',
+				note: 'transient provider error (503: down)'
+			}
+		],
+		[
+			'pi non-zero exit with an ok or plain-error stream is a plain failure',
+			{ harness: 'pi', code: 1, harnessOutcome: { kind: 'error', detail: 'nope' } },
+			{ status: 'failed', error: 'harness exited with code 1' }
+		],
+		[
+			'a non-zero exit never reads the stream outcome of a harness other than pi',
+			{ code: 1, harnessOutcome: { kind: 'rate_limited', detail: '429: x' } },
 			{ status: 'failed', error: 'harness exited with code 1' }
 		],
 		[
