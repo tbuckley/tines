@@ -10,6 +10,7 @@ import { createContextItem } from '$lib/server/api/context';
 import { sessionActor, sha256Hex } from '$lib/server/api/core';
 import { createTestDb } from '$lib/server/api/test-db';
 import { NOW, PROJECT, seedBase, USER } from '$lib/server/supervisor/test-fixtures';
+import { GET as LIST, POST as CREATE } from '../+server';
 import { GET, PATCH } from './+server';
 import { POST as APPEND } from './append/+server';
 
@@ -56,13 +57,14 @@ type Caller = { user: string } | { key: string };
 
 async function call(
 	t: T,
-	handler: typeof GET | typeof PATCH | typeof APPEND,
+	handler: typeof GET | typeof PATCH | typeof APPEND | typeof LIST | typeof CREATE,
 	caller: Caller,
+	/** An item id, or a query string for the collection routes. */
 	id: string,
 	method: string,
 	body?: unknown
 ) {
-	const url = new URL(`http://test/api/v1/context/${id}`);
+	const url = new URL(`http://test/api/v1/context${id.startsWith('?') ? id : `/${id}`}`);
 	const headers: Record<string, string> = {};
 	if (body !== undefined) headers['content-type'] = 'application/json';
 	if ('key' in caller) headers.authorization = `Bearer ${caller.key}`;
@@ -97,41 +99,52 @@ function beforeNextBatch(t: T, race: () => void) {
 
 describe('context writes disclose no more than the ordinary read', () => {
 	it.each([
-		['PATCH', { expected_version: 0, description: 'edit' }],
+		['PATCH', { expected_version: 0, description: 'edit' }, false],
 		// Without a version too: the refusal must not depend on the conflict path.
-		['PATCH', { description: 'edit' }],
+		['PATCH', { description: 'edit' }, false],
 		// A kind mismatch used to answer with the stored kind.
-		['PATCH', { kind: 'env' }],
-		['APPEND', { expected_version: 0, text: 'more' }],
-		['APPEND', { text: 'more' }]
-	] as const)('refuses a key with no authority before %s %j reads the row', async (op, body) => {
-		const { t, owner } = fixture();
-		await addScopedKey(t);
-		const item = await createContextItem(t.db, t.env, owner, {
-			kind: 'prompt',
-			name: 'private',
-			project_id: PROJECT,
-			body: 'PRIVATE_PROMPT_CANARY'
-		});
-		const before = { row: stored(t, item.id), events: eventIds(t) };
+		['PATCH', { kind: 'env' }, false],
+		['APPEND', { expected_version: 0, text: 'more' }, false],
+		['APPEND', { text: 'more' }, false],
+		// An archived project's refusal names the project.
+		['PATCH', { description: 'edit' }, true],
+		['APPEND', { text: 'more' }, true]
+	] as const)(
+		'refuses a key with no authority before %s %j reads the row (archived: %s)',
+		async (op, body, archived) => {
+			const { t, owner } = fixture();
+			await addScopedKey(t);
+			const item = await createContextItem(t.db, t.env, owner, {
+				kind: 'prompt',
+				name: 'private',
+				project_id: PROJECT,
+				body: 'PRIVATE_PROMPT_CANARY'
+			});
+			if (archived)
+				t.sqlite
+					.prepare(`UPDATE project SET name='PRIVATE_PROJECT_CANARY', archived_at=? WHERE id=?`)
+					.run(NOW, PROJECT);
+			const before = { row: stored(t, item.id), events: eventIds(t) };
 
-		const read = await call(t, GET, { key: KEY }, item.id, 'GET');
-		expect(read.status).toBe(404);
-		expect(read.text).not.toContain('PRIVATE_PROMPT_CANARY');
+			const read = await call(t, GET, { key: KEY }, item.id, 'GET');
+			expect(read.status).toBe(404);
+			expect(read.text).not.toContain('PRIVATE_PROMPT_CANARY');
 
-		const write =
-			op === 'PATCH'
-				? await call(t, PATCH, { key: KEY }, item.id, 'PATCH', body)
-				: await call(t, APPEND, { key: KEY }, item.id, 'POST', body);
-		expect(write.status).toBe(403);
-		expect(write.json.error.code).toBe('insufficient_permissions');
-		expect(write.text).not.toContain('PRIVATE_PROMPT_CANARY');
-		expect(write.text).not.toContain('private');
-		expect(write.json.error.details).not.toHaveProperty('current');
-		// Nothing written, nothing recorded.
-		expect(stored(t, item.id)).toEqual(before.row);
-		expect(eventIds(t)).toEqual(before.events);
-	});
+			const write =
+				op === 'PATCH'
+					? await call(t, PATCH, { key: KEY }, item.id, 'PATCH', body)
+					: await call(t, APPEND, { key: KEY }, item.id, 'POST', body);
+			expect(write.status).toBe(403);
+			expect(write.json.error.code).toBe('insufficient_permissions');
+			expect(write.text).not.toContain('PRIVATE_PROMPT_CANARY');
+			expect(write.text).not.toContain('PRIVATE_PROJECT_CANARY');
+			expect(write.text).not.toContain('private');
+			expect(write.json.error.details).not.toHaveProperty('current');
+			// Nothing written, nothing recorded.
+			expect(stored(t, item.id)).toEqual(before.row);
+			expect(eventIds(t)).toEqual(before.events);
+		}
+	);
 
 	it.each([
 		['non-secret', false],
@@ -250,6 +263,65 @@ describe('context writes disclose no more than the ordinary read', () => {
 			t.all("SELECT id FROM event WHERE type='context.updated' AND payload LIKE ?", `%${item.id}%`)
 		).toHaveLength(1);
 	});
+
+	it.each([
+		['non-secret', false],
+		['secret', true]
+	] as const)(
+		"keeps a %s env value out of a member's list, no-op edit and create",
+		async (_label, secret) => {
+			const { t, owner } = fixture();
+			const item = await createContextItem(t.db, t.env, owner, {
+				kind: 'env',
+				name: 'OWNER_CONFIG',
+				project_id: PROJECT,
+				secret,
+				value: 'OWNER_VALUE_CANARY'
+			});
+			const before = { row: stored(t, item.id), events: eventIds(t) };
+			const read = await call(t, GET, { user: BOB }, item.id, 'GET');
+			expect(read.status).toBe(200);
+
+			const listed = await call(t, LIST, { user: BOB }, `?project=${PROJECT}`, 'GET');
+			expect(listed.status).toBe(200);
+			expect(listed.text).not.toContain('OWNER_VALUE_CANARY');
+			expect(listed.json.items).toHaveLength(1);
+			expect(listed.json.items[0]).toMatchObject({ id: item.id, secret, value_set: true });
+			expect(listed.json.items[0]).not.toHaveProperty('value');
+
+			// An edit that changes nothing returns the item, and it is the member's read.
+			for (const body of [{}, { expected_version: item.version }, { hint: null }]) {
+				const noop = await call(t, PATCH, { user: BOB }, item.id, 'PATCH', body);
+				expect(noop.status, JSON.stringify(body)).toBe(200);
+				expect(noop.text).not.toContain('OWNER_VALUE_CANARY');
+				expect(noop.json).toEqual(read.json);
+			}
+			expect(stored(t, item.id)).toEqual(before.row);
+			expect(eventIds(t)).toEqual(before.events);
+
+			// A value the member sets is stored, and not read back to them either.
+			const created = await call(t, CREATE, { user: BOB }, '?', 'POST', {
+				kind: 'env',
+				name: 'MEMBER_CONFIG',
+				project_id: PROJECT,
+				secret,
+				value: 'MEMBER_VALUE_CANARY'
+			});
+			expect(created.status).toBe(201);
+			expect(created.text).not.toContain('MEMBER_VALUE_CANARY');
+			expect(created.json).toMatchObject({ name: 'MEMBER_CONFIG', secret, value_set: true });
+			expect(created.json).not.toHaveProperty('value');
+			expect(stored(t, created.json.id).name).toBe('MEMBER_CONFIG');
+
+			// The owner still reads a non-secret value back, from the list too.
+			const owned = await call(t, LIST, { user: USER }, `?project=${PROJECT}`, 'GET');
+			const values = owned.json.items.map((i: { value?: string }) => i.value);
+			expect(values.toSorted()).toEqual(
+				secret ? [undefined, undefined] : ['MEMBER_VALUE_CANARY', 'OWNER_VALUE_CANARY']
+			);
+			expect(owned.text.includes('VALUE_CANARY')).toBe(!secret);
+		}
+	);
 
 	it.each([
 		['an explicit version', true, 1],
