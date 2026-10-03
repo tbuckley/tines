@@ -5,7 +5,7 @@
  * silently ignored (the list comes back unfiltered), and no unit test of the
  * query function can see it.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createContextItem, listContextItems } from '$lib/server/api/context';
 import type { ActorContext } from '$lib/server/api/core';
 import { createTestDb } from '$lib/server/api/test-db';
@@ -19,6 +19,22 @@ import {
 	seedBase,
 	USER
 } from '$lib/server/supervisor/test-fixtures';
+
+// Lets a test land a write after a delegated member list has read its rows
+// and before the membership re-check that decides whether they are returned.
+const hooks = vi.hoisted(() => ({ afterMemberList: null as null | (() => void) }));
+vi.mock('$lib/server/api/context', async (importOriginal) => {
+	const real = await importOriginal<typeof import('$lib/server/api/context')>();
+	return {
+		...real,
+		listContextItems: async (...args: Parameters<typeof real.listContextItems>) => {
+			const result = await real.listContextItems(...args);
+			if (typeof args[1] !== 'string' && args[1].member) hooks.afterMemberList?.();
+			return result;
+		}
+	};
+});
+
 import { GET } from './+server';
 
 const actor: ActorContext = {
@@ -196,6 +212,23 @@ describe('GET /api/v1/context for a member of a shared project', () => {
 		t.sqlite.exec(`UPDATE project_member SET revoked_at = ${NOW} WHERE user_id = 'u2'`);
 		const body = await list(t, '', BOB);
 		expect(body.items.map((i) => i.name)).toEqual(['bob-own']);
+	});
+
+	it('drops a shared project whose membership is removed while its list is read', async () => {
+		const { t } = await sharedSetup();
+		let removed = 0;
+		hooks.afterMemberList = () => {
+			removed += 1;
+			t.sqlite.exec(`UPDATE project_member SET revoked_at = ${NOW} WHERE user_id = 'u2'`);
+		};
+		try {
+			const body = await list(t, '', BOB);
+			expect(body.items.map((i) => i.name)).toEqual(['bob-own']);
+		} finally {
+			hooks.afterMemberList = null;
+		}
+		// The rows were read (the hook ran) and then discarded.
+		expect(removed).toBe(1);
 	});
 
 	it('leaves the owner list as it was: the whole account, nothing added', async () => {
