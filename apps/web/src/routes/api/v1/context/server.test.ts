@@ -47,7 +47,7 @@ const actor: ActorContext = {
 
 type Listed = { id: string; name: string; kind: string; value?: string; value_set?: boolean };
 
-async function list(
+async function get(
 	t: ReturnType<typeof createTestDb>,
 	query: string,
 	user: { id: string; name: string } = { id: USER, name: 'alice' }
@@ -59,7 +59,11 @@ async function list(
 		request: new Request(url, { method: 'GET' }),
 		url
 	};
-	const res = await GET(event as unknown as Parameters<typeof GET>[0]);
+	return GET(event as unknown as Parameters<typeof GET>[0]);
+}
+
+async function list(...args: Parameters<typeof get>) {
+	const res = await get(...args);
 	return (await res.json()) as { items: Listed[]; next_cursor: string | null };
 }
 
@@ -179,6 +183,62 @@ describe('GET /api/v1/context for a member of a shared project', () => {
 			query = `?limit=2&cursor=${encodeURIComponent(body.next_cursor)}`;
 		}
 		expect(names).toEqual(order);
+	});
+
+	// Own rows and shared rows each fit one page; only their sum overflows it,
+	// so neither source reports more and the merge alone must.
+	it('pages on when only the merged total exceeds the limit', async () => {
+		const { t, order } = await sharedSetup();
+		const first = await list(t, '?limit=4', BOB);
+		expect(first.items.map((i) => i.name)).toEqual(order.slice(0, 4));
+		expect(first.next_cursor).not.toBeNull();
+		const rest = await list(t, `?limit=4&cursor=${encodeURIComponent(first.next_cursor!)}`, BOB);
+		expect(rest.items.map((i) => i.name)).toEqual(order.slice(4));
+		expect(rest.next_cursor).toBeNull();
+	});
+
+	it('narrows the shared project items by kind', async () => {
+		const { t, order } = await sharedSetup();
+		const body = await list(t, '?kind=prompt', BOB);
+		expect(body.items.map((i) => i.name)).toEqual(order.filter((name) => name !== 'SHARED_ENV'));
+	});
+
+	it('narrows the shared project items by q', async () => {
+		const { t } = await sharedSetup();
+		const body = await list(t, '?q=owner-proj', BOB);
+		expect(body.items.map((i) => i.name)).toEqual(['owner-project']);
+	});
+
+	it('lists an archived shared project only under archived=true', async () => {
+		const { t, order } = await sharedSetup();
+		t.sqlite.exec(`UPDATE project SET archived_at = ${NOW} WHERE id = '${PROJECT}'`);
+		expect((await list(t, '', BOB)).items.map((i) => i.name)).toEqual(['bob-own']);
+		const archived = await list(t, '?archived=true', BOB);
+		expect(archived.items.map((i) => i.name)).toEqual(order.filter((name) => name !== 'bob-own'));
+		expectNoCanary(archived);
+	});
+
+	it('keeps issue=<id> to that issue own items', async () => {
+		const { t } = await sharedSetup();
+		const { issue_id } = t.sqlite
+			.prepare(`SELECT issue_id FROM context_item WHERE name = 'owner-issue'`)
+			.get() as { issue_id: string };
+		const body = await list(t, `?issue=${issue_id}`, BOB);
+		expect(body.items.map((i) => i.name)).toEqual(['owner-issue']);
+	});
+
+	it('answers 409 ambiguous_project when a name matches an own and a shared project', async () => {
+		const { t } = await sharedSetup();
+		t.sqlite.exec(`
+			INSERT INTO project (id, user_id, name, created_at, updated_at)
+			SELECT 'prj_bob', 'u2', name, ${NOW}, ${NOW} FROM project WHERE id = '${PROJECT}';
+		`);
+		const res = await get(t, '?project=demo', BOB);
+		expect(res.status).toBe(409);
+		expect(await res.json()).toMatchObject({ error: { code: 'ambiguous_project' } });
+		// The immutable id still names exactly one of them.
+		const byId = await list(t, `?project=${PROJECT}`, BOB);
+		expect(byId.items.map((i) => i.name)).toEqual(['SHARED_ENV', 'bob-shared', 'owner-project']);
 	});
 
 	it('keeps exact=true to the member own global items', async () => {
