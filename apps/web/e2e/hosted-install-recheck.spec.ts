@@ -227,6 +227,8 @@ test('a hosted install rejected as stale can be previewed and installed again', 
 	expect(attempts).toHaveLength(1);
 
 	await preview.click();
+	// A new preview is prepared; a session still held by the rejected install would ignore the click.
+	await expect(confirmed).toBeVisible();
 	await confirmed.check();
 	await install.click();
 	await expect(page.getByRole('heading', { name: 'Installed', exact: true })).toBeVisible();
