@@ -155,3 +155,80 @@ test('a withdrawn snapshot clears the hosted install review', async ({
 	await expect(name).toHaveCount(0);
 	await expect(page.getByTestId('install-actions')).toHaveCount(0);
 });
+
+// A rejected install hands the page back to the session: reads resume and the next attempt is
+// allowed. Without that, Install stays enabled and does nothing.
+async function rejectInstallOnce(page: Page, status: number, code: string) {
+	const attempts: string[] = [];
+	await page.route('**/api/v1/library/install', async (route) => {
+		attempts.push(route.request().url());
+		if (attempts.length > 1) return route.continue();
+		await route.fulfill({
+			status,
+			contentType: 'application/json',
+			body: JSON.stringify({ error: { code, message: 'Injected rejection', details: null } })
+		});
+	});
+	return attempts;
+}
+
+test('a hosted install that did not finish can be retried with the same review', async ({
+	request,
+	context,
+	page,
+	uniqueName
+}) => {
+	const { name } = await openHostedInstall(request, context, page, uniqueName);
+	await name.fill(uniqueName('retried-install'));
+	await page.getByRole('button', { name: 'Preview installation', exact: true }).click();
+	const confirmed = page.getByLabel('I reviewed what will be installed');
+	await confirmed.check();
+	const install = page.getByRole('button', { name: 'Install workflow', exact: true });
+	await expect(install).toBeEnabled();
+
+	const attempts = await rejectInstallOnce(page, 500, 'internal_error');
+	await install.click();
+	await expect(page.getByRole('alert')).toContainText(
+		'Installation did not finish. Your reviewed choices are still available. Choose Install workflow to retry.'
+	);
+	await expect(confirmed).toBeChecked();
+	await expect(install).toBeEnabled();
+	expect(attempts).toHaveLength(1);
+
+	await install.click();
+	await expect(page.getByRole('heading', { name: 'Installed', exact: true })).toBeVisible();
+	expect(attempts).toHaveLength(2);
+});
+
+test('a hosted install rejected as stale can be previewed and installed again', async ({
+	request,
+	context,
+	page,
+	uniqueName
+}) => {
+	const { name } = await openHostedInstall(request, context, page, uniqueName);
+	const destination = uniqueName('re-previewed-install');
+	await name.fill(destination);
+	const preview = page.getByRole('button', { name: 'Preview installation', exact: true });
+	await preview.click();
+	const confirmed = page.getByLabel('I reviewed what will be installed');
+	await confirmed.check();
+	const install = page.getByRole('button', { name: 'Install workflow', exact: true });
+	await expect(install).toBeEnabled();
+
+	const attempts = await rejectInstallOnce(page, 409, 'plan_stale');
+	await install.click();
+	await expect(page.getByRole('alert')).toContainText(
+		'The preview expired or the destination changed. Nothing was created by this rejected attempt. Choose Preview installation and review it again.'
+	);
+	// The rejected plan is gone; the destination the person typed is not.
+	await expect(confirmed).toHaveCount(0);
+	await expect(name).toHaveValue(destination);
+	expect(attempts).toHaveLength(1);
+
+	await preview.click();
+	await confirmed.check();
+	await install.click();
+	await expect(page.getByRole('heading', { name: 'Installed', exact: true })).toBeVisible();
+	expect(attempts).toHaveLength(2);
+});
