@@ -930,7 +930,8 @@ test('the context editor scopes an item to an issue far older than the newest 10
 		await test.step('typed text that was never picked does not save as "any issue"', async () => {
 			await scope.fill('Page issue');
 			await expect(dialog.getByRole('listbox').getByRole('option').first()).toBeVisible();
-			await scope.press('Escape');
+			// Moving focus closes the list, which would otherwise sit over the button.
+			await dialog.getByLabel('Name', { exact: true }).focus();
 			await dialog.getByRole('button', { name: 'Create' }).click();
 			await expect(dialog).toContainText(
 				'Choose an issue from the list, or clear the issue field.'
