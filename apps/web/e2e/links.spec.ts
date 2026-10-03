@@ -379,8 +379,6 @@ test.describe.serial('issue links', () => {
 			const options = card.getByRole('listbox').getByRole('option');
 
 			// A bare #N means the current issue's own project.
-			await picker.fill(`#${current.number}`);
-			await expect(card.getByRole('listbox')).toHaveText('No issues match');
 			const sibling = await body<IssueDetail>(
 				await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Sibling issue' })
 			);

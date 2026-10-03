@@ -1005,16 +1005,18 @@ test("changing the project in the context editor drops the old project's issue r
 	try {
 		await api.post(`/api/v1/projects/${other.id}/issues`, { title: 'Other first issue' });
 		await signIn(context, PAGINATION.user.sessionToken);
-		await gotoHydrated(page, `/projects/${PAGINATION.projectId}`);
-		await page.getByRole('button', { name: 'Add context' }).click();
+		await gotoHydrated(page, '/context');
+		await page.getByRole('button', { name: 'New item' }).click();
 		const dialog = page.getByRole('dialog');
+		const project = dialog.getByLabel('Project', { exact: true });
 		const scope = dialog.getByLabel('Only for issue');
 		const first = dialog.getByRole('listbox').getByRole('option').first();
 
+		await project.selectOption(PAGINATION.projectId);
 		await scope.fill('#1');
 		await expect(first).toHaveText('#1 Page issue 1');
 
-		await dialog.getByLabel('Project', { exact: true }).selectOption(other.id);
+		await project.selectOption(other.id);
 		await scope.focus();
 		await expect(first).toHaveText('#1 Other first issue');
 		await expect(dialog.getByRole('listbox').getByRole('option')).toHaveCount(1);
