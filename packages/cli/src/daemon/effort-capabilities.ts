@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import {
 	admitEffort,
+	EFFORT_CAPABILITIES_MAX_MODELS,
+	isRecognizedEffort,
 	supportedEfforts,
 	type EffortCapabilities,
 	type EffortCapabilitiesV1,
@@ -13,18 +15,32 @@ const MAX_STDOUT = 1024 * 1024;
 const DEADLINE_MS = 5000;
 export const EFFORT_CAPABILITIES_TTL_MS = 10 * 60_000;
 const MIN_CLAUDE_EFFORT_VERSION = [2, 1, 258] as const;
+/** The `pi` whose JSON event and RPC shapes this daemon parses (Tines/900). */
+const MIN_PI_VERSION = [0, 99, 2] as const;
+/** The same floor, as `tines runner install` names it. */
+export const PI_VERSION_FLOOR = MIN_PI_VERSION.join('.');
+/** One RPC round trip per model, so Pi's probe gets longer than the others. */
+const PI_DEADLINE_MS = 20_000;
 
-export function claudeEffortVersionSupported(version: string): boolean {
+function versionAtLeast(version: string, floor: readonly number[]): boolean {
 	const parsed = version
 		.match(/(\d+)\.(\d+)\.(\d+)/)
 		?.slice(1)
 		.map(Number);
 	if (!parsed) return false;
-	for (let i = 0; i < MIN_CLAUDE_EFFORT_VERSION.length; i++) {
-		if (parsed[i]! > MIN_CLAUDE_EFFORT_VERSION[i]!) return true;
-		if (parsed[i]! < MIN_CLAUDE_EFFORT_VERSION[i]!) return false;
+	for (let i = 0; i < floor.length; i++) {
+		if (parsed[i]! > floor[i]!) return true;
+		if (parsed[i]! < floor[i]!) return false;
 	}
 	return true;
+}
+
+export function claudeEffortVersionSupported(version: string): boolean {
+	return versionAtLeast(version, MIN_CLAUDE_EFFORT_VERSION);
+}
+
+export function piVersionSupported(version: string): boolean {
+	return versionAtLeast(version, MIN_PI_VERSION);
 }
 
 /** Refuse an enforced assignment if this exact boot cannot uphold it. */
@@ -57,7 +73,7 @@ function digest(models: EffortCapabilitiesV1['models']): string {
 }
 
 function failure(
-	harness: 'claude_code' | 'codex',
+	harness: 'claude_code' | 'codex' | 'pi',
 	daemonVersion: string,
 	reason: string
 ): EffortCapabilitiesV1 {
@@ -210,8 +226,131 @@ async function discoverCodex(daemonVersion: string): Promise<EffortCapabilitiesV
 	});
 }
 
+/**
+ * Pi's catalog is whatever this machine has configured, so it is read from
+ * the running `pi` over its RPC mode: the model list, then each model's
+ * thinking levels. Records are JSONL split on LF only (Pi's docs/rpc.md), and
+ * the commands go **one at a time**, each waiting for its own response —
+ * `get_available_thinking_levels` answers for whichever model is current, so
+ * a burst would race the `set_model` before it.
+ *
+ * `set_model` over RPC does not persist a default, and `--no-session` keeps
+ * the probe out of the session directory. A model with no recognized level is
+ * listed with `efforts: []`: it is a model this runner can launch, just not
+ * one effort can be routed to.
+ */
+export async function discoverPi(
+	daemonVersion: string,
+	deadlineMs = PI_DEADLINE_MS
+): Promise<EffortCapabilitiesV1> {
+	let harnessVersion: string;
+	try {
+		harnessVersion = (await run('pi', ['--version'])).trim().slice(0, 100);
+	} catch (error) {
+		return failure('pi', daemonVersion, error instanceof Error ? error.message : String(error));
+	}
+	if (!piVersionSupported(harnessVersion))
+		return failure(
+			'pi',
+			daemonVersion,
+			`installed pi ${harnessVersion || 'unknown'} predates the supported ${MIN_PI_VERSION.join('.')}`
+		);
+	return new Promise((resolve) => {
+		const child = spawn('pi', ['--mode', 'rpc', '--no-session'], {
+			stdio: ['pipe', 'pipe', 'ignore']
+		});
+		let buffer = '';
+		let bytes = 0;
+		let settled = false;
+		let requestId = 0;
+		/** The one command in flight; its response is matched by id. */
+		let awaiting: { id: string; deliver: (response: Record<string, any>) => void } | null = null;
+		const finish = (report: EffortCapabilitiesV1) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			child.kill();
+			resolve(report);
+		};
+		const fail = (reason: string) => finish(failure('pi', daemonVersion, reason));
+		const request = (command: Record<string, unknown>) =>
+			new Promise<Record<string, any>>((deliver) => {
+				const id = `tines-${++requestId}`;
+				awaiting = { id, deliver };
+				child.stdin.write(`${JSON.stringify({ id, ...command })}\n`);
+			});
+		const timer = setTimeout(() => fail('pi model discovery timed out'), deadlineMs);
+		child.on('error', (error) => fail(error.message));
+		// As for Codex: a `pi` that exits before reading a command turns the
+		// write into EPIPE, and an unhandled stream error would take the daemon
+		// down with it.
+		child.stdin.on('error', (error) => fail(`pi rpc stdin: ${error.message}`));
+		child.on('close', (code, signal) =>
+			fail(`pi rpc exited (${signal ?? `code ${code}`}) before listing models`)
+		);
+		child.stdout.on('data', (chunk: Buffer) => {
+			bytes += chunk.length;
+			if (bytes > MAX_STDOUT) return fail('pi model discovery exceeded 1 MiB');
+			buffer += chunk.toString('utf8');
+			for (;;) {
+				const newline = buffer.indexOf('\n');
+				if (newline < 0) break;
+				const line = buffer.slice(0, newline).replace(/\r$/, '');
+				buffer = buffer.slice(newline + 1);
+				let record: Record<string, any>;
+				try {
+					record = JSON.parse(line);
+				} catch {
+					continue;
+				}
+				// Session events share the pipe; only the awaited response counts.
+				if (record?.type !== 'response' || !awaiting || record.id !== awaiting.id) continue;
+				const { deliver } = awaiting;
+				awaiting = null;
+				deliver(record);
+			}
+		});
+		void (async () => {
+			const listed = await request({ type: 'get_available_models' });
+			if (!listed.success)
+				return fail(`pi get_available_models failed: ${String(listed.error ?? 'no reason given')}`);
+			const models: EffortCapabilitiesV1['models'] = [];
+			const names = new Set<string>();
+			for (const entry of Array.isArray(listed.data?.models) ? listed.data.models : []) {
+				if (settled || models.length >= EFFORT_CAPABILITIES_MAX_MODELS) break;
+				if (typeof entry?.provider !== 'string' || typeof entry?.id !== 'string') continue;
+				const model = `${entry.provider}/${entry.id}`;
+				if (model.length > 200 || names.has(model)) continue;
+				const selected = await request({
+					type: 'set_model',
+					provider: entry.provider,
+					modelId: entry.id
+				});
+				// Not selectable here (no credentials for it): not a model to route to.
+				if (!selected.success) continue;
+				const thinking = await request({ type: 'get_available_thinking_levels' });
+				const levels: unknown[] =
+					thinking.success && Array.isArray(thinking.data?.levels) ? thinking.data.levels : [];
+				names.add(model);
+				models.push({ model, efforts: [...new Set(levels.filter(isRecognizedEffort))] });
+			}
+			// Not `accepts_asserted_effort`: this catalog is the machine's whole
+			// model list, so a model missing from it is one Pi cannot run.
+			finish({
+				version: 1,
+				daemon_version: daemonVersion,
+				harness: 'pi',
+				harness_version: harnessVersion,
+				catalog_digest: digest(models),
+				models
+			});
+		})();
+	});
+}
+
 export async function discoverEffortCapabilities(harness: HarnessKind, daemonVersion: string) {
 	if (harness === 'custom') return undefined;
+	if (harness === 'pi') return discoverPi(daemonVersion);
 	return harness === 'codex' ? discoverCodex(daemonVersion) : discoverClaude(daemonVersion);
 }
 

@@ -41,20 +41,26 @@ export interface ResumeCandidateInput {
 export type ResumeEligibility =
 	{ eligible: true } | { eligible: false; reason: ResumeFallbackReason };
 
+/** Local harnesses that keep their session in the kept workspace and can reopen it. */
+export const LOCAL_RESUME_HARNESSES: readonly string[] = ['claude_code', 'pi'];
+
 /**
- * Which providers can actually continue a conversation. Claude Code local
- * runners resume in their kept workspace (`claude -p --resume <session-id>`);
- * Claude managed sessions are kept idle past their run and continued by
- * rotating the vault credential to the new run's key, retagging the session
- * and sending the continuation as a `user.message`. Anything else (a
- * different local harness, a future provider) launches fresh.
+ * Which providers can actually continue a conversation. Claude Code and Pi
+ * local runners resume in their kept workspace (`claude -p --resume
+ * <session-id>`, `pi --session <session-id>`); Claude managed sessions are
+ * kept idle past their run and continued by rotating the vault credential to
+ * the new run's key, retagging the session and sending the continuation as a
+ * `user.message`. Anything else (a different local harness, a future
+ * provider) launches fresh.
  */
 export function isResumeProviderSupported(
 	type: Runner['type'],
 	config: Record<string, unknown>
 ): boolean {
 	if (type === 'claude_managed') return true;
-	return type === 'local' && (config.harness ?? 'claude_code') === 'claude_code';
+	return (
+		type === 'local' && LOCAL_RESUME_HARNESSES.includes(String(config.harness ?? 'claude_code'))
+	);
 }
 
 /**
@@ -252,7 +258,11 @@ export async function retainResumeResource(
 		runnerId: string;
 		issueId: string;
 		ownerRunId: string;
-		/** `local_claude` keeps a workspace; `claude_managed` keeps a vault. */
+		/**
+		 * `local_claude` = any local harness that keeps its session in the kept
+		 * workspace (Claude Code, Pi), guarded by turn count; the resume
+		 * fingerprint carries the harness. `claude_managed` keeps a vault.
+		 */
 		kind?: 'local_claude' | 'claude_managed';
 		providerSessionId: string;
 		workspacePath: string | null;

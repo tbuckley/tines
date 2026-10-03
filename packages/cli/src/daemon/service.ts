@@ -144,6 +144,17 @@ export function servicePath(input: ServicePathInput): { path: string; missing: s
 	return { path: [...new Set(dirs)].join(delimiter), missing };
 }
 
+/**
+ * How many models `pi --list-models` printed: a header line starting
+ * `provider`, then one row per model. With none Pi prints a sentence about
+ * logging in instead, and still exits 0.
+ */
+export function listedPiModels(stdout: string): number {
+	const lines = stdout.split('\n').filter((line) => line.trim() !== '');
+	if (lines.length === 0 || !/^provider\s+model\b/.test(lines[0]!)) return 0;
+	return lines.length - 1;
+}
+
 export interface ServiceSpec {
 	name: string;
 	kind: ServiceManagerKind;

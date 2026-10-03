@@ -287,6 +287,15 @@ export const RUNNER_CONCURRENCY = {
 	apiKeyName: 'runner-concurrency-key',
 	sessionToken: 'e2e-session-runner-concurrency'
 };
+/** Exclusive to runner-pi.spec.ts: a rate-limited Pi run backs its runner off. */
+export const RUNNER_PI = {
+	id: 'usr_e2e_runner_pi',
+	name: 'Runner Pi E2E',
+	email: 'runner-pi@e2e.test',
+	apiKey: 'tines_e2erunnerpi0000000000000000000000000000000',
+	apiKeyName: 'runner-pi-key',
+	sessionToken: 'e2e-session-runner-pi'
+};
 export const EXPLAINER_REMEDIES = {
 	id: 'usr_e2e_explainer_remedies',
 	name: 'Explainer Remedies E2E',

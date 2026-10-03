@@ -65,6 +65,22 @@ describe('effort capability validation', () => {
 		models: [{ model: 'gpt-5.6', efforts: ['low', 'ultra'] }]
 	};
 
+	it('accepts a pi report, including a model with no thinking levels', () => {
+		const pi = {
+			...report,
+			harness: 'pi' as const,
+			harness_version: '0.99.2',
+			models: [
+				{ model: 'ollama/qwen3:32b', efforts: ['low', 'high'] },
+				{ model: 'ollama/llama3.3', efforts: [] }
+			]
+		};
+		expect(validateEffortCapabilities(pi, 'boot_1')).toEqual(pi);
+		expect(() =>
+			validateEffortCapabilities({ ...report, harness: 'custom' }, 'boot_1')
+		).toThrowError(ApiFail);
+	});
+
 	it('accepts bounded exact-model reports only from identified daemon boots', () => {
 		expect(validateEffortCapabilities(report, 'boot_1')).toEqual(report);
 		expect(() => validateEffortCapabilities(report)).toThrowError(ApiFail);
@@ -1672,6 +1688,128 @@ describe('finishRun', () => {
 		expect(runById(t, runId)?.effort_application_status).toBe('accepted_unconfirmed');
 	});
 
+	it('accepts a confirmed effort from a daemon and never downgrades it', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { harness: 'pi' });
+		const runId = await delivered(t, { runnerId, issueId: addIssue(t) });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(runId);
+		const milestone = { transport: 'argv' as const, attempted_effort: 'high' };
+		const append = async (effort: NonNullable<Parameters<typeof appendRunLog>[7]>, at: number) => {
+			await appendRunLog(
+				t.db,
+				t.env,
+				await runnerRow(t, runnerId),
+				runId,
+				'',
+				at,
+				undefined,
+				effort
+			);
+			return runById(t, runId)?.effort_application_status;
+		};
+		expect(await append({ ...milestone, status: 'accepted_unconfirmed' }, NOW + 10)).toBe(
+			'accepted_unconfirmed'
+		);
+		expect(await append({ ...milestone, status: 'confirmed' }, NOW + 11)).toBe('confirmed');
+		// The launch milestone arriving late (a retried request) must not undo it.
+		expect(await append({ ...milestone, status: 'accepted_unconfirmed' }, NOW + 12)).toBe(
+			'confirmed'
+		);
+		await expect(
+			append({ ...milestone, status: 'confirmed', attempted_effort: 'low' }, NOW + 13)
+		).rejects.toMatchObject({ code: 'invalid_field' });
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			runId,
+			{ status: 'completed', effort_application: { ...milestone, status: 'confirmed' } },
+			NOW + 30
+		);
+		expect(run.effort_application_status).toBe('confirmed');
+	});
+
+	it('a rejection naming the level the harness applied wins over the launch milestone', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { harness: 'pi' });
+		const runId = await delivered(t, { runnerId, issueId: addIssue(t) });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(runId);
+		const milestone = { transport: 'argv' as const, attempted_effort: 'high' };
+		const runner = await runnerRow(t, runnerId);
+		await appendRunLog(t.db, t.env, runner, runId, '', NOW + 10, undefined, {
+			...milestone,
+			status: 'accepted_unconfirmed'
+		});
+		await appendRunLog(t.db, t.env, runner, runId, '', NOW + 11, undefined, {
+			...milestone,
+			status: 'rejected',
+			observed_effort: 'medium',
+			reason: 'pi applied thinking level medium, not the assigned high'
+		});
+		expect(runById(t, runId)?.effort_application_status).toBe('rejected');
+		const run = await finishRun(
+			t.db,
+			t.env,
+			runner,
+			TEST_NOOP_DISPATCH_EFFECTS,
+			runId,
+			{ status: 'failed', effort_application: { ...milestone, status: 'confirmed' } },
+			NOW + 30
+		);
+		expect(run.effort_application_status).toBe('rejected');
+	});
+
+	it('marks token-only usage from a pi runner as harness_unpriced', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { harness: 'pi' });
+		const runId = await delivered(t, { runnerId, issueId: addIssue(t) });
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			runId,
+			{ status: 'completed', usage: { input_tokens: 40, output_tokens: 9 } },
+			NOW + 30
+		);
+		expect(run.usage).toEqual({
+			input_tokens: 40,
+			output_tokens: 9,
+			pricing: {
+				version: 1,
+				evaluated_at: NOW + 30,
+				status: 'unpriced',
+				reason: 'harness_unpriced'
+			}
+		});
+	});
+
+	it('keeps a non-zero cost reported by pi as provider cost', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { harness: 'pi' });
+		const runId = await delivered(t, { runnerId, issueId: addIssue(t) });
+		const usage = { input_tokens: 40, output_tokens: 9, cost_usd: 0.02, cost_source: 'provider' };
+		const run = await finishRun(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			runId,
+			{ status: 'completed', usage: usage as Parameters<typeof finishRun>[5]['usage'] },
+			NOW + 30
+		);
+		expect(run.usage).toEqual(usage);
+	});
+
 	it('prices a finished run on an unlisted model with the user rate', async () => {
 		const t = world();
 		const runnerId = addRunner(t);
@@ -2772,6 +2910,60 @@ describe('resume (retention and delivery)', () => {
 					harness_version: '2.1.258',
 					catalog_digest: 'effort-resume',
 					models: [{ model: 'claude-sonnet-5', efforts: ['high'] }]
+				}
+			},
+			NOW + 40
+		);
+		expect(response.assignments.find((item) => item.run.id === secondRunId)?.resume).toMatchObject({
+			previous_run_id: first.runId,
+			provider_session_id: 'sess-abc'
+		});
+	});
+
+	it('a pi run whose effort was confirmed retains a fingerprint the next claim matches', async () => {
+		const t = world();
+		const runnerId = addRunner(t, { harness: 'pi' });
+		t.sqlite
+			.prepare(
+				'UPDATE runner SET resume_enabled = 1, resume_window_hours = 48, resume_max_turns = 60 WHERE id = ?'
+			)
+			.run(runnerId);
+		const issue = addIssue(t);
+		const first = await deliver(t, runnerId, issue);
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET model = 'ollama/qwen3:32b', resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(first.runId);
+		await finishAdvanced(t, runnerId, issue, first.runId, {
+			effort_application: { status: 'confirmed', transport: 'argv', attempted_effort: 'high' }
+		});
+		expect(runById(t, first.runId)?.effort_application_status).toBe('confirmed');
+		expect(resources(t)[0]).toMatchObject({ kind: 'local_claude', owner_run_id: first.runId });
+		expect(resources(t)[0]!.resume_fingerprint).toContain('"harness":"pi"');
+		expect(resources(t)[0]!.resume_fingerprint).toContain('"effort":"high"');
+		t.sqlite.prepare('UPDATE issue SET state_id = ? WHERE id = ?').run(OPEN, issue);
+		const secondRunId = addRun(t, { issueId: issue, runnerId, model: 'ollama/qwen3:32b' });
+		t.sqlite
+			.prepare(
+				`UPDATE agent_run SET resolved_effort = 'high', effort_application_status = 'pending' WHERE id = ?`
+			)
+			.run(secondRunId);
+		const { response } = await pollRunner(
+			t.db,
+			t.env,
+			await runnerRow(t, runnerId),
+			TEST_NOOP_DISPATCH_EFFECTS,
+			{
+				owned_runs: [],
+				instance_id: 'pi-resume-boot',
+				effort_capabilities: {
+					version: 1,
+					daemon_version: 'test',
+					harness: 'pi',
+					harness_version: '0.99.2',
+					catalog_digest: 'pi-resume',
+					models: [{ model: 'ollama/qwen3:32b', efforts: ['high'] }]
 				}
 			},
 			NOW + 40
