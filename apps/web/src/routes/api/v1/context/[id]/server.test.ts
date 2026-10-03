@@ -88,7 +88,7 @@ const eventIds = (t: T) => t.all('SELECT id FROM event ORDER BY id').map((row) =
 /** Runs `race` once, after the write's reads and immediately before its batch commits. */
 function beforeNextBatch(t: T, race: () => void) {
 	const batch = t.env.DB.batch.bind(t.env.DB);
-	t.env.DB.batch = ((statements: D1PreparedStatement[]) => {
+	t.env.DB.batch = ((statements: Parameters<typeof batch>[0]) => {
 		t.env.DB.batch = batch;
 		race();
 		return batch(statements);
@@ -271,7 +271,7 @@ describe('context writes disclose no more than the ordinary read', () => {
 			// "version = mine + 1", which a single competing bump would satisfy.
 			let races = 0;
 			const batch = t.env.DB.batch.bind(t.env.DB);
-			t.env.DB.batch = ((statements: D1PreparedStatement[]) => {
+			t.env.DB.batch = ((statements: Parameters<typeof batch>[0]) => {
 				races++;
 				t.sqlite
 					.prepare(
