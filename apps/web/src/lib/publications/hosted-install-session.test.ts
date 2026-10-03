@@ -242,6 +242,22 @@ describe('hosted install session', () => {
 		expect(h.session.state).toMatchObject({ phase: 'idle', plan: null });
 	});
 
+	it('reports no failure for a held prepare that fails after the destination choices change', async () => {
+		const h = await loaded();
+		const preparing = h.session.prepare(CHOICES);
+		h.session.discardPlan();
+		h.prepares[0].reject(
+			new ApiError(
+				422,
+				{ code: 'missing_input', message: 'Choose a workflow' },
+				'Choose a workflow'
+			)
+		);
+		// The person already abandoned that request, so there is no error to show for it.
+		expect(await preparing).toEqual({ kind: 'superseded' });
+		expect(h.session.state).toMatchObject({ availability: 'available', phase: 'idle', plan: null });
+	});
+
 	it('refuses a plan bound to a status version the session does not hold', async () => {
 		const h = await loaded();
 		const preparing = h.session.prepare(CHOICES);
@@ -335,6 +351,34 @@ describe('hosted install session', () => {
 		expect(h.session.state.phase).toBe('committing');
 	});
 
+	it('discards a recheck sent while a commit was confirming availability', async () => {
+		const h = await prepared();
+		const committing = h.session.beginCommit();
+		const during = h.session.recheck();
+		expect(h.statuses).toHaveLength(3);
+		h.statuses[1].resolve(status());
+		expect(await committing).toBe(true);
+		h.statuses[2].reject(unavailable());
+		await during;
+		expect(h.session.state).toMatchObject({
+			availability: 'available',
+			phase: 'committing',
+			plan: h.plan
+		});
+	});
+
+	it('lets the commit answer for itself when an earlier recheck fails during confirmation', async () => {
+		const h = await prepared();
+		const earlier = h.session.recheck();
+		const committing = h.session.beginCommit();
+		h.statuses[1].reject(unavailable());
+		await earlier;
+		expect(h.session.state).toMatchObject({ availability: 'available', phase: 'prepared' });
+		h.statuses[2].resolve(status());
+		expect(await committing).toBe(true);
+		expect(h.session.state).toMatchObject({ phase: 'committing', plan: h.plan });
+	});
+
 	it('resumes reads after a rejected commit, with or without the plan', async () => {
 		const h = await prepared();
 		const committing = h.session.beginCommit();
@@ -364,12 +408,15 @@ describe('hosted install session', () => {
 	});
 
 	it('reports nothing after disposal', async () => {
-		const h = await loaded();
+		const h = await prepared();
 		const check = h.session.recheck();
 		h.session.dispose();
 		const emitted = h.changes.length;
 		h.statuses[1].reject(unavailable());
 		await check;
+		expect(h.changes).toHaveLength(emitted);
+		// A late call from the page it was disposed by is not reported either.
+		h.session.discardPlan();
 		expect(h.changes).toHaveLength(emitted);
 	});
 });
