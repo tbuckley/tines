@@ -173,9 +173,11 @@ describe('GET /api/v1/context for a member of a shared project', () => {
 
 	it('resolves a shared project named by name or by id', async () => {
 		const { t } = await sharedSetup();
-		const name = (t.sqlite.prepare(`SELECT name FROM project WHERE id = ?`).get(PROJECT) as {
-			name: string;
-		}).name;
+		const name = (
+			t.sqlite.prepare(`SELECT name FROM project WHERE id = ?`).get(PROJECT) as {
+				name: string;
+			}
+		).name;
 		for (const ref of [name, PROJECT]) {
 			const body = await list(t, `?project=${encodeURIComponent(ref)}`, BOB);
 			expect(

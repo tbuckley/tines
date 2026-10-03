@@ -261,15 +261,13 @@ test('a member sees the shared project context they can create, in the list API 
 		await editor.getByLabel('Description').fill('Edited by the member');
 		await editor.getByRole('button', { name: 'Save' }).click();
 		await expect(editor).toHaveCount(0);
-		await expect(
-			page.getByRole('button', { name: new RegExp(names.memberPrompt) })
-		).toContainText('Edited by the member');
+		await expect(page.getByRole('button', { name: new RegExp(names.memberPrompt) })).toContainText(
+			'Edited by the member'
+		);
 
 		// The issue page counts what the member can see, and links to it.
 		await gotoHydrated(page, `/issues/${project.id}/${issue.number}`);
-		await expect(page.getByRole('heading', { name: /^Context/ })).toContainText(
-			'(2 prompts, 1 env)'
-		);
+		await expect(page.getByRole('heading', { name: 'Context (2 prompts, 1 env)' })).toBeVisible();
 		await expect(page.getByRole('link', { name: 'View project context' })).toHaveAttribute(
 			'href',
 			`/projects/${project.id}`
