@@ -7,7 +7,7 @@ import type {
 	TinesEvent
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
-import { ALICE, BOB } from './constants.mjs';
+import { ALICE, BOB, PAGINATION } from './constants.mjs';
 import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
 
 /**
@@ -311,7 +311,7 @@ test.describe.serial('issue links', () => {
 
 		await kind.selectOption('blocks');
 		await picker.fill(source.title);
-		await card.getByRole('button', { name: new RegExp(source.title) }).click();
+		await card.getByRole('option', { name: new RegExp(source.title) }).click();
 		const cycle = card.getByText('Adding this link would create a cycle:');
 		await expect(cycle).toBeVisible();
 		await expect(cycle.getByRole('link')).toHaveCount(4);
@@ -321,7 +321,7 @@ test.describe.serial('issue links', () => {
 		await expect(card.getByText(source.title, { exact: true })).toHaveCount(1);
 
 		await picker.fill(valid.title);
-		await card.getByRole('button', { name: new RegExp(valid.title) }).click();
+		await card.getByRole('option', { name: new RegExp(valid.title) }).click();
 		await expect(cycle).toHaveCount(0);
 		await expect(card.getByText(valid.title, { exact: true })).toBeVisible();
 
@@ -342,7 +342,7 @@ test.describe.serial('issue links', () => {
 		);
 		await kind.selectOption('duplicate_of');
 		await picker.fill(competing.title);
-		await card.getByRole('button', { name: new RegExp(competing.title) }).click();
+		await card.getByRole('option', { name: new RegExp(competing.title) }).click();
 		const duplicate = card.getByText('Already a duplicate of');
 		await expect(duplicate).toBeVisible();
 		await expect(duplicate).toContainText(`${project.name}/#${canonical.number}`);
@@ -351,8 +351,58 @@ test.describe.serial('issue links', () => {
 			`/issues/${project.name}/${canonical.number}`
 		);
 		await expect(picker).toBeVisible();
-		await expect(card.getByRole('button', { name: new RegExp(competing.title) })).toBeVisible();
+		await expect(card.getByRole('option', { name: new RegExp(competing.title) })).toBeVisible();
 		const detail = await body<IssueDetail>(await api.get(`/api/v1/issues/${current.id}`));
 		expect(detail.links.duplicate_of?.issue_id).toBe(canonical.id);
+	});
+
+	test('the Relations picker reaches an issue far older than the newest 100', async ({
+		request,
+		context,
+		page
+	}) => {
+		// The pagination account owns 205 seeded issues; #1 is the oldest, so no
+		// newest-first page of 100 can contain it.
+		const api = apiClient(request, PAGINATION.user.apiKey);
+		const project = await body<Project>(
+			await api.post('/api/v1/projects', { name: `link-old-${runId}` })
+		);
+		try {
+			const current = await body<IssueDetail>(
+				await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Needs an old blocker' })
+			);
+			await signIn(context, PAGINATION.user.sessionToken);
+			await gotoHydrated(page, `/issues/${encodeURIComponent(project.name)}/${current.number}`);
+			const card = page.locator('#relations');
+			await card.getByRole('button', { name: 'Add' }).click();
+			const picker = card.getByRole('combobox', { name: 'Issue to link' });
+			const options = card.getByRole('option');
+
+			// By title: the server searches every issue, oldest included.
+			await picker.fill('Page issue 2');
+			await expect(options.filter({ hasText: /Page issue 2$/ })).toHaveText(
+				`${PAGINATION.projectName}/#2 Page issue 2`
+			);
+
+			// By ref: Project/N is looked up directly and listed first.
+			await picker.fill(`${PAGINATION.projectName}/1`);
+			await expect(options.first()).toHaveText(`${PAGINATION.projectName}/#1 Page issue 1`);
+			await options.first().click();
+			await expect(card.getByText('Page issue 1', { exact: true })).toBeVisible();
+			await expect(picker).toHaveValue('');
+			await expect
+				.poll(async () => {
+					const detail = await body<IssueDetail>(await api.get(`/api/v1/issues/${current.id}`));
+					return detail.links.blocked_by.map((l) => l.issue_id);
+				})
+				.toEqual(['iss_e2e_page_1']);
+
+			// Already linked, so it is no longer offered.
+			await picker.fill(`${PAGINATION.projectName}/1`);
+			await expect(card.getByRole('listbox')).toContainText('Page issue 1');
+			await expect(options.filter({ hasText: /Page issue 1$/ })).toHaveCount(0);
+		} finally {
+			await api.delete(`/api/v1/projects/${project.id}`).catch(() => undefined);
+		}
 	});
 });

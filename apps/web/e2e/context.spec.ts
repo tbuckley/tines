@@ -10,7 +10,7 @@ import type {
 	WorkflowResponse
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
-import { ALICE, BOB, RUNROW } from './constants.mjs';
+import { ALICE, BOB, PAGINATION, RUNROW } from './constants.mjs';
 import { apiClient, body, errorBody, gotoHydrated, issuePath, runId, signIn } from './helpers';
 
 /**
@@ -905,4 +905,76 @@ test.describe.serial('context list state chips', () => {
 		await expect(row).toContainText('Review');
 		await expect(row).not.toContainText(engName);
 	});
+});
+
+test('the context editor scopes an item to an issue far older than the newest 100', async ({
+	request,
+	context,
+	page
+}) => {
+	// The pagination account owns 205 seeded issues; #1 is the oldest, so no
+	// newest-first page of 100 can contain it.
+	const api = apiClient(request, PAGINATION.user.apiKey);
+	const name = `old-issue-scope-${runId}`;
+	let created: ContextItem | undefined;
+	try {
+		await signIn(context, PAGINATION.user.sessionToken);
+		await gotoHydrated(page, `/projects/${PAGINATION.projectId}`);
+		await page.getByRole('button', { name: 'Add context' }).click();
+		const dialog = page.getByRole('dialog');
+		await expect(dialog.getByRole('heading', { name: 'New context item' })).toBeVisible();
+		await dialog.getByLabel('Name', { exact: true }).fill(name);
+		await dialog.getByLabel('Body (Markdown)').fill('Only for the oldest issue.');
+		const scope = dialog.getByLabel('Only for issue');
+
+		await test.step('typed text that was never picked does not save as "any issue"', async () => {
+			await scope.fill('Page issue');
+			await expect(dialog.getByRole('option').first()).toBeVisible();
+			await scope.press('Escape');
+			await dialog.getByRole('button', { name: 'Create' }).click();
+			await expect(dialog).toContainText(
+				'Choose an issue from the list, or clear the issue field.'
+			);
+			const { items } = await body<ListResponse<ContextItem>>(
+				await api.get(`/api/v1/context?q=${encodeURIComponent(name)}`)
+			);
+			expect(items).toEqual([]);
+		});
+
+		await test.step('the oldest issue is found by number and saved as the scope', async () => {
+			await scope.fill('#1');
+			await expect(dialog.getByRole('option').first()).toHaveText('#1 Page issue 1');
+			await scope.press('Enter');
+			await expect(scope).toHaveValue('#1 Page issue 1');
+			await expect(dialog).toContainText('The issue implies its project.');
+			await dialog.getByRole('button', { name: 'Create' }).click();
+			await expect(dialog).toHaveCount(0);
+			const { items } = await body<ListResponse<ContextItem>>(
+				await api.get(`/api/v1/context?q=${encodeURIComponent(name)}`)
+			);
+			expect(items.map((i) => i.scope.issue_id)).toEqual(['iss_e2e_page_1']);
+			created = items[0];
+		});
+
+		await test.step('reopening the item shows its bound issue', async () => {
+			await gotoHydrated(page, `/context?q=${encodeURIComponent(name)}`);
+			await page
+				.locator('li:not([inert])')
+				.filter({ hasText: name })
+				.getByRole('button')
+				.first()
+				.click();
+			await expect(page.getByRole('dialog').getByLabel('Only for issue')).toHaveValue(
+				`${PAGINATION.projectName}/#1 Page issue 1`
+			);
+		});
+	} finally {
+		if (!created) {
+			const { items } = await body<ListResponse<ContextItem>>(
+				await api.get(`/api/v1/context?q=${encodeURIComponent(name)}`)
+			).catch(() => ({ items: [] as ContextItem[] }));
+			created = items[0];
+		}
+		if (created) await api.delete(`/api/v1/context/${created.id}`).catch(() => undefined);
+	}
 });
