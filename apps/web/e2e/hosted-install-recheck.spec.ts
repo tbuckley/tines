@@ -172,6 +172,17 @@ async function rejectInstallOnce(page: Page, status: number, code: string) {
 	return attempts;
 }
 
+// Bob's library is compared whole by library.spec.ts, so a completed install is removed again.
+async function removeInstalled(request: APIRequestContext, workflowName: string) {
+	const bob = apiClient(request, BOB.apiKey);
+	const list = await body<{ items: { id: string; name: string }[] }>(
+		await bob.get('/api/v1/workflows')
+	);
+	const installed = list.items.find((workflow) => workflow.name === workflowName);
+	expect(installed).toBeTruthy();
+	expect((await bob.delete(`/api/v1/workflows/${installed!.id}`)).status()).toBe(204);
+}
+
 test('a hosted install that did not finish can be retried with the same review', async ({
 	request,
 	context,
@@ -179,7 +190,8 @@ test('a hosted install that did not finish can be retried with the same review',
 	uniqueName
 }) => {
 	const { name } = await openHostedInstall(request, context, page, uniqueName);
-	await name.fill(uniqueName('retried-install'));
+	const destination = uniqueName('retried-install');
+	await name.fill(destination);
 	await page.getByRole('button', { name: 'Preview installation', exact: true }).click();
 	const confirmed = page.getByLabel('I reviewed what will be installed');
 	await confirmed.check();
@@ -198,6 +210,7 @@ test('a hosted install that did not finish can be retried with the same review',
 	await install.click();
 	await expect(page.getByRole('heading', { name: 'Installed', exact: true })).toBeVisible();
 	expect(attempts).toHaveLength(2);
+	await removeInstalled(request, destination);
 });
 
 test('a hosted install rejected as stale can be previewed and installed again', async ({
@@ -233,4 +246,5 @@ test('a hosted install rejected as stale can be previewed and installed again', 
 	await install.click();
 	await expect(page.getByRole('heading', { name: 'Installed', exact: true })).toBeVisible();
 	expect(attempts).toHaveLength(2);
+	await removeInstalled(request, destination);
 });
