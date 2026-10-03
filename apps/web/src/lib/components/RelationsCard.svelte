@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { IssueLinks, IssueListItem, IssueRef, LinkedIssue } from '@tines/shared';
+	import type { IssueLinks, IssueRef, LinkedIssue } from '@tines/shared';
 	import { ApiError } from '@tines/shared';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconX from '@tabler/icons-svelte/icons/x';
@@ -7,10 +7,11 @@
 	import { slide } from 'svelte/transition';
 	import { invalidateAll } from '$app/navigation';
 	import { api } from '$lib/api';
+	import IssueCombobox from '$lib/components/IssueCombobox.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
-	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { categoryVar, prefersReducedMotion } from '$lib/format';
+	import type { IssuePick } from '$lib/issue-picker';
 	import { isTempLink, TEMP_LINK_PREFIX, type PendingAdd } from '$lib/link-overlay';
 
 	/** One hop of a rejected cycle; refs are absent only for a vanished issue. */
@@ -19,6 +20,7 @@
 
 	let {
 		issueId,
+		projectId,
 		links,
 		adds = $bindable(),
 		removals = $bindable(),
@@ -26,6 +28,8 @@
 		onerror
 	}: {
 		issueId: string;
+		/** The issue's project: a bare `#N` in the picker means an issue of this project. */
+		projectId: string;
 		/** The merged view (server truth + overlay), owned by the page. */
 		links: IssueLinks;
 		/** Overlay of in-flight operations, bound to the page so every reload re-merges them. */
@@ -76,43 +80,14 @@
 
 	let adding = $state(false);
 	let kind = $state<'blocked_by' | 'blocks' | 'duplicate_of'>('blocked_by');
-	let queryText = $state('');
 	let inputEl = $state<HTMLInputElement | null>(null);
-	let listOpen = $state(false);
-	let highlight = $state(0);
 	let formError = $state<FormError | null>(null);
 	/** Monotonic per-card counter making each add operation's temp id unique. */
 	let addSeq = 0;
 
-	// The picker's pool: fetched once, when the form first opens. Single-user
-	// volumes make client-side filtering fine; a server-side `q` is the
-	// upgrade path if this ever gets heavy.
-	let candidates = $state<IssueListItem[] | null>(null);
-	let loadingCandidates = $state(false);
-
-	async function toggleForm() {
-		if (adding) {
-			adding = false;
-			listOpen = false;
-			return;
-		}
-		adding = true;
-		listOpen = true;
-		formError = null;
-		if (candidates === null && !loadingCandidates) {
-			loadingCandidates = true;
-			try {
-				// Relationship editing supports duplicate chains, so keep duplicate
-				// issues selectable even though ordinary lists hide them.
-				const { items } = await api.listIssues({ hide_duplicates: false, limit: 100 });
-				// Empty input shows the most recently active issues first.
-				candidates = [...items].sort((a, b) => b.last_activity_at - a.last_activity_at);
-			} catch (e) {
-				onerror(e);
-			} finally {
-				loadingCandidates = false;
-			}
-		}
+	function toggleForm() {
+		adding = !adding;
+		if (adding) formError = null;
 	}
 
 	$effect(() => {
@@ -125,58 +100,21 @@
 		if (kind === 'duplicate_of' && links.duplicate_of) kind = 'blocked_by';
 	});
 
-	const linkedIds = $derived(
-		new Set([
-			...links.blocked_by.map((l) => l.issue_id),
-			...links.blocks.map((l) => l.issue_id),
-			...links.duplicated_by.map((l) => l.issue_id),
-			...(links.duplicate_of ? [links.duplicate_of.issue_id] : [])
-		])
-	);
-
-	const suggestions = $derived.by(() => {
-		const term = queryText.trim().toLowerCase();
-		const pool = (candidates ?? []).filter((i) => i.id !== issueId && !linkedIds.has(i.id));
-		const matched = term
-			? pool.filter(
-					(i) =>
-						`${i.project_name}/${i.number}`.toLowerCase().includes(term) ||
-						i.title.toLowerCase().includes(term)
-				)
-			: pool;
-		// Done issues stay available (essential for duplicates of fixed bugs)
-		// but sort below the open ones; sort is stable, so recency survives.
-		return [...matched]
-			.sort(
-				(a, b) =>
-					Number(a.effective_state.category === 'done') -
-					Number(b.effective_state.category === 'done')
-			)
-			.slice(0, 8);
-	});
-
-	// A changed suggestion list restarts the keyboard cursor at the top.
-	$effect(() => {
-		void suggestions;
-		highlight = 0;
-	});
+	// Never offered: the issue itself and everything it already links to
+	// (pending adds included, so a second tap can't double-add).
+	const excluded = $derived([
+		issueId,
+		...links.blocked_by.map((l) => l.issue_id),
+		...links.blocks.map((l) => l.issue_id),
+		...links.duplicated_by.map((l) => l.issue_id),
+		...(links.duplicate_of ? [links.duplicate_of.issue_id] : [])
+	]);
 
 	function onKeydown(e: KeyboardEvent) {
-		if (e.key === 'ArrowDown') {
+		// The picker takes the first Escape to close its list; the next closes the form.
+		if (e.key === 'Escape' && !e.defaultPrevented) {
 			e.preventDefault();
-			listOpen = true;
-			highlight = Math.min(highlight + 1, suggestions.length - 1);
-		} else if (e.key === 'ArrowUp') {
-			e.preventDefault();
-			highlight = Math.max(highlight - 1, 0);
-		} else if (e.key === 'Enter') {
-			e.preventDefault();
-			const pick = suggestions[highlight];
-			if (pick) add(pick);
-		} else if (e.key === 'Escape') {
-			e.preventDefault();
-			if (listOpen) listOpen = false;
-			else adding = false;
+			adding = false;
 		}
 	}
 
@@ -192,7 +130,7 @@
 		return { message: e.message };
 	}
 
-	async function add(target: IssueListItem) {
+	async function add(target: IssuePick) {
 		formError = null;
 		// Optimistic, like pending comments: the row appears dimmed immediately
 		// (which also drops the issue from the suggestions, so a second tap
@@ -219,8 +157,6 @@
 				}
 			}
 		];
-		queryText = '';
-		highlight = 0;
 		inputEl?.focus();
 		try {
 			const created = await api.addIssueLink(issueId, { kind: requestKind, issue_id: target.id });
@@ -360,50 +296,22 @@
 						: ''}
 				</option>
 			</Select>
-			<div class="relative">
-				<Input
+			<!-- Relations span projects and include done issues (a duplicate of a
+			     fixed bug) and duplicates (duplicate chains). -->
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div onkeydown={onKeydown}>
+				<IssueCombobox
 					bind:ref={inputEl}
-					bind:value={queryText}
+					homeProjectId={projectId}
+					includeDone
+					includeDuplicates
+					exclude={excluded}
+					onpick={add}
+					label="Issue to link"
+					clearLabel="Clear search"
 					class="h-8 text-xs"
-					placeholder={loadingCandidates ? 'Loading issues…' : 'Search issues…'}
-					role="combobox"
-					aria-expanded={listOpen}
-					aria-label="Issue to link"
-					autocomplete="off"
-					onfocus={() => (listOpen = true)}
-					onblur={() => (listOpen = false)}
-					onkeydown={onKeydown}
+					placeholder="Search by title, #N or Project/N"
 				/>
-				{#if listOpen && suggestions.length > 0}
-					<ul
-						class="bg-popover text-popover-foreground absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-md border p-1 shadow-md"
-					>
-						{#each suggestions as suggestion, i (suggestion.id)}
-							<li>
-								<button
-									type="button"
-									class="flex w-full items-center gap-2 rounded-sm px-1.5 py-1 text-left {i ===
-									highlight
-										? 'bg-accent'
-										: ''} {suggestion.effective_state.category === 'done' ? 'opacity-55' : ''}"
-									onmouseenter={() => (highlight = i)}
-									onpointerdown={(e) => e.preventDefault()}
-									onclick={() => add(suggestion)}
-								>
-									<span
-										class="size-2 shrink-0 rounded-full"
-										style="background: {categoryVar(suggestion.effective_state.category)}"
-										title={suggestion.effective_state.name}
-									></span>
-									<span class="shrink-0 font-mono text-xs">
-										{suggestion.project_name}/#{suggestion.number}
-									</span>
-									<span class="text-muted-foreground truncate text-xs">{suggestion.title}</span>
-								</button>
-							</li>
-						{/each}
-					</ul>
-				{/if}
 			</div>
 			{#if formError}
 				<p

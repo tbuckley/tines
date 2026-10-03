@@ -190,6 +190,7 @@
 						<IssueCombobox
 							projectId={data.projectId}
 							id="invite-landing"
+							clearLabel="Clear landing issue"
 							bind:selected={landing}
 							bind:text={landingText}
 							bind:ref={landingInput}
