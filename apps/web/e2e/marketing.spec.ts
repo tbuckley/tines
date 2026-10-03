@@ -3,7 +3,7 @@ import { gotoHydrated } from './helpers';
 
 test('renders the complete public story and shares one sign-in dialog', async ({ page }) => {
 	await gotoHydrated(page, '/');
-	await expect(page.getByRole('heading', { name: /Manage a system/ })).toBeVisible();
+	await expect(page.getByRole('heading', { name: /Put your agents to work/ })).toBeVisible();
 	await expect(page.getByLabel('Engineering workflow')).toContainText('Backlog');
 	await expect(page.getByLabel('Engineering workflow')).toContainText('Closed');
 	await page.getByRole('button', { name: 'Sign in ↗' }).first().click();
