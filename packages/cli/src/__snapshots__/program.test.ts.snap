@@ -1987,6 +1987,8 @@ Options:
   --initial-state <id-or-name>  set the initial state
   --no-prompts                  allow new states without initial "prompt"
                                 instructions
+  --expect-revision <n>         refuse the update unless the workflow is still
+                                at this revision (see \`tines workflows show\`)
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)

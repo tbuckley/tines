@@ -1073,7 +1073,8 @@ export async function updateWorkflow(
 	actor: ActorContext,
 	effects: DispatchEffects,
 	id: string,
-	body: UpdateWorkflowRequest
+	body: UpdateWorkflowRequest,
+	beforeCommit?: () => Promise<void>
 ): Promise<WorkflowResponse> {
 	requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'workflow.update');
 	const current = await loadWorkflow(db, actor.userId, id);
@@ -1506,6 +1507,7 @@ export async function updateWorkflow(
 			);
 		}
 	}
+	if (beforeCommit) await beforeCommit();
 	try {
 		await runAtomic(env, queries);
 	} catch (e) {

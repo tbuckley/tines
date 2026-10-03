@@ -100,7 +100,7 @@ function parseMaxItems(value: string): number {
 	return parsePositiveIntegerOption(value, 'max-items');
 }
 
-function parsePositiveIntegerOption(value: string, optionName: string): number {
+export function parsePositiveIntegerOption(value: string, optionName: string): number {
 	if (!/^[1-9]\d*$/.test(value)) throw new Error(`${optionName} must be a positive integer`);
 	const result = Number(value);
 	if (!Number.isSafeInteger(result)) {
