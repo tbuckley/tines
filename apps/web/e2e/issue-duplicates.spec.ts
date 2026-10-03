@@ -177,7 +177,7 @@ test('direct duplicate selectors remain available outside ordinary lists', async
 	await page.getByRole('button', { name: 'Add context' }).click();
 	await expect(page.getByRole('heading', { name: 'New context item' })).toBeVisible();
 	await page.getByLabel('Only for issue').fill(duplicate.title);
-	await expect(page.getByRole('dialog').getByRole('option')).toHaveText([
+	await expect(page.getByRole('dialog').getByRole('listbox').getByRole('option')).toHaveText([
 		`#${duplicate.number} ${duplicate.title}`
 	]);
 });

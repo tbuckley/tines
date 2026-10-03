@@ -929,7 +929,7 @@ test('the context editor scopes an item to an issue far older than the newest 10
 
 		await test.step('typed text that was never picked does not save as "any issue"', async () => {
 			await scope.fill('Page issue');
-			await expect(dialog.getByRole('option').first()).toBeVisible();
+			await expect(dialog.getByRole('listbox').getByRole('option').first()).toBeVisible();
 			await scope.press('Escape');
 			await dialog.getByRole('button', { name: 'Create' }).click();
 			await expect(dialog).toContainText(
@@ -943,7 +943,9 @@ test('the context editor scopes an item to an issue far older than the newest 10
 
 		await test.step('the oldest issue is found by number and saved as the scope', async () => {
 			await scope.fill('#1');
-			await expect(dialog.getByRole('option').first()).toHaveText('#1 Page issue 1');
+			await expect(dialog.getByRole('listbox').getByRole('option').first()).toHaveText(
+				'#1 Page issue 1'
+			);
 			await scope.press('Enter');
 			await expect(scope).toHaveValue('#1 Page issue 1');
 			await expect(dialog).toContainText('The issue implies its project.');

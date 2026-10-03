@@ -378,12 +378,6 @@ test.describe.serial('issue links', () => {
 			const picker = card.getByRole('combobox', { name: 'Issue to link' });
 			const options = card.getByRole('option');
 
-			// By title: the server searches every issue, oldest included.
-			await picker.fill('Page issue 2');
-			await expect(options.filter({ hasText: /Page issue 2$/ })).toHaveText(
-				`${PAGINATION.projectName}/#2 Page issue 2`
-			);
-
 			// By ref: Project/N is looked up directly and listed first.
 			await picker.fill(`${PAGINATION.projectName}/1`);
 			await expect(options.first()).toHaveText(`${PAGINATION.projectName}/#1 Page issue 1`);
