@@ -77,6 +77,21 @@ export function redactForMember<T extends ContextItem>(actor: ActorContext, item
 	return { ...rest, value_set: true } as T;
 }
 
+/**
+ * The disclosure policy for a stored item: what `actor` may be shown of it,
+ * or null when it is not theirs to see. Every item the context service
+ * returns goes through here, a conflict's `current` included, so a refused
+ * or failed write can never say more than the ordinary read does.
+ */
+export async function discloseContextItem<T extends ContextItem>(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	item: T
+): Promise<T | null> {
+	if (!(await memberScopeAllowed(db, actor, item.scope))) return null;
+	return redactForMember(actor, item);
+}
+
 /** An issue in one of the owner's other projects, as a member sees it. */
 const PRIVATE_BLOCKER = {
 	project_name: 'Another project',
