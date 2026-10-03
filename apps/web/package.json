@@ -21,6 +21,7 @@
 		"perf:report": "node scripts/perf-report.mjs",
 		"perf:stats": "node scripts/stats-scale.mjs",
 		"perf:stats:cpu": "STATSPERF=1 vitest run src/lib/server/supervisor/stats-perf.test.ts",
+		"flake:ledger": "node scripts/flake-ledger.mjs",
 		"perf:usage": "node scripts/usage-scale.mjs",
 		"test:e2e": "playwright test",
 		"test:usage-mixed": "node scripts/usage-mixed.mjs"
