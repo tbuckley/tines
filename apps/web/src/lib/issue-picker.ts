@@ -41,6 +41,20 @@ export function parseIssueQuery(text: string): {
 	};
 }
 
+/**
+ * The project a typed `Project/N` names. Case is ignored, but an exact-case
+ * match wins when two names differ only by case.
+ */
+export function findProjectByName<P extends { name: string }>(
+	projects: P[],
+	name: string
+): P | undefined {
+	const folded = name.toLowerCase();
+	return (
+		projects.find((p) => p.name === name) ?? projects.find((p) => p.name.toLowerCase() === folded)
+	);
+}
+
 export type IssueOptionFilters = {
 	limit?: number;
 	/** Offer issues in a done state (sorted below the open ones). */

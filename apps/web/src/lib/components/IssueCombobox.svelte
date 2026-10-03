@@ -1,11 +1,12 @@
 <script lang="ts">
-	import { ApiError, type IssueDetail, type IssueListItem } from '@tines/shared';
+	import { ApiError, type IssueDetail, type IssueListItem, type Project } from '@tines/shared';
 	import IconX from '@tabler/icons-svelte/icons/x';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, tick, untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { categoryVar } from '$lib/format';
 	import {
+		findProjectByName,
 		issueLabel,
 		issueRef,
 		mergeIssueOptions,
@@ -91,8 +92,8 @@
 	let status = $state<'idle' | 'loading' | 'error'>('idle');
 	/** The newest issues of one search scope, fetched on its first empty focus. */
 	let recent: { scope: string; found: Found } | null = null;
-	/** Project name (as typed) → id, for `Project/N` lookups. */
-	const projectIds = new Map<string, Promise<string | null>>();
+	/** Every project the user can see, fetched once for `Project/N` lookups. */
+	let projects: Promise<Project[]> | null = null;
 	/** Monotonic: a response for an older request is discarded. */
 	let seq = 0;
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -126,17 +127,28 @@
 		return projectId ? api.listProjectIssues(projectId, filters) : api.listIssues(filters);
 	}
 
-	/** A project's id from the name in `Project/N`; any one of its issues carries it. */
-	function projectIdByName(name: string) {
-		let lookup = projectIds.get(name);
-		if (!lookup) {
-			lookup = api
-				.listIssues({ project: name, hide_duplicates: false, brief: true, limit: 1 })
-				.then(({ items }) => items[0]?.project_id ?? null);
-			projectIds.set(name, lookup);
-			lookup.catch(() => projectIds.delete(name));
+	async function allProjects() {
+		const all: Project[] = [];
+		let cursor: string | undefined;
+		do {
+			// Archived ones too: a named project is searched whatever its state.
+			const page = await api.listProjects({ archived: 'all', limit: 100, cursor });
+			all.push(...page.items);
+			cursor = page.next_cursor ?? undefined;
+		} while (cursor);
+		return all;
+	}
+
+	/** A project's id from the name in `Project/N`, whatever case it was typed in. */
+	async function projectIdByName(name: string) {
+		if (!projects) {
+			const request = allProjects();
+			projects = request;
+			request.catch(() => {
+				if (projects === request) projects = null;
+			});
 		}
-		return lookup;
+		return findProjectByName(await projects, name)?.id ?? null;
 	}
 
 	async function lookup(number: number | null, project: string | null) {
@@ -180,6 +192,27 @@
 			return { exact, items };
 		});
 	}
+
+	/**
+	 * The results on hand belong to the scope they were searched in. When it
+	 * changes, drop them (and anything in flight) and search the typed text again.
+	 */
+	function rescope() {
+		clearTimeout(timer);
+		seq++;
+		found = NONE;
+		status = 'idle';
+		if (selected) return;
+		if (text.trim()) search(text);
+		else if (open) showRecent();
+	}
+
+	let scope: string | null = null;
+	$effect(() => {
+		const next = `${projectId ?? ''}\n${homeProjectId ?? ''}`;
+		if (scope !== null && scope !== next) untrack(rescope);
+		scope = next;
+	});
 
 	function onfocus() {
 		open = true;
@@ -228,9 +261,11 @@
 				return;
 			}
 			highlight = Math.min(highlight + 1, options.length - 1);
+			void revealHighlight();
 		} else if (e.key === 'ArrowUp') {
 			e.preventDefault();
 			highlight = Math.max(highlight - 1, 0);
+			void revealHighlight();
 		} else if (e.key === 'Enter') {
 			// Only intercept when there is something to pick; otherwise the form submits.
 			const option = options[highlight];
@@ -247,6 +282,24 @@
 	const showList = $derived(
 		open && !selected && (status !== 'idle' || options.length > 0 || !!text.trim())
 	);
+
+	let listbox = $state<HTMLUListElement | null>(null);
+	/**
+	 * The list is positioned past the end of its field, which in a dialog can be
+	 * past the end of the scrolling body: scroll it into view as it opens and as
+	 * its rows arrive.
+	 */
+	$effect(() => {
+		void status;
+		void options;
+		listbox?.scrollIntoView({ block: 'nearest' });
+	});
+
+	/** Keyboard moves only: scrolling under a resting pointer would move the highlight again. */
+	async function revealHighlight() {
+		await tick();
+		document.getElementById(optionId(highlight))?.scrollIntoView({ block: 'nearest' });
+	}
 </script>
 
 <div class="relative">
@@ -285,6 +338,7 @@
 	{/if}
 	{#if showList}
 		<ul
+			bind:this={listbox}
 			id={listboxId}
 			role="listbox"
 			class="bg-popover text-popover-foreground absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-md border p-1 shadow-md"

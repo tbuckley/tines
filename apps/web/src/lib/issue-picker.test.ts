@@ -1,6 +1,6 @@
 import type { Issue } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
-import { issueLabel, mergeIssueOptions, parseIssueQuery } from './issue-picker';
+import { findProjectByName, issueLabel, mergeIssueOptions, parseIssueQuery } from './issue-picker';
 
 type Candidate = NonNullable<Parameters<typeof mergeIssueOptions>[0]>;
 
@@ -126,6 +126,28 @@ describe('mergeIssueOptions', () => {
 				effective_state: { category: 'active' }
 			}
 		]);
+	});
+});
+
+describe('findProjectByName', () => {
+	const projects = [
+		{ id: 'prj_lower', name: 'tines' },
+		{ id: 'prj_title', name: 'Tines' },
+		{ id: 'prj_seed', name: 'pagination-seed' }
+	];
+
+	it('ignores the case the name was typed in', () => {
+		expect(findProjectByName(projects, 'PAGINATION-SEED')?.id).toBe('prj_seed');
+		expect(findProjectByName(projects, 'TINES')?.id).toBe('prj_lower');
+	});
+
+	it('prefers the exact-case name when two differ only by case', () => {
+		expect(findProjectByName(projects, 'Tines')?.id).toBe('prj_title');
+		expect(findProjectByName(projects, 'tines')?.id).toBe('prj_lower');
+	});
+
+	it('finds nothing for a name no project has', () => {
+		expect(findProjectByName(projects, 'nope')).toBeUndefined();
 	});
 });
 

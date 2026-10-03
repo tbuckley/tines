@@ -9,9 +9,19 @@ import type {
 	TinesEvent,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator } from '@playwright/test';
 import { ALICE, BOB, PAGINATION, RUNROW } from './constants.mjs';
-import { apiClient, body, errorBody, gotoHydrated, issuePath, runId, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	DESKTOP,
+	errorBody,
+	gotoHydrated,
+	issuePath,
+	PHONE,
+	runId,
+	signIn
+} from './helpers';
 
 /**
  * The context-attachments acceptance loop (specs/context/SPEC.md): scoped
@@ -981,3 +991,71 @@ test('the context editor scopes an item to an issue far older than the newest 10
 		if (created) await api.delete(`/api/v1/context/${created.id}`).catch(() => undefined);
 	}
 });
+
+test("changing the project in the context editor drops the old project's issue results", async ({
+	request,
+	context,
+	page
+}) => {
+	// Both projects own an issue #1, so a stale list offers the wrong one.
+	const api = apiClient(request, PAGINATION.user.apiKey);
+	const other = await body<Project>(
+		await api.post('/api/v1/projects', { name: `scope-switch-${runId}` })
+	);
+	try {
+		await api.post(`/api/v1/projects/${other.id}/issues`, { title: 'Other first issue' });
+		await signIn(context, PAGINATION.user.sessionToken);
+		await gotoHydrated(page, `/projects/${PAGINATION.projectId}`);
+		await page.getByRole('button', { name: 'Add context' }).click();
+		const dialog = page.getByRole('dialog');
+		const scope = dialog.getByLabel('Only for issue');
+		const first = dialog.getByRole('listbox').getByRole('option').first();
+
+		await scope.fill('#1');
+		await expect(first).toHaveText('#1 Page issue 1');
+
+		await dialog.getByLabel('Project', { exact: true }).selectOption(other.id);
+		await scope.focus();
+		await expect(first).toHaveText('#1 Other first issue');
+		await expect(dialog.getByRole('listbox').getByRole('option')).toHaveCount(1);
+		await scope.press('Enter');
+		await expect(scope).toHaveValue('#1 Other first issue');
+	} finally {
+		await api.delete(`/api/v1/projects/${other.id}`).catch(() => undefined);
+	}
+});
+
+for (const size of [DESKTOP, PHONE, { width: 1280, height: 720 }, { width: 390, height: 480 }]) {
+	test(`the context editor's issue list is reachable without scrolling by hand at ${size.width}x${size.height}`, async ({
+		context,
+		page
+	}) => {
+		// The issue field is the last one in the dialog, so its list opens past
+		// the end of the dialog's scrolling body.
+		const hittable = (option: Locator) =>
+			option.evaluate((el) => {
+				const box = el.getBoundingClientRect();
+				const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+				return hit !== null && el.contains(hit);
+			});
+		await page.setViewportSize(size);
+		await signIn(context, PAGINATION.user.sessionToken);
+		await gotoHydrated(page, `/projects/${PAGINATION.projectId}`);
+		await page.getByRole('button', { name: 'Add context' }).click();
+		const dialog = page.getByRole('dialog');
+		const scope = dialog.getByLabel('Only for issue');
+		const options = dialog.getByRole('listbox').getByRole('option');
+
+		await scope.fill('Page issue');
+		await expect(options).toHaveCount(8);
+		await expect.poll(() => hittable(options.first())).toBe(true);
+		// A list taller than the dialog body can only show its top rows at once.
+		if (size.height >= 720) await expect.poll(() => hittable(options.last())).toBe(true);
+
+		for (let i = 1; i < 8; i += 1) {
+			await scope.press('ArrowDown');
+			await expect(options.nth(i)).toHaveAttribute('aria-selected', 'true');
+			await expect.poll(() => hittable(options.nth(i)), { message: `option ${i}` }).toBe(true);
+		}
+	});
+}

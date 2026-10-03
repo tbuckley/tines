@@ -378,8 +378,18 @@ test.describe.serial('issue links', () => {
 			const picker = card.getByRole('combobox', { name: 'Issue to link' });
 			const options = card.getByRole('listbox').getByRole('option');
 
-			// By ref: Project/N is looked up directly and listed first.
-			await picker.fill(`${PAGINATION.projectName}/1`);
+			// A bare #N means the current issue's own project.
+			await picker.fill(`#${current.number}`);
+			await expect(card.getByRole('listbox')).toHaveText('No issues match');
+			const sibling = await body<IssueDetail>(
+				await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Sibling issue' })
+			);
+			await picker.fill(`#${sibling.number}`);
+			await expect(options.first()).toHaveText(`${project.name}/#${sibling.number} Sibling issue`);
+
+			// By ref: Project/N is looked up directly and listed first, whatever
+			// case the project name is typed in.
+			await picker.fill(`${PAGINATION.projectName.toUpperCase()}/1`);
 			await expect(options.first()).toHaveText(`${PAGINATION.projectName}/#1 Page issue 1`);
 			await options.first().click();
 			await expect(card.getByText('Page issue 1', { exact: true })).toBeVisible();
