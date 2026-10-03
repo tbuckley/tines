@@ -62,3 +62,15 @@ member run, directly or as a link-created child — is written with an owner
 unapproved proposal until a person turns it on in the browser. Parent consent
 never propagates; key consent fields still fail with
 `consent_browser_required`. Never-shared projects keep the default, on.
+
+## Amendment 2026-10-03 — owner-run-filed issues (Tines/905)
+
+Tom reported that follow-ups his own runs filed in a shared project sat idle
+until he opened each one and turned agents on. The 2026-09-26 amendment is
+narrowed: an issue filed by a run whose contributor is the project owner —
+directly or as a link-created child — writes no owner row and follows the
+owner default, on, exactly like an issue the owner's named key creates. An
+issue filed by a member's run, or created by a member, still gets the owner
+`off` row and stays a proposal. Key consent fields still fail with
+`consent_browser_required`; no key writes an `on` row. Issues created under
+the 2026-09-26 rule keep their `off` row; there is no backfill.
