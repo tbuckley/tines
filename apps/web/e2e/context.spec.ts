@@ -947,7 +947,7 @@ test('the context editor scopes an item to an issue far older than the newest 10
 			await expect(dialog.getByRole('listbox').getByRole('option').first()).toHaveText(
 				'#1 Page issue 1'
 			);
-			await scope.press('Enter');
+			await dialog.getByRole('listbox').getByRole('option').first().click();
 			await expect(scope).toHaveValue('#1 Page issue 1');
 			await expect(dialog).toContainText('The issue implies its project.');
 			await dialog.getByRole('button', { name: 'Create' }).click();

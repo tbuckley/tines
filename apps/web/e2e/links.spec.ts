@@ -376,7 +376,7 @@ test.describe.serial('issue links', () => {
 			const card = page.locator('#relations');
 			await card.getByRole('button', { name: 'Add' }).click();
 			const picker = card.getByRole('combobox', { name: 'Issue to link' });
-			const options = card.getByRole('option');
+			const options = card.getByRole('listbox').getByRole('option');
 
 			// By ref: Project/N is looked up directly and listed first.
 			await picker.fill(`${PAGINATION.projectName}/1`);
