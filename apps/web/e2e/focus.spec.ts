@@ -513,9 +513,11 @@ focusTest.describe.serial('project focus', () => {
 				await gotoHydrated(page, `/issues?project=${RUNROW.projectId}`);
 				await gotoHydrated(page, '/agents');
 				await page.getByLabel('Show ended runs').check();
+				// The RUNROW issue carries three seeded runs: RUNROW, RUNROW_FAILED
+				// and RUNROW_STALLED.
 				await expect(
 					page.getByRole('link', { name: `${RUNROW.projectName}/#${RUNROW.issueNumber}` })
-				).toHaveCount(2);
+				).toHaveCount(3);
 				const ruleDialog = page.getByRole('dialog', { name: 'New routing rule' });
 				await gotoHydrated(page, `/issues?project=${world.aId}`);
 				await gotoHydrated(page, '/agents');

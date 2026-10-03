@@ -276,3 +276,15 @@ test('focusing the landing issue on desktop does not scroll the page', async ({
 	);
 	expect(await page.evaluate(() => window.scrollY)).toBe(before);
 });
+
+test('the People page uses the layout main landmark, not a second nested one', async ({
+	page,
+	request,
+	uniqueName
+}) => {
+	await setup(page, request, uniqueName('people-landmark'));
+	const main = page.getByRole('main');
+	await expect(main).toHaveCount(1);
+	await expect(main.getByRole('button', { name: 'Send invitation' })).toBeVisible();
+	expect(await page.evaluate(() => document.querySelectorAll('main').length)).toBe(1);
+});
