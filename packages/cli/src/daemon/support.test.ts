@@ -5,6 +5,7 @@ import {
 	AMBIENT_CLI,
 	buildHarnessInvocation,
 	buildSpawnEnv,
+	classifyExit,
 	redactSecrets,
 	SecretRedactor,
 	CliRefresher,
@@ -21,6 +22,7 @@ import {
 	RunTable,
 	shellQuote,
 	type AgentCli,
+	type ExitFacts,
 	type ManagedRun,
 	type RunOutcome
 } from './support.js';
@@ -160,6 +162,65 @@ describe('buildHarnessInvocation', () => {
 		});
 		expect(() => buildHarnessInvocation({ harness: 'custom' }, input)).toThrow(/--command/);
 	});
+
+	it('pi: JSON mode, the prompt on stdin, sessions kept inside the workspace', () => {
+		// Cold, with nothing routed: no --model (Pi's own default), no --thinking.
+		expect(buildHarnessInvocation({ harness: 'pi' }, { ...input, model: null })).toEqual({
+			file: 'sh',
+			args: [
+				'-c',
+				`pi --mode json --no-approve --session-dir '/tmp/ws/run 1/.pi-sessions' < '/tmp/ws/run 1/prompt.md'`
+			]
+		});
+	});
+
+	it('pi: model, effort and each materialized skill are named on the command line', () => {
+		expect(
+			buildHarnessInvocation(
+				{ harness: 'pi' },
+				{
+					...input,
+					model: 'omlx/qwen3-coder',
+					effort: 'high',
+					skillDirs: ['.agents/skills/i-have-adhd', '.agents/skills/tines-local-e2e']
+				}
+			).args
+		).toEqual([
+			'-c',
+			`pi --mode json --no-approve --session-dir '/tmp/ws/run 1/.pi-sessions' --model 'omlx/qwen3-coder' --thinking 'high' --skill '.agents/skills/i-have-adhd' --skill '.agents/skills/tines-local-e2e' < '/tmp/ws/run 1/prompt.md'`
+		]);
+		// Never --approve: that would also trust a repository's own `.pi/` extensions.
+		expect(buildHarnessInvocation({ harness: 'pi' }, input).args[1]).not.toMatch(/ --approve\b/);
+	});
+
+	it('pi: a resumed launch reopens the session from the same session dir', () => {
+		const script = buildHarnessInvocation(
+			{ harness: 'pi' },
+			{ ...input, resumeSessionId: '01a10335-d7b7-7690-aa36-7f04c20b8cb9' }
+		).args[1]!;
+		expect(script).toContain(
+			`--session-dir '/tmp/ws/run 1/.pi-sessions' --session '01a10335-d7b7-7690-aa36-7f04c20b8cb9' --model`
+		);
+		expect(buildHarnessInvocation({ harness: 'pi' }, input).args[1]).not.toContain('--session ');
+	});
+
+	it('pi: every interpolated value is shell-quoted', () => {
+		const script = buildHarnessInvocation(
+			{ harness: 'pi' },
+			{
+				workspace: "/tmp/it's",
+				promptFile: "/tmp/it's/prompt.md",
+				prompt: 'Do the thing',
+				model: 'a; rm -rf /',
+				effort: '$(id)',
+				resumeSessionId: "s'1",
+				skillDirs: [".agents/skills/o'no"]
+			}
+		).args[1]!;
+		expect(script).toBe(
+			`pi --mode json --no-approve --session-dir '/tmp/it'\\''s/.pi-sessions' --session 's'\\''1' --model 'a; rm -rf /' --thinking '$(id)' --skill '.agents/skills/o'\\''no' < '/tmp/it'\\''s/prompt.md'`
+		);
+	});
 });
 
 describe('formatLaunchBanner', () => {
@@ -205,6 +266,21 @@ describe('formatLaunchBanner', () => {
 		expect(banner).not.toContain('--model');
 	});
 
+	it('pi with no model named reads model=(pi default), not (fixed)', () => {
+		const unrouted = { ...input, model: null };
+		const pi = { ...meta, harness: 'pi' as const };
+		expect(
+			formatLaunchBanner(buildHarnessInvocation({ harness: 'pi' }, unrouted), unrouted, pi)
+		).toBe(
+			`$ pi --mode json --no-approve --session-dir '/tmp/ws/run 1/.pi-sessions' < '/tmp/ws/run 1/prompt.md'\n` +
+				`# tines runner: harness=pi model=(pi default) effort=(provider-default) timeout=30m cli=0.0.1 workspace=/tmp/ws/run 1\n`
+		);
+		const routed = { ...input, model: 'omlx/qwen3-coder' };
+		expect(
+			formatLaunchBanner(buildHarnessInvocation({ harness: 'pi' }, routed), routed, pi)
+		).toContain('model=omlx/qwen3-coder');
+	});
+
 	it('codex: argv shell-quoted, quoting only the words that need it', () => {
 		const invocation = buildHarnessInvocation({ harness: 'codex' }, input);
 		expect(formatLaunchBanner(invocation, input, { ...meta, harness: 'codex' })).toBe(
@@ -246,6 +322,7 @@ describe('formatLaunchBanner', () => {
 		for (const spec of [
 			{ harness: 'claude_code' as const },
 			{ harness: 'codex' as const },
+			{ harness: 'pi' as const },
 			{ harness: 'custom' as const, command: 'my-agent {prompt_file}' }
 		]) {
 			const banner = formatLaunchBanner(buildHarnessInvocation(spec, input), input, {
@@ -301,6 +378,221 @@ describe('exitLineForRun', () => {
 
 	it('a settled run gets none — its batcher never flushes again', () => {
 		expect(exitLineForRun({ settled: true, timedOut: false }, exit)).toBeNull();
+	});
+});
+
+describe('classifyExit', () => {
+	const facts = (over: Partial<ExitFacts>): ExitFacts => ({
+		harness: 'claude_code',
+		code: 0,
+		signal: null,
+		timedOut: false,
+		timeoutMinutes: 30,
+		secrets: [],
+		...over
+	});
+	const limited = {
+		resumeAt: 1_800_000_000_000,
+		source: 'stream' as const,
+		detail: 'five_hour limit rejected',
+		limit: 'five_hour'
+	};
+	const providerError = { source: 'stderr' as const, detail: 'API Error: 529 overloaded' };
+
+	it.each<[string, Partial<ExitFacts>, ReturnType<typeof classifyExit>]>([
+		// -- what the close handler did before the extraction (claude_code, codex, custom)
+		['exit 0 completes', {}, { status: 'completed' }],
+		['codex exit 0 completes', { harness: 'codex' }, { status: 'completed' }],
+		['custom exit 0 completes', { harness: 'custom' }, { status: 'completed' }],
+		[
+			'exit 0 completes even when the limiter saw a limit: the harness recovered',
+			{ limited, providerError },
+			{ status: 'completed' }
+		],
+		[
+			'the daemon timeout wins over everything, including the SIGTERM it sent',
+			{ timedOut: true, timeoutMinutes: 45, code: null, signal: 'SIGTERM', limited },
+			{ status: 'failed', error: 'run exceeded the 45m timeout; harness killed' }
+		],
+		[
+			'a timed-out harness that still exits 0 is a timeout',
+			{ timedOut: true },
+			{ status: 'failed', error: 'run exceeded the 30m timeout; harness killed' }
+		],
+		[
+			'a signal is a plain failure, whatever the limiter read',
+			{ code: null, signal: 'SIGKILL', limited, providerError },
+			{ status: 'failed', error: 'harness killed by SIGKILL' }
+		],
+		[
+			'a non-zero exit on a usage limit is rate_limited, with the reset time',
+			{ code: 1, limited },
+			{
+				status: 'failed',
+				error: 'rate limited: five_hour limit rejected',
+				judgment: 'rate_limited',
+				resume_at: 1_800_000_000_000,
+				note: 'harness rate limited (five_hour limit rejected)'
+			}
+		],
+		[
+			'a usage limit with no parseable reset carries no resume_at',
+			{ code: 1, limited: { ...limited, resumeAt: null } },
+			{
+				status: 'failed',
+				error: 'rate limited: five_hour limit rejected',
+				judgment: 'rate_limited',
+				note: 'harness rate limited (five_hour limit rejected)'
+			}
+		],
+		[
+			'a usage limit outranks a provider error',
+			{ code: 1, limited: { ...limited, resumeAt: null }, providerError },
+			{
+				status: 'failed',
+				error: 'rate limited: five_hour limit rejected',
+				judgment: 'rate_limited',
+				note: 'harness rate limited (five_hour limit rejected)'
+			}
+		],
+		[
+			'a non-zero exit on a transient provider error is interrupted',
+			{ code: 1, providerError },
+			{
+				status: 'failed',
+				error: 'provider error: API Error: 529 overloaded',
+				judgment: 'interrupted',
+				note: 'transient provider error (API Error: 529 overloaded)'
+			}
+		],
+		[
+			"a plain non-zero exit is the issue's own failure",
+			{ code: 2, limited: null, providerError: null },
+			{ status: 'failed', error: 'harness exited with code 2' }
+		],
+		[
+			'codex non-zero, where no limiter ran',
+			{ harness: 'codex', code: 1 },
+			{ status: 'failed', error: 'harness exited with code 1' }
+		],
+		[
+			'a harness outcome is ignored for a harness whose exit code is trusted',
+			{ harnessOutcome: { kind: 'error', detail: 'nope' } },
+			{ status: 'completed' }
+		],
+		// -- pi: exit 0 proves nothing, the stream decides
+		[
+			'pi exit 0 with an ok stream completes',
+			{ harness: 'pi', harnessOutcome: { kind: 'ok' } },
+			{ status: 'completed' }
+		],
+		[
+			'pi exit 0 on a 429 is rate_limited, with no resume_at: Pi names no reset',
+			{ harness: 'pi', harnessOutcome: { kind: 'rate_limited', detail: '429: slow down' } },
+			{
+				status: 'failed',
+				error: 'rate limited: 429: slow down',
+				judgment: 'rate_limited',
+				note: 'harness rate limited (429: slow down)'
+			}
+		],
+		[
+			'pi exit 0 on a provider error is interrupted',
+			{ harness: 'pi', harnessOutcome: { kind: 'provider_error', detail: 'Connection error.' } },
+			{
+				status: 'failed',
+				error: 'provider error: Connection error.',
+				judgment: 'interrupted',
+				note: 'transient provider error (Connection error.)'
+			}
+		],
+		[
+			'pi exit 0 on any other stream error fails the run, and takes the strike',
+			{
+				harness: 'pi',
+				harnessOutcome: { kind: 'error', detail: 'pi ended without an assistant message' }
+			},
+			{ status: 'failed', error: 'pi: pi ended without an assistant message' }
+		],
+		[
+			'pi non-zero exit on a 429 is still rate_limited: the stream names the cause',
+			{ harness: 'pi', code: 1, harnessOutcome: { kind: 'rate_limited', detail: '429: x' } },
+			{
+				status: 'failed',
+				error: 'rate limited: 429: x',
+				judgment: 'rate_limited',
+				note: 'harness rate limited (429: x)'
+			}
+		],
+		[
+			'pi non-zero exit on a provider error is still interrupted',
+			{ harness: 'pi', code: 1, harnessOutcome: { kind: 'provider_error', detail: '503: down' } },
+			{
+				status: 'failed',
+				error: 'provider error: 503: down',
+				judgment: 'interrupted',
+				note: 'transient provider error (503: down)'
+			}
+		],
+		[
+			'pi non-zero exit with an ok or plain-error stream is a plain failure',
+			{ harness: 'pi', code: 1, harnessOutcome: { kind: 'error', detail: 'nope' } },
+			{ status: 'failed', error: 'harness exited with code 1' }
+		],
+		[
+			'a non-zero exit never reads the stream outcome of a harness other than pi',
+			{ code: 1, harnessOutcome: { kind: 'rate_limited', detail: '429: x' } },
+			{ status: 'failed', error: 'harness exited with code 1' }
+		],
+		[
+			'an effort mismatch the daemon killed the run for outranks the signal it sent',
+			{
+				harness: 'pi',
+				code: null,
+				signal: 'SIGTERM',
+				effortMismatch: 'pi applied thinking level off, not the assigned high',
+				harnessOutcome: { kind: 'ok' }
+			},
+			{ status: 'failed', error: 'pi applied thinking level off, not the assigned high' }
+		],
+		[
+			'the timeout outranks an effort mismatch',
+			{ harness: 'pi', timedOut: true, effortMismatch: 'pi applied thinking level off' },
+			{ status: 'failed', error: 'run exceeded the 30m timeout; harness killed' }
+		]
+	])('%s', (_name, over, verdict) => {
+		expect(classifyExit(facts(over))).toEqual(verdict);
+	});
+
+	it('masks secret env values in every detail that reaches the report', () => {
+		const secrets = ['hunter2'];
+		expect(
+			classifyExit(
+				facts({
+					code: 1,
+					limited: { ...limited, detail: 'key hunter2 is over its limit' },
+					secrets
+				})
+			)
+		).toMatchObject({
+			error: 'rate limited: key *** is over its limit',
+			note: 'harness rate limited (key *** is over its limit)'
+		});
+		expect(
+			classifyExit(
+				facts({ code: 1, providerError: { source: 'stream', detail: 'hunter2' }, secrets })
+			).error
+		).toBe('provider error: ***');
+		for (const kind of ['rate_limited', 'provider_error', 'error'] as const) {
+			const verdict = classifyExit(
+				facts({ harness: 'pi', harnessOutcome: { kind, detail: '401: bad key hunter2' }, secrets })
+			);
+			expect(JSON.stringify(verdict)).not.toContain('hunter2');
+			expect(verdict.error).toContain('bad key ***');
+		}
+		expect(
+			classifyExit(facts({ harness: 'pi', effortMismatch: 'model hunter2 clamped', secrets })).error
+		).toBe('model *** clamped');
 	});
 });
 

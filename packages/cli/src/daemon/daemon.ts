@@ -15,6 +15,7 @@ import {
 	createWriteStream,
 	existsSync,
 	mkdirSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -35,6 +36,7 @@ import {
 import { cliVersion } from '../version.js';
 import { ClaudeStreamRenderer } from './claude-stream';
 import { CodexStreamRenderer } from './codex-stream.js';
+import { PiRawSpoolFilter, PiStreamRenderer } from './pi-stream.js';
 import { collectCodexRequestContext, resolveCodexHome } from './codex-rollout.js';
 import type { RunStreamRenderer } from './stream-summary.js';
 import { RateLimitDetector } from './rate-limit';
@@ -62,6 +64,7 @@ import {
 	AMBIENT_CLI,
 	buildHarnessInvocation,
 	buildSpawnEnv,
+	classifyExit,
 	SecretRedactor,
 	redactSecrets,
 	CliRefresher,
@@ -70,6 +73,7 @@ import {
 	keepWorkspace,
 	LogBatcher,
 	pathWithin,
+	PI_SESSION_DIR,
 	pendingSelfUpdate,
 	RunTable,
 	type AgentCli,
@@ -124,7 +128,7 @@ interface ActiveRun extends ManagedRun {
 	renderer?: RunStreamRenderer;
 	/** claude_code: watches the stream and stderr for a provider usage limit. */
 	limiter?: RateLimitDetector;
-	/** claude_code: the unrendered stream, spooled for the raw-log upload. */
+	/** claude_code, pi: the unrendered stream, spooled for the raw-log upload. */
 	rawSpool?: WriteStream;
 	/** Where that spool lives — outside the workspace, which release() wipes. */
 	rawSpoolPath?: string;
@@ -137,6 +141,8 @@ interface ActiveRun extends ManagedRun {
 	/** Immutable facts used to qualify Codex's requested-model estimate. */
 	pricingModel?: string | null;
 	effortEvidence?: NonNullable<import('@tines/shared').FinishRunRequest['effort_application']>;
+	/** pi: why the daemon killed the run — it applied another effort than assigned. */
+	effortMismatch?: string;
 	pricingSessionMode?: 'cold' | 'resumed';
 	codexHome?: string;
 }
@@ -193,6 +199,20 @@ const log = (message: string) =>
 	console.log(`[${new Date().toISOString().slice(11, 19)}] ${message}`);
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Whether `pi --session <id>` has a session to reopen in this workspace. Pi
+ * names each session file `<timestamp>_<id>.jsonl` under its session dir.
+ */
+function piSessionExists(workspace: string, sessionId: string): boolean {
+	try {
+		return readdirSync(join(workspace, PI_SESSION_DIR)).some((name) =>
+			name.endsWith(`_${sessionId}.jsonl`)
+		);
+	} catch {
+		return false;
+	}
+}
 
 function killTree(pid: number, signal: NodeJS.Signals): void {
 	// The harness is spawned detached (its own process group), so children —
@@ -703,13 +723,32 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 						: `warning: no daemon-managed tines CLI; using whatever \`tines\` is on this machine's PATH\n`
 			);
 
+			// Pi's session lives in the kept workspace itself. If its file is gone
+			// the workspace is still worth reusing, but there is no conversation
+			// to reopen: say so and start one, rather than hand Pi a dead id.
+			let resumeSessionId = resume?.provider_session_id;
+			if (
+				opts.harness === 'pi' &&
+				resumeSessionId &&
+				!piSessionExists(workspace, resumeSessionId)
+			) {
+				log(`run ${runId}: pi session ${resumeSessionId} is gone; launching fresh`);
+				run.batcher.append(`pi session ${resumeSessionId} is gone; launching fresh\n`);
+				resumeSessionId = undefined;
+				run.priorTurns = 0;
+			}
 			const harnessInput = {
 				workspace,
 				promptFile: join(workspace, 'prompt.md'),
 				prompt: assignment.prompt,
 				model: assignment.run.model,
 				effort: assignment.effort?.value ?? null,
-				...(resume ? { resumeSessionId: resume.provider_session_id } : {})
+				...(resumeSessionId ? { resumeSessionId } : {}),
+				// Pi does not load `.agents/skills` in a folder it has not been told
+				// to trust, so each materialized skill is named on the command line.
+				...(opts.harness === 'pi'
+					? { skillDirs: assignment.bundle.skills.map((skill) => `.agents/skills/${skill.name}`) }
+					: {})
 			};
 			const invocation = buildHarnessInvocation(
 				{ harness: opts.harness, command: opts.command },
@@ -808,6 +847,69 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					run.rawSpool?.write(rawRedactor.write(text));
 					renderer.write(text);
 				});
+			} else if (opts.harness === 'pi') {
+				// Pi's JSONL is rendered for the log and spooled for the raw upload
+				// as Claude's is, except that the spool drops the per-token lines
+				// (PiRawSpoolFilter) so the upload's size cap keeps the whole run.
+				const renderer = new PiStreamRenderer((line) => run.batcher.append(line), {
+					resumed: Boolean(resumeSessionId),
+					// Pi clamps `--thinking` to what the model supports without
+					// saying so; the level its first answer records is the proof.
+					// A match confirms an enforced effort. Anything else is a run
+					// at an effort nobody assigned, so it stops here.
+					onAppliedEffort: (level) => {
+						const assigned = assignment.effort?.value;
+						if (!assigned || run.settled) return;
+						if (level === assigned) {
+							run.effortEvidence = {
+								status: 'confirmed',
+								attempted_effort: assigned,
+								transport: 'argv'
+							};
+						} else {
+							const reason = `pi applied thinking level ${level.slice(0, 100)}, not the assigned ${assigned}`;
+							// `observed_effort` is what makes the rejection outrank the
+							// `accepted_unconfirmed` sent at spawn in the server's merge.
+							run.effortEvidence = {
+								status: 'rejected',
+								attempted_effort: assigned,
+								transport: 'argv',
+								reason,
+								observed_effort: level.slice(0, 100)
+							};
+							run.effortMismatch = reason;
+							log(`run ${runId}: ${reason}; killing`);
+							run.batcher.append(`[effort] ${reason}; stopping the run\n`);
+							if (child.pid) killTree(child.pid, 'SIGTERM');
+							if (child.pid) setTimeout(() => killTree(child.pid!, 'SIGKILL'), 5000).unref?.();
+						}
+						void client
+							.appendRunLog(runId, { chunk: '', effort_application: run.effortEvidence })
+							.catch((err) => log(`run ${runId}: effort evidence rejected: ${message(err)}`));
+					}
+				});
+				run.renderer = renderer;
+				const spoolPath = join(opts.configDir, 'rawlogs', `${runId}.ndjson`);
+				mkdirSync(dirname(spoolPath), { recursive: true });
+				run.rawSpoolPath = spoolPath;
+				run.rawSpool = createWriteStream(spoolPath);
+				run.rawUpload = (body) => client.putRunLogRaw(runId, body);
+				const decoder = new StringDecoder('utf8');
+				const spoolFilter = new PiRawSpoolFilter();
+				const rawRedactor = new SecretRedactor(secretEnvValues);
+				run.drain = () => {
+					const trailing = decoder.end();
+					run.rawSpool?.write(
+						rawRedactor.write(spoolFilter.write(trailing) + spoolFilter.end()) + rawRedactor.end()
+					);
+					if (trailing) renderer.write(trailing);
+					renderer.finish();
+				};
+				child.stdout?.on('data', (data: Buffer) => {
+					const text = decoder.write(data);
+					run.rawSpool?.write(rawRedactor.write(spoolFilter.write(text)));
+					renderer.write(text);
+				});
 			} else if (opts.harness === 'codex') {
 				const renderer = new CodexStreamRenderer((line) => run.batcher.append(line));
 				const decoder = new StringDecoder('utf8');
@@ -887,43 +989,21 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 				if (closing) run.batcher.append(closing);
 				// A supervisor-canceled run is already settled: finishAndCleanup
 				// degrades to cleanup-only, reporting nothing.
-				if (run.timedOut) {
-					void table.finishAndCleanup(
-						run,
-						'failed',
-						`run exceeded the ${assignment.timeout_minutes}m timeout; harness killed`
-					);
-				} else if (code === 0) {
-					void table.finishAndCleanup(run, 'completed');
-				} else {
-					// A non-zero exit whose cause was the provider refusing on a
-					// usage limit is the runner's condition, not the issue's
-					// fault: report it without a strike and say when the window
-					// reopens, so the supervisor can hold the runner until then.
-					// A signal is our own kill, so it keeps its existing report.
-					const limited = signal ? null : (run.limiter?.signal() ?? null);
-					const providerError = signal ? null : (run.limiter?.providerError() ?? null);
-					if (limited) {
-						const detail = redactSecrets(limited.detail, secretEnvValues);
-						log(`run ${runId}: harness rate limited (${detail}); reporting without a strike`);
-						void table.finishAndCleanup(run, 'failed', `rate limited: ${detail}`, {
-							judgment: 'rate_limited',
-							...(limited.resumeAt !== null ? { resume_at: limited.resumeAt } : {})
-						});
-					} else if (providerError) {
-						const detail = redactSecrets(providerError.detail, secretEnvValues);
-						log(`run ${runId}: transient provider error (${detail}); reporting without a strike`);
-						void table.finishAndCleanup(run, 'failed', `provider error: ${detail}`, {
-							judgment: 'interrupted'
-						});
-					} else {
-						void table.finishAndCleanup(
-							run,
-							'failed',
-							signal ? `harness killed by ${signal}` : `harness exited with code ${code}`
-						);
-					}
-				}
+				const { status, error, note, ...judgment } = classifyExit({
+					harness: opts.harness,
+					code,
+					signal,
+					timedOut: run.timedOut,
+					timeoutMinutes: assignment.timeout_minutes,
+					limited: run.limiter?.signal() ?? null,
+					providerError: run.limiter?.providerError() ?? null,
+					// pi: its stream, not its exit code, says how the run ended.
+					...(run.renderer ? { harnessOutcome: run.renderer.summary().harnessOutcome } : {}),
+					effortMismatch: run.effortMismatch ?? null,
+					secrets: secretEnvValues
+				});
+				if (note) log(`run ${runId}: ${note}; reporting without a strike`);
+				void table.finishAndCleanup(run, status, error, judgment.judgment ? judgment : undefined);
 			});
 		} catch (err) {
 			void table.finishAndCleanup(
