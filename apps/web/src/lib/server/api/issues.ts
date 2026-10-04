@@ -195,6 +195,13 @@ export function issueQuery(db: Kysely<Database>, userId: string) {
 				'scheduled_task_project.name as scheduled_task_project_name',
 				'pin_runner.name as pinned_runner_name'
 			])
+			// The graph revision an issue transition pins, read with the row so
+			// the detail read needs no extra statement.
+			.select(
+				sql<number>`(SELECT w.decision_revision FROM workflow w WHERE w.id = issue.workflow_id)`.as(
+					'workflow_revision'
+				)
+			)
 			.select([
 				sql<string>`COALESCE(eff_state.id, state.id)`.as('eff_state_id'),
 				sql<string>`COALESCE(eff_state.name, state.name)`.as('eff_state_name'),
@@ -349,6 +356,20 @@ export function serializeIssue(row: IssueRow): Issue {
 		created_at: row.created_at,
 		updated_at: row.updated_at,
 		last_activity_at: Number(row.last_event_at ?? row.created_at)
+	};
+}
+
+/**
+ * The transition witness an issue detail carries: the state visit and the
+ * workflow graph the row was read at. Kept off list items.
+ */
+export type WitnessedIssue = Issue & Pick<IssueDetail, 'decision_revision' | 'workflow_revision'>;
+
+function serializeWitnessedIssue(row: IssueRow): WitnessedIssue {
+	return {
+		...serializeIssue(row),
+		decision_revision: row.decision_revision,
+		workflow_revision: row.workflow_revision
 	};
 }
 
@@ -866,7 +887,7 @@ export async function loadIssue(
 	db: Kysely<Database>,
 	userId: string,
 	ref: IssueLookup
-): Promise<Issue> {
+): Promise<WitnessedIssue> {
 	let q = issueQuery(db, userId);
 	if ('id' in ref) q = q.where('issue.id', '=', ref.id);
 	else if ('projectId' in ref)
@@ -893,7 +914,7 @@ export async function loadIssue(
 		);
 	const row = await q.executeTakeFirst();
 	if (!row) throw notFound();
-	return serializeIssue(row);
+	return serializeWitnessedIssue(row);
 }
 
 /** External issue lookup. Out-of-scope project rows are indistinguishable from missing rows. */
@@ -901,7 +922,7 @@ export async function loadIssueForActor(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	ref: IssueLookup
-): Promise<Issue> {
+): Promise<WitnessedIssue> {
 	let q = issueQuery(db, actor.userId).where(projectReadPredicate(actor, 'issue.project_id'));
 	if ('id' in ref) q = q.where('issue.id', '=', ref.id);
 	else if ('projectId' in ref)
@@ -928,7 +949,7 @@ export async function loadIssueForActor(
 		);
 	const row = await q.executeTakeFirst();
 	if (!row) throw notFound();
-	return serializeIssue(row);
+	return serializeWitnessedIssue(row);
 }
 
 export interface IssueDetailOptions {
@@ -975,7 +996,7 @@ export type IssueHead = { id: string; project_id: string; workflow_id: string; s
 export async function getIssueDetail(
 	db: Kysely<Database>,
 	userId: string,
-	ref: IssueLookup | Issue | { head: IssueHead; issue: Promise<Issue> },
+	ref: IssueLookup | WitnessedIssue | { head: IssueHead; issue: Promise<WitnessedIssue> },
 	opts: IssueDetailOptions = {}
 ): Promise<FullIssueDetail> {
 	// An already-loaded issue can be passed straight in (the page resolves the
@@ -2322,7 +2343,36 @@ export async function transitionIssue(
 	// deciding. A run key can neither read nor set personal permission, so it
 	// has no witness to echo; it moves its own issue by name or id, and the
 	// compare-and-swap write still pins the revisions read here.
-	if (consentMode && !actor.agentRunId) {
+	const witnessRequired = consentMode && !actor.agentRunId;
+	// Everywhere else the witness is optional, but one that is sent is honored:
+	// it names the state visit and workflow graph the caller actually read.
+	if (
+		!witnessRequired &&
+		((body.expected_state_id !== undefined && body.expected_state_id !== current.state.id) ||
+			(body.expected_decision_revision !== undefined &&
+				body.expected_decision_revision !== decision.decision_revision) ||
+			(body.expected_workflow_revision !== undefined &&
+				body.expected_workflow_revision !== decision.workflow_revision))
+	) {
+		throw new ApiFail(
+			409,
+			'decision_refresh_required',
+			'The issue or its workflow changed after you read it; refresh and choose again',
+			{
+				committed: false,
+				reason:
+					body.expected_workflow_revision !== undefined &&
+					body.expected_workflow_revision !== decision.workflow_revision
+						? 'workflow_changed'
+						: 'issue_moved',
+				current_state_id: current.state.id,
+				current_decision_revision: decision.decision_revision,
+				current_workflow_revision: decision.workflow_revision,
+				remedy: 'refresh_issue'
+			}
+		);
+	}
+	if (witnessRequired) {
 		if (!transitionId || action) {
 			throw new ApiFail(
 				409,
@@ -2418,9 +2468,10 @@ export async function transitionIssue(
 		throw unmetRequirements(current, target, unmet);
 	}
 
-	// Compare-and-swap: the update only applies while the issue is still in
-	// the state the transition was validated against, and the event insert is
-	// guarded on that same write landing — a lost race records nothing.
+	// Compare-and-swap: the update only applies while the issue is still on
+	// the state visit and workflow graph the transition was validated against
+	// (in every project mode), and the event insert is guarded on that same
+	// write's token landing — a lost race records nothing.
 	const now = Date.now();
 	const token = newId('dcn');
 	const lifecycleReset = target.to_state.category === 'done' || current.state.category === 'done';
@@ -2449,7 +2500,7 @@ export async function transitionIssue(
 		UPDATE issue SET state_id = ${target.to_state.id}, state_entered_at = ${now}, updated_at = ${now},
 			decision_revision = decision_revision + 1,
 			consent_epoch = consent_epoch + ${lifecycleReset ? 1 : 0},
-			last_decision_token = CASE WHEN ${consentMode ? 1 : 0} = 1 THEN ${token} ELSE last_decision_token END,
+			last_decision_token = ${token},
 			needs_attention = CASE WHEN ${actor.agentRunId ? 1 : 0} = 1 THEN needs_attention ELSE 0 END,
 			attempt_count = CASE WHEN ${actor.agentRunId ? 1 : 0} = 1 THEN attempt_count ELSE 0 END
 		WHERE id = ${id} AND state_id = ${current.state.id}
@@ -2459,17 +2510,17 @@ export async function transitionIssue(
 			AND EXISTS (SELECT 1 FROM workflow_transition wt
 				WHERE wt.id = ${target.transition_id} AND wt.workflow_id = issue.workflow_id
 					AND wt.from_state_id = ${current.state.id} AND wt.to_state_id = ${target.to_state.id})
+			AND decision_revision = ${decision.decision_revision}
+			AND EXISTS (SELECT 1 FROM workflow w WHERE w.id = issue.workflow_id
+				AND w.decision_revision = ${decision.workflow_revision})
 			${
 				consentMode
-					? sql`AND decision_revision = ${decision.decision_revision}
-				AND consent_epoch = ${decision.consent_epoch}
+					? sql`AND consent_epoch = ${decision.consent_epoch}
 				AND EXISTS (SELECT 1 FROM project p WHERE p.id = issue.project_id AND p.user_id = ${actor.userId}
 					AND p.shared_at IS NOT NULL AND p.sharing_revision = ${decision.sharing_revision}
 					AND p.archived_at IS NULL)
 				AND COALESCE((SELECT c.revision FROM issue_personal_choice c
-					WHERE c.issue_id = issue.id AND c.user_id = ${actor.userId}), 0) = ${choiceRevision}
-				AND EXISTS (SELECT 1 FROM workflow w WHERE w.id = issue.workflow_id
-					AND w.decision_revision = ${decision.workflow_revision})`
+					WHERE c.issue_id = issue.id AND c.user_id = ${actor.userId}), 0) = ${choiceRevision}`
 					: sql``
 			}`.compile(db);
 	const writeQueries = [stateWrite];
@@ -2511,11 +2562,9 @@ export async function transitionIssue(
 			WHERE issue_personal_choice.revision = ${choiceRevision}`.compile(db)
 		);
 	}
-	const decisionGuard = consentMode
-		? {
-				predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id} AND last_decision_token = ${token})`
-			}
-		: { issueId: id, stateId: target.to_state.id, updatedAt: now };
+	const decisionGuard = {
+		predicate: sql<boolean>`EXISTS (SELECT 1 FROM issue WHERE id = ${id} AND last_decision_token = ${token})`
+	};
 	writeQueries.push(
 		eventInsert(
 			db,
@@ -2570,12 +2619,31 @@ export async function transitionIssue(
 	const results = await runAtomic(env, writeQueries);
 	if ((results[0]?.meta.changes ?? 0) === 0) {
 		await assertRunStillBound(db, actor);
+		// One re-read says which pin refused the write.
 		const fresh = await getIssueDetail(db, actor.userId, { id });
+		const moved = fresh.state.id !== current.state.id;
+		const reason =
+			moved || fresh.decision_revision !== decision.decision_revision
+				? 'issue_moved'
+				: fresh.workflow_revision !== decision.workflow_revision ||
+					  !fresh.allowed_transitions.some((t) => t.transition_id === target.transition_id)
+					? 'workflow_changed'
+					: undefined;
 		throw new ApiFail(
 			409,
 			'conflict',
-			`The issue moved to state "${fresh.state.name}" while this transition was in flight; re-check the allowed transitions`,
-			{ current_state: fresh.state, allowed_transitions: fresh.allowed_transitions }
+			reason === 'workflow_changed'
+				? `Action "${target.name}" was changed or removed in workflow "${fresh.workflow.name}" while this transition was in flight; re-check the allowed transitions`
+				: moved || !reason
+					? `The issue moved to state "${fresh.state.name}" while this transition was in flight; re-check the allowed transitions`
+					: `The issue left state "${fresh.state.name}" and came back to it while this transition was in flight; re-check the allowed transitions`,
+			{
+				...(reason ? { reason } : {}),
+				current_state: fresh.state,
+				current_decision_revision: fresh.decision_revision,
+				current_workflow_revision: fresh.workflow_revision,
+				allowed_transitions: fresh.allowed_transitions
+			}
 		);
 	}
 	effects.signalDispatch();

@@ -9,7 +9,7 @@
 import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, gotoHydrated, signIn } from './helpers';
+import { apiClient, body, clickUntil, gotoHydrated, signIn, stateCard } from './helpers';
 
 let workflowName: string;
 let wideWorkflowName: string;
@@ -1263,4 +1263,79 @@ test('saving over a version that deleted a draft state re-creates it', async ({
 	expect(stored.states.map((state) => state.name)).toEqual(['Open', 'Review', 'Done']);
 	expect(stored.states.find((state) => state.name === 'Review')?.id).not.toBe(idOf('Review'));
 	expect(stored.transitions.map((t) => t.name).sort()).toEqual(['Approve', 'Submit']);
+});
+
+// --- issue transitions pin the state visit (Tines/608 Part D) -----------------
+
+test('a transition confirmed after the issue left and returned is refused', async ({
+	page,
+	apiFor,
+	uniqueName
+}) => {
+	const api = apiFor(ALICE);
+	const projectName = uniqueName('visit-pin');
+	// Not shared: the witness used to be sent only in a shared project.
+	const project = await body<{ id: string }>(
+		await api.post('/api/v1/projects', { name: projectName })
+	);
+	const workflow = await body<{ id: string }>(
+		await api.post('/api/v1/workflows', {
+			name: uniqueName('Visit pin', { maxLength: 100 }),
+			initial_state: 'Review',
+			states: [
+				{ name: 'Review', category: 'active' },
+				{ name: 'Rework', category: 'awaiting_human' },
+				{ name: 'Done', category: 'done' }
+			],
+			transitions: [
+				{ name: 'Approve', from: 'Review', to: 'Done' },
+				{ name: 'Send back', from: 'Review', to: 'Rework' },
+				{ name: 'Resubmit', from: 'Rework', to: 'Review' }
+			]
+		})
+	);
+	const issue = await body<{ id: string; number: number; decision_revision: number }>(
+		await api.post(`/api/v1/projects/${project.id}/issues`, {
+			title: 'Approve the round that was read',
+			workflow_id: workflow.id
+		})
+	);
+
+	await gotoHydrated(page, `/issues/${encodeURIComponent(projectName)}/${issue.number}`);
+	const dialog = page.getByRole('dialog');
+	await clickUntil(stateCard(page).getByRole('button', { name: 'Approve' }), async () => {
+		await expect(dialog).toBeVisible({ timeout: 2_000 });
+	});
+
+	// With the dialog open, the issue leaves Review and comes back: the same
+	// state, the same "Approve" transition id, a different round.
+	for (const action of ['Send back', 'Resubmit']) {
+		expect((await api.post(`/api/v1/issues/${issue.id}/transition`, { action })).status()).toBe(
+			200
+		);
+	}
+
+	const refused = page.waitForResponse(
+		(response) =>
+			response.url().endsWith(`/api/v1/issues/${issue.id}/transition`) &&
+			response.request().method() === 'POST'
+	);
+	await dialog.locator('button[type="submit"]').click();
+	const response = await refused;
+	expect(response.status()).toBe(409);
+	expect((await response.json()).error).toMatchObject({
+		code: 'decision_refresh_required',
+		details: { reason: 'issue_moved', committed: false }
+	});
+	expect(response.request().postDataJSON()).toMatchObject({
+		expected_decision_revision: issue.decision_revision
+	});
+	await expect(page.getByText('refresh and choose again')).toBeVisible();
+	await expect(dialog).toBeHidden();
+
+	const stored = await body<{ state: { name: string }; decision_revision: number }>(
+		await api.get(`/api/v1/issues/${issue.id}`)
+	);
+	expect(stored.state.name).toBe('Review');
+	expect(stored.decision_revision).toBe(issue.decision_revision + 2);
 });

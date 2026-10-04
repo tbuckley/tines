@@ -719,11 +719,13 @@ Options:
 Take a current transition (members: no permission change)
 
 Options:
-  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
-                   \`tines login\`; default https://tines.tbuckley.dev)
-  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
-  --json           output the raw JSON response
-  -h, --help       display help for command
+  --expect-revision <n>  refuse the move unless the issue is still at this
+                         decision revision (see \`tines issues show\`)
+  -u, --url <url>        base URL of the Tines API (or set TINES_API_URL, or run
+                         \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>        API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                 output the raw JSON response
+  -h, --help             display help for command
 ",
   "tines issues prompt": "Usage: tines issues prompt [options] <ref>
 

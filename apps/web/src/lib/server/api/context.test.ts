@@ -232,6 +232,8 @@ const issue: IssueDetail = {
 			updated_at: null
 		}
 	],
+	decision_revision: 0,
+	workflow_revision: 1,
 	allowed_transitions: [
 		{
 			transition_id: 't1',

@@ -40,6 +40,7 @@ tines issues create <project> --title "…" -d @description.md
 tines issues create <project> --title "Linked" --blocked-by Other/12 --blocks Other/14 --duplicate-of Other/9
 tines issues show <project>/<number>
 tines issues move <project>/<number> <action>        # a workflow transition
+tines issues move <project>/<number> <action> --expect-revision <n>   # refuse unless the issue is still at the decision revision `issues show` printed
 tines issues hold <project>/<number>                 # stop new admission, keep permission
 tines issues release <project>/<number>              # resume eligibility if permission remains on
 tines issues cancel-run <project>/<number> <run-id>   # request bounded cancellation

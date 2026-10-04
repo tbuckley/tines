@@ -194,7 +194,7 @@ recorded here; resource APIs keep their existing authentication rules.
 | `GET /api/v1/issues` | Global list across projects; filters include `project`, `state`, `category`, `workflow`, and `q` |
 | `GET/POST /api/v1/projects/:id/issues` | List (including workflow/state/category/`q` filters) / create |
 | `GET/PATCH /api/v1/issues/:id` | Read (incl. workflow, state, comments) / update title & description |
-| `POST /api/v1/issues/:id/transition` | `{ action }` (transition name) or `{ transition_id }`; 422 with the allowed transitions (named) when invalid |
+| `POST /api/v1/issues/:id/transition` | `{ action }` (transition name) or `{ transition_id }`; 422 with the allowed transitions (named) when invalid. Commits only against the state visit (`issue.decision_revision`) and workflow graph (`workflow.decision_revision`) it read, else `409 conflict` with `details.reason` (`issue_moved` \| `workflow_changed`). Optional `expected_state_id` / `expected_decision_revision` / `expected_workflow_revision` (both revisions are on issue reads) are honored for every caller: a mismatch is `409 decision_refresh_required`, nothing written (Tines/608) |
 | `GET/POST /api/v1/issues/:id/transfer` | Preview / commit a signed project transfer; run keys may preview but cannot commit |
 | `GET/POST /api/v1/issues/:id/comments` | List / add comment |
 | `GET /api/v1/events` | Global feed, newest first; filters: `issue`, `project`, comma-separated `type`, `since`, `until`, `state`; cursor pagination |
