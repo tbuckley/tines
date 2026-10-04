@@ -229,7 +229,11 @@ describe('CodexStreamRenderer', () => {
 
 describe('classifyCodexFailure', () => {
 	it.each<[string, string, number | undefined]>([
-		['September, ASCII apostrophe', LIMIT_SEPTEMBER, new Date(2026, 8, 19, 5, 1).getTime() + MINUTE],
+		[
+			'September, ASCII apostrophe',
+			LIMIT_SEPTEMBER,
+			new Date(2026, 8, 19, 5, 1).getTime() + MINUTE
+		],
 		['0.156.1, dated', LIMIT_DATED, new Date(2026, 9, 7, 14, 58).getTime() + MINUTE],
 		['0.156.1, same day', LIMIT_SAME_DAY, new Date(2026, 9, 4, 15, 6).getTime() + MINUTE],
 		[
@@ -279,10 +283,13 @@ describe('classifyCodexFailure', () => {
 		expect('resumeAt' in classifyCodexFailure(message, NOW)!).toBe(resumeAt !== undefined);
 	});
 
-	it.each([CAPACITY, HIGH_DEMAND, 'We\'re currently experiencing high demand.'])(
+	it.each([CAPACITY, HIGH_DEMAND, "We're currently experiencing high demand."])(
 		'a provider failure is transient: %s',
 		(message) => {
-			expect(classifyCodexFailure(message, NOW)).toEqual({ kind: 'provider_error', detail: message });
+			expect(classifyCodexFailure(message, NOW)).toEqual({
+				kind: 'provider_error',
+				detail: message
+			});
 		}
 	);
 
@@ -427,7 +434,11 @@ describe('CodexStreamRenderer provider refusal', () => {
 
 	it('returns a defensive copy of the outcome', () => {
 		const renderer = new CodexStreamRenderer(() => {});
-		renderer.write(refusal(CAPACITY).map((event) => JSON.stringify(event)).join('\n'));
+		renderer.write(
+			refusal(CAPACITY)
+				.map((event) => JSON.stringify(event))
+				.join('\n')
+		);
 		renderer.finish();
 		(renderer.summary().harnessOutcome as { detail: string }).detail = 'changed';
 		expect(renderer.summary().harnessOutcome).toEqual({ kind: 'provider_error', detail: CAPACITY });

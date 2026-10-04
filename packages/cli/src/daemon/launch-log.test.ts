@@ -616,18 +616,22 @@ describe('the run log a local run leaves behind', () => {
 				error: 'provider error: Selected model is at capacity. Please try a different model.'
 			}
 		]
-	])('a refused Codex run costs no strike: %s', async (_name, message, expected) => {
-		const { server: stub, done } = stubSupervisor(30, 'gpt-5.6-sol');
-		server = stub;
-		await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
-		const port = (stub.address() as AddressInfo).port;
-		configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
+	])(
+		'a refused Codex run costs no strike: %s',
+		async (_name, message, expected) => {
+			const { server: stub, done } = stubSupervisor(30, 'gpt-5.6-sol');
+			server = stub;
+			await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+			const port = (stub.address() as AddressInfo).port;
+			configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
 
-		child = startDaemon(port, configDir, { fakeCodexDir: fakeCodexRefused(configDir, message) });
-		const harvest = await done;
-		expect(harvest.finish).toMatchObject({ status: 'failed', ...expected });
-		expect(harvest.log.match(/^\[error\] /gm)).toHaveLength(2);
-	}, 30_000);
+			child = startDaemon(port, configDir, { fakeCodexDir: fakeCodexRefused(configDir, message) });
+			const harvest = await done;
+			expect(harvest.finish).toMatchObject({ status: 'failed', ...expected });
+			expect(harvest.log.match(/^\[error\] /gm)).toHaveLength(2);
+		},
+		30_000
+	);
 
 	it('does not use rollout proof for a failed Codex attempt', async () => {
 		const { server: stub, done } = stubSupervisor(30, 'gpt-5.6-sol');
