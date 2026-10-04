@@ -571,6 +571,9 @@ pointing at them. Input values, schedules the project created, and the pack's
 place in the order are kept. Runs already in progress finish on their launch
 snapshot. A transition the new version no longer allows is refused, and the
 refusal lists the transitions now available.
+Replace never clears a person's run permission on an issue or schedule,
+including issues it moves through the state mapping
+(`specs/packs/ORGANIZATIONS_SPEC.md`, *Runs and consent*).
 
 Replace on an **authored** pack overwrites its content with the file's: this
 is the round trip for a pack kept as files. If the authored pack has edits

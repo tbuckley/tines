@@ -120,23 +120,29 @@ own runners in. Organizations keep that, with these rules:
 - **Defaults.** The issue's creator's choice defaults to on (in a personal
   organization that is always its one user). Everyone else opts in. Issues
   filed by runs start with every choice off, as proposals, as today.
-- **No resets from definition changes.** Editing a workflow, replacing a pack
-  and moving a project never clear choices, whatever they change. The person
-  making the change reviews what it means, on the screen that already shows
-  it. The decision revision still advances on a state or transition change,
-  but only to refuse a transition submitted from a stale screen, as it
-  already does. What this replaces is the narrower set of resets a workflow
-  edit makes today (`updateWorkflow` in `apps/web/src/lib/server/api/workflows.ts`):
-  changing the workflow's initial state clears members' future-issue choices
-  on schedules that start in it, and the unlaunched issue choices those
-  schedules granted; changing a state's category does the same for
-  schedules that start in that state; and changing a state's category to
-  `done` clears every personal choice on the issues in it. Editing a
-  schedule's templates, workflow, start, recurrence, timezone or gate also
-  clears members' future-issue choices on it today; that stays, since it is
-  an edit to the schedule a person opted in to, not to a definition.
-- **What still clears a choice:** moving the issue to Done (unchanged), the
-  person losing access to the organization, and the person turning it off.
+- **Choices are kept.** A run permission, on an issue or as a schedule's
+  future-issue choice, is cleared only when its person turns it off or loses
+  access to the organization. Nothing else resets it, so no one has to go
+  back through their issues to allow them again. This decision does not wait
+  for organizations; it applies from the packs MVP onward. Each of today's
+  resets (`docs/shared-projects.md`; `updateWorkflow` in
+  `apps/web/src/lib/server/api/workflows.ts`) is removed:
+  - changing a workflow's initial state, or the category of a state a
+    schedule starts in, no longer clears schedule choices or the issue
+    choices those schedules granted;
+  - changing a state's category to `done` no longer clears choices on the
+    issues in it;
+  - moving an issue into or out of Done, onto another workflow, or to another
+    project no longer clears its choices. A Done issue is never run, so its
+    choice simply applies again if it is reopened;
+  - editing a schedule's templates, workflow, start, recurrence, timezone or
+    gate no longer clears future-issue choices;
+  - replacing a pack and moving a project between organizations clear
+    nothing.
+
+  The person making a change reviews what it means on the screen that already
+  shows it. The decision revision still advances on a state or transition
+  change, but only to refuse a transition submitted from a stale screen.
 
 A run reads the effective context of its issue, which is the same whoever the
 contributor is, plus the contributor's own secret values. The run key is bound
@@ -531,9 +537,10 @@ Decided 2026-10-04.
    not a project owner; everyone else opts in.
 2. **Roles.** Organizations have an owner, managers and, later, members.
    The MVP has only the owner and managers.
-3. **No resets from definition changes.** Workflow edits, pack replaces and
-   project moves never clear personal choices. The person making the change
-   reviews what it means.
+3. **Run permissions are kept.** Only the person turning a choice off, or
+   losing access, clears it. Workflow and schedule edits, moves into or out
+   of Done, workflow and project transfers, pack replaces and project moves
+   never do. Applies from the packs MVP onward, ahead of organizations.
 4. **`workspace` is renamed `organization`** everywhere, stored values
    included, to drop the legacy term.
 5. **The user context layer is withdrawn.**
