@@ -83,7 +83,7 @@ cookie, unauthenticated, or transport behavior under test.
 browser. It does not sign in contexts created manually with `browser.newContext()`; call
 `signIn` explicitly for deliberate multi-context and account-switch cases. It also does not
 reset preferences: preserve explicit `resetFocus` calls and the dedicated DANA, SPEND,
-PAGINATION, AGENTS_FIRST_RUN, API_ISOLATION, EXPLAINER_REMEDIES, STOPPED_FIRST_RUN,
+PAGINATION, CONTEXT_PAGINATION, AGENTS_FIRST_RUN, API_ISOLATION, EXPLAINER_REMEDIES, STOPPED_FIRST_RUN,
 MANAGED_SETTINGS, CAROL, and TRANSFER_RUNTIME account contracts.
 
 To stress D1 CLI contention on fresh isolated stacks, run the affected files sequentially
