@@ -403,8 +403,9 @@ complete cumulative input/output/cache-read/cache-write evidence and its thread 
 calculates supported models using the immutable policy in [Codex run pricing](codex-pricing.md).
 Unsupported or incomplete evidence remains visibly Unpriced. Custom harnesses and processes that stop before
 a terminal usage event are marked `unreported`. Usage already emitted is retained even when
-the harness exits unsuccessfully. The session/thread id is shown on the run row and by
-`tines runs show`, and is what a resumed launch continues.
+the harness exits unsuccessfully. The session/thread id is printed by `tines runs show`
+(`provider session:`) and returned by the API; run rows do not show it. It is what a resumed
+launch continues.
 
 ## Resuming a send-back
 

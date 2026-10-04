@@ -104,6 +104,26 @@ describe('runRow', () => {
 		);
 	});
 
+	it('prints the bare effort value in the tier cell, not its application status', () => {
+		const run = { ...base, tier: 'balanced', model: 'claude-opus-5-5' };
+		expect(runRow(run as never)[3]).toBe('balanced (claude-opus-5-5)');
+		const accepted = runRow({
+			...run,
+			resolved_effort: 'high',
+			effort_application_status: 'accepted_unconfirmed'
+		} as never);
+		expect(accepted[3]).toBe('balanced (claude-opus-5-5) · high');
+		expect(accepted.join(' ')).not.toContain('accepted_unconfirmed');
+		// The one status where a bare value would be false: the daemon dropped it.
+		expect(
+			runRow({
+				...run,
+				resolved_effort: 'high',
+				effort_application_status: 'legacy_not_applied'
+			} as never)[3]
+		).toBe('balanced (claude-opus-5-5) · high not delivered');
+	});
+
 	it('shows confirmed resume lineage in the status cell', () => {
 		expect(runRow({ ...base, resumed_from_run_id: 'arun_old' } as never)).toContain(
 			'completed · resumed run arun_old'
