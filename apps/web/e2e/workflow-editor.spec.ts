@@ -965,3 +965,302 @@ test('the owner widens what runs in a stage can change, and an API key cannot', 
 	);
 	expect(workflow.states.find((state) => state.id === triaging.id)?.run_scope).toBe('project');
 });
+
+// --- save conflicts (Tines/608) ------------------------------------------------
+
+const B_DESCRIPTION = 'The description only the second tab wrote.';
+
+const conflictBanner = (page: Page) => page.getByTestId('workflow-conflict');
+
+const patchResponse = (page: Page, id: string) =>
+	page.waitForResponse(
+		(res) => res.request().method() === 'PATCH' && res.url().endsWith(`/api/v1/workflows/${id}`)
+	);
+
+/**
+ * Two tabs open the same workflow and each make a draft. The first tab gates
+ * "Approve" on a `sign-off` artifact and saves; the second, which only edited
+ * the description, then saves against the revision it opened and is refused.
+ */
+async function openConflict(
+	page: Page,
+	api: ReturnType<typeof apiClient>,
+	name: string
+): Promise<{ id: string; second: Page }> {
+	const created = await body<{ id: string; revision: number }>(
+		await api.post('/api/v1/workflows', {
+			name,
+			description: 'A workflow two tabs edit at once.',
+			initial_state: 'Open',
+			states: [
+				{ name: 'Open', category: 'active' },
+				{ name: 'Review', category: 'awaiting_human' },
+				{ name: 'Done', category: 'done' }
+			],
+			transitions: [
+				{ name: 'Submit', from: 'Open', to: 'Review' },
+				{ name: 'Approve', from: 'Review', to: 'Done' }
+			]
+		})
+	);
+	const second = await page.context().newPage();
+	await gotoHydrated(page, `/workflows/${created.id}`);
+	await gotoHydrated(second, `/workflows/${created.id}`);
+
+	await second.getByLabel('Description', { exact: true }).fill(B_DESCRIPTION);
+
+	const review = await expandState(page, 'Review');
+	await review.getByRole('button', { name: 'Require artifact' }).click();
+	await review.getByLabel('Required artifact name').fill('sign-off');
+	const firstSave = patchResponse(page, created.id);
+	await page.getByRole('button', { name: 'Save workflow' }).click();
+	expect((await firstSave).status()).toBe(200);
+
+	const refused = patchResponse(second, created.id);
+	await second.getByRole('button', { name: 'Save workflow' }).click();
+	const response = await refused;
+	expect(response.status()).toBe(409);
+	expect(response.request().postDataJSON().expected_revision).toBe(created.revision);
+	expect((await response.json()).error.code).toBe('workflow_conflict');
+	await expect(conflictBanner(second)).toBeVisible();
+	return { id: created.id, second };
+}
+
+type StoredWorkflow = {
+	description: string;
+	revision: number;
+	transitions: { name: string; requires?: { artifact: string }[] }[];
+};
+
+test('a save against a workflow another tab changed keeps the draft and asks', async ({
+	page,
+	apiFor,
+	uniqueName
+}) => {
+	const api = apiFor(ALICE);
+	const { id, second } = await openConflict(
+		page,
+		api,
+		uniqueName('Conflict keep', { maxLength: 100 })
+	);
+
+	const banner = conflictBanner(second);
+	await expect(banner).toHaveAttribute('role', 'alert');
+	await expect(banner).toContainText('Your edits are still here and have not been saved.');
+	await expect(second.getByLabel('Description', { exact: true })).toHaveValue(B_DESCRIPTION);
+	await expect(banner.getByRole('button', { name: 'Save my version anyway' })).toBeDisabled();
+	await expect(banner.getByRole('button', { name: 'Review changes' })).toBeEnabled();
+	await expect(
+		banner.getByRole('button', { name: 'Discard my edits and load the latest' })
+	).toBeEnabled();
+	await expect(second.getByRole('button', { name: 'Save workflow' })).toBeDisabled();
+
+	// Nothing of the refused draft was stored: the first tab's save stands.
+	const stored = await body<StoredWorkflow>(await api.get(`/api/v1/workflows/${id}`));
+	expect(stored.description).toBe('A workflow two tabs edit at once.');
+	expect(stored.revision).toBe(2);
+	expect(stored.transitions.find((t) => t.name === 'Approve')?.requires).toEqual([
+		{ artifact: 'sign-off' }
+	]);
+});
+
+test('after reviewing the other change, the draft can be saved over it', async ({
+	page,
+	apiFor,
+	uniqueName
+}) => {
+	const api = apiFor(ALICE);
+	const { id, second } = await openConflict(
+		page,
+		api,
+		uniqueName('Conflict save', { maxLength: 100 })
+	);
+
+	const banner = conflictBanner(second);
+	const overwrite = banner.getByRole('button', { name: 'Save my version anyway' });
+	await expect(overwrite).toBeDisabled();
+	await banner.getByRole('button', { name: 'Review changes' }).click();
+	await expect(banner.getByRole('list', { name: 'Changes in the latest version' })).toContainText(
+		'Action “Approve” (Review → Done) now requires sign-off (was nothing).'
+	);
+	await expect(overwrite).toBeEnabled();
+
+	const saved = patchResponse(second, id);
+	await overwrite.click();
+	const response = await saved;
+	expect(response.status()).toBe(200);
+	// Checked against the revision that was reviewed, not the one first opened.
+	expect(response.request().postDataJSON().expected_revision).toBe(2);
+	await expect(banner).toBeHidden();
+	await expect(second.getByLabel('Description', { exact: true })).toHaveValue(B_DESCRIPTION);
+
+	const stored = await body<StoredWorkflow>(await api.get(`/api/v1/workflows/${id}`));
+	expect(stored.description).toBe(B_DESCRIPTION);
+	expect(stored.revision).toBe(3);
+	expect(stored.transitions.find((t) => t.name === 'Approve')?.requires ?? []).toEqual([]);
+});
+
+test('discarding a conflicted draft loads the other change into the editor', async ({
+	page,
+	apiFor,
+	uniqueName
+}) => {
+	const api = apiFor(ALICE);
+	const { id, second } = await openConflict(
+		page,
+		api,
+		uniqueName('Conflict discard', { maxLength: 100 })
+	);
+
+	const banner = conflictBanner(second);
+	await banner.getByRole('button', { name: 'Discard my edits and load the latest' }).click();
+	await expect(banner).toBeHidden();
+	await expect(second.getByLabel('Description', { exact: true })).toHaveValue(
+		'A workflow two tabs edit at once.'
+	);
+	const review = await expandState(second, 'Review');
+	await expect(review.getByLabel('Required artifact name')).toHaveValue('sign-off');
+
+	// The reloaded editor is on the latest revision, so an ordinary save commits.
+	await second.getByLabel('Description', { exact: true }).fill('Written after loading the latest.');
+	const saved = patchResponse(second, id);
+	await second.getByRole('button', { name: 'Save workflow' }).click();
+	const response = await saved;
+	expect(response.status()).toBe(200);
+	expect(response.request().postDataJSON().expected_revision).toBe(2);
+	const stored = await body<StoredWorkflow>(await api.get(`/api/v1/workflows/${id}`));
+	expect(stored.transitions.find((t) => t.name === 'Approve')?.requires).toEqual([
+		{ artifact: 'sign-off' }
+	]);
+});
+
+test('an unsaved draft survives a run-scope change and still saves', async ({
+	page,
+	apiFor,
+	uniqueName
+}) => {
+	const api = apiFor(ALICE);
+	const created = await body<{ id: string; revision: number }>(
+		await api.post('/api/v1/workflows', {
+			name: uniqueName('Draft kept', { maxLength: 100 }),
+			description: 'A workflow whose draft outlives a reload.',
+			initial_state: 'Triaging',
+			states: [
+				{ name: 'Triaging', category: 'active' },
+				{ name: 'Done', category: 'done' }
+			],
+			transitions: [{ name: 'Triage complete', from: 'Triaging', to: 'Done' }]
+		})
+	);
+	await gotoHydrated(page, `/workflows/${created.id}`);
+	await page.getByLabel('Description', { exact: true }).fill('A draft description, not saved yet.');
+	const triaging = await expandState(page, 'Triaging');
+	await triaging.getByLabel('State name').fill('Sorting');
+
+	const scopeSaved = page.waitForResponse(
+		(response) => response.url().endsWith('/run-scope') && response.request().method() === 'PUT'
+	);
+	// The page reloads its data after the change; the draft must outlive that.
+	const reloaded = page.waitForResponse((response) => response.url().includes('__data.json'));
+	await page
+		.getByTestId('run-scope')
+		.getByLabel('What runs in Triaging can change')
+		.selectOption('project');
+	expect((await scopeSaved).status()).toBe(200);
+	await reloaded;
+	await expect(
+		page.getByTestId('run-scope').getByLabel('What runs in Triaging can change')
+	).toHaveValue('project');
+
+	await expect(page.getByLabel('Description', { exact: true })).toHaveValue(
+		'A draft description, not saved yet.'
+	);
+	await expect(page.getByLabel('State name')).toHaveValue('Sorting');
+
+	// A run-scope change does not advance the definition revision, so the
+	// draft still saves against the revision it opened.
+	const saved = patchResponse(page, created.id);
+	await page.getByRole('button', { name: 'Save workflow' }).click();
+	const response = await saved;
+	expect(response.status()).toBe(200);
+	expect(response.request().postDataJSON().expected_revision).toBe(created.revision);
+	const stored = await body<{
+		description: string;
+		states: { name: string; run_scope?: string }[];
+	}>(await api.get(`/api/v1/workflows/${created.id}`));
+	expect(stored.description).toBe('A draft description, not saved yet.');
+	expect(stored.states.map((state) => state.name)).toEqual(['Sorting', 'Done']);
+	expect(stored.states[0].run_scope).toBe('project');
+});
+
+test('saving over a version that deleted a draft state re-creates it', async ({
+	page,
+	apiFor,
+	uniqueName
+}) => {
+	const api = apiFor(ALICE);
+	const created = await body<{
+		id: string;
+		revision: number;
+		states: { id: string; name: string }[];
+	}>(
+		await api.post('/api/v1/workflows', {
+			name: uniqueName('Conflict deleted state', { maxLength: 100 }),
+			description: 'A workflow whose Review state is deleted under a draft.',
+			initial_state: 'Open',
+			states: [
+				{ name: 'Open', category: 'active' },
+				{ name: 'Review', category: 'awaiting_human' },
+				{ name: 'Done', category: 'done' }
+			],
+			transitions: [
+				{ name: 'Submit', from: 'Open', to: 'Review' },
+				{ name: 'Approve', from: 'Review', to: 'Done' }
+			]
+		})
+	);
+	const idOf = (name: string) => created.states.find((state) => state.name === name)!.id;
+	await gotoHydrated(page, `/workflows/${created.id}`);
+	await page.getByLabel('Description', { exact: true }).fill(B_DESCRIPTION);
+
+	const removed = await api.patch(`/api/v1/workflows/${created.id}`, {
+		expected_revision: created.revision,
+		states: [
+			{ id: idOf('Open'), name: 'Open', category: 'active' },
+			{ id: idOf('Done'), name: 'Done', category: 'done' }
+		],
+		transitions: [{ name: 'Finish', from: idOf('Open'), to: idOf('Done') }]
+	});
+	expect(removed.status()).toBe(200);
+
+	const refused = patchResponse(page, created.id);
+	await page.getByRole('button', { name: 'Save workflow' }).click();
+	expect((await refused).status()).toBe(409);
+	const banner = conflictBanner(page);
+	await banner.getByRole('button', { name: 'Review changes' }).click();
+	const changes = banner.getByRole('list', { name: 'Changes in the latest version' });
+	await expect(changes).toContainText('State “Review” was removed.');
+	await expect(changes).toContainText(
+		'“Review” was deleted in the latest version; saving your version re-creates it as a new state without its stage instructions.'
+	);
+
+	const saved = patchResponse(page, created.id);
+	await banner.getByRole('button', { name: 'Save my version anyway' }).click();
+	const response = await saved;
+	expect(response.status()).toBe(200);
+	const sent = response.request().postDataJSON() as {
+		states: { id?: string; name: string }[];
+		transitions: { name: string; from: string; to: string }[];
+	};
+	// The deleted state goes out without its old id, referenced by name.
+	expect(sent.states.find((state) => state.name === 'Review')).not.toHaveProperty('id');
+	expect(sent.transitions.find((t) => t.name === 'Submit')?.to).toBe('Review');
+
+	const stored = await body<{
+		states: { id: string; name: string }[];
+		transitions: { name: string }[];
+	}>(await api.get(`/api/v1/workflows/${created.id}`));
+	expect(stored.states.map((state) => state.name)).toEqual(['Open', 'Review', 'Done']);
+	expect(stored.states.find((state) => state.name === 'Review')?.id).not.toBe(idOf('Review'));
+	expect(stored.transitions.map((t) => t.name).sort()).toEqual(['Approve', 'Submit']);
+});

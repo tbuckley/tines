@@ -21,7 +21,12 @@
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
-	import { CATEGORY_LABELS, prefersReducedMotion } from '$lib/format';
+	import { CATEGORY_LABELS, prefersReducedMotion, relativeTime } from '$lib/format';
+	import {
+		deletedStateLine,
+		statesDeletedInLatest,
+		summarizeWorkflowChanges
+	} from '$lib/workflow-conflict';
 
 	interface RowState {
 		key: string;
@@ -38,12 +43,20 @@
 		workflow = null,
 		saveLabel = 'Save workflow',
 		onsave,
+		ondiscard,
 		footerActions
 	}: {
 		workflow?: WorkflowResponse | null;
 		saveLabel?: string;
-		/** Called with the request body; throw an ApiError to surface it inline. */
-		onsave: (request: CreateWorkflowRequest) => Promise<void>;
+		/**
+		 * Called with the request body; throw an ApiError to surface it inline.
+		 * An existing workflow's save carries the revision the draft was built on.
+		 * On `workflow_conflict` the caller refreshes `workflow` to the latest
+		 * definition before rethrowing; the draft is kept.
+		 */
+		onsave: (request: CreateWorkflowRequest & { expected_revision?: number }) => Promise<void>;
+		/** Drop the draft and re-mount on the latest definition. */
+		ondiscard?: () => void | Promise<void>;
 		/** Extra controls for the save row, aligned opposite the submit button. */
 		footerActions?: Snippet;
 	} = $props();
@@ -80,8 +93,14 @@
 	const freshKey = () => `new-${nextKey++}`;
 
 	// The editor deliberately seeds from the workflow prop once; callers
-	// re-mount it ({#key}) when the server copy changes.
+	// re-mount it ({#key}) after a save or a discard. The prop itself keeps
+	// following the server copy, which is how a conflict learns the latest.
 	/* eslint-disable svelte/no-state-referenced-locally */
+	// What the draft was built on. A save is checked against this revision,
+	// never against whatever the live prop holds by the time Save is clicked.
+	// svelte-ignore state_referenced_locally
+	const base = workflow ? $state.snapshot(workflow) : null;
+	const baseRevision = base?.revision;
 	// svelte-ignore state_referenced_locally
 	let name = $state(workflow?.name ?? '');
 	// svelte-ignore state_referenced_locally
@@ -147,6 +166,12 @@
 
 	let saving = $state(false);
 	let errorMessage = $state<string | null>(null);
+	/** Set while a save was refused because the workflow changed underneath the draft. */
+	let conflictLatest = $state.raw<WorkflowResponse | null>(null);
+	let reviewOpen = $state(false);
+	/** Overwriting is offered only once the latest definition has been shown. */
+	let reviewed = $state(false);
+	let discarding = $state(false);
 	let moveAnnouncement = $state('');
 	let expandedStateKey = $state<string | null>(null);
 	const stateRowElements = new Map<string, HTMLDivElement>();
@@ -324,23 +349,51 @@
 			)
 	);
 
-	async function save(e: SubmitEvent) {
+	/** Draft states the conflicting version deleted; an overwrite re-creates them. */
+	const deletedInLatest = $derived(
+		conflictLatest ? statesDeletedInLatest(states, conflictLatest) : []
+	);
+	const conflictChanges = $derived(
+		base && conflictLatest
+			? [
+					...summarizeWorkflowChanges(base, conflictLatest),
+					...deletedInLatest.map((s) => deletedStateLine(s.name.trim() || 'unnamed'))
+				]
+			: []
+	);
+
+	function save(e: SubmitEvent) {
 		e.preventDefault();
+		// In conflict the banner's actions are the only ways forward.
+		if (conflictLatest) return;
+		return submit(baseRevision);
+	}
+
+	/**
+	 * `expectedRevision` is the base the draft was built on, or — when saving
+	 * over a conflict — the revision of the definition that was just reviewed.
+	 */
+	async function submit(expectedRevision: number | undefined) {
 		if (saving || problems.length > 0) return;
 		saving = true;
 		errorMessage = null;
 		const byKey = new Map(states.map((s) => [s.key, s]));
+		// A state the latest version deleted cannot be addressed by its id any
+		// more: it goes out as a new state, and references to it by name.
+		const gone = new Set(deletedInLatest.map((s) => s.key));
+		const idOf = (s: RowState) => (gone.has(s.key) ? undefined : s.id);
 		const ref = (key: string) => {
 			const s = byKey.get(key)!;
-			return s.id ?? s.name.trim();
+			return idOf(s) ?? s.name.trim();
 		};
 		try {
 			await onsave({
+				...(expectedRevision !== undefined ? { expected_revision: expectedRevision } : {}),
 				name: name.trim(),
 				description: description.trim(),
 				initial_state: ref(initialKey),
 				states: states.map((s) => ({
-					...(s.id ? { id: s.id } : {}),
+					...(idOf(s) ? { id: idOf(s) } : {}),
 					name: s.name.trim(),
 					category: s.category,
 					// New states only: existing stage instructions are edited as
@@ -365,9 +418,29 @@
 				}))
 			});
 		} catch (err) {
-			errorMessage = err instanceof ApiError ? err.message : 'Failed to save the workflow.';
+			if (workflow && err instanceof ApiError && err.code === 'workflow_conflict') {
+				// The caller has already refreshed `workflow` to the latest
+				// definition. Pin what is about to be reviewed: a later reload
+				// must not change the revision an overwrite is checked against.
+				await tick();
+				conflictLatest = $state.snapshot(workflow) as WorkflowResponse;
+				reviewOpen = false;
+				reviewed = false;
+			} else {
+				errorMessage = err instanceof ApiError ? err.message : 'Failed to save the workflow.';
+			}
 		} finally {
 			saving = false;
+		}
+	}
+
+	async function discard() {
+		if (discarding) return;
+		discarding = true;
+		try {
+			await ondiscard?.();
+		} finally {
+			discarding = false;
 		}
 	}
 
@@ -750,6 +823,66 @@
 				{warning}
 			</p>
 		{/each}
+		{#if conflictLatest}
+			<div
+				class="border-destructive/40 bg-destructive/10 text-destructive space-y-3 rounded-md border px-3 py-2 text-sm"
+				role="alert"
+				data-testid="workflow-conflict"
+				transition:slide={{ duration: dur() }}
+			>
+				<p>
+					This workflow was changed {relativeTime(conflictLatest.updated_at)}, after you opened it.
+					Your edits are still here and have not been saved.
+				</p>
+				{#if reviewOpen}
+					<ul
+						id={`workflow-conflict-changes-${previewUid}`}
+						class="text-foreground space-y-1 text-xs"
+						aria-label="Changes in the latest version"
+					>
+						{#each conflictChanges as change, index (index)}
+							<li>• {change}</li>
+						{:else}
+							<li>The latest version has the same definition you opened.</li>
+						{/each}
+					</ul>
+				{/if}
+				<div class="flex flex-wrap gap-2">
+					<Button
+						type="button"
+						size="sm"
+						variant="outline"
+						aria-expanded={reviewOpen}
+						aria-controls={`workflow-conflict-changes-${previewUid}`}
+						onclick={() => {
+							reviewOpen = !reviewOpen;
+							reviewed = true;
+						}}
+					>
+						Review changes
+					</Button>
+					<Button
+						type="button"
+						size="sm"
+						variant="outline"
+						disabled={!reviewed || saving || discarding || problems.length > 0}
+						title={reviewed ? undefined : 'Review the changes first'}
+						onclick={() => submit(conflictLatest?.revision)}
+					>
+						{saving ? 'Saving…' : 'Save my version anyway'}
+					</Button>
+					<Button
+						type="button"
+						size="sm"
+						variant="outline"
+						disabled={saving || discarding}
+						onclick={discard}
+					>
+						Discard my edits and load the latest
+					</Button>
+				</div>
+			</div>
+		{/if}
 		{#if errorMessage}
 			<p
 				class="border-destructive/40 bg-destructive/10 text-destructive rounded-md border px-3 py-2 text-sm"
@@ -760,7 +893,7 @@
 		{/if}
 
 		<div class="flex flex-wrap items-center justify-between gap-2">
-			<Button type="submit" disabled={saving || problems.length > 0}>
+			<Button type="submit" disabled={saving || problems.length > 0 || conflictLatest !== null}>
 				{saving ? 'Saving…' : saveLabel}
 			</Button>
 			{#if footerActions}
