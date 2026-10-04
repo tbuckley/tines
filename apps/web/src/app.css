@@ -282,13 +282,20 @@
 		text-decoration: underline;
 		text-underline-offset: 3px;
 	}
+	/* display: block + overflow-x makes an over-wide table scroll inside
+	   itself; break-word on cells keeps words whole (anywhere would let the
+	   auto table layout shrink a column to one character and split words). */
 	.markdown table {
+		display: block;
+		max-width: 100%;
+		overflow-x: auto;
 		border-collapse: collapse;
 		width: 100%;
 		font-size: 0.8125rem;
 	}
 	.markdown th,
 	.markdown td {
+		overflow-wrap: break-word;
 		border: 1px solid var(--border);
 		padding: 0.375rem 0.625rem;
 		text-align: left;

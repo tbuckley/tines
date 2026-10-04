@@ -282,10 +282,12 @@
 	</main>
 
 	<!-- Compact chrome bottom tab bar below md. -->
+	<!-- In-page popovers measure data-bottom-chrome ($lib/popover-fit.ts) so they end above it. -->
 	<nav
 		class="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur md:hidden"
 		style="padding-bottom: env(safe-area-inset-bottom)"
 		aria-label="Primary"
+		data-bottom-chrome
 		style:view-transition-name="tab-bar"
 	>
 		<div class="grid h-16 grid-cols-3">

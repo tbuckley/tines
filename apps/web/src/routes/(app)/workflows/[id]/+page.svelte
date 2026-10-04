@@ -121,14 +121,34 @@
 		}
 	}
 
+	/**
+	 * The editor seeds its draft once per mount. Only a committed save or a
+	 * deliberate discard re-mounts it, so a reload for anything else (a run
+	 * scope change, a stage-instructions save) leaves an unsaved draft alone.
+	 */
+	let editorEpoch = $state(0);
+
 	async function saveWorkflow(request: UpdateWorkflowRequest) {
 		try {
-			await api.updateWorkflow(data.workflow.id, request);
+			try {
+				await api.updateWorkflow(data.workflow.id, request);
+			} catch (err) {
+				if (!(await confirmContextSweep(err))) throw err;
+				await api.updateWorkflow(data.workflow.id, { ...request, force_delete_context: true });
+			}
 		} catch (err) {
-			if (!(await confirmContextSweep(err))) throw err;
-			await api.updateWorkflow(data.workflow.id, { ...request, force_delete_context: true });
+			// Hand the editor the definition that won, without re-mounting it:
+			// the draft stays, and the editor shows what changed underneath it.
+			if (err instanceof ApiError && err.code === 'workflow_conflict') await invalidateAll();
+			throw err;
 		}
 		await invalidateAll();
+		editorEpoch += 1;
+	}
+
+	async function discardDraft() {
+		await invalidateAll();
+		editorEpoch += 1;
 	}
 
 	/** Duplicate the workflow into the user's library (states by name). */
@@ -299,8 +319,8 @@
 		</div>
 	</div>
 {:else}
-	{#key data.workflow.updated_at}
-		<WorkflowEditor workflow={data.workflow} onsave={saveWorkflow}>
+	{#key `${data.workflow.id}:${editorEpoch}`}
+		<WorkflowEditor workflow={data.workflow} onsave={saveWorkflow} ondiscard={discardDraft}>
 			<!-- Delete sits with Save rather than in the header, so the page opens on
 			     the form and no destructive action shares the title row. -->
 			{#snippet footerActions()}
