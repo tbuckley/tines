@@ -1370,6 +1370,13 @@
 							<Button size="sm" variant="outline" onclick={() => (promptDialogOpen = true)}>
 								<IconRocket size={14} /> View launch prompt
 							</Button>
+						{:else}
+							<a
+								href="/projects/{data.issue.project_id}"
+								class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 rounded-sm text-xs outline-none focus-visible:ring-[3px]"
+							>
+								View project context
+							</a>
 						{/if}
 						<Button
 							size="sm"

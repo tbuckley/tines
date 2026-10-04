@@ -270,7 +270,14 @@ Conventions:
 
 The complete **Context** page (`/context`) is reached through “View all context”
 links on issue, project, and workflow detail pages rather than primary
-navigation. Under All projects it lists all items; under a project focus it lists items anchored directly on that project or on one of its issues, plus the count of global and state-scoped library items that also apply. Kind, workflow, label and search filters remain; project scope comes from focus. Create defaults to the focus while the full scope picker remains available. The HTTP API's explicit `project` filter retains its narrower direct-project semantics; the project-touching rule is web presentation only. Legacy `?project=<id|name>` links set focus once and redirect, while ordinary contextual links use plain `/context` so link preloading cannot mutate focus.
+navigation. Under All projects it lists every kind except artifacts; under a project focus it lists the same kinds anchored directly on that project or on one of its issues, plus the count of global and state-scoped library items that also apply. Kind, workflow, label and search filters remain; project scope comes from focus. Create defaults to the focus while the full scope picker remains available. The HTTP API's explicit `project` filter retains its narrower direct-project semantics; the project-touching rule is web presentation only. Legacy `?project=<id|name>` links set focus once and redirect, while ordinary contextual links use plain `/context` so link preloading cannot mutate focus.
+
+**Revised 2026-10 (Tines/861).** The page used to load the 100 most recently updated items of every kind and drop the rest without notice; once agents attached artifacts on every run, those 100 rows were mostly artifacts and the guidance fell off the page. Now:
+
+- The default view (Kind → “All except artifacts”) leaves artifacts out in SQL, before the limit. Kind → Artifacts lists them, including a focused project's issue artifacts. There is no mixed “everything” view. The exclusion is web presentation only: `GET /api/v1/context` and `tines context list` still return every kind.
+- Every view pages 100 rows at a time with Previous and Next, as a two-way keyset on `(updated_at DESC, id DESC)`; see [issue list pagination](../issues-pagination/SPEC.md) for the shared helper. A saved item moves to the first page because `updated_at` is the sort key.
+- Any filter change clears the page boundary. A `page_scope` marker rides with each cursor, so a changed project focus sends a bounded URL back to the first page with its filters kept.
+- The starter-guidance banner asks for the global `agent-guidelines` prompt by exact name instead of scanning the first 100 global prompts.
 
 ### In-place sections
 

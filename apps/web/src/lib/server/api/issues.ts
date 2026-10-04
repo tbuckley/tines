@@ -977,6 +977,16 @@ export interface IssueDetailOptions {
 	 * route and the runner's prompt delivery) opt in.
 	 */
 	round?: boolean;
+	/**
+	 * The delegated member this detail is returned to; narrows `context_summary`
+	 * only. Separate from `authorizationActor`, which also re-reads link targets.
+	 */
+	memberActor?: ActorContext;
+}
+
+/** `getIssueDetail` options for a mutation reply: a member's count stays the member's. */
+function forMember(actor: ActorContext): IssueDetailOptions {
+	return actor.member ? { memberActor: actor } : {};
 }
 
 export type FullIssueDetail = IssueDetail & { workflow: NonNullable<IssueDetail['workflow']> };
@@ -1015,6 +1025,7 @@ export async function getIssueDetail(
 				state_id: loaded!.state.id
 			};
 	const actor = opts.authorizationActor;
+	const summaryActor = actor ?? opts.memberActor;
 	const workspaceReadable =
 		actor === undefined ||
 		accessAllowed(actor, [{ domain: 'workspace', access: 'read' }], 'workflow.read');
@@ -1043,7 +1054,7 @@ export async function getIssueDetail(
 					stateId: head.state_id,
 					issueId: head.id
 				},
-				actor
+				summaryActor
 			),
 			opts.artifacts ? listArtifacts(db, userId, head.id) : null,
 			opts.round && controlReadable ? loadHandoffRows(db, userId, head.id) : null
@@ -1058,7 +1069,7 @@ export async function getIssueDetail(
 					db,
 					userId,
 					{ projectId: issue.project_id, stateId: issue.state.id, issueId: issue.id },
-					actor
+					summaryActor
 				);
 
 	const workflow = workflows.find((w) => w.id === issue.workflow_id);
@@ -1671,7 +1682,7 @@ export async function createIssue(
 	}
 	effects.signalDispatch();
 
-	const issue = await getIssueDetail(db, actor.userId, { id });
+	const issue = await getIssueDetail(db, actor.userId, { id }, forMember(actor));
 	const response: CreateIssueResponse = schedule
 		? { ...issue, schedule: await getSchedule(db, actor.userId, schedule.id) }
 		: issue;
@@ -1729,7 +1740,7 @@ export async function updateIssue(
 ): Promise<IssueDetail> {
 	assertConsentFieldsSupported(actor, body);
 	assertPinFieldsAllowed(actor, body);
-	const current = await getIssueDetail(db, actor.userId, { id });
+	const current = await getIssueDetail(db, actor.userId, { id }, forMember(actor));
 	requireAccess(
 		actor,
 		[{ domain: 'project', access: 'write', projectId: current.project_id }],
@@ -2001,7 +2012,7 @@ export async function updateIssue(
 	const results = await runAtomic(env, queries);
 	if ((results[0]?.meta.changes ?? 0) === 0) await assertRunStillBound(db, actor);
 	if (guarded && (results[0]?.meta.changes ?? 0) === 0) {
-		const fresh = await getIssueDetail(db, actor.userId, { id });
+		const fresh = await getIssueDetail(db, actor.userId, { id }, forMember(actor));
 		throw new ApiFail(
 			409,
 			'conflict',
@@ -2010,7 +2021,7 @@ export async function updateIssue(
 		);
 	}
 	effects.signalDispatch();
-	return getIssueDetail(db, actor.userId, { id });
+	return getIssueDetail(db, actor.userId, { id }, forMember(actor));
 }
 
 /**
@@ -2302,7 +2313,7 @@ export async function transitionIssue(
 		);
 		return transitionMemberIssue(db, env, actor, effects, id, body, access, beforeMemberCommit);
 	}
-	const current = await getIssueDetail(db, actor.userId, { id });
+	const current = await getIssueDetail(db, actor.userId, { id }, forMember(actor));
 	requireAccess(
 		actor,
 		[{ domain: 'project', access: 'write', projectId: current.project_id }],
@@ -2620,7 +2631,7 @@ export async function transitionIssue(
 	if ((results[0]?.meta.changes ?? 0) === 0) {
 		await assertRunStillBound(db, actor);
 		// One re-read says which pin refused the write.
-		const fresh = await getIssueDetail(db, actor.userId, { id });
+		const fresh = await getIssueDetail(db, actor.userId, { id }, forMember(actor));
 		const moved = fresh.state.id !== current.state.id;
 		const reason =
 			moved || fresh.decision_revision !== decision.decision_revision
@@ -2647,7 +2658,7 @@ export async function transitionIssue(
 		);
 	}
 	effects.signalDispatch();
-	const updated = await getIssueDetail(db, actor.userId, { id });
+	const updated = await getIssueDetail(db, actor.userId, { id }, forMember(actor));
 	if (!consentMode) return updated;
 	const permission_receipt: IssueConsentReceipt = {
 		...(await readIssueConsent(db, actor.userId, id)),
@@ -2673,7 +2684,7 @@ export async function resumeIssue(
 	effects: DispatchEffects,
 	id: string
 ): Promise<IssueDetail> {
-	const current = await getIssueDetail(db, actor.userId, { id });
+	const current = await getIssueDetail(db, actor.userId, { id }, forMember(actor));
 	requireAccess(
 		actor,
 		[
@@ -2702,7 +2713,7 @@ export async function resumeIssue(
 		})
 	]);
 	effects.signalDispatch();
-	return getIssueDetail(db, actor.userId, { id });
+	return getIssueDetail(db, actor.userId, { id }, forMember(actor));
 }
 
 export async function createComment(
@@ -2721,7 +2732,7 @@ export async function createComment(
 		{ projectId: access.projectId, issueId }
 	);
 	if (access.role === 'owner') {
-		const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+		const issue = await getIssueDetail(db, actor.userId, { id: issueId }, forMember(actor));
 		await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 		// A member run comments on its admitted project (Tines/751); no other run does.
 	} else if (actor.agentRunId && !runProjectActor(actor, access.projectId)) throw notFound();
@@ -2827,7 +2838,7 @@ async function requireComment(
 		{ projectId: access.projectId, issueId }
 	);
 	if (access.role === 'owner') {
-		const issue = await getIssueDetail(db, actor.userId, { id: issueId });
+		const issue = await getIssueDetail(db, actor.userId, { id: issueId }, forMember(actor));
 		await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
 	}
 	const row = await db
