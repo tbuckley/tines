@@ -250,9 +250,15 @@ test('the landing issue list fits a phone screen', async ({ page, request, uniqu
 	await lastOptionFits();
 
 	// Keyboard stand-in: the viewport shrinks while the list is open, and the cap follows it.
-	await page.setViewportSize({ width: 390, height: 300 });
+	// The new height leaves room for about four rows under the field wherever the first scroll
+	// left it (under the header, or lower at the page's end): enough for the list's minimum
+	// height, too little for all eight rows, so the cap has to move for the list to fit.
+	const barHeight = (await tabBar.boundingBox())!.height;
+	const shrunk = Math.ceil((await bottom(landing)) + 8 + 120 + barHeight);
+	await page.setViewportSize({ width: 390, height: shrunk });
 	await expect(options).toHaveCount(8);
 	await expect.poll(async () => (await bottom(listbox)) <= (await top(tabBar))).toBe(true);
+	expect(await listbox.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
 	await page.setViewportSize({ width: 390, height: 844 });
 
 	// Little room left: the list caps its height and scrolls inside itself.
