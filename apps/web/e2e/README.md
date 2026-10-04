@@ -244,6 +244,30 @@ behaviour under test. Repeat a single spec file against a freshly seeded server 
 Then mutate your own fix (revert the locator, flip the config line) and confirm the check
 reds on that mutation alone.
 
+## Recording a flake
+
+A test that fails and then passes when re-run on the same SHA is a flake. A comment on the
+issue you were working is not a record: the next run never sees it. Record it:
+
+1. File an issue for the test, with its error line and the runs it failed in.
+2. Add it to `e2e/known-flakes.json`, keyed `e2e/<file>:<line> › <title>` exactly as the list
+   reporter prints it (without the column), with the issue ref as the value.
+3. Then re-run the shard.
+
+Entries match on file and title, so an edit that moves the test's line does not orphan one;
+renaming the test does.
+
+The aggregate `Playwright e2e` job reads that file. Its run summary lists each failed test as
+**known flake → Tines/N** (re-run) or **new failure** (investigate first). It never changes
+pass or fail, and the suite still has no `retries`: a retry would turn a native-D1 race green.
+
+`pnpm --filter web flake:ledger` (needs `gh`) prints the tests that failed in CI over the last
+14 days (`--days N`), marks the ones that failed and passed on one SHA, failed on `main`, or
+failed on three or more branches, and lists the flaky ones `known-flakes.json` does not own.
+Run it instead of scraping logs.
+
+Remove an entry in the PR that fixes the flake, once the fix meets the standard above.
+
 ## Dana, and the one-way account
 
 `first-run-checklist.spec.ts` walks a brand-new account (`DANA` in
