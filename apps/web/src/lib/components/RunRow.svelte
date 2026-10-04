@@ -137,13 +137,11 @@
 			>
 				{relativeTime(run.created_at)}
 			</span>
-			<div class="run-actions flex shrink-0 items-center gap-x-1" data-testid="run-trailing">
+			<div class="run-actions flex shrink-0 items-center" data-testid="run-trailing">
 				{#if run.provider_url}
 					<!-- An action, like Logs: beside it, so a managed run costs no extra line. -->
-					<Button
-						size="sm"
-						variant="ghost"
-						class="text-muted-foreground h-7 px-1.5"
+					<a
+						class="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 shrink-0 items-center justify-center rounded-md"
 						href={run.provider_url}
 						target="_blank"
 						rel="noreferrer"
@@ -151,7 +149,7 @@
 						title="Open the provider console (full transcript)"
 					>
 						<IconExternalLink size={16} stroke={1.5} />
-					</Button>
+					</a>
 				{/if}
 				{#if showLogs}
 					<Button
