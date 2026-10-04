@@ -37,7 +37,10 @@ test.describe('shared run row', () => {
 		const issueRow = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
 		await expect(issueRow).toHaveCount(1);
 		await expect(issueRow).toContainText(RUNROW.costLabel);
-		await expect(issueRow).toContainText(`session: ${RUNROW.providerSessionId}`);
+		// The session id and the effort disclosure are `tines runs show`'s, not
+		// the row's: neither helps a person scanning runs (Tines/920).
+		await expect(issueRow).not.toContainText(RUNROW.providerSessionId);
+		await expect(issueRow).not.toContainText('Effort details');
 		// How the end was judged, beside the status: the difference between a
 		// run that cost the issue a strike and one that cost it nothing.
 		await expect(issueRow).toContainText(RUNROW.outcome);
@@ -57,7 +60,8 @@ test.describe('shared run row', () => {
 		const agentsRow = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
 		await expect(agentsRow).toHaveCount(1);
 		await expect(agentsRow).toContainText(RUNROW.costLabel);
-		await expect(agentsRow).toContainText(`session: ${RUNROW.providerSessionId}`);
+		await expect(agentsRow).not.toContainText(RUNROW.providerSessionId);
+		await expect(agentsRow).not.toContainText('Effort details');
 		await expect(agentsRow).toContainText(RUNROW.outcome);
 		await expect(agentsRow.getByRole('link', { name: /console/ })).toHaveAttribute(
 			'href',
@@ -124,11 +128,91 @@ test.describe('shared run row', () => {
 		await expect(row.getByTestId('run-log-waiting')).toHaveCount(0);
 	});
 
-	test('shows unpriced Codex tokens and a local thread id', async ({ page }) => {
+	test('shows the model with a bare effort value, and the rest in its tooltip, on both surfaces', async ({
+		page
+	}) => {
+		for (const surface of ['issue', 'agents'] as const) {
+			if (surface === 'issue') {
+				await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
+			} else {
+				await gotoHydrated(page, '/agents');
+				await page.getByLabel('Show ended runs').check();
+			}
+			const model = page
+				.locator('li:not([inert])', { hasText: RUNROW.runnerName })
+				.getByTestId('run-model');
+			// Just "high": the tier, where the value came from and whether the
+			// provider confirmed it are a hover away, not three more lines.
+			await expect(model, surface).toHaveText('claude-opus-4 · high');
+			await expect(model, surface).toHaveAttribute('title', /Tier balanced/);
+			await expect(model, surface).toHaveAttribute(
+				'title',
+				/effort high from runner tier balanced/
+			);
+			await expect(model, surface).toHaveAttribute('title', /accepted unconfirmed/);
+			const row = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
+			await expect(row, surface).not.toContainText('accepted unconfirmed');
+			await expect(row, surface).not.toContainText('effort high');
+
+			// No model and no effort recorded: the tier alone, and no filler text.
+			const failed = page.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName });
+			await expect(failed.getByTestId('run-model'), surface).toHaveText('balanced');
+			await expect(failed, surface).not.toContainText('effort unknown');
+			await expect(failed, surface).not.toContainText('provider default');
+		}
+	});
+
+	test('keeps status with its outcome, and the time with Logs at the right, on a phone', async ({
+		page
+	}) => {
+		await page.setViewportSize({ width: 390, height: 844 });
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`
+		);
+		await page.getByRole('button', { name: /^Agent activity/ }).click();
+		const row = page.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName });
+		const trailing = row.getByTestId('run-trailing');
+		const logs = trailing.getByRole('button', { name: 'Logs' });
+		await expect(logs).toBeVisible();
+
+		// "failed · stalled" is one unit: the outcome never wraps alone.
+		const result = row.getByTestId('run-status').locator('xpath=..');
+		await expect(result).toHaveText(/^failed\s+·\s+\w+$/);
+		expect(await result.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe('nowrap');
+
+		// Read every box inside one layout pass: rows keep settling as the
+		// log-tail fetches resolve.
+		const boxes = await row.evaluate((li) => {
+			const rect = (el: Element) => {
+				const r = el.getBoundingClientRect();
+				return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+			};
+			const group = li.querySelector('[data-testid="run-trailing"]')!;
+			return {
+				row: rect(li),
+				paddingRight: parseFloat(getComputedStyle(li).paddingRight),
+				group: rect(group),
+				time: rect(group.querySelector('span')!),
+				logs: rect(group.querySelector('button')!)
+			};
+		});
+		// Same line: the time's vertical centre falls inside the button's box.
+		const timeCentre = (boxes.time.top + boxes.time.bottom) / 2;
+		expect(timeCentre).toBeGreaterThan(boxes.logs.top);
+		expect(timeCentre).toBeLessThan(boxes.logs.bottom);
+		expect(boxes.time.right).toBeLessThanOrEqual(boxes.logs.left);
+		// Right-aligned as a group, where Logs alone used to wrap to the left edge.
+		expect(Math.abs(boxes.row.right - boxes.paddingRight - boxes.group.right)).toBeLessThanOrEqual(
+			2
+		);
+	});
+
+	test('shows unpriced Codex tokens and resume lineage, not the thread id', async ({ page }) => {
 		await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
 		const row = page.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName });
 		await expect(row).toContainText(RUNROW_FAILED.tokenLabel);
-		await expect(row).toContainText(`session: ${RUNROW_FAILED.providerSessionId}`);
+		await expect(row).not.toContainText(RUNROW_FAILED.providerSessionId);
 		await expect(row).toContainText(`resumed run ${RUNROW_FAILED.resumedFromRunId}`);
 		await expect(row.getByRole('link', { name: /resumed run/ })).toHaveCount(0);
 	});

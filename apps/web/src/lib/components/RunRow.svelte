@@ -10,15 +10,19 @@
 		prefersReducedMotion,
 		relativeTime,
 		runElapsedLabel,
+		runModelLabel,
 		runOutcomePresentation,
 		runStatusClass
 	} from '$lib/format';
 
 	/**
-	 * The one run row, shared by every surface that lists runs (the Agents tab
-	 * and an issue's agent-activity card). Everything a run says about itself
-	 * is unconditional here — the props cover only what is genuinely
-	 * contextual, so a new run field is added once rather than per surface.
+	 * The one run row, shared by every surface that lists runs (the Agents tab,
+	 * an issue's agent-activity card and the first-run checklist). It shows what
+	 * a person scanning runs needs — who ran, on what, how it ended, what it
+	 * cost — and leaves the rest (session id, effort provenance) to
+	 * `tines runs show`. What it does show is unconditional here — the props
+	 * cover only what is genuinely contextual, so a new run field is added once
+	 * rather than per surface.
 	 *
 	 * The parent owns the surrounding `<ul class="divide-y rounded-lg border">`.
 	 */
@@ -46,6 +50,7 @@
 	let expanded = $state(false);
 	let now = $state(Date.now());
 	let active = $derived(isActiveRun(run.status));
+	let model = $derived(runModelLabel(run));
 	/** Same glyph and color as the run's Activity-feed entry; null while live. */
 	let outcomeView = $derived(active ? null : runOutcomePresentation(run.status, run.outcome));
 	/** A failure's error reads red; any other error stays amber and never turns green. */
@@ -68,28 +73,6 @@
 			document.removeEventListener('visibilitychange', onVisibility);
 		};
 	});
-
-	function effortSourceLabel(): string {
-		const source = run.effort_source;
-		if (!source) return 'legacy record';
-		if (source.kind === 'routing_target')
-			return `routing target ${source.target_index + 1} (${source.scope_label})`;
-		if (source.kind === 'runner_tier') return `runner tier ${source.tier}`;
-		return 'provider default';
-	}
-
-	function observedEffort(): { model?: string; effort?: string; reason?: string } | null {
-		const evidence = run.effort_application_evidence as {
-			milestones?: Array<{ observed_model?: string; observed_effort?: string; reason?: string }>;
-		} | null;
-		const item = evidence?.milestones?.findLast(
-			(entry) => entry.observed_model !== undefined || entry.observed_effort !== undefined
-		);
-		return item
-			? { model: item.observed_model, effort: item.observed_effort, reason: item.reason }
-			: null;
-	}
-	let observed = $derived(observedEffort());
 
 	/** What each judgment meant for the issue's attempt budget. */
 	function outcomeTitle(outcome: RunEndOutcome): string {
@@ -124,8 +107,8 @@
 		</a>
 	{/if}
 	<span class="text-muted-foreground">{run.runner_name}</span>
-	<span class="text-muted-foreground text-xs">
-		{run.tier}{run.model ? ` · ${run.model}` : ''}
+	<span class="text-muted-foreground text-xs" title={model.title} data-testid="run-model">
+		{model.text}
 	</span>
 	{#if run.effort_application_status === 'legacy_not_applied'}
 		<span
@@ -134,32 +117,20 @@
 		>
 			tier effort {run.resolved_effort} not delivered · upgrade pending
 		</span>
-	{:else if run.resolved_effort}
-		<span
-			class="text-muted-foreground text-xs"
-			title={`Requested ${run.requested_effort ?? 'from runner tier'}; application ${run.effort_application_status}`}
-		>
-			effort {run.resolved_effort} · {run.effort_application_status.replaceAll('_', ' ')}
-		</span>
-	{:else if run.effort_application_status === 'unknown'}
-		<span class="text-muted-foreground text-xs">effort unknown</span>
-	{:else}
-		<span class="text-muted-foreground text-xs">provider default · unconfirmed</span>
 	{/if}
-	<span
-		class="text-xs font-medium {runStatusClass(run.status, run.outcome)}"
-		data-testid="run-status"
-	>
-		{run.status.replaceAll('_', ' ')}
+	<span class="text-xs whitespace-nowrap">
+		<span class="font-medium {runStatusClass(run.status, run.outcome)}" data-testid="run-status">
+			{run.status.replaceAll('_', ' ')}
+		</span>
+		{#if run.outcome}
+			<!-- How the end was judged, subordinate to the status: "failed · interrupted"
+			     says the run failed but the issue was not charged for it. Absent on
+			     active runs and on rows that ended before outcomes were recorded. -->
+			<span class="text-muted-foreground" title={outcomeTitle(run.outcome)}>
+				· {run.outcome}
+			</span>
+		{/if}
 	</span>
-	{#if run.outcome}
-		<!-- How the end was judged, subordinate to the status: "failed · interrupted"
-		     says the run failed but the issue was not charged for it. Absent on
-		     active runs and on rows that ended before outcomes were recorded. -->
-		<span class="text-muted-foreground text-xs" title={outcomeTitle(run.outcome)}>
-			· {run.outcome}
-		</span>
-	{/if}
 	<span
 		class="text-muted-foreground text-xs whitespace-nowrap tabular-nums"
 		title="Elapsed since assignment"
@@ -171,11 +142,6 @@
 		</span>
 	{/if}
 	{#if showCost}<RunCostCell {run} />{/if}
-	{#if run.provider_session_id}
-		<span class="text-muted-foreground max-w-full font-mono text-xs break-all select-text">
-			session: {run.provider_session_id}
-		</span>
-	{/if}
 	{#if run.provider_session_id && run.status === 'running'}
 		<!-- staleness honesty: managed logs/cost advance only at sweep cadence -->
 		<span
@@ -196,18 +162,6 @@
 			console ↗
 		</a>
 	{/if}
-	<details class="text-muted-foreground w-full text-xs">
-		<summary class="w-fit cursor-pointer select-none">Effort details</summary>
-		<div class="mt-1 grid gap-x-4 gap-y-0.5 sm:grid-cols-2">
-			<span>Requested: {run.requested_effort ?? 'none'}</span>
-			<span>Resolved: {run.resolved_effort ?? 'provider default'}</span>
-			<span>Source: {effortSourceLabel()}</span>
-			<span>Application: {run.effort_application_status.replaceAll('_', ' ')}</span>
-			<span>Observed effort: {observed?.effort ?? 'unknown'}</span>
-			<span>Observed model: {observed?.model ?? 'unknown'}</span>
-			{#if observed?.reason}<span class="sm:col-span-2">Evidence: {observed.reason}</span>{/if}
-		</div>
-	</details>
 	{#if run.error}
 		<!-- The most useful line on a failed row, and the one most likely to be
 		     cut mid-word ("ENOSPC: no space left on…"). Two clamped lines carry
@@ -221,28 +175,32 @@
 			{run.error}
 		</span>
 	{/if}
-	<span
-		class="text-muted-foreground ml-auto text-xs"
-		title={new Date(run.created_at).toLocaleString()}
-	>
-		{relativeTime(run.created_at)}
-	</span>
-	{#if showLogs}
-		<Button
-			size="sm"
-			variant="ghost"
-			class="h-7"
-			aria-expanded={expanded}
-			onclick={() => (expanded = !expanded)}
+	<!-- One group, so the time and its buttons wrap together and stay at the
+	     right edge instead of Logs dropping alone to the left of the next line. -->
+	<div class="ml-auto flex shrink-0 items-center gap-x-1" data-testid="run-trailing">
+		<span
+			class="text-muted-foreground text-xs whitespace-nowrap"
+			title={new Date(run.created_at).toLocaleString()}
 		>
-			{expanded ? 'Hide logs' : 'Logs'}
-		</Button>
-	{/if}
-	{#if oncancel && isActiveRun(run.status)}
-		<Button size="sm" variant="ghost" class="text-destructive h-7" onclick={() => oncancel(run)}>
-			Cancel
-		</Button>
-	{/if}
+			{relativeTime(run.created_at)}
+		</span>
+		{#if showLogs}
+			<Button
+				size="sm"
+				variant="ghost"
+				class="h-7"
+				aria-expanded={expanded}
+				onclick={() => (expanded = !expanded)}
+			>
+				{expanded ? 'Hide logs' : 'Logs'}
+			</Button>
+		{/if}
+		{#if oncancel && isActiveRun(run.status)}
+			<Button size="sm" variant="ghost" class="text-destructive h-7" onclick={() => oncancel(run)}>
+				Cancel
+			</Button>
+		{/if}
+	</div>
 	{#if expanded && showLogs}
 		<div class="w-full" transition:slide={{ duration: dur() }}>
 			<RunLogViewer runId={run.id} runError={run.error} {errorClass} />

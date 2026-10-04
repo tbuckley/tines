@@ -1,4 +1,4 @@
-import type { AgentRun } from '@tines/shared';
+import type { AgentRun, EffortSource } from '@tines/shared';
 import { RUN_END_OUTCOMES, isActiveRun } from '@tines/shared';
 
 /** Absolute fallback for timestamps too far out to phrase as a duration. */
@@ -20,6 +20,44 @@ export function relativeTime(ms: number, now = Date.now()): string {
 	const days = Math.floor(hours / 24);
 	if (days < 30) return `${days}d ago`;
 	return shortDate(ms);
+}
+
+/** Where a run's effort value came from, for the run row's tooltip. */
+function effortSourceLabel(source: EffortSource | null): string {
+	if (!source) return 'legacy record';
+	if (source.kind === 'routing_target')
+		return `routing target ${source.target_index + 1} (${source.scope_label})`;
+	if (source.kind === 'runner_tier') return `runner tier ${source.tier}`;
+	return 'provider default';
+}
+
+/**
+ * A run row's model label: the resolved model (the tier when the harness
+ * cannot vary its model) and, when one was set, the bare effort value.
+ * Tier, effort source and application status are the tooltip.
+ */
+export function runModelLabel(
+	run: Pick<
+		AgentRun,
+		'tier' | 'model' | 'resolved_effort' | 'effort_source' | 'effort_application_status'
+	>
+): { text: string; title: string } {
+	const name = run.model ?? run.tier;
+	const tier = `Tier ${run.tier}`;
+	// An old daemon dropped the value: the row's amber warning says so, and a
+	// bare "high" beside the model would claim the opposite.
+	if (run.effort_application_status === 'legacy_not_applied') return { text: name, title: tier };
+	if (run.resolved_effort) {
+		const status = run.effort_application_status.replaceAll('_', ' ');
+		return {
+			text: `${name} · ${run.resolved_effort}`,
+			title: `${tier} · effort ${run.resolved_effort} from ${effortSourceLabel(run.effort_source)} · ${status}`
+		};
+	}
+	return {
+		text: name,
+		title: `${tier} · ${run.effort_application_status === 'unknown' ? 'effort not recorded' : 'provider default effort'}`
+	};
 }
 
 /** Capacity elapsed since assignment, ticking only while a run is active. */
