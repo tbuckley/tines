@@ -14,11 +14,9 @@ import {
 import {
 	actorForContextScope,
 	contextScopeProject,
-	listSharedContextItems,
-	memberScopeAllowed,
-	mergeContextPages,
-	redactForMember
+	memberScopeAllowed
 } from '$lib/server/api/member-context';
+import { listSharedContextItems, mergeContextPages } from '$lib/server/api/member-context-list';
 import { resolveAccessibleProjectRef } from '$lib/server/api/project-access';
 import { memberWriteRace } from '$lib/server/api/member-e2e-race';
 import type { RequestHandler } from './$types';
@@ -62,7 +60,7 @@ export const GET: RequestHandler = api(async (event) => {
 		? (
 				await Promise.all(
 					own.items.map(async (item) =>
-						(await memberScopeAllowed(db, actor, item.scope)) ? redactForMember(actor, item) : null
+						(await memberScopeAllowed(db, actor, item.scope)) ? item : null
 					)
 				)
 			).filter((item) => item !== null)
@@ -105,5 +103,5 @@ export const POST: RequestHandler = api(async (event) => {
 		body,
 		memberWriteRace(event.request, db, actor)
 	);
-	return json(redactForMember(actor, item), { status: 201 });
+	return json(item, { status: 201 });
 });

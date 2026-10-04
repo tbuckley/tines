@@ -46,6 +46,7 @@ import {
 } from '@tines/shared';
 import { insertValues, type QueryGuard } from './query-guard';
 import { assertRunStillBound, runBoundGuard, runStillBoundPredicate } from './project-access';
+import { discloseContextItem, redactForMember } from './member-context';
 import type { D1Result } from '@cloudflare/workers-types';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { artifactKeyPrefix, getArtifactStore } from '$lib/server/artifact-store';
@@ -420,7 +421,12 @@ function rowScope(row: ItemRow): ResolvedScope {
 	};
 }
 
-function serializeItem(row: ItemRow, files?: ContextFile[]): ContextItem {
+/**
+ * The stored row as an item, before the actor is considered. A read or write
+ * on behalf of an actor never returns this as it is: `discloseContextItem`
+ * decides what that actor may see of it.
+ */
+function serializeItem(row: ItemRow): ContextItem {
 	const kind = row.kind as ContextKind;
 	const item: ContextItem = {
 		id: row.id,
@@ -434,10 +440,7 @@ function serializeItem(row: ItemRow, files?: ContextFile[]): ContextItem {
 		updated_at: row.updated_at
 	};
 	if (kind === 'prompt') item.body = row.body ?? '';
-	if (kind === 'skill') {
-		item.file_count = Number(row.file_count ?? 0);
-		if (files) item.files = files;
-	}
+	if (kind === 'skill') item.file_count = Number(row.file_count ?? 0);
 	if (kind === 'repo') {
 		item.repo_url = row.repo_url ?? '';
 		item.repo_branch = row.repo_branch;
@@ -504,9 +507,10 @@ export async function getContextItem(
 		)
 		.executeTakeFirst();
 	if (!row) throw notFound();
-	const files =
-		row.kind === 'skill' ? ((await loadFiles(db, [row.id])).get(row.id) ?? []) : undefined;
-	return serializeItem(row, files);
+	const item = await discloseContextItem(db, actor, serializeItem(row));
+	if (!item) throw notFound();
+	if (row.kind === 'skill') item.files = (await loadFiles(db, [row.id])).get(row.id) ?? [];
+	return item;
 }
 
 export interface ContextItemFilters {
@@ -537,18 +541,21 @@ export interface ContextItemFilters {
 	 * state-scoped items are anchored on no project and always show.
 	 */
 	archived?: ArchivedFilter;
+	/** Web-only: kinds to leave out, applied before the limit. Not exposed over HTTP. */
+	excludeKinds?: readonly ContextKind[];
 }
 
 /**
- * Lists items ordered `updated_at` desc then `id` desc (stable cursors; the
- * cursor's timestamp slot carries updated_at). Filters use "scope includes"
+ * Lists items ordered `updated_at` desc then `id` desc: a two-way keyset on
+ * `(updated_at, id)` (the cursor's timestamp slot carries updated_at), and
+ * either direction returns its page newest first. Filters use "scope includes"
  * semantics; `exact` additionally requires unfiltered dimensions to be unset.
  */
 export async function listContextItems(
 	db: Kysely<Database>,
 	actorInput: ActorContext | string,
 	filters: ContextItemFilters,
-	page: Page
+	page: Page & { direction?: 'after' | 'before' }
 ): Promise<{ items: ContextItem[]; hasMore: boolean }> {
 	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
 	const userId = actor.userId;
@@ -562,6 +569,9 @@ export async function listContextItems(
 	);
 	if (filters.kind) {
 		q = q.where('context_item.kind', '=', requireKind(filters.kind));
+	}
+	if (filters.excludeKinds?.length) {
+		q = q.where('context_item.kind', 'not in', filters.excludeKinds);
 	}
 	if (filters.project) {
 		const p = filters.project;
@@ -642,22 +652,30 @@ export async function listContextItems(
 			])
 		);
 	}
+	const backwards = page.direction === 'before';
 	if (page.cursor) {
 		const { createdAt: updatedAt, id } = page.cursor;
 		q = q.where((eb) =>
 			eb.or([
-				eb('context_item.updated_at', '<', updatedAt),
-				eb.and([eb('context_item.updated_at', '=', updatedAt), eb('context_item.id', '<', id)])
+				eb('context_item.updated_at', backwards ? '>' : '<', updatedAt),
+				eb.and([
+					eb('context_item.updated_at', '=', updatedAt),
+					eb('context_item.id', backwards ? '>' : '<', id)
+				])
 			])
 		);
 	}
 	const rows = await q
-		.orderBy('context_item.updated_at desc')
-		.orderBy('context_item.id desc')
+		.orderBy('context_item.updated_at', backwards ? 'asc' : 'desc')
+		.orderBy('context_item.id', backwards ? 'asc' : 'desc')
 		.limit(page.limit + 1)
 		.execute();
+	const pageRows = rows.slice(0, page.limit);
+	if (backwards) pageRows.reverse();
 	return {
-		items: rows.slice(0, page.limit).map((r) => serializeItem(r)),
+		// A member's page is narrowed to the shared project by the caller, which
+		// needs the unfiltered rows for its cursor; the value rule applies here.
+		items: pageRows.map((r) => redactForMember(actor, serializeItem(r))),
 		hasMore: rows.length > page.limit
 	};
 }
@@ -1072,13 +1090,18 @@ function guardedContextEvent(
 		)`.compile(db);
 }
 
-/** 409 carrying the current item so the caller can rebase and retry. */
-function versionConflict(row: ItemRow): ApiFail {
+/**
+ * 409 carrying the current item so the caller can rebase and retry. `current`
+ * is what `getContextItem` returns to this actor, never a row: a conflict
+ * discloses exactly what the ordinary read does, and an item that has moved
+ * out of the actor's reach since the write began is a 404 there too.
+ */
+function versionConflict(current: ContextItem): ApiFail {
 	return new ApiFail(
 		409,
 		'version_conflict',
-		`The item changed to version ${row.version} while this write was in flight; re-read and retry`,
-		{ current: serializeItem(row) }
+		`The item changed to version ${current.version} while this write was in flight; re-read and retry`,
+		{ current }
 	);
 }
 
@@ -1096,12 +1119,29 @@ export async function updateContextItem(
 		.where('context_item.id', '=', id)
 		.executeTakeFirst();
 	if (!row) throw notFound();
-	await assertScopeWritable(db, actor, rowScope(row));
 	const kind = row.kind as ContextKind;
+	const currentScope = rowScope(row);
+	// Authority over the item where it sits comes before anything read from
+	// the row can reach the response: a stale version, the kind, an archived
+	// project's name. The destination of a re-scope is authorized below, once
+	// it is resolved.
+	const oldBoundJournal = await isBoundRunJournal(db, actor, row);
+	requireAccess(
+		actor,
+		contextRequirements(currentScope, 'write', { env: kind === 'env' }),
+		oldBoundJournal ? 'journal.rewrite' : 'context.update',
+		{
+			projectId: currentScope.issueProjectId ?? currentScope.projectId ?? undefined,
+			issueId: currentScope.issueId ?? undefined,
+			issueScoped: isRunOwnIssue(actor, currentScope.issueId),
+			boundJournal: oldBoundJournal
+		}
+	);
+	await assertScopeWritable(db, actor, currentScope);
 	fenceRunKeyEnvWrite(actor, kind);
 
 	if (body.expected_version !== undefined && body.expected_version !== row.version) {
-		throw versionConflict(row);
+		throw versionConflict(await getContextItem(db, actor, id));
 	}
 
 	if (body.kind !== undefined && body.kind !== kind) {
@@ -1126,7 +1166,6 @@ export async function updateContextItem(
 			: row.description;
 
 	// Merge-patch scope: omitted = unchanged, explicit null = unset.
-	const currentScope = rowScope(row);
 	const scopeTouched =
 		body.project_id !== undefined ||
 		body.workflow_state_id !== undefined ||
@@ -1157,7 +1196,6 @@ export async function updateContextItem(
 	}
 	const scope =
 		scopeTouched || scopeChanged ? await resolveScope(db, actor.userId, targetIds) : currentScope;
-	const oldBoundJournal = await isBoundRunJournal(db, actor, row);
 	const newBoundJournal = await isBoundRunJournal(db, actor, {
 		kind,
 		name,
@@ -1296,7 +1334,7 @@ export async function updateContextItem(
 		}
 	}
 
-	if (changed.length === 0 && !filesChanged) return serializeItem(row, files);
+	if (changed.length === 0 && !filesChanged) return getContextItem(db, actor, id);
 
 	// Every write is a compare-and-swap on the version we read, so a
 	// concurrent append or edit can never be half-overwritten: the guarded
@@ -1364,13 +1402,12 @@ export async function updateContextItem(
 	const results = await runContextWrite(env, queries);
 	if ((results[0]?.meta.changes ?? 0) === 0) {
 		await assertRunStillBound(db, actor);
-		const fresh = await contextItemQuery(db, actor.userId)
-			.where('context_item.id', '=', id)
-			.executeTakeFirst();
-		if (!fresh) throw notFound();
 		// An explicit expectation surfaces the conflict; otherwise this is
-		// last-write-wins, so re-apply the merge-patch onto the fresh row.
-		if (body.expected_version !== undefined || attempt >= 3) throw versionConflict(fresh);
+		// last-write-wins, so re-apply the merge-patch onto the fresh row. The
+		// retry authorizes against that row from the top.
+		if (body.expected_version !== undefined || attempt >= 3) {
+			throw versionConflict(await getContextItem(db, actor, id));
+		}
 		return updateContextItem(db, env, actor, id, body, undefined, attempt + 1);
 	}
 	return getContextItem(db, actor, id);
@@ -1451,24 +1488,7 @@ export async function appendContextItem(
 			.where('context_item.id', '=', id)
 			.executeTakeFirst();
 		if (!row) throw notFound();
-		await assertScopeWritable(db, actor, rowScope(row));
-		if (row.kind !== 'prompt') {
-			throw new ApiFail(
-				422,
-				'not_a_prompt',
-				`Only prompt items can be appended to (this is a ${row.kind})`,
-				{
-					kind: row.kind
-				}
-			);
-		}
-		if (body.expected_version !== undefined && body.expected_version !== row.version) {
-			throw versionConflict(row);
-		}
-		const current = (row.body ?? '').trimEnd();
-		const nextBody = current ? `${current}\n\n${text}` : text;
-		validatePromptBody(nextBody);
-
+		// Authorized before the row can shape the response (see updateContextItem).
 		const scope = rowScope(row);
 		const boundJournal = await isBoundRunJournal(db, actor, row);
 		requireAccess(
@@ -1482,6 +1502,24 @@ export async function appendContextItem(
 				boundJournal
 			}
 		);
+		await assertScopeWritable(db, actor, scope);
+		if (row.kind !== 'prompt') {
+			throw new ApiFail(
+				422,
+				'not_a_prompt',
+				`Only prompt items can be appended to (this is a ${row.kind})`,
+				{
+					kind: row.kind
+				}
+			);
+		}
+		if (body.expected_version !== undefined && body.expected_version !== row.version) {
+			throw versionConflict(await getContextItem(db, actor, id));
+		}
+		const current = (row.body ?? '').trimEnd();
+		const nextBody = current ? `${current}\n\n${text}` : text;
+		validatePromptBody(nextBody);
+
 		const newVersion = row.version + 1;
 		const now = Date.now();
 		if (attempt === 0) await beforeCommit?.();
@@ -1518,11 +1556,7 @@ export async function appendContextItem(
 		// Lost the race: with an explicit expectation that's a conflict;
 		// otherwise re-read and re-append onto the fresh body.
 		if (body.expected_version !== undefined || attempt >= 4) {
-			const fresh = await contextItemQuery(db, actor.userId)
-				.where('context_item.id', '=', id)
-				.executeTakeFirst();
-			if (!fresh) throw notFound();
-			throw versionConflict(fresh);
+			throw versionConflict(await getContextItem(db, actor, id));
 		}
 	}
 }
@@ -2024,7 +2058,7 @@ export async function journalForIssue(
 		scope,
 		anchor: launch.stateId ? 'run' : 'current',
 		note: launch.note,
-		item: row ? serializeItem(row) : null
+		item: row ? await discloseContextItem(db, actor, serializeItem(row)) : null
 	};
 }
 
@@ -2997,23 +3031,33 @@ export function seedRepoQueries(
 	};
 }
 
+/** Whether the user's global starter prompt exists: one indexed row probe. */
+export async function hasGlobalAgentGuidelines(
+	db: Kysely<Database>,
+	userId: string
+): Promise<boolean> {
+	const existing = await db
+		.selectFrom('context_item')
+		.select('id')
+		.where('user_id', '=', userId)
+		.where('kind', '=', 'prompt')
+		.where('name', '=', AGENT_GUIDELINES_NAME)
+		.where('project_id', 'is', null)
+		.where('workflow_state_id', 'is', null)
+		.where('issue_id', 'is', null)
+		.where('label_id', 'is', null)
+		.limit(1)
+		.executeTakeFirst();
+	return existing !== undefined;
+}
+
 /** Seeds the global agent-guidelines prompt once; a no-op if it exists. */
 export async function ensureAgentGuidelines(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext
 ): Promise<'created' | 'exists'> {
-	const existing = await db
-		.selectFrom('context_item')
-		.select('id')
-		.where('user_id', '=', actor.userId)
-		.where('kind', '=', 'prompt')
-		.where('name', '=', AGENT_GUIDELINES_NAME)
-		.where('project_id', 'is', null)
-		.where('workflow_state_id', 'is', null)
-		.where('issue_id', 'is', null)
-		.executeTakeFirst();
-	if (existing) return 'exists';
+	if (await hasGlobalAgentGuidelines(db, actor.userId)) return 'exists';
 	await createContextItem(db, env, actor, {
 		kind: 'prompt',
 		name: AGENT_GUIDELINES_NAME,

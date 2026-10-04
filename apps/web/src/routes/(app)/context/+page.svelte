@@ -15,8 +15,10 @@
 	import { api } from '$lib/api';
 	import ContextItemEditor from '$lib/components/ContextItemEditor.svelte';
 	import ContextItemList from '$lib/components/ContextItemList.svelte';
+	import IssuePagination from '$lib/components/IssuePagination.svelte';
 	import ProjectFocusNotice from '$lib/components/ProjectFocusNotice.svelte';
 	import { focusHint } from '$lib/focus.svelte';
+	import { clearIssuePagination } from '$lib/issue-pagination';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
@@ -66,6 +68,9 @@
 		const params = new URLSearchParams(page.url.searchParams);
 		if (value) params.set(key, value);
 		else params.delete(key);
+		// A cursor points into the old filter's ordering; any filter change
+		// starts again from the first page.
+		clearIssuePagination(params);
 		goto(`/context${params.size ? `?${params}` : ''}`, { keepFocus: true, noScroll: true });
 	}
 
@@ -80,6 +85,7 @@
 			focusHint.clear();
 			const params = new URLSearchParams(page.url.searchParams);
 			params.delete('project');
+			clearIssuePagination(params);
 			await goto(`/context${params.size ? `?${params}` : ''}`, { invalidateAll: true });
 		} catch (err) {
 			focusError = err instanceof ApiError ? err.message : 'Failed to show all projects.';
@@ -87,6 +93,23 @@
 			clearingFocus = false;
 		}
 	}
+
+	// Keyed on the page boundary so a Previous/Next swap replaces the list
+	// outright: the rows' slide is local, so it still plays for saves and
+	// filter changes but not for up to 200 rows at once.
+	const pageKey = $derived(
+		`${page.url.searchParams.get('after') ?? ''}|${page.url.searchParams.get('before') ?? ''}`
+	);
+
+	const emptyMessage = $derived.by(() => {
+		const { kind, workflow, label, q } = data.filters;
+		if (data.pagination.bounded) return 'No items on this page. Results may have changed.';
+		if (!kind && (workflow || label || q)) {
+			return 'No prompts, skills, repos or environment items match these filters. Artifacts are listed separately: set Kind to Artifacts.';
+		}
+		if (kind) return 'No context items match these filters.';
+		return 'No context items yet. Attach a prompt, skill, or repo to a project, workflow state, or issue.';
+	});
 </script>
 
 <svelte:head><title>Context · Tines</title></svelte:head>
@@ -144,12 +167,12 @@
 		class="h-9 w-auto text-sm"
 		aria-label="Filter by kind"
 	>
-		<option value="">All kinds</option>
+		<option value="">All except artifacts</option>
 		<option value="prompt">Prompts</option>
 		<option value="skill">Skills</option>
 		<option value="repo">Repos</option>
-		<option value="artifact">Artifacts</option>
 		<option value="env">Environment</option>
+		<option value="artifact">Artifacts</option>
 	</Select>
 	<Select
 		value={data.filters.workflow ?? ''}
@@ -196,12 +219,24 @@
 	</div>
 {/if}
 
-<ContextItemList
-	items={data.items}
-	onselect={openEdit}
-	emptyMessage={data.filters.kind || data.filters.workflow || data.filters.label || data.filters.q
-		? 'No context items match these filters.'
-		: 'No context items yet. Attach a prompt, skill, or repo to a project, workflow state, or issue.'}
+<IssuePagination
+	pagination={data.pagination}
+	itemCount={data.items.length}
+	noun="item"
+	label="Context pagination above results"
+	class="mb-4"
+/>
+
+{#key pageKey}
+	<ContextItemList items={data.items} onselect={openEdit} {emptyMessage} />
+{/key}
+
+<IssuePagination
+	pagination={data.pagination}
+	itemCount={data.items.length}
+	noun="item"
+	label="Context pagination below results"
+	announceCount={false}
 />
 
 <ContextItemEditor
