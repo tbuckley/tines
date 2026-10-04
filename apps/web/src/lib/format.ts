@@ -32,30 +32,33 @@ function effortSourceLabel(source: EffortSource | null): string {
 }
 
 /**
- * A run row's model label: the resolved model (the tier when the harness
- * cannot vary its model) and, when one was set, the bare effort value.
- * Tier, effort source and application status are the tooltip.
+ * A run row's model and effort cells: the resolved model (null when the
+ * harness cannot vary its model — the tier column already names the tier)
+ * and, when one was set, the bare effort value. Effort source and
+ * application status are the tooltip.
  */
 export function runModelLabel(
 	run: Pick<
 		AgentRun,
 		'tier' | 'model' | 'resolved_effort' | 'effort_source' | 'effort_application_status'
 	>
-): { text: string; title: string } {
-	const name = run.model ?? run.tier;
+): { model: string | null; effort: string | null; title: string } {
 	const tier = `Tier ${run.tier}`;
 	// An old daemon dropped the value: the row's amber warning says so, and a
 	// bare "high" beside the model would claim the opposite.
-	if (run.effort_application_status === 'legacy_not_applied') return { text: name, title: tier };
+	if (run.effort_application_status === 'legacy_not_applied')
+		return { model: run.model, effort: null, title: tier };
 	if (run.resolved_effort) {
 		const status = run.effort_application_status.replaceAll('_', ' ');
 		return {
-			text: `${name} · ${run.resolved_effort}`,
+			model: run.model,
+			effort: run.resolved_effort,
 			title: `${tier} · effort ${run.resolved_effort} from ${effortSourceLabel(run.effort_source)} · ${status}`
 		};
 	}
 	return {
-		text: name,
+		model: run.model,
+		effort: null,
 		title: `${tier} · ${run.effort_application_status === 'unknown' ? 'effort not recorded' : 'provider default effort'}`
 	};
 }
