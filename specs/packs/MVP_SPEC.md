@@ -614,15 +614,18 @@ Illustrative; a migration plan comes with implementation.
 - **State inheritance** is not carried by packs. Copying an inheriting workflow
   into a pack flattens it: each state gets its base's context as its own.
 
-## Open questions
+## Decided questions
 
-1. **Built-in workflows.** Whether `Standard` and other system workflows
-   become installed packs in the MVP, or stay as they are until the cloud
-   catalog exists.
-2. **Update from source discovery.** Whether *newer version available* is
-   computed when the Packs page loads (cheap, comparing digests) or surfaced
-   more widely, such as on the project's Workflows page.
-3. **Copy with issues.** Whether "copy an existing workflow into a pack and
-   move this project's issues" should also offer to do the same in the other
-   projects that use the original workflow, as a step toward migrating
-   everything into packs.
+Decided 2026-10-04; each was an open question in the first draft.
+
+1. **Built-in workflows stay as they are.** `Standard` and the other system
+   workflows do not become installed packs in the MVP. Revisit with the cloud
+   catalog, which is what would carry their new versions to every project.
+2. **Newer versions are surfaced on the Packs page only.** *Newer version
+   available* is computed when the Packs page loads, by comparing digests.
+   Showing it more widely, such as on the Workflows page, is later work.
+3. **Copy with issues stays within one project.** Copying an existing workflow
+   into a pack offers to move issues and schedules only in the project where
+   the pack is being created. It does not offer to do the same in other
+   projects that use the original workflow; that belongs with migrating
+   existing workflows into packs, which is a non-goal.
