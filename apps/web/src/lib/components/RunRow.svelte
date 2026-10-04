@@ -366,12 +366,13 @@
 
 	/* Wide: one line, one column per fact. The widths are fixed, not `auto`:
 	   each row is its own grid, so only a fixed track lands at the same x on
-	   every row. 69rem is the fixed tracks plus the widest actions group
-	   (console, Logs, Cancel), so that group never reaches the row's padding. */
-	@container (min-width: 69rem) {
+	   every row. 66.5rem is the fixed tracks plus the widest actions group
+	   (console, Logs, Cancel), so that group never reaches the row's padding;
+	   the Agents tab's rows top out a few pixels above it. */
+	@container (min-width: 66.5rem) {
 		.run-grid {
 			grid-template-columns:
-				1rem 9rem 7.5rem 3rem 3.5rem 8.5rem 3rem 6.25rem 3.75rem minmax(0, 1fr)
+				1rem 8.5rem 7.5rem 3rem 3.5rem 8.5rem 3rem 6.25rem 3.75rem minmax(0, 1fr)
 				auto;
 			grid-template-areas:
 				'glyph runner model effort tier status duration cost time . actions'
@@ -380,7 +381,7 @@
 		}
 		.run-grid.with-ref {
 			grid-template-columns:
-				1rem 7.5rem 9rem 7.5rem 3rem 3.5rem 8.5rem 3rem 6.25rem 3.75rem minmax(0, 1fr)
+				1rem 7.5rem 8.5rem 7.5rem 3rem 3.5rem 8.5rem 3rem 6.25rem 3.75rem minmax(0, 1fr)
 				auto;
 			grid-template-areas:
 				'glyph ref    runner model effort tier status duration cost time . actions'

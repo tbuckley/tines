@@ -278,6 +278,17 @@ test.describe('shared run row', () => {
 			expect(positions(rows, cell, 'left'), `${cell} starts at one x`).toHaveLength(1);
 		}
 		expect(positions(rows, 'actions', 'right'), 'actions end at one x').toHaveLength(1);
+		// The fullest actions group (console link, Logs, Cancel) fits its
+		// column: it does not run into the row's right padding.
+		const overflow = await page
+			.locator(`li[data-run-id="${RUNROW.runKeyRunId}"]:not([inert])`)
+			.evaluate((li) => {
+				const actions = li.querySelector('[data-testid="run-trailing"]')!;
+				const contentRight =
+					li.getBoundingClientRect().right - parseFloat(getComputedStyle(li).paddingRight);
+				return actions.getBoundingClientRect().right - contentRight;
+			});
+		expect(overflow, 'actions stay inside the row').toBeLessThanOrEqual(1);
 		// One line: the last column sits level with the first.
 		for (const r of rows) expect(Math.abs(r.runner.mid - r.time.mid)).toBeLessThan(8);
 		// Columns in reading order, none overlapping the next.
