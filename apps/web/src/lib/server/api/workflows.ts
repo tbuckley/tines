@@ -1515,8 +1515,12 @@ export async function updateWorkflow(
 		const stale = message.includes('workflow_definition_conflict');
 		// Cross-table races (an issue entering a state this save removes, the
 		// workflow deleted under a save that adds states) roll back on a
-		// foreign key rather than on the revision.
-		if (!stale && !message.includes('FOREIGN KEY constraint failed')) throw e;
+		// foreign key rather than on the revision. A forced context sweep rolls
+		// back on its own lost witness ("malformed JSON") when the workflow was
+		// deleted, or an item it would delete was edited, under the save.
+		const raced =
+			message.includes('FOREIGN KEY constraint failed') || message.includes('malformed JSON');
+		if (!stale && !raced) throw e;
 		const row = await db
 			.selectFrom('workflow')
 			.select('definition_revision')

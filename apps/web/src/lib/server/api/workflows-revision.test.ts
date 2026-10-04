@@ -464,6 +464,58 @@ describe('cross-table races', () => {
 		expect(updatedEvents(adding.t)).toEqual([]);
 	});
 
+	/** A save that removes Triage and force-sweeps the one context item scoped to it. */
+	async function sweepingSave() {
+		const { t, w } = await setup();
+		t.sqlite
+			.prepare(
+				`INSERT INTO context_item(id,user_id,kind,name,description,workflow_state_id,position,version,created_at,updated_at)
+				 VALUES('ctx_attached',?,'prompt','Attached','',?,0,1,1,1)`
+			)
+			.run(USER, w.states[1].id);
+		const stale = input(w);
+		stale.states = stale.states!.filter((s) => s.name !== 'Triage');
+		stale.transitions = stale.transitions!.filter((x) => x.name !== 'Start');
+		stale.force_delete_context = true;
+		return { t, w, stale };
+	}
+
+	it('answers 404 when the workflow is deleted under a save that sweeps context', async () => {
+		const { t, w, stale } = await sweepingSave();
+		const delayed = delayedBy(t, () =>
+			deleteWorkflow(t.db, t.env, actor, w.id, { forceDeleteContext: true })
+		);
+		await expect(
+			updateWorkflow(t.db, delayed.env, actor, effects, w.id, stale)
+		).rejects.toMatchObject({ status: 404 });
+		expect(updatedEvents(t)).toEqual([]);
+		// The one deletion event is the workflow delete's own, not the save's.
+		expect(t.all(`SELECT id FROM event WHERE type = 'context.deleted'`)).toHaveLength(1);
+	});
+
+	it('answers 409 conflict when an item the save would sweep is edited mid-save', async () => {
+		const { t, w, stale } = await sweepingSave();
+		const delayed = delayedBy(t, async () => {
+			t.sqlite.prepare(`UPDATE context_item SET version = 2 WHERE id = 'ctx_attached'`).run();
+		});
+		const before = updatedEvents(t).length;
+		await expect(
+			updateWorkflow(t.db, delayed.env, actor, effects, w.id, stale)
+		).rejects.toMatchObject({
+			status: 409,
+			code: 'conflict',
+			message: 'The workflow or its issues changed while saving; reload and try again'
+		});
+		const kept = await loadWorkflow(t.db, USER, w.id);
+		expect(kept.revision).toBe(1);
+		expect(kept.states.map((s) => s.name)).toEqual(['Open', 'Triage', 'Done']);
+		expect(t.all('SELECT id, version FROM context_item')).toEqual([
+			{ id: 'ctx_attached', version: 2 }
+		]);
+		expect(updatedEvents(t)).toHaveLength(before);
+		expect(t.all(`SELECT id FROM event WHERE type = 'context.deleted'`)).toEqual([]);
+	});
+
 	it('answers 409 conflict when an issue enters a state the save removes', async () => {
 		const { t, w } = await setup();
 		const stale = input(w);
