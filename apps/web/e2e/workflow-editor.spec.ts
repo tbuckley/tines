@@ -1193,6 +1193,152 @@ test('an unsaved draft survives a run-scope change and still saves', async ({
 	expect(stored.states[0].run_scope).toBe('project');
 });
 
+/**
+ * A draft is open when another caller gates "Approve" on `sign-off`. The
+ * draft tab then changes a run scope, which reloads the page's copy of the
+ * workflow to the gated revision. The draft is still built on the revision it
+ * opened, so its save has to be checked against that one.
+ */
+async function openStaleDraftAfterReload(
+	page: Page,
+	api: ReturnType<typeof apiClient>,
+	name: string
+): Promise<{ id: string; revision: number }> {
+	const created = await body<{
+		id: string;
+		revision: number;
+		states: { id: string; name: string }[];
+	}>(
+		await api.post('/api/v1/workflows', {
+			name,
+			description: 'A workflow gated under a draft that then reloads.',
+			initial_state: 'Open',
+			states: [
+				{ name: 'Open', category: 'active' },
+				{ name: 'Review', category: 'awaiting_human' },
+				{ name: 'Done', category: 'done' }
+			],
+			transitions: [
+				{ name: 'Submit', from: 'Open', to: 'Review' },
+				{ name: 'Approve', from: 'Review', to: 'Done' }
+			]
+		})
+	);
+	const idOf = (state: string) => created.states.find((s) => s.name === state)!.id;
+	await gotoHydrated(page, `/workflows/${created.id}`);
+	await page.getByLabel('Description', { exact: true }).fill(B_DESCRIPTION);
+
+	const gated = await api.patch(`/api/v1/workflows/${created.id}`, {
+		expected_revision: created.revision,
+		transitions: [
+			{ name: 'Submit', from: idOf('Open'), to: idOf('Review') },
+			{
+				name: 'Approve',
+				from: idOf('Review'),
+				to: idOf('Done'),
+				requires: [{ artifact: 'sign-off' }]
+			}
+		]
+	});
+	expect(gated.status()).toBe(200);
+	expect((await body<{ revision: number }>(gated)).revision).toBe(created.revision + 1);
+
+	await changeRunScope(page, 'Open', 'project');
+	return { id: created.id, revision: created.revision };
+}
+
+/** Change a state's run scope in the page and wait for the reload it causes. */
+async function changeRunScope(page: Page, state: string, scope: string) {
+	const select = page.getByTestId('run-scope').getByLabel(`What runs in ${state} can change`);
+	const scopeSaved = page.waitForResponse(
+		(response) => response.url().endsWith('/run-scope') && response.request().method() === 'PUT'
+	);
+	const reloaded = page.waitForResponse((response) => response.url().includes('__data.json'));
+	await select.selectOption(scope);
+	expect((await scopeSaved).status()).toBe(200);
+	await reloaded;
+	await expect(select).toHaveValue(scope);
+	await expect(select).toBeEnabled();
+}
+
+test('a draft saves against the revision it opened, not the one a reload brought in', async ({
+	page,
+	apiFor,
+	uniqueName
+}) => {
+	const api = apiFor(ALICE);
+	const { id, revision } = await openStaleDraftAfterReload(
+		page,
+		api,
+		uniqueName('Conflict reload', { maxLength: 100 })
+	);
+
+	const refused = patchResponse(page, id);
+	await page.getByRole('button', { name: 'Save workflow' }).click();
+	const response = await refused;
+	// The page now holds the gated revision; the draft never saw it.
+	expect(response.request().postDataJSON().expected_revision).toBe(revision);
+	expect(response.status()).toBe(409);
+	expect((await response.json()).error.code).toBe('workflow_conflict');
+	await expect(conflictBanner(page)).toBeVisible();
+	await expect(page.getByLabel('Description', { exact: true })).toHaveValue(B_DESCRIPTION);
+
+	const stored = await body<StoredWorkflow>(await api.get(`/api/v1/workflows/${id}`));
+	expect(stored.description).toBe('A workflow gated under a draft that then reloads.');
+	expect(stored.revision).toBe(revision + 1);
+	expect(stored.transitions.find((t) => t.name === 'Approve')?.requires).toEqual([
+		{ artifact: 'sign-off' }
+	]);
+});
+
+test('saving over a conflict is checked against the reviewed revision after a reload', async ({
+	page,
+	apiFor,
+	uniqueName
+}) => {
+	const api = apiFor(ALICE);
+	const { id, revision } = await openStaleDraftAfterReload(
+		page,
+		api,
+		uniqueName('Conflict reviewed', { maxLength: 100 })
+	);
+	const firstRefusal = patchResponse(page, id);
+	await page.getByRole('button', { name: 'Save workflow' }).click();
+	expect((await firstRefusal).status()).toBe(409);
+	const banner = conflictBanner(page);
+	await expect(banner).toBeVisible();
+
+	// With the banner up a third save lands, and a run-scope change reloads
+	// the page's copy to it. The review below still describes the second.
+	const third = await api.patch(`/api/v1/workflows/${id}`, {
+		expected_revision: revision + 1,
+		description: 'The description a third save wrote.'
+	});
+	expect(third.status()).toBe(200);
+	expect((await body<{ revision: number }>(third)).revision).toBe(revision + 2);
+	await changeRunScope(page, 'Open', 'workspace');
+
+	const overwrite = banner.getByRole('button', { name: 'Save my version anyway' });
+	await banner.getByRole('button', { name: 'Review changes' }).click();
+	await expect(overwrite).toBeEnabled();
+	const secondRefusal = patchResponse(page, id);
+	await overwrite.click();
+	const response = await secondRefusal;
+	expect(response.request().postDataJSON().expected_revision).toBe(revision + 1);
+	expect(response.status()).toBe(409);
+	// Refused again: the newer version has to be reviewed before it is overwritten.
+	await expect(banner).toBeVisible();
+	await expect(overwrite).toBeDisabled();
+	await expect(page.getByLabel('Description', { exact: true })).toHaveValue(B_DESCRIPTION);
+
+	const stored = await body<StoredWorkflow>(await api.get(`/api/v1/workflows/${id}`));
+	expect(stored.description).toBe('The description a third save wrote.');
+	expect(stored.revision).toBe(revision + 2);
+	expect(stored.transitions.find((t) => t.name === 'Approve')?.requires).toEqual([
+		{ artifact: 'sign-off' }
+	]);
+});
+
 test('saving over a version that deleted a draft state re-creates it', async ({
 	page,
 	apiFor,
@@ -1383,6 +1529,12 @@ test('a transition confirmed after the issue left and returned is refused', asyn
 			200
 		);
 	}
+	// The page polls every five seconds and reloads the issue behind the
+	// dialog. Confirm only once it holds the new round, so the request shows
+	// what the dialog opened on and not what the page has since loaded.
+	await expect(page.locator('li[data-event-id]').filter({ hasText: '“Resubmit”' })).toHaveCount(1, {
+		timeout: 20_000
+	});
 
 	const refused = page.waitForResponse(
 		(response) =>
