@@ -1086,5 +1086,27 @@ for (const size of [DESKTOP, PHONE, { width: 1280, height: 720 }, { width: 390, 
 			await expect(options.nth(i)).toHaveAttribute('aria-selected', 'true');
 			await expect.poll(() => hittable(options.nth(i)), { message: `option ${i}` }).toBe(true);
 		}
+
+		// Opened again with its rows already loaded, the list is in view at once.
+		// On a phone the page version then slides the field up under the header;
+		// in a dialog that slide would push the list back out of the body.
+		await scope.fill('');
+		await expect(options.first()).toHaveText('#205 Page issue 205');
+		await scope.blur();
+		await expect(listbox).toBeHidden();
+		await scope.focus();
+		await expect(options).toHaveCount(8);
+		// The slide starts a frame after the list opens (and is instant here: reduced motion).
+		await page.evaluate(
+			() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+		);
+		expect(await hittable(options.first()), 'first row after reopening').toBe(true);
+		expect(
+			await listbox.evaluate((el) => {
+				const body = el.closest('[role="dialog"] > .overflow-y-auto')!;
+				return el.getBoundingClientRect().bottom <= body.getBoundingClientRect().bottom + 0.5;
+			}),
+			'list inside the dialog body after reopening'
+		).toBe(true);
 	});
 }
