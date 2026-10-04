@@ -178,7 +178,7 @@ test.describe('shared run row', () => {
 
 		// "failed · stalled" is one unit: the outcome never wraps alone.
 		const result = row.getByTestId('run-status').locator('xpath=..');
-		await expect(result).toHaveText(/^failed\s+·\s+\w+$/);
+		await expect(result).toHaveText(/^failed\s+·\s+stalled$/);
 		expect(await result.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe('nowrap');
 
 		// Read every box inside one layout pass: rows keep settling as the
