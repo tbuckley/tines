@@ -74,6 +74,21 @@ test.beforeAll(async ({ apiFor, uniqueName, workerRequest: request }) => {
 		content_type: 'text/markdown'
 	});
 
+	// A markdown table whose long unbreakable cell forces the table wider than
+	// a phone viewport (Tines/889): short columns used to be crushed to a
+	// single character and split words mid-word ("Res/ult", "pas/s").
+	const tableDoc = [
+		'| Name | Result | Notes |',
+		'| --- | --- | --- |',
+		'| alpha | pass | ' + 'x'.repeat(80) + ' |',
+		'| beta | pass | second row |'
+	].join('\n');
+	await api.put(`/api/v1/issues/${issue.id}/artifacts/table-doc`, {
+		type: 'text',
+		content: tableDoc,
+		content_type: 'text/markdown'
+	});
+
 	// A folder set: the gallery has no height cap of its own, so the modal is
 	// the only thing keeping it on screen.
 	const multipart: Record<string, { name: string; mimeType: string; buffer: Buffer }> =
@@ -130,8 +145,57 @@ test.beforeAll(async ({ apiFor, uniqueName, workerRequest: request }) => {
 
 test.use({ signedIn: ALICE });
 
+test('a table artifact keeps words whole and scrolls inside itself on a phone', async ({
+	page
+}) => {
+	await page.setViewportSize(PHONE);
+	await gotoHydrated(page, issuePath(projectName, issue.number));
+	await unfoldArtifacts(page);
+
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View table-doc/ }), dialog);
+
+	const table = dialog.locator('.markdown table');
+	await expect(table).toBeVisible();
+
+	// Words stay whole: the header cell is at least as wide as its longest
+	// word ("Result"), which a mid-word split would shrink below.
+	const header = table.locator('th').nth(1);
+	await expect(header).toHaveText('Result');
+	const geometry = await readSettled(
+		() =>
+			header.evaluate((th) => {
+				const cell = th.getBoundingClientRect().width;
+				const range = document.createRange();
+				range.selectNodeContents(th);
+				const word = range.getBoundingClientRect().width;
+				return { cell, word };
+			}),
+		{ timeout: 3_000, bestEffort: true }
+	);
+	expect(geometry.cell).toBeGreaterThanOrEqual(geometry.word);
+
+	// The over-wide table scrolls inside itself instead of being squeezed.
+	const tableGeometry = await table.evaluate((el) => ({
+		scrollWidth: el.scrollWidth,
+		clientWidth: el.clientWidth,
+		overflowX: getComputedStyle(el).overflowX
+	}));
+	expect(tableGeometry.scrollWidth).toBeGreaterThan(tableGeometry.clientWidth);
+	expect(tableGeometry.overflowX).toBe('auto');
+
+	// And the scroll actually reaches the whole content: scrolling right
+	// reveals the end of the wide cell.
+	await table.evaluate((el) => el.scrollTo({ left: el.scrollWidth }));
+	const scrolled = await table.evaluate((el) => el.scrollLeft + el.clientWidth);
+	expect(scrolled).toBeGreaterThanOrEqual(tableGeometry.scrollWidth - 2);
+
+	await dialog.getByRole('button', { name: 'Close' }).click();
+	await expect(dialog).toBeHidden();
+});
+
 /**
- * On a phone the Artifacts panel folds to one row (Tines/165); open it before
+ * A phone the Artifacts panel folds to one row (Tines/165); open it before
  * reaching for anything inside. A no-op on desktop, where there is no fold.
  * Retried across the hydration window: the row is a Svelte listener.
  */
