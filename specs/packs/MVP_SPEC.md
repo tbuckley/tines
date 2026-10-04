@@ -494,11 +494,13 @@ use Replace.
 4. **inputs** — a form for every input, pre-filled with defaults; workflow
    inputs offer this pack's workflows and the project's existing ones;
 5. **schedules** — each suggested schedule, unchecked; a checked one is
-   created as an ordinary project schedule, paused, with a timezone the person
-   picks, and its `{{ inputs.* }}` rendered with the values entered above. A
-   schedule that references an input with no value cannot be checked until
-   that value is given;
-6. a **rendered preview** of every prompt and skill as an agent will read it.
+   created as an ordinary project schedule, **enabled**, in a timezone that
+   defaults to the person's current one (the browser's) and can be changed
+   on the row, with its `{{ inputs.* }}` rendered with the values entered
+   above. A schedule that references an input with no value cannot be checked
+   until that value is given;
+6. **prompts and skills** — a list of every prompt and skill by reach, each
+   collapsed; opening one shows it rendered as an agent will read it.
 
 Missing required inputs do not block the install; the pack is installed as
 *needs setup*. Install is one transaction, and reuses the prepare → confirm →
@@ -518,7 +520,8 @@ with a different digest, asks for confirmation.
 **The replace screen** shows:
 
 1. the CHANGELOG for the new versions;
-2. a **diff** of every file;
+2. **changed files** — a list of every added, changed and removed file, each
+   collapsed; expanding one shows its diff;
 3. **what changed in what the pack adds**, in the same terms as install — new
    `project/` items, new or wider `run_scope`, new env values and repo URLs,
    new suggested schedules;
@@ -533,7 +536,11 @@ with a different digest, asks for confirmation.
    the project's notes and schedules. Only a removed state that holds none of
    the three needs no mapping, and renamed keys need none;
 6. **replacements** that the new version creates, changes or removes;
-7. the rendered preview.
+7. **prompts and skills**, listed and collapsed as at install; opening one
+   shows it rendered with this project's values.
+
+Collapsed sections are part of what is reviewed: the confirmation binds to the
+digest of the whole version, whether or not each item was opened.
 
 Applying rewrites the pack's rows in place, matching workflows and states by
 key, so ids survive and issues, schedules, labels and project additions keep
