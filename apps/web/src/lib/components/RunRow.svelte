@@ -2,6 +2,7 @@
 	import type { AgentRun, RunEndOutcome } from '@tines/shared';
 	import { isActiveRun } from '@tines/shared';
 	import { slide } from 'svelte/transition';
+	import IconExternalLink from '@tabler/icons-svelte/icons/external-link';
 	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
 	import RunCostCell from '$lib/components/RunCostCell.svelte';
 	import RunOutcomeIcon from '$lib/components/RunOutcomeIcon.svelte';
@@ -27,8 +28,8 @@
 	 * Every fact has a fixed cell, so the same fact sits at the same place on
 	 * every row and a list scans as a table: one line where the row is wide
 	 * (the Agents tab), three fixed lines where it is narrow (an issue's
-	 * sidebar, a phone). Only the occasional extras — error, resume lineage,
-	 * console link — flow freely, on a line of their own under the cells.
+	 * sidebar, a phone). Only the occasional extras — error, resume lineage —
+	 * flow freely, on a line of their own under the cells.
 	 *
 	 * The parent owns the surrounding `<ul class="divide-y rounded-lg border">`.
 	 */
@@ -62,11 +63,7 @@
 	let managedLive = $derived(Boolean(run.provider_session_id) && run.status === 'running');
 	/** The free-flowing line exists only when a row has something to put on it. */
 	let hasDetail = $derived(
-		legacyEffort ||
-			Boolean(run.resumed_from_run_id) ||
-			managedLive ||
-			Boolean(run.provider_url) ||
-			Boolean(run.error)
+		legacyEffort || Boolean(run.resumed_from_run_id) || managedLive || Boolean(run.error)
 	);
 	/** Same glyph and color as the run's Activity-feed entry; null while live. */
 	let outcomeView = $derived(active ? null : runOutcomePresentation(run.status, run.outcome));
@@ -141,6 +138,21 @@
 				{relativeTime(run.created_at)}
 			</span>
 			<div class="run-actions flex shrink-0 items-center gap-x-1" data-testid="run-trailing">
+				{#if run.provider_url}
+					<!-- An action, like Logs: beside it, so a managed run costs no extra line. -->
+					<Button
+						size="sm"
+						variant="ghost"
+						class="text-muted-foreground h-7 px-1.5"
+						href={run.provider_url}
+						target="_blank"
+						rel="noreferrer"
+						aria-label="Open the provider console"
+						title="Open the provider console (full transcript)"
+					>
+						<IconExternalLink size={16} stroke={1.5} />
+					</Button>
+				{/if}
 				{#if showLogs}
 					<Button
 						size="sm"
@@ -229,17 +241,6 @@
 					>
 						updates every ~5m
 					</span>
-				{/if}
-				{#if run.provider_url}
-					<a
-						href={run.provider_url}
-						target="_blank"
-						rel="noreferrer"
-						class="text-muted-foreground text-xs underline-offset-2 hover:underline"
-						title="Open the provider console (full transcript)"
-					>
-						console ↗
-					</a>
 				{/if}
 				{#if run.error}
 					<!-- The most useful line on a failed row, and the one most likely to be
@@ -352,20 +353,18 @@
 	   every row. */
 	@container (min-width: 66rem) {
 		.run-grid {
-			grid-template-columns: 1rem 8rem 7.5rem 3rem 3.5rem 8.5rem 3rem 6.25rem 3.75rem minmax(
-					0,
-					1fr
-				) auto;
+			grid-template-columns:
+				1rem 9rem 7.5rem 3rem 3.5rem 8.5rem 3rem 6.25rem 3.75rem minmax(0, 1fr)
+				auto;
 			grid-template-areas:
 				'glyph runner model effort tier status duration cost time . actions'
 				'.     detail detail detail detail detail detail detail detail detail detail';
 			row-gap: 0.25rem;
 		}
 		.run-grid.with-ref {
-			grid-template-columns: 1rem 7.5rem 8rem 7.5rem 3rem 3.5rem 8.5rem 3rem 6.25rem 3.75rem minmax(
-					0,
-					1fr
-				) auto;
+			grid-template-columns:
+				1rem 7.5rem 9rem 7.5rem 3rem 3.5rem 8.5rem 3rem 6.25rem 3.75rem minmax(0, 1fr)
+				auto;
 			grid-template-areas:
 				'glyph ref    runner model effort tier status duration cost time . actions'
 				'.     detail detail detail detail detail detail detail detail detail detail detail';

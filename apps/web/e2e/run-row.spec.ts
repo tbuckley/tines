@@ -128,7 +128,7 @@ test.describe('shared run row', () => {
 		await expect(row.getByTestId('run-log-waiting')).toHaveCount(0);
 	});
 
-	test('shows the model with a bare effort value, and the rest in its tooltip, on both surfaces', async ({
+	test('shows model, bare effort and tier in their own cells, and the rest in a tooltip, on both surfaces', async ({
 		page
 	}) => {
 		for (const surface of ['issue', 'agents'] as const) {
@@ -138,25 +138,28 @@ test.describe('shared run row', () => {
 				await gotoHydrated(page, '/agents');
 				await page.getByLabel('Show ended runs').check();
 			}
-			const model = page
-				.locator('li:not([inert])', { hasText: RUNROW.runnerName })
-				.getByTestId('run-model');
-			// Just "high": the tier, where the value came from and whether the
-			// provider confirmed it are a hover away, not three more lines.
-			await expect(model, surface).toHaveText('claude-opus-4 · high');
-			await expect(model, surface).toHaveAttribute('title', /Tier balanced/);
-			await expect(model, surface).toHaveAttribute(
+			const row = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
+			await expect(row.getByTestId('run-model'), surface).toHaveText('claude-opus-4');
+			await expect(row.getByTestId('run-tier'), surface).toHaveText('balanced');
+			// Just "high": where the value came from and whether the provider
+			// confirmed it are a hover away, not three more lines.
+			const effort = row.getByTestId('run-effort');
+			await expect(effort, surface).toHaveText('high');
+			await expect(effort, surface).toHaveAttribute('title', /Tier balanced/);
+			await expect(effort, surface).toHaveAttribute(
 				'title',
 				/effort high from runner tier balanced/
 			);
-			await expect(model, surface).toHaveAttribute('title', /accepted unconfirmed/);
-			const row = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
+			await expect(effort, surface).toHaveAttribute('title', /accepted unconfirmed/);
 			await expect(row, surface).not.toContainText('accepted unconfirmed');
 			await expect(row, surface).not.toContainText('effort high');
 
-			// No model and no effort recorded: the tier alone, and no filler text.
+			// No model and no effort recorded: the cells stay in place, empty, so
+			// the tier still sits under every other row's tier. No filler text.
 			const failed = page.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName });
-			await expect(failed.getByTestId('run-model'), surface).toHaveText('balanced');
+			await expect(failed.getByTestId('run-model'), surface).toHaveText('—');
+			await expect(failed.getByTestId('run-effort'), surface).toHaveText('');
+			await expect(failed.getByTestId('run-tier'), surface).toHaveText('balanced');
 			await expect(failed, surface).not.toContainText('effort unknown');
 			await expect(failed, surface).not.toContainText('provider default');
 		}
@@ -193,7 +196,7 @@ test.describe('shared run row', () => {
 				row: rect(li),
 				paddingRight: parseFloat(getComputedStyle(li).paddingRight),
 				group: rect(group),
-				time: rect(group.querySelector('span')!),
+				time: rect(li.querySelector('[data-testid="run-time"]')!),
 				logs: rect(group.querySelector('button')!)
 			};
 		});
@@ -206,6 +209,106 @@ test.describe('shared run row', () => {
 		expect(Math.abs(boxes.row.right - boxes.paddingRight - boxes.group.right)).toBeLessThanOrEqual(
 			2
 		);
+	});
+
+	/**
+	 * Tines/920: a row used to be one wrapping line, so each fact landed
+	 * wherever the ones before it ended and no two rows lined up. Every fact
+	 * now has a fixed cell. Each row is its own grid, so this only holds while
+	 * the tracks are fixed widths — the edges below are compared across rows
+	 * with different runner names, models, statuses and costs.
+	 */
+	const cellEdges = (page: Page) =>
+		page.locator('li[data-run-id]:not([inert])').evaluateAll((rows) =>
+			rows.map((li) => {
+				const edge = (id: string) => {
+					const r = li.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect();
+					return {
+						left: Math.round(r.left),
+						right: Math.round(r.right),
+						mid: (r.top + r.bottom) / 2
+					};
+				};
+				return {
+					runner: edge('run-runner'),
+					model: edge('run-model'),
+					effort: edge('run-effort'),
+					tier: edge('run-tier'),
+					status: edge('run-status'),
+					duration: edge('run-duration'),
+					cost: edge('run-cost'),
+					time: edge('run-time'),
+					actions: edge('run-trailing')
+				};
+			})
+		);
+	type Edges = Awaited<ReturnType<typeof cellEdges>>;
+	/** The distinct positions one cell takes across every row; aligned means one. */
+	const positions = (rows: Edges, cell: keyof Edges[number], side: 'left' | 'right') => [
+		...new Set(rows.map((r) => r[cell][side]))
+	];
+
+	test('puts each fact in the same column on every row of the Agents tab', async ({ page }) => {
+		await gotoHydrated(page, '/agents');
+		await page.getByLabel('Show ended runs').check();
+		await expect(
+			page.locator('li:not([inert])', { hasText: RUNROW_STALLED.runnerName })
+		).toHaveCount(1);
+		const rows = await cellEdges(page);
+		expect(rows.length).toBeGreaterThanOrEqual(3);
+		for (const cell of [
+			'runner',
+			'model',
+			'effort',
+			'tier',
+			'status',
+			'duration',
+			'cost',
+			'time'
+		] as const) {
+			expect(positions(rows, cell, 'left'), `${cell} starts at one x`).toHaveLength(1);
+		}
+		expect(positions(rows, 'actions', 'right'), 'actions end at one x').toHaveLength(1);
+		// One line: the last column sits level with the first.
+		for (const r of rows) expect(Math.abs(r.runner.mid - r.time.mid)).toBeLessThan(8);
+		// Columns in reading order, none overlapping the next.
+		const first = rows[0];
+		expect(first.runner.left).toBeLessThan(first.model.left);
+		expect(first.model.right).toBeLessThanOrEqual(first.effort.left);
+		expect(first.effort.right).toBeLessThanOrEqual(first.tier.left);
+		expect(first.tier.right).toBeLessThanOrEqual(first.status.left);
+		expect(first.duration.right).toBeLessThanOrEqual(first.cost.left);
+		expect(first.cost.right).toBeLessThanOrEqual(first.time.left);
+	});
+
+	test('keeps the same three fixed lines on every row of an issue sidebar', async ({ page }) => {
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`
+		);
+		await expect(
+			page.locator('li:not([inert])', { hasText: RUNROW_STALLED.runnerName })
+		).toHaveCount(1);
+		const rows = await cellEdges(page);
+		expect(rows.length).toBeGreaterThanOrEqual(3);
+		// Words start at one x, numbers end at one x.
+		for (const cell of ['runner', 'status', 'model', 'effort', 'tier'] as const) {
+			expect(positions(rows, cell, 'left'), `${cell} starts at one x`).toHaveLength(1);
+		}
+		for (const cell of ['cost', 'duration', 'actions'] as const) {
+			expect(positions(rows, cell, 'right'), `${cell} ends at one x`).toHaveLength(1);
+		}
+		for (const r of rows) {
+			// Line 1: who and when. Line 2: how it ended and what it cost.
+			// Line 3: what it ran on and for how long.
+			expect(Math.abs(r.runner.mid - r.time.mid)).toBeLessThan(8);
+			expect(r.status.mid).toBeGreaterThan(r.runner.mid + 8);
+			expect(Math.abs(r.status.mid - r.cost.mid)).toBeLessThan(8);
+			expect(r.model.mid).toBeGreaterThan(r.status.mid + 8);
+			for (const cell of ['effort', 'tier', 'duration'] as const) {
+				expect(Math.abs(r.model.mid - r[cell].mid)).toBeLessThan(8);
+			}
+		}
 	});
 
 	test('shows unpriced Codex tokens and resume lineage, not the thread id', async ({ page }) => {
