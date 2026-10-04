@@ -373,6 +373,8 @@ test.describe.serial('issue links', () => {
 			await page.setViewportSize(PHONE);
 			await signIn(context, PAGINATION.user.sessionToken);
 			await gotoHydrated(page, `/issues/${encodeURIComponent(project.name)}/${current.number}`);
+			// On a phone the card starts folded.
+			await page.getByRole('button', { name: 'Relations none' }).click();
 			const card = page.locator('#relations');
 			await card.getByRole('button', { name: 'Add' }).click();
 			const picker = card.getByRole('combobox', { name: 'Issue to link' });

@@ -1072,6 +1072,13 @@ for (const size of [DESKTOP, PHONE, { width: 1280, height: 720 }, { width: 390, 
 				)
 				.toBe(true);
 			await expect.poll(() => hittable(scope)).toBe(true);
+			// It takes all of that room, down past where the covered tab bar starts.
+			const room = await listbox.evaluate((el) => {
+				const body = el.closest('[role="dialog"] > .overflow-y-auto')!;
+				const field = document.getElementById('ctx-scope-issue')!;
+				return { list: el.offsetHeight, most: body.clientHeight - field.offsetHeight };
+			});
+			expect(room.list).toBeGreaterThanOrEqual(room.most - 16);
 		}
 
 		for (let i = 1; i < 8; i += 1) {
