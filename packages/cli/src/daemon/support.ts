@@ -280,7 +280,7 @@ export interface ExitFacts {
 	/** The RateLimitDetector's readings (claude_code); absent where none ran. */
 	limited?: RateLimitSignal | null;
 	providerError?: ProviderErrorSignal | null;
-	/** The stream's own account of how the harness ended (`pi`). */
+	/** The stream's own account of how the harness ended (any stream renderer). */
 	harnessOutcome?: HarnessOutcome;
 	/** Secret env values, masked in every detail that reaches a report. */
 	secrets: readonly string[];
@@ -300,11 +300,15 @@ export interface ExitVerdict extends RunJudgment {
  * provider failure, is the runner's condition and not the issue's fault, so
  * it carries a judgment and costs no strike — and only then success.
  *
+ * The refusal or failure is read from the RateLimitDetector (`claude_code`)
+ * or from the stream renderer's own outcome (`codex`, `pi`), and either holds
+ * on any non-zero exit; any other non-zero exit is a plain failure.
+ *
  * `pi` is the exception to "exit 0 is success": it exits 0 when the model
- * call failed (429, 500, connection refused), so its verdict comes from the
- * stream. A stream that ended on a rate limit or provider error keeps that
- * judgment on a non-zero exit too; any other non-zero exit is a plain failure. Pi reports no reset time, so a rate limit carries no `resume_at`
- * and the supervisor's default backoff applies.
+ * call failed (429, 500, connection refused), so it alone is judged from the
+ * stream on exit 0. Codex names a reset time, which rides along as
+ * `resume_at`; Pi reports none, so its rate limit carries no `resume_at` and
+ * the supervisor's default backoff applies.
  */
 export function classifyExit(facts: ExitFacts): ExitVerdict {
 	const mask = (text: string) => redactSecrets(text, facts.secrets);
@@ -317,9 +321,10 @@ export function classifyExit(facts: ExitFacts): ExitVerdict {
 	if (facts.effortMismatch) return { status: 'failed', error: mask(facts.effortMismatch) };
 	// A signal is our own kill, so it keeps its plain report.
 	if (facts.signal) return { status: 'failed', error: `harness killed by ${facts.signal}` };
-	// The stream's account of a refused or unreachable provider holds whatever
-	// pi exits with: it is the runner's condition either way, never a strike.
-	const outcome = facts.harness === 'pi' ? facts.harnessOutcome : undefined;
+	// The stream's account of a refused or unreachable provider holds on any
+	// non-zero exit, whichever harness: it is the runner's condition, never a
+	// strike.
+	const outcome = facts.harnessOutcome;
 	if (facts.code !== 0) {
 		if (facts.limited) {
 			const detail = mask(facts.limited.detail);
@@ -347,7 +352,8 @@ export function classifyExit(facts: ExitFacts): ExitVerdict {
 			}
 		);
 	}
-	if (outcome && outcome.kind !== 'ok') {
+	// Only pi's exit 0 proves nothing.
+	if (facts.harness === 'pi' && outcome && outcome.kind !== 'ok') {
 		return (
 			providerVerdict(outcome, mask) ?? { status: 'failed', error: `pi: ${mask(outcome.detail)}` }
 		);
@@ -366,6 +372,7 @@ function providerVerdict(
 			status: 'failed',
 			error: `rate limited: ${detail}`,
 			judgment: 'rate_limited',
+			...(outcome.resumeAt !== undefined ? { resume_at: outcome.resumeAt } : {}),
 			note: `harness rate limited (${detail})`
 		};
 	}

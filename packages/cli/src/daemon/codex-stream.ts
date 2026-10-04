@@ -4,6 +4,7 @@ import {
 	copySummary,
 	validMetric,
 	validProviderSessionId,
+	type HarnessOutcome,
 	type RunStreamRenderer,
 	type StreamSummary
 } from './stream-summary.js';
@@ -18,6 +19,102 @@ function object(value: unknown): JsonObject | undefined {
 
 function text(value: unknown): string | undefined {
 	return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+/**
+ * The openings of the messages Codex 0.156.1 puts on a failed turn when the
+ * provider refused or failed, copied from its stream. Either apostrophe:
+ * September's Codex wrote `You've` (ASCII), 0.156.1 writes U+2019. The
+ * usage-limit pattern stops before the period because Codex also writes
+ * `You’ve hit your usage limit for <model>`.
+ *
+ * This is vendor text, not a contract: when it drifts we simply stop
+ * recognising the message and fall back to a plain failure (a strike), never
+ * to anything worse. Each is anchored at the start, because Codex embeds
+ * provider response bodies in its other errors.
+ */
+const CODEX_USAGE_LIMIT = /^You['’]ve hit your usage limit/;
+const CODEX_QUOTA_EXCEEDED = /^Quota exceeded\./;
+const CODEX_PROVIDER_FAILURES = [
+	/^Selected model is at capacity/,
+	/^We['’]re currently experiencing high demand/
+];
+
+const CODEX_MONTHS = [
+	'jan',
+	'feb',
+	'mar',
+	'apr',
+	'may',
+	'jun',
+	'jul',
+	'aug',
+	'sep',
+	'oct',
+	'nov',
+	'dec'
+];
+
+/**
+ * Codex prints the reset to the minute, so the window may reopen at any second
+ * of it. Reporting the end of that minute keeps a run refused inside the
+ * minute from naming a time already past, which the supervisor reads as "no
+ * reset given" and holds its default instead.
+ */
+const CODEX_RESET_MINUTE_MS = 60_000;
+
+/**
+ * The reset time in `… try again at <time>.`, as epoch ms, or null when the
+ * message names none we can read. Codex formats it in the machine's local
+ * zone, as `Oct 7th, 2026 2:58 PM` or, for a reset later the same day,
+ * `3:06 PM`; the daemon runs Codex on the same machine, so local time is read
+ * back the same way.
+ */
+export function parseCodexResetTime(message: string, now: number): number | null {
+	const stated = /\btry again at (.+?)\.?$/i.exec(message.trim())?.[1];
+	if (!stated) return null;
+	const parts =
+		/^(?:([A-Z][a-z]{2}) (\d{1,2})(?:st|nd|rd|th), (\d{4}) )?(\d{1,2}):(\d{2}) (AM|PM)$/.exec(
+			stated
+		);
+	if (!parts) return null;
+	const [, monthName, dayText, yearText, hourText, minuteText, meridiem] = parts;
+	const hour = Number(hourText);
+	const minute = Number(minuteText);
+	if (hour < 1 || hour > 12 || minute > 59) return null;
+	const hour24 = (hour % 12) + (meridiem === 'PM' ? 12 : 0);
+	if (monthName === undefined) {
+		const today = new Date(now);
+		return (
+			new Date(today.getFullYear(), today.getMonth(), today.getDate(), hour24, minute).getTime() +
+			CODEX_RESET_MINUTE_MS
+		);
+	}
+	const month = CODEX_MONTHS.indexOf(monthName.toLowerCase());
+	if (month === -1) return null;
+	const day = Number(dayText);
+	const date = new Date(Number(yearText), month, day, hour24, minute);
+	// `Feb 31st` rolls over into March rather than failing.
+	if (date.getMonth() !== month || date.getDate() !== day) return null;
+	return date.getTime() + CODEX_RESET_MINUTE_MS;
+}
+
+/**
+ * A failed turn's message → the provider's refusal or failure it reports, or
+ * undefined for anything else (a plain failure, as before).
+ */
+export function classifyCodexFailure(message: string, now: number): HarnessOutcome | undefined {
+	const trimmed = message.trim();
+	const detail = clip(trimmed, 500);
+	if (CODEX_USAGE_LIMIT.test(trimmed)) {
+		const resumeAt = parseCodexResetTime(trimmed, now);
+		return { kind: 'rate_limited', detail, ...(resumeAt !== null ? { resumeAt } : {}) };
+	}
+	if (CODEX_QUOTA_EXCEEDED.test(trimmed)) return { kind: 'rate_limited', detail };
+	if (CODEX_PROVIDER_FAILURES.some((pattern) => pattern.test(trimmed))) {
+		return { kind: 'provider_error', detail };
+	}
+	return undefined;
 }
 
 export function renderCodexEvent(event: JsonObject): string[] {
@@ -82,8 +179,15 @@ export class CodexStreamRenderer implements RunStreamRenderer {
 	private threadId?: string;
 	private stickyStatus?: 'nonmonotonic' | 'multiple_threads';
 	private awaitingTerminal = false;
+	/** How the current turn failed, when the provider refused or failed. */
+	private turnOutcome?: HarnessOutcome;
+	/** A top-level `error` that nothing has followed yet. */
+	private trailingOutcome?: HarnessOutcome;
 
-	constructor(private readonly emit: (line: string) => void) {}
+	constructor(
+		private readonly emit: (line: string) => void,
+		private readonly now: () => number = Date.now
+	) {}
 
 	write(chunk: string): void {
 		this.pending += chunk;
@@ -103,7 +207,8 @@ export class CodexStreamRenderer implements RunStreamRenderer {
 	}
 
 	summary(): StreamSummary {
-		return copySummary(this.collected);
+		const outcome = this.turnOutcome ?? this.trailingOutcome;
+		return copySummary({ ...this.collected, ...(outcome ? { harnessOutcome: outcome } : {}) });
 	}
 
 	private line(raw: string): void {
@@ -123,7 +228,39 @@ export class CodexStreamRenderer implements RunStreamRenderer {
 		for (const line of renderCodexEvent(event)) this.emit(`${line}\n`);
 	}
 
+	/**
+	 * Reads a refusal only from Codex's own `turn.failed` and `error` events,
+	 * never from an item's content: an agent message or command output that
+	 * quotes the usage-limit sentence must not hold the runner.
+	 */
+	private noteOutcome(event: JsonObject): void {
+		switch (event.type) {
+			case 'turn.started':
+			case 'turn.completed':
+				this.turnOutcome = undefined;
+				this.trailingOutcome = undefined;
+				return;
+			case 'turn.failed':
+				this.turnOutcome = classifyCodexFailure(
+					text(object(event.error)?.message) ?? text(event.message) ?? '',
+					this.now()
+				);
+				this.trailingOutcome = undefined;
+				return;
+			case 'error':
+				this.trailingOutcome = classifyCodexFailure(text(event.message) ?? '', this.now());
+				return;
+			case 'item.started':
+			case 'item.updated':
+			case 'item.completed':
+				// The stream carried on, so that error was not how the run ended.
+				this.trailingOutcome = undefined;
+				return;
+		}
+	}
+
 	private collect(event: JsonObject): void {
+		this.noteOutcome(event);
 		if (event.type === 'thread.started' && validProviderSessionId(event.thread_id)) {
 			if (this.threadId && this.threadId !== event.thread_id)
 				this.stickyStatus = 'multiple_threads';

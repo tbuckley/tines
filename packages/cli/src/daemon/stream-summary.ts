@@ -1,12 +1,21 @@
 import type { AgentRunUsage, CodexPricingEvidenceV1 } from '@tines/shared';
 
 /**
- * A harness's own account of how it ended, for one whose exit code cannot be
- * trusted to say (`pi` exits 0 when the model call failed). `detail` is the
+ * The stream's account of how the harness ended: the provider refused on a
+ * usage limit, the provider failed, or the harness itself gave up. It is read
+ * on any non-zero exit, and on exit 0 for `pi` alone, whose exit code cannot
+ * be trusted to say (it exits 0 when the model call failed). `detail` is the
  * provider's or the harness's message, unredacted.
  */
 export type HarnessOutcome =
-	{ kind: 'ok' } | { kind: 'rate_limited' | 'provider_error' | 'error'; detail: string };
+	| { kind: 'ok' }
+	| {
+			kind: 'rate_limited';
+			detail: string;
+			/** Epoch ms the provider said the window reopens, when it said. */
+			resumeAt?: number;
+	  }
+	| { kind: 'provider_error' | 'error'; detail: string };
 
 export interface StreamSummary {
 	providerSessionId?: string;
@@ -14,7 +23,7 @@ export interface StreamSummary {
 	numTurns?: number;
 	durationMs?: number;
 	pricingEvidence?: CodexPricingEvidenceV1;
-	/** Set by a renderer whose stream, not its exit code, decides the run. */
+	/** Set by a renderer whose stream says the provider refused or failed. */
 	harnessOutcome?: HarnessOutcome;
 	/** The effort the harness recorded actually applying, when it says. */
 	appliedEffort?: string;
