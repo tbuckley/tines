@@ -2,7 +2,7 @@ import type { ContextItem, Label, Project } from '@tines/shared';
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { d1, sqlLiteral } from './d1';
-import { body, gotoHydrated } from './helpers';
+import { body, gotoHydrated, resetFocus } from './helpers';
 
 // Owner controls for shared guidance (Tines/752): a library item stays private
 // until the owner includes it from the project page, and Remove takes it back
@@ -25,6 +25,7 @@ for (const viewport of VIEWPORTS) {
 
 		test('include from library, review, and remove', async ({
 			page,
+			request,
 			apiFor,
 			uniqueName
 		}, testInfo) => {
@@ -101,6 +102,9 @@ for (const viewport of VIEWPORTS) {
 				await expect(card.getByText('Nothing included.')).toBeVisible();
 			} finally {
 				await api.delete(`/api/v1/context/${item.id}`).catch(() => undefined);
+				// Opening the project page focused it for ALICE; left set, it scopes
+				// every later spec's /context and /agents to this project.
+				await resetFocus(request).catch(() => undefined);
 			}
 		});
 	});
