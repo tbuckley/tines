@@ -4,6 +4,7 @@
 	import { onDestroy } from 'svelte';
 	import { api } from '$lib/api';
 	import { Input } from '$lib/components/ui/input/index.js';
+	import { fitBelow } from '$lib/popover-fit';
 	import {
 		issueLabel,
 		mergeIssueOptions,
@@ -166,6 +167,13 @@
 	const showList = $derived(
 		open && !selected && (status !== 'idle' || options.length > 0 || !!text.trim())
 	);
+
+	/** Keeps the list above the phone tab bar and the on-screen keyboard; null before measuring. */
+	let maxHeight = $state<number | null>(null);
+	$effect(() => {
+		if (!showList || !ref) return;
+		return fitBelow(ref, (px) => (maxHeight = px));
+	});
 </script>
 
 <div class="relative">
@@ -173,7 +181,7 @@
 		bind:ref
 		bind:value={text}
 		{id}
-		class="pr-8"
+		class="scroll-mt-20 pr-8"
 		{placeholder}
 		{disabled}
 		role="combobox"
@@ -206,6 +214,7 @@
 			id={listboxId}
 			role="listbox"
 			class="bg-popover text-popover-foreground absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-md border p-1 shadow-md"
+			style:max-height={maxHeight === null ? undefined : `${maxHeight}px`}
 		>
 			{#if status === 'loading'}
 				<li class="text-muted-foreground px-1.5 py-1 text-sm">Searching…</li>
