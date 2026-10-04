@@ -2803,13 +2803,16 @@ export async function findAttachedContext(
  * Rejects the operation (422 naming the attached items) unless forced; when
  * forced, returns the delete statements plus one `context.deleted` event per
  * item, to be committed in the caller's batch. All-or-nothing per request.
+ * A `guard` is ANDed onto each item's witness, so a batch whose own
+ * precondition failed without raising records no deletion either.
  */
 export function sweepAttachedContext(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	items: AttachedContextItem[],
 	force: boolean,
-	operation: string
+	operation: string,
+	guard?: QueryGuard
 ): { queries: CompiledQuery[]; deleted: DeletedContextItem[] } {
 	if (items.length === 0) return { queries: [], deleted: [] };
 	if (!force) {
@@ -2863,7 +2866,7 @@ export function sweepAttachedContext(
 						forced: true
 					}
 				},
-				{ predicate: witness }
+				{ predicate: guard ? sql<boolean>`${witness} AND ${guard.predicate}` : witness }
 			),
 			// SQLite CASE is lazy: a lost witness raises and rolls back the whole
 			// D1 batch instead of letting the enclosing anchor cascade partially.

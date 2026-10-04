@@ -88,11 +88,14 @@ const issue = {
 		states: [],
 		transitions: [],
 		issue_count: 1,
+		revision: 1,
 		created_at: 0,
 		updated_at: 0
 	},
 	comments,
 	allowed_transitions: [],
+	decision_revision: 0,
+	workflow_revision: 1,
 	state_entered_at: input.fixed_clock - 5000,
 	context_summary: { prompts: 0, skills: 1, repos: 0, artifacts: 1, envs: 0 },
 	launch_comments: input.issue.launch_comments
