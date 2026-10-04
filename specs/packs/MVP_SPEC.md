@@ -293,6 +293,14 @@ There is no timezone: the project chooses one when it sets the schedule up.
 The title template's existing variables (such as `{{ date }}`) are left for the
 scheduler; only `{{ inputs.* }}` is a pack placeholder.
 
+Unlike every other placeholder, a schedule's `{{ inputs.* }}` renders **once,
+when the project schedule is created** from the suggestion, with the values the
+project has then. The created schedule is an ordinary project schedule: its
+title and description hold the rendered text (plus the scheduler's own
+variables), and a later change to an input value, or a Replace, does not
+rewrite it. To pick up a new value, edit the schedule or create it again.
+
+
 ### `migrations.yaml`
 
 Tells Replace where issues go when a version removes or renames a state.
@@ -324,7 +332,14 @@ otherwise.
 **Syntax.** `{{ inputs.<name> }}`, with optional spaces inside the braces. That
 is the only placeholder. Any other `{{ … }}` is literal text and passes through
 unchanged, so a skill that documents a templating language needs no escaping.
-There is no way to write the literal text `{{ inputs.<name> }}`.
+
+**Escaping.** One or more `!` straight after the opening braces escapes a
+placeholder: the renderer removes one `!` and otherwise passes the text
+through. So `{{! inputs.x }}` renders as `{{ inputs.x }}`, `{{!! inputs.x }}`
+as `{{! inputs.x }}`, and so on, and any text can be written. An escaped
+placeholder is not checked against the declared inputs. Escapes apply wherever
+placeholders do (below); text that does not take placeholders, such as the
+README, is shown as is.
 
 **Where.** Prompts, `.md` files inside skills, string values in `env.yaml`, and
 schedule `title` and `description`. Nowhere else: not in names, keys,
@@ -348,6 +363,9 @@ run read. So:
 - Replace brings new text and keeps the values;
 - a workflow input always renders the bound workflow's current name, start
   state and id.
+
+The one exception is a suggested schedule, which renders when the project
+schedule is created from it (see `schedules/<name>.yaml`).
 
 **Checked at install, not at launch.** An unknown input name, or a secret used
 as a placeholder, fails validation before anything is installed.
@@ -477,7 +495,9 @@ use Replace.
    inputs offer this pack's workflows and the project's existing ones;
 5. **schedules** — each suggested schedule, unchecked; a checked one is
    created as an ordinary project schedule, paused, with a timezone the person
-   picks;
+   picks, and its `{{ inputs.* }}` rendered with the values entered above. A
+   schedule that references an input with no value cannot be checked until
+   that value is given;
 6. a **rendered preview** of every prompt and skill as an agent will read it.
 
 Missing required inputs do not block the install; the pack is installed as
@@ -538,8 +558,10 @@ the old pack's versions can no longer replace it.
 Pack → **Remove**. Refused while any issue or schedule uses one of its
 workflows; the refusal lists them, so they can be moved first. Removing
 deletes the pack's workflows and context, and the project additions on its
-states (listed on the confirmation). Workflow inputs in other packs bound to
-its workflows become unbound, so those packs show *needs setup*.
+states. Workflow inputs in other packs bound to its workflows become unbound,
+so those packs show *needs setup*. The confirmation lists both before anything
+is removed: the project additions that will be deleted, and each pack and
+input that will become unbound.
 
 ### Change input values
 
@@ -575,6 +597,11 @@ for a person to act on.
 - Paths are UTF-8 and use `/`. No absolute paths, `..`, symlinks, or two paths
   that differ only by case. Only `.md` and `.yaml` files are parsed; every
   other file must be inside a skill.
+- Operating-system clutter is ignored wherever it appears: a `__MACOSX/`
+  folder, `.DS_Store`, AppleDouble `._*` files, `Thumbs.db` and `desktop.ini`.
+  It is dropped before validation, never counts as a second top-level folder,
+  is left out of the digest, and is never written by export, so a pack
+  re-zipped in Finder or Explorer still installs with the same digest.
 - Size limits: the existing per-kind caps on prompts and skill files, and 5 MiB
   for the whole archive.
 - **Digest**: SHA-256 over the sorted list of `<path>\0<sha256 of bytes>\n`
