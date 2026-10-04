@@ -5,6 +5,7 @@
 	import { api } from '$lib/api';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { categoryVar } from '$lib/format';
+	import { fitBelow } from '$lib/popover-fit';
 	import {
 		findProjectByName,
 		issueLabel,
@@ -300,6 +301,13 @@
 		await tick();
 		document.getElementById(optionId(highlight))?.scrollIntoView({ block: 'nearest' });
 	}
+
+	/** Keeps the list above the phone tab bar and the on-screen keyboard; null before measuring. */
+	let maxHeight = $state<number | null>(null);
+	$effect(() => {
+		if (!showList || !ref) return;
+		return fitBelow(ref, (px) => (maxHeight = px));
+	});
 </script>
 
 <div class="relative">
@@ -307,7 +315,7 @@
 		bind:ref
 		bind:value={text}
 		{id}
-		class={['pr-8', className]}
+		class={['scroll-mt-20 pr-8', className]}
 		aria-label={label}
 		{placeholder}
 		{disabled}
@@ -342,6 +350,7 @@
 			id={listboxId}
 			role="listbox"
 			class="bg-popover text-popover-foreground absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-md border p-1 shadow-md"
+			style:max-height={maxHeight === null ? undefined : `${maxHeight}px`}
 		>
 			{#if status === 'loading'}
 				<li class="text-muted-foreground px-1.5 py-1 text-sm">Searching…</li>
