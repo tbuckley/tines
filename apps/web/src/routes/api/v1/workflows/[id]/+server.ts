@@ -3,6 +3,11 @@ import type { DeleteAnchorRequest, UpdateWorkflowRequest } from '@tines/shared';
 import { api, apiContext, readJson, readOptionalJson } from '$lib/server/api/core';
 import { deleteWorkflow, loadWorkflowForActor, updateWorkflow } from '$lib/server/api/workflows';
 import { readSharedWorkflow } from '$lib/server/api/shared-workflows';
+import {
+	e2eWorkflowSaveHold,
+	releaseE2eHeldWorkflowSave,
+	waitForE2eHeldWorkflowSave
+} from '$lib/server/api/workflow-e2e-race';
 import { ApiFail } from '$lib/server/api/core';
 import { accessAllowed } from '$lib/server/api/permissions';
 import type { RequestHandler } from './$types';
@@ -22,7 +27,22 @@ export const GET: RequestHandler = api(async (event) => {
 export const PATCH: RequestHandler = api(async (event) => {
 	const { db, env, actor, effects } = await apiContext(event);
 	const body = await readJson<UpdateWorkflowRequest>(event);
-	return json(await updateWorkflow(db, env, actor, effects, event.params.id, body));
+	await waitForE2eHeldWorkflowSave(event.request, event.params.id);
+	try {
+		return json(
+			await updateWorkflow(
+				db,
+				env,
+				actor,
+				effects,
+				event.params.id,
+				body,
+				e2eWorkflowSaveHold(event.request, event.params.id)
+			)
+		);
+	} finally {
+		releaseE2eHeldWorkflowSave(event.request, event.params.id);
+	}
 });
 
 export const DELETE: RequestHandler = api(async (event) => {

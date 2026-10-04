@@ -14,7 +14,7 @@ import {
 	setSettings,
 	USER
 } from '$lib/server/supervisor/test-fixtures';
-import { DELETE, PATCH } from './+server';
+import { DELETE, GET, PATCH } from './+server';
 
 const actor: ActorContext = {
 	userId: USER,
@@ -128,6 +128,65 @@ describe('PATCH /api/v1/workflows/:id', () => {
 		expect(waits).toHaveLength(1);
 		await Promise.all(waits);
 		expect(runs(t).map((run) => run.issue_id)).toEqual([issue]);
+	});
+
+	it('reads the revision and refuses a stale expected_revision with the conflict body', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const workflow = await createWorkflow(t.db, t.env, actor, {
+			name: 'Revisioned',
+			initial_state: 'Open',
+			states: [{ name: 'Open', category: 'active' }],
+			transitions: []
+		});
+		const url = new URL(`http://test/api/v1/workflows/${workflow.id}`);
+		const routeEvent = (method: string, body?: object) => ({
+			params: { id: workflow.id },
+			locals: { user: { id: USER, name: 'alice' } },
+			platform: { env: t.env, ctx: { waitUntil: () => {} } },
+			request: new Request(url, {
+				method,
+				...(body
+					? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
+					: {})
+			}),
+			url
+		});
+		const read = async () =>
+			(await (await GET(routeEvent('GET') as unknown as Parameters<typeof GET>[0])).json()) as {
+				revision: number;
+				name: string;
+			};
+		expect(await read()).toMatchObject({ revision: 1 });
+
+		const saved = await PATCH(
+			routeEvent('PATCH', { name: 'First', expected_revision: 1 }) as unknown as Parameters<
+				typeof PATCH
+			>[0]
+		);
+		expect(saved.status).toBe(200);
+		expect(await saved.json()).toMatchObject({ name: 'First', revision: 2 });
+
+		const stale = await PATCH(
+			routeEvent('PATCH', { name: 'Second', expected_revision: 1 }) as unknown as Parameters<
+				typeof PATCH
+			>[0]
+		);
+		expect(stale.status).toBe(409);
+		expect(await stale.json()).toEqual({
+			error: {
+				code: 'workflow_conflict',
+				message:
+					'This workflow changed after you read it. Reload it, review the changes, then save again.',
+				details: {
+					committed: false,
+					expected_revision: 1,
+					current_revision: 2,
+					remedy: 'reload_workflow'
+				}
+			}
+		});
+		expect(await read()).toMatchObject({ name: 'First', revision: 2 });
 	});
 
 	it('does not bind or schedule effects before authentication succeeds', async () => {

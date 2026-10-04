@@ -5,6 +5,7 @@ import {
 	client,
 	die,
 	fetchList,
+	parsePositiveIntegerOption,
 	pickWorkflow,
 	printJson,
 	printList,
@@ -358,9 +359,19 @@ function resolveBasePair(lib: Library, pair: string, stateName: string): string 
 	return state.id;
 }
 
+const WORKFLOW_REVISION_HELP = `
+Every committed update advances the workflow's revision by one (\`tines
+workflows show\` prints it). Pass --expect-revision <n>, or "expected_revision"
+in the JSON body (the flag wins), to have the update refused with
+workflow_conflict — nothing written — when the workflow is no longer at the
+revision you read. Without it, only a save that commits during this command is
+caught.
+`;
+
 function printWorkflowDetail(wf: WorkflowResponse, lib: Library): void {
 	console.log(`${wf.name}${wf.is_system ? ' (standard, read-only)' : ''}  [${wf.id}]`);
 	if (wf.description) console.log(wf.description);
+	console.log(`revision: ${wf.revision}`);
 	console.log('\nstates:');
 	const byId = new Map(wf.states.map((s) => [s.id, s]));
 	// Rendered as one table, then split apart again, so a state's inheritance
@@ -503,7 +514,12 @@ export function register(program: Command): void {
 			.option('-d, --description <text>', 'set the description')
 			.option('--initial-state <id-or-name>', 'set the initial state')
 			.option('--no-prompts', 'allow new states without initial "prompt" instructions')
-			.addHelpText('after', WORKFLOW_JSON_HELP)
+			.option(
+				'--expect-revision <n>',
+				'refuse the update unless the workflow is still at this revision (see `tines workflows show`)',
+				(value) => parsePositiveIntegerOption(value, 'expect-revision')
+			)
+			.addHelpText('after', WORKFLOW_JSON_HELP + WORKFLOW_REVISION_HELP)
 	).action(
 		async (
 			ref: string,
@@ -514,6 +530,7 @@ export function register(program: Command): void {
 				description?: string;
 				initialState?: string;
 				prompts?: boolean;
+				expectRevision?: number;
 			}
 		) => {
 			const api = client(opts);
@@ -527,10 +544,22 @@ export function register(program: Command): void {
 			if (opts.name !== undefined) body.name = opts.name;
 			if (opts.description !== undefined) body.description = opts.description;
 			if (opts.initialState !== undefined) body.initial_state = opts.initialState;
-			if (Object.keys(body).length === 0) {
+			// The flag wins over the body's own value. It is never filled in from
+			// the library load above: that would vouch for a read the caller
+			// never made, and hide the stale one they did.
+			if (opts.expectRevision !== undefined) body.expected_revision = opts.expectRevision;
+			if (Object.keys(body).every((key) => key === 'expected_revision')) {
 				die('nothing to update: pass JSON and/or --name/--description/--initial-state');
 			}
-			const updated = await api.updateWorkflow(wf.id, body);
+			const updated = await api.updateWorkflow(wf.id, body).catch((error: unknown) => {
+				if (!(error instanceof ApiError) || error.code !== 'workflow_conflict') throw error;
+				const current = error.details?.current_revision;
+				die(
+					`${error.message} (${error.code})\n` +
+						`hint: re-read with \`tines workflows show ${wf.id}\`, then retry with ` +
+						`--expect-revision ${typeof current === 'number' ? current : '<revision>'}`
+				);
+			});
 			if (opts.json) return printJson(updated);
 			console.log(`updated workflow "${updated.name}" (${updated.id})\n`);
 			printWorkflowDetail(updated, await loadLibrary(api));

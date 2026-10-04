@@ -21,6 +21,7 @@ const workflow = (
 	})),
 	transitions: [],
 	issue_count: 0,
+	revision: 1,
 	created_at: 0,
 	updated_at: 0
 });

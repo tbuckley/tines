@@ -7,6 +7,7 @@
 		ContextItem,
 		ContextKind,
 		RoutingRule,
+		TransitionIssueRequest,
 		WorkflowState
 	} from '@tines/shared';
 	import { ApiError, usageCostLabel } from '@tines/shared';
@@ -546,10 +547,36 @@
 	let pendingTransition = $state<AllowedTransition | null>(null);
 	let transitionComment = $state('');
 	let transitioning = $state(false);
+	// What the person was looking at when the dialog opened: the state visit,
+	// workflow graph and (in a shared project) permission. Sent as read then,
+	// not as the page holds them at confirm time, so a move that lands while
+	// the dialog is open refuses this one instead of being approved blind.
+	let transitionWitness = $state<Pick<
+		TransitionIssueRequest,
+		| 'expected_state_id'
+		| 'expected_decision_revision'
+		| 'expected_workflow_revision'
+		| 'expected_consent_epoch'
+		| 'expected_consent_revision'
+	> | null>(null);
 
 	function requestMove(transition: AllowedTransition) {
 		transitionComment = '';
 		transitionAllowsAgents = data.permissionReceipt?.my_agents.value !== 'off';
+		const permission = data.permissionReceipt;
+		transitionWitness = permission
+			? {
+					expected_state_id: permission.issue_state.id,
+					expected_decision_revision: permission.issue_state.decision_revision,
+					expected_workflow_revision: permission.issue_state.workflow_revision,
+					expected_consent_epoch: permission.my_agents.epoch,
+					expected_consent_revision: permission.my_agents.revision
+				}
+			: {
+					expected_state_id: data.issue.state.id,
+					expected_decision_revision: data.issue.decision_revision,
+					expected_workflow_revision: data.issue.workflow_revision
+				};
 		// From the phone's State sheet, the confirm dialog takes the sheet's
 		// place rather than stacking on it.
 		stateSheetOpen = false;
@@ -562,22 +589,13 @@
 		try {
 			// Comment BEFORE the transition: re-dispatch can never race past it.
 			if (comment) await api.createComment(data.issue.id, { body: comment });
-			const permission = data.permissionReceipt;
 			await api.transitionIssue(data.issue.id, {
 				transition_id: transition.transition_id,
-				...(permission
+				...transitionWitness,
+				...(data.permissionReceipt && transition.to_state.category === 'active'
 					? {
-							expected_state_id: permission.issue_state.id,
-							expected_decision_revision: permission.issue_state.decision_revision,
-							expected_workflow_revision: permission.issue_state.workflow_revision,
-							expected_consent_epoch: permission.my_agents.epoch,
-							expected_consent_revision: permission.my_agents.revision,
-							...(transition.to_state.category === 'active'
-								? {
-										allow_my_agents: transitionAllowsAgents,
-										...(transitionAllowsAgents ? { disclosure_version: 1 } : {})
-									}
-								: {})
+							allow_my_agents: transitionAllowsAgents,
+							...(transitionAllowsAgents ? { disclosure_version: 1 } : {})
 						}
 					: {})
 			});
@@ -590,6 +608,12 @@
 			await refresh();
 		} catch (e) {
 			showError(e);
+			// The witness is spent: close the dialog and load what the issue is
+			// now, so the next choice is made against the current state.
+			if (e instanceof ApiError && e.code === 'decision_refresh_required') {
+				pendingTransition = null;
+				await refresh();
+			}
 		} finally {
 			// Success: the reload has settled, so server truth already carries
 			// the new state. Failure: dropping the overlay is the revert.
@@ -1346,6 +1370,13 @@
 							<Button size="sm" variant="outline" onclick={() => (promptDialogOpen = true)}>
 								<IconRocket size={14} /> View launch prompt
 							</Button>
+						{:else}
+							<a
+								href="/projects/{data.issue.project_id}"
+								class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 rounded-sm text-xs outline-none focus-visible:ring-[3px]"
+							>
+								View project context
+							</a>
 						{/if}
 						<Button
 							size="sm"

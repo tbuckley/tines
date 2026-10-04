@@ -26,6 +26,7 @@
 	let { data } = $props();
 
 	const scopeLabel = $derived(data.focus ? `“${data.focus.name}”` : 'All projects');
+	const isMember = $derived(data.viewerRole === 'member');
 
 	let editorOpen = $state(false);
 	let editing = $state<ContextItem | null>(null);
@@ -137,6 +138,11 @@
 			>All projects</button
 		>
 	</p>
+{:else if isMember && data.focus}
+	<p class="text-muted-foreground mb-4 text-sm" data-testid="member-context-note">
+		Context in “{data.focus.name}”, shared by {data.focus.owner?.name ?? 'its owner'}. The owner's
+		global and workflow-state context is not listed here.
+	</p>
 {/if}
 {#if focusError}<p class="text-destructive mb-4 text-sm" role="alert">{focusError}</p>{/if}
 
@@ -237,7 +243,7 @@
 	bind:open={editorOpen}
 	item={editing}
 	defaults={data.focusId ? { project_id: data.focusId } : {}}
-	projects={data.projects}
+	projects={isMember && data.focus ? [data.focus] : data.projects}
 	workflows={data.workflows}
 	onsaved={invalidateAll}
 />

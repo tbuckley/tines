@@ -43,6 +43,7 @@ export async function readSharedWorkflow(
 			'w.description',
 			'w.user_id',
 			'w.initial_state_id',
+			'w.definition_revision',
 			'w.created_at',
 			'w.updated_at'
 		])
@@ -109,6 +110,7 @@ export async function readSharedWorkflow(
 			...(transition.requirements ? { requires: JSON.parse(transition.requirements) } : {})
 		})),
 		issue_count: Number(count?.n ?? 0),
+		revision: row.definition_revision,
 		created_at: row.created_at,
 		updated_at: row.updated_at
 	};

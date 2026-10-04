@@ -40,6 +40,19 @@ and requires a fresh browser decision. The CLI fetches the current witness and
 submits an exact transition once; it has no consent flag and never retries a
 different decision after a conflict.
 
+The state-visit and workflow-graph half of that comparison is not specific to
+shared projects (Tines/608). Every transition write, in every project, commits
+only while the issue is still at the decision revision and the workflow at the
+graph revision the request read; a lost comparison returns `409 conflict` with
+`details.reason` `issue_moved` or `workflow_changed`. Outside a shared project
+the witnesses (`expected_state_id`, `expected_decision_revision`,
+`expected_workflow_revision`) are optional, but one that is sent is honored for
+every caller, run keys included: a mismatch returns
+`409 decision_refresh_required` and writes nothing. Issue reads carry
+`decision_revision` and `workflow_revision` to echo; the browser sends the
+values it held when the confirmation dialog opened, and
+`tines issues move --expect-revision <n>` sends the caller's own.
+
 ## Admission, holds, and cancellation
 
 The owner's permission defaults on (decision recorded in

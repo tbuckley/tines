@@ -270,6 +270,12 @@ export interface Workflow {
 	transitions: WorkflowTransition[];
 	/** Issues currently bound to this workflow. */
 	issue_count: number;
+	/**
+	 * Definition revision; advances by one on every committed save. Not the
+	 * same as `workflow_revision` on issue permission receipts, which is the
+	 * graph `decision_revision`.
+	 */
+	revision: number;
 	created_at: number;
 	updated_at: number;
 }
@@ -330,9 +336,20 @@ export interface CreateWorkflowRequest {
 /**
  * Updates replace what they include: when `states` is present, existing
  * states not listed (by id) are deleted, subject to the editing rules; when
- * `transitions` is present, the transition set is replaced wholesale.
+ * `transitions` is present, the transition set is replaced wholesale. What is
+ * omitted is not written.
+ *
+ * A save commits only against the definition it read: if the workflow's
+ * `revision` moves before the write lands, the request fails with
+ * `409 workflow_conflict` and nothing is written.
  */
 export interface UpdateWorkflowRequest {
+	/**
+	 * The `Workflow.revision` the caller read and edited. A mismatch is
+	 * refused with `409 workflow_conflict` before anything is written. Omitted,
+	 * the save is still checked against the server's own read of the workflow.
+	 */
+	expected_revision?: number;
 	name?: string;
 	description?: string;
 	initial_state?: string;
@@ -663,6 +680,17 @@ export interface IssueDetail extends Issue {
 	comments: Comment[];
 	/** The named transitions legally available from the current state. */
 	allowed_transitions: AllowedTransition[];
+	/**
+	 * The state visit this read saw: advances on every state change, so a
+	 * leave-and-return to the same state is a different value. Echo it as
+	 * `expected_decision_revision` to bind a transition to this read.
+	 */
+	decision_revision: number;
+	/**
+	 * The workflow graph this read saw (the workflow's `decision_revision`, not
+	 * its definition `revision`). Echo it as `expected_workflow_revision`.
+	 */
+	workflow_revision: number;
 	links: IssueLinks;
 	/** Per-kind counts of the currently effective context, post-dedupe. */
 	context_summary: ContextSummary;
@@ -994,7 +1022,12 @@ export interface TransitionIssueRequest {
 	/** Action name, matched case-insensitively among the allowed transitions. */
 	action?: string;
 	transition_id?: string;
-	/** Optimistic decision/permission witnesses used by shared projects. */
+	/**
+	 * Optimistic witnesses: the state visit, workflow graph and permission the
+	 * caller read. Required from a person in a shared project; optional
+	 * everywhere else, but honored whenever sent — a mismatch is refused with
+	 * `409 decision_refresh_required` and nothing is written.
+	 */
 	expected_state_id?: string;
 	expected_decision_revision?: number;
 	expected_consent_revision?: number;
