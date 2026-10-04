@@ -397,6 +397,48 @@ describe('priceCodexUsage', () => {
 		).toEqual(legacy);
 	});
 
+	it('names the caller-supplied reason when measured tokens arrive with no evidence', () => {
+		const measured = { input_tokens: 4, output_tokens: 1 };
+		const run = { model: null, created_at };
+		expect(priceCodexUsage({ run, usage: measured, now: created_at }).pricing).toMatchObject({
+			status: 'unpriced',
+			reason: 'pricing_evidence_missing'
+		});
+		const pi = priceCodexUsage({
+			run,
+			usage: measured,
+			now: created_at,
+			missingEvidenceReason: 'harness_unpriced'
+		});
+		expect(pi).toEqual({
+			...measured,
+			pricing: {
+				version: 1,
+				evaluated_at: created_at,
+				status: 'unpriced',
+				reason: 'harness_unpriced'
+			}
+		});
+		// The reason never overrides a cost the harness did report, or an empty usage.
+		const reported = { ...measured, cost_usd: 0.25, cost_source: 'provider' as const };
+		expect(
+			priceCodexUsage({
+				run,
+				usage: reported,
+				now: created_at,
+				missingEvidenceReason: 'harness_unpriced'
+			})
+		).toEqual(reported);
+		expect(
+			priceCodexUsage({
+				run,
+				usage: {},
+				now: created_at,
+				missingEvidenceReason: 'harness_unpriced'
+			}).pricing
+		).toBeUndefined();
+	});
+
 	it('selects the claim-time version and leaves stored basis independent of later catalog changes', () => {
 		const next: CodexRate = {
 			...CODEX_RATES.find((r) => r.model === 'gpt-5.6-sol')!,

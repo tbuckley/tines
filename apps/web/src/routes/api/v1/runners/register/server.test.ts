@@ -21,6 +21,31 @@ function eventFor(t: ReturnType<typeof createTestDb>, body: unknown, waits: Prom
 }
 
 describe('POST /api/v1/runners/register', () => {
+	it('registers a pi runner: tiers apply, with no built-in model table', async () => {
+		const t = createTestDb();
+		seedBase(t);
+		const waits: Promise<unknown>[] = [];
+		const created = await POST(
+			eventFor(t, { name: 'macbook-pi', harness: 'pi' }, waits) as unknown as Parameters<
+				typeof POST
+			>[0]
+		);
+		expect(created.status).toBe(201);
+		const body = (await created.json()) as { runner: Record<string, unknown> };
+		expect(body.runner).toMatchObject({
+			config: { harness: 'pi' },
+			tier_models: null,
+			tiers_apply: true
+		});
+		await Promise.all(waits);
+
+		const unknown = await POST(
+			eventFor(t, { name: 'other', harness: 'aider' }, []) as unknown as Parameters<typeof POST>[0]
+		);
+		expect(unknown.status).toBe(422);
+		expect(JSON.stringify(await unknown.json())).toContain('claude_code, codex, pi, custom');
+	});
+
 	it('queues dispatch after create and reconnect without claiming before a policy poll', async () => {
 		const t = createTestDb();
 		seedBase(t);

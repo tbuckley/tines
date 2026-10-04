@@ -113,6 +113,17 @@ jobs:
       # in-file ordering is untouched.
       - run: pnpm test:e2e --shard=${{ matrix.shard }}/3
 
+      # The JSON reporter's results (playwright.config.ts), from every shard
+      # that ran, green or red: the aggregate job below summarises them and
+      # scripts/flake-ledger.mjs reads them across runs.
+      - name: Upload Playwright results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-results-${{ matrix.shard }}
+          path: apps/web/test-results/results.json
+          if-no-files-found: ignore
+
       - name: Upload Playwright failure output
         if: failure()
         uses: actions/upload-artifact@v7
@@ -129,6 +140,25 @@ jobs:
     needs: e2e-shard
     if: always()
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      contents: read
     steps:
+      # Names each failed test as a known flake (with its owning issue) or a
+      # new failure, in the run's summary, so a red PR says whether to re-run
+      # or investigate (apps/web/e2e/README.md, "Recording a flake"). It only
+      # reports: every step here may fail without touching the verdict, which
+      # is the last step's alone.
+      - uses: actions/checkout@v7
+        continue-on-error: true
+
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: playwright-results-*
+          path: shard-results
+
+      - name: Summarise failed tests
+        continue-on-error: true
+        run: node apps/web/scripts/flake-summary.mjs shard-results
+
       - run: test "${{ needs.e2e-shard.result }}" = success
