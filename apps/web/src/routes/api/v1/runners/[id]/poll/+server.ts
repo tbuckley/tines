@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RunnerPollRequest } from '@tines/shared';
 import { api, notFound, readJson } from '$lib/server/api/core';
 import { pollRunner, runnerProtocolContext } from '$lib/server/api/runner-protocol';
+import { bundleRace } from '$lib/server/supervisor/bundle-e2e-race';
 import type { RequestHandler } from './$types';
 
 /**
@@ -13,6 +14,15 @@ export const POST: RequestHandler = api(async (event) => {
 	// The token is the credential; the path must name the same runner.
 	if (runner.id !== event.params.id) throw notFound();
 	const body = await readJson<RunnerPollRequest>(event);
-	const { response } = await pollRunner(db, env, runner, effects, body);
+	const { response } = await pollRunner(
+		db,
+		env,
+		runner,
+		effects,
+		body,
+		Date.now(),
+		0,
+		bundleRace(event.request)
+	);
 	return json(response);
 });
