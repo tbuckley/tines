@@ -20,11 +20,14 @@ import {
 	type CommonOpts
 } from '../common.js';
 import { agentCliPrefix, installAgentCli } from '../daemon/cli-refresh.js';
+import { PI_VERSION_FLOOR, piVersionSupported } from '../daemon/effort-capabilities.js';
 import { ensureRunnerCredentials, nextStepsMessage } from '../daemon/register.js';
 import {
 	daemonArgs,
 	daemonStartedLine,
 	defaultServiceManager,
+	findOnPath,
+	listedPiModels,
 	managedBinary,
 	managedBinaryPresent,
 	matchDaemonProcesses,
@@ -39,6 +42,7 @@ import {
 	type ServiceSpec
 } from '../daemon/service.js';
 import { defaultConfigDir } from '../daemon/store.js';
+import type { HarnessKind } from '../daemon/support.js';
 import {
 	harnessFlag,
 	parseDaemonFlags,
@@ -52,6 +56,14 @@ const run = promisify(execFile);
 const STARTUP_TIMEOUT_MS = 30_000;
 
 const log = (message: string) => console.log(message);
+
+/** The binary each harness needs on the service's PATH; `custom` names its own. */
+const HARNESS_BINARIES: Record<HarnessKind, string | null> = {
+	claude_code: 'claude',
+	codex: 'codex',
+	pi: 'pi',
+	custom: null
+};
 
 function resolveServiceManager(flag: string | undefined): ServiceManagerKind {
 	if (flag !== undefined) {
@@ -118,6 +130,59 @@ async function waitForStart(logPath: string, offset: number, name: string): Prom
 	return false;
 }
 
+/**
+ * The Pi preflight, run against the `pi` the service's PATH resolves to —
+ * the one the daemon will launch, which is not always this shell's first.
+ * Too old is fatal before anything is registered or written: the daemon
+ * cannot parse its stream. Returns whether a `pi` was there to check; when
+ * it is not, the missing-binary warning covers it.
+ */
+async function requirePiVersion(path: string): Promise<boolean> {
+	const pi = findOnPath('pi', path);
+	if (!pi) return false;
+	let version: string;
+	try {
+		version = (await run(pi, ['--version'], { timeout: 10_000 })).stdout.trim();
+	} catch (err) {
+		die(`\`${pi} --version\` failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
+	if (!piVersionSupported(version)) {
+		die(
+			`${pi} is pi ${version || '(unknown version)'}, older than ${PI_VERSION_FLOOR}, the oldest the pi harness supports — update it (\`npm install -g @earendil-works/pi-coding-agent\`), then install again`
+		);
+	}
+	return true;
+}
+
+/**
+ * Asks `pi` for its models the way the service will: the unit's PATH and
+ * HOME, and none of this shell's other variables. Credentials that depend
+ * on one (an API key exported in a shell profile) show up here as an empty
+ * list, which is what the daemon would see on every run.
+ */
+async function warnIfPiListsNoModels(path: string): Promise<void> {
+	let count: number;
+	try {
+		const { stdout } = await run('pi', ['--list-models'], {
+			env: { PATH: path, HOME: homedir() },
+			timeout: 30_000
+		});
+		count = listedPiModels(stdout);
+	} catch (err) {
+		log(
+			`warning: could not run \`pi --list-models\` with the service's PATH (${err instanceof Error ? err.message.split('\n')[0] : String(err)}); check the model list yourself before routing work here`
+		);
+		return;
+	}
+	if (count > 0) {
+		log(`pi lists ${count} model${count === 1 ? '' : 's'} in the service's environment`);
+		return;
+	}
+	log(
+		'warning: `pi --list-models` lists no models in the service\'s environment. The service gets only PATH and HOME, not this shell\'s variables, so model credentials that depend on one (an API key exported in your shell profile) are invisible to it and every run would fail. Put the credential where pi reads it without the shell (`~/.pi/agent/auth.json`, or a literal key in `~/.pi/agent/models.json`), then `tines runner restart`. See docs/runner-daemon.md, "Pi" → "Model credentials".'
+	);
+}
+
 function serviceTarget(name: string, kind: ServiceManagerKind) {
 	return { kind, name, unitPath: unitPath(name, kind, homedir()), uid: userInfo().uid };
 }
@@ -162,6 +227,15 @@ export function registerServiceCommands(runnerCmd: Command): void {
 			);
 		}
 
+		const harnessBinary = HARNESS_BINARIES[settings.harness];
+		const { path, missing } = servicePath({
+			execPath: process.execPath,
+			required: [...(harnessBinary ? [harnessBinary] : []), 'git'],
+			envPath: process.env.PATH,
+			platform: process.platform
+		});
+		const piPresent = settings.harness === 'pi' && (await requirePiVersion(path));
+
 		// The managed prefix: the binary the unit launches, so that a newer
 		// release installed there restarts the daemon (self-update).
 		if (!managedBinaryPresent(prefix)) {
@@ -193,19 +267,13 @@ export function registerServiceCommands(runnerCmd: Command): void {
 			die(err instanceof Error ? err.message : String(err));
 		}
 
-		const harnessBinary =
-			settings.harness === 'claude_code' ? 'claude' : settings.harness === 'codex' ? 'codex' : null;
-		const { path, missing } = servicePath({
-			execPath: process.execPath,
-			required: [...(harnessBinary ? [harnessBinary] : []), 'git'],
-			envPath: process.env.PATH,
-			platform: process.platform
-		});
 		for (const name of missing) {
 			log(
 				`warning: \`${name}\` is not on this shell's PATH, so it is not on the service's either — install it, then \`tines runner install\` again`
 			);
 		}
+
+		if (piPresent) await warnIfPiListsNoModels(path);
 
 		const target = serviceTarget(settings.name, kind);
 		const logPath = serviceLogPath(configDir, settings.name);

@@ -1,8 +1,8 @@
 import type { IssueListItem } from '@tines/shared';
 import { describe, expect, it } from 'vitest';
 import { clearIssuePagination, issuePageHref } from '$lib/issue-pagination';
-import { ApiFail, encodeCursor } from './api/core';
-import { issuePagination, readIssuePage } from './issue-pagination';
+import { ApiFail, decodeCursor, encodeCursor } from './api/core';
+import { issuePagination, keysetPagination, readIssuePage } from './issue-pagination';
 
 const url = (query = '') => new URL(`https://example.test/issues${query}`);
 const item = (id: string, created_at: number) => ({ id, created_at }) as IssueListItem;
@@ -62,5 +62,26 @@ describe('issue pagination URLs', () => {
 			previousHref: expect.stringContaining('before='),
 			firstHref: '/issues'
 		});
+	});
+
+	it('mints cursors from the timestamp the caller sorts on', () => {
+		const source = new URL('https://example.test/context?kind=prompt');
+		const rows = [
+			{ id: 'ctx_b', created_at: 1, updated_at: 9 },
+			{ id: 'ctx_a', created_at: 2, updated_at: 7 }
+		];
+		const pagination = keysetPagination(
+			source,
+			readIssuePage(source),
+			rows,
+			true,
+			(row) => row.updated_at,
+			'all'
+		);
+		const next = new URL(pagination.nextHref!, source);
+		expect(next.pathname).toBe('/context');
+		expect(next.searchParams.get('kind')).toBe('prompt');
+		expect(next.searchParams.get('page_scope')).toBe('all');
+		expect(decodeCursor(next.searchParams.get('after')!)).toEqual({ createdAt: 7, id: 'ctx_a' });
 	});
 });

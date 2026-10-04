@@ -2151,9 +2151,15 @@ export interface Runner {
 	/**
 	 * The built-in tier→model table for this runner's type (and harness), so
 	 * clients can render resolution and the stale-override marker without
-	 * duplicating the table. Null = tiers don't apply (custom harness).
+	 * duplicating the table. Null = no built-in table (custom and pi harnesses).
 	 */
 	tier_models: Record<ModelTier, string> | null;
+	/**
+	 * Whether tiers mean anything on this runner. False only for a local
+	 * `custom` harness; a `pi` runner has no built-in table but still takes
+	 * per-tier model overrides.
+	 */
+	tiers_apply: boolean;
 	/** Per-runner money limits; null = none. */
 	budget: RunnerBudget | null;
 	/** Managed types: whether a provider API key is stored (write-only). */
@@ -2215,7 +2221,7 @@ export interface CreateRunnerRequest {
 	 * `{}` to create one uncapped (the setup flow shows and edits this).
 	 */
 	budget?: RunnerBudget;
-	/** Local runners: { harness?: 'claude_code' | 'codex' | 'custom', … }. */
+	/** Local runners: { harness?: 'claude_code' | 'codex' | 'pi' | 'custom', … }. */
 	config?: Record<string, unknown>;
 }
 
@@ -2262,7 +2268,7 @@ export interface DeleteRunnerRequest {
  */
 export interface RegisterRunnerRequest {
 	name: string;
-	harness?: 'claude_code' | 'codex' | 'custom';
+	harness?: 'claude_code' | 'codex' | 'pi' | 'custom';
 	/** Custom harness only: the command template. */
 	command?: string;
 	max_concurrent?: number;
@@ -2370,7 +2376,7 @@ export interface RunnerAssignmentEnv {
 export interface RunnerAssignmentResume {
 	/** The run whose conversation this one continues. */
 	previous_run_id: string;
-	/** The harness session to reopen (`claude -p --resume <id>`). */
+	/** The harness session to reopen (`claude -p --resume <id>`, `pi --session <id>`). */
 	provider_session_id: string;
 	/** The predecessor's workspace, kept on disk for exactly this. */
 	workspace_path: string;
@@ -2407,12 +2413,17 @@ export interface RunnerPollResponse {
 /** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */
 export interface AppendRunLogRequest {
 	chunk: string;
-	/** Local launch milestone; accepted only for this run's resolved effort. */
+	/**
+	 * Local launch milestone; accepted only for this run's resolved effort.
+	 * `confirmed` = the harness reported applying exactly this effort (pi).
+	 */
 	effort_application?: {
-		status: 'accepted_unconfirmed' | 'rejected';
+		status: 'accepted_unconfirmed' | 'confirmed' | 'rejected';
 		attempted_effort: string;
 		transport: 'argv';
 		reason?: string;
+		/** With `rejected`: the level the harness reported applying instead (pi). */
+		observed_effort?: string;
 	};
 	/**
 	 * Per-run, 1-based, monotonic chunk number assigned by the daemon. A
@@ -2612,6 +2623,7 @@ export interface CodexPricingEvidenceV1 {
 
 export type RunPricingReason =
 	| 'pricing_evidence_missing'
+	| 'harness_unpriced'
 	| 'invalid_pricing_evidence'
 	| 'model_missing'
 	| 'model_mismatch'
