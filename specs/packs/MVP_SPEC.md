@@ -182,7 +182,7 @@ inputs:
 | Input type | Value the project supplies | Default | Required when |
 | --- | --- | --- | --- |
 | `text` | a string | `default:` | no default, unless `required: false` (then it renders as empty) |
-| `secret` | a secret string, stored like an env secret today | none | always |
+| `secret` | a secret string, supplied by each contributor for their own runs (see *Secret inputs*) | none | always |
 | `repo` | a URL and a branch | `default_branch:` (the URL never has a default) | always |
 | `workflow` | a workflow used in this project, and optionally a start state | `default:` names a workflow in this pack, as `<workflow>` or `<workflow>/<state>` | no default |
 
@@ -220,7 +220,11 @@ states:
 ```
 
 - `category` is one of `backlog`, `active`, `awaiting_human`, `done`.
-- `run_scope` is `issue` (the default), `project` or `workspace`.
+- `run_scope` is `issue` (the default), `project` or `organization`. Until
+  organizations land (`specs/packs/ORGANIZATIONS_SPEC.md`), `organization`
+  maps to today's `workspace` scope: the pack format never contains
+  `workspace`, and the installer stores `workspace` for it. When
+  organizations rename the stored value, installed packs need no change.
 - `Name: target` is shorthand for `Name: { to: target }`. `requires` lists
   artifact names the transition requires, as artifact requirements do today.
 - Transition names are unique within their state. A non-`done` state with no
@@ -326,6 +330,25 @@ Free Markdown, shown as is (no placeholders) on the install and replace
 screens. The replace screen shows the CHANGELOG sections for versions newer
 than the installed one when headed `## <version>`, and the whole file
 otherwise.
+
+### Secret inputs
+
+Secrets stay per contributor, as they are today. A pack's `secret` input
+declares a name and a description; it has no project value. Each person who
+runs the project's issues supplies their own value, for that project, and no
+one can read anyone else's.
+
+- **At install**, the installer is asked for their own value. Leaving it empty
+  does not block the install.
+- **When someone joins the project**, or a pack gains a secret input through
+  install or Replace, each member without a value is asked for theirs on the
+  project, privately, naming the pack and the input's description.
+- **A contributor with no value** for a secret input referenced by an issue's
+  effective context is not eligible to run that issue; the refusal names the
+  pack and the input. Other contributors are unaffected, and the pack is not
+  *needs setup* for everyone because one member has not supplied a value.
+- **Leaving the project** stops the value being used there; removing the pack
+  deletes every contributor's values for it.
 
 ## Placeholders
 
@@ -487,8 +510,8 @@ use Replace.
 1. the README;
 2. **what this pack adds** — workflows and states; every `project/` item
    (*applies to every issue in this project*); env values and fixed repo URLs;
-   states whose `run_scope` is `project` or `workspace`, with `workspace`
-   marked high risk; suggested schedules;
+   states whose `run_scope` is `project` or `organization`, with
+   `organization` marked high risk; suggested schedules;
 3. **replacements** — items in this project the pack would override, or that
    would override the pack's;
 4. **inputs** — a form for every input, pre-filled with defaults; workflow
@@ -584,7 +607,7 @@ workflow.
 | create and edit an authored pack | yes | yes | if `run_scope` reaches the project |
 | set `run_scope` on an authored pack's state | yes | no | no (as `0047` set) |
 | install, replace, detach, remove | yes | yes | no |
-| install or replace a pack with a `project` or `workspace` state, or one that widens a `run_scope` | yes | no | no |
+| install or replace a pack with a `project` or `organization` state, or one that widens a `run_scope` | yes | no | no |
 | set input values | yes | yes | no |
 
 For the MVP any member of a project may do what the table allows.
@@ -625,9 +648,11 @@ Illustrative; a migration plan comes with implementation.
   `digest`, `last_exported_version`, `last_exported_digest`, `source_kind`
   (`file` | `project`), `source_pack_id`, `derived_from`, `position`,
   `inputs` (the declarations, as JSON), `created_by`.
-- `pack_input_value` — `pack_id`, `name`, and one of: text value, secret
-  ciphertext (stored like an env secret), repo URL and branch, workflow id and
-  optional state id.
+- `pack_input_value` — `pack_id`, `name`, and one of: text value, repo URL
+  and branch, workflow id and optional state id. Secret inputs have no row
+  here.
+- `pack_secret_value` — `pack_id`, `input_name`, `user_id`, `value_enc`,
+  `updated_at`: one contributor's value for one secret input.
 - `workflow` gains `pack_id` and `key`; `workflow_state` gains `key`.
 - `context_item` gains `pack_id`, `reach` (`project` | `pack` | `workflow` |
   `state`) and, for workflow reach, `workflow_id`. Pack items store their text

@@ -124,9 +124,17 @@ own runners in. Organizations keep that, with these rules:
   and moving a project never clear choices, whatever they change. The person
   making the change reviews what it means, on the screen that already shows
   it. The decision revision still advances on a state or transition change,
-  but only to refuse a transition submitted from a stale screen; it no longer
-  invalidates choices. (Today, `docs/shared-projects.md`, a definition change
-  invalidates choices; this replaces that rule.)
+  but only to refuse a transition submitted from a stale screen, as it
+  already does. What this replaces is the narrower set of resets a workflow
+  edit makes today (`updateWorkflow` in `apps/web/src/lib/server/api/workflows.ts`):
+  changing the workflow's initial state clears members' future-issue choices
+  on schedules that start in it, and the unlaunched issue choices those
+  schedules granted; changing a state's category does the same for
+  schedules that start in that state; and changing a state's category to
+  `done` clears every personal choice on the issues in it. Editing a
+  schedule's templates, workflow, start, recurrence, timezone or gate also
+  clears members' future-issue choices on it today; that stays, since it is
+  an edit to the schedule a person opted in to, not to a definition.
 - **What still clears a choice:** moving the issue to Done (unchanged), the
   person losing access to the organization, and the person turning it off.
 
@@ -468,13 +476,13 @@ work are run again against organizations.
   bind only to an organization-level workflow; a project override may bind to
   a project one. A `workflow` input renders with the run's own project, so a
   handoff files into the same project.
-- **Secret inputs** are supplied by each contributor (see *Secrets*). The
-  MVP's per-project secret value is removed.
+- **Secret inputs** are already supplied by each contributor in the MVP
+  (`pack_secret_value`); they move into `contributor_secret` (see *Secrets*).
 - **Install sources.** *From my projects* becomes *From my organizations*,
   listing packs at both levels in organizations the person belongs to.
 - **Who can do what.** The MVP's table applies at both levels, to owners and
-  managers. `run_scope: workspace` in the MVP's formats becomes
-  `organization`.
+  managers. The MVP's formats already say `run_scope: organization`; it stops
+  mapping to stored `workspace` when the rename ships.
 - **Suggested schedules** gain an optional `suggested: on`, which pre-checks
   the suggestion wherever it is offered. Suggestions not yet set up are listed
   on each project's Schedules page (see *Suggested schedules from organization
