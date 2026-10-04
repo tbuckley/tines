@@ -24,6 +24,7 @@ import {
 	MANAGED_SETTINGS,
 	NATIVE_MODERATION_PUBLISHER,
 	NATIVE_PUBLICATIONS_PUBLISHER,
+	CONTEXT_PAGINATION,
 	PAGINATION,
 	RUNNER_E2E,
 	RUNNER_CONCURRENCY,
@@ -70,6 +71,7 @@ for (const user of [
 	WORKFLOW_MODERATION_PUBLISHER,
 	WORKFLOW_PUBLICATIONS_PUBLISHER,
 	PAGINATION.user,
+	CONTEXT_PAGINATION,
 	SPEND,
 	WEEKLY
 ]) {
@@ -161,6 +163,17 @@ for (let number = 1; number <= 205; number += 1) {
 		`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
 		 VALUES ('iss_e2e_page_${number}', '${PAGINATION.projectId}', ${number}, 'Page issue ${number}',
 		 'large body omitted from list ${number}', 'wf_standard', 'wfs_std_open', ${number}, ${number});`
+	);
+}
+
+// Its own account, because the issue pagination spec leaves PAGINATION focused
+// on a project, which hides global items. Ascending timestamps put
+// page-prompt-101..002 on the first Context page and page-prompt-001 on the second.
+for (let number = 1; number <= 101; number += 1) {
+	const name = `page-prompt-${String(number).padStart(3, '0')}`;
+	statements.push(
+		`INSERT INTO context_item (id, user_id, kind, name, description, body, position, version, created_at, updated_at)
+		 VALUES ('ctx_e2e_${name}', '${CONTEXT_PAGINATION.id}', 'prompt', '${name}', '', 'page fixture', 0, 1, ${number}, ${number});`
 	);
 }
 

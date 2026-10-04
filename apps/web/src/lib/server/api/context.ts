@@ -541,18 +541,21 @@ export interface ContextItemFilters {
 	 * state-scoped items are anchored on no project and always show.
 	 */
 	archived?: ArchivedFilter;
+	/** Web-only: kinds to leave out, applied before the limit. Not exposed over HTTP. */
+	excludeKinds?: readonly ContextKind[];
 }
 
 /**
- * Lists items ordered `updated_at` desc then `id` desc (stable cursors; the
- * cursor's timestamp slot carries updated_at). Filters use "scope includes"
+ * Lists items ordered `updated_at` desc then `id` desc: a two-way keyset on
+ * `(updated_at, id)` (the cursor's timestamp slot carries updated_at), and
+ * either direction returns its page newest first. Filters use "scope includes"
  * semantics; `exact` additionally requires unfiltered dimensions to be unset.
  */
 export async function listContextItems(
 	db: Kysely<Database>,
 	actorInput: ActorContext | string,
 	filters: ContextItemFilters,
-	page: Page
+	page: Page & { direction?: 'after' | 'before' }
 ): Promise<{ items: ContextItem[]; hasMore: boolean }> {
 	const actor = typeof actorInput === 'string' ? sessionActor({ id: actorInput }) : actorInput;
 	const userId = actor.userId;
@@ -566,6 +569,9 @@ export async function listContextItems(
 	);
 	if (filters.kind) {
 		q = q.where('context_item.kind', '=', requireKind(filters.kind));
+	}
+	if (filters.excludeKinds?.length) {
+		q = q.where('context_item.kind', 'not in', filters.excludeKinds);
 	}
 	if (filters.project) {
 		const p = filters.project;
@@ -646,24 +652,30 @@ export async function listContextItems(
 			])
 		);
 	}
+	const backwards = page.direction === 'before';
 	if (page.cursor) {
 		const { createdAt: updatedAt, id } = page.cursor;
 		q = q.where((eb) =>
 			eb.or([
-				eb('context_item.updated_at', '<', updatedAt),
-				eb.and([eb('context_item.updated_at', '=', updatedAt), eb('context_item.id', '<', id)])
+				eb('context_item.updated_at', backwards ? '>' : '<', updatedAt),
+				eb.and([
+					eb('context_item.updated_at', '=', updatedAt),
+					eb('context_item.id', backwards ? '>' : '<', id)
+				])
 			])
 		);
 	}
 	const rows = await q
-		.orderBy('context_item.updated_at desc')
-		.orderBy('context_item.id desc')
+		.orderBy('context_item.updated_at', backwards ? 'asc' : 'desc')
+		.orderBy('context_item.id', backwards ? 'asc' : 'desc')
 		.limit(page.limit + 1)
 		.execute();
+	const pageRows = rows.slice(0, page.limit);
+	if (backwards) pageRows.reverse();
 	return {
 		// A member's page is narrowed to the shared project by the caller, which
 		// needs the unfiltered rows for its cursor; the value rule applies here.
-		items: rows.slice(0, page.limit).map((r) => redactForMember(actor, serializeItem(r))),
+		items: pageRows.map((r) => redactForMember(actor, serializeItem(r))),
 		hasMore: rows.length > page.limit
 	};
 }
@@ -3012,23 +3024,33 @@ export function seedRepoQueries(
 	};
 }
 
+/** Whether the user's global starter prompt exists: one indexed row probe. */
+export async function hasGlobalAgentGuidelines(
+	db: Kysely<Database>,
+	userId: string
+): Promise<boolean> {
+	const existing = await db
+		.selectFrom('context_item')
+		.select('id')
+		.where('user_id', '=', userId)
+		.where('kind', '=', 'prompt')
+		.where('name', '=', AGENT_GUIDELINES_NAME)
+		.where('project_id', 'is', null)
+		.where('workflow_state_id', 'is', null)
+		.where('issue_id', 'is', null)
+		.where('label_id', 'is', null)
+		.limit(1)
+		.executeTakeFirst();
+	return existing !== undefined;
+}
+
 /** Seeds the global agent-guidelines prompt once; a no-op if it exists. */
 export async function ensureAgentGuidelines(
 	db: Kysely<Database>,
 	env: Env,
 	actor: ActorContext
 ): Promise<'created' | 'exists'> {
-	const existing = await db
-		.selectFrom('context_item')
-		.select('id')
-		.where('user_id', '=', actor.userId)
-		.where('kind', '=', 'prompt')
-		.where('name', '=', AGENT_GUIDELINES_NAME)
-		.where('project_id', 'is', null)
-		.where('workflow_state_id', 'is', null)
-		.where('issue_id', 'is', null)
-		.executeTakeFirst();
-	if (existing) return 'exists';
+	if (await hasGlobalAgentGuidelines(db, actor.userId)) return 'exists';
 	await createContextItem(db, env, actor, {
 		kind: 'prompt',
 		name: AGENT_GUIDELINES_NAME,
