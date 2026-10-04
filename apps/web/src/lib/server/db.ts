@@ -57,6 +57,11 @@ export interface WorkflowTable {
 	created_at: number;
 	updated_at: number;
 	decision_revision: Generated<number>;
+	/**
+	 * Advances by exactly one per committed updateWorkflow batch; the
+	 * `workflow_definition_revision_step` trigger aborts any other step.
+	 */
+	definition_revision: Generated<number>;
 }
 
 export interface WorkflowStateTable {

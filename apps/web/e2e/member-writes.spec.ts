@@ -152,3 +152,128 @@ test('a member files and edits issues in a shared project, and people stay the o
 	await expect(page.getByRole('button', { name: 'Delete' })).toHaveCount(0);
 	await expect(page.getByText('Context by state')).toHaveCount(0);
 });
+
+test('a member sees the shared project context they can create, in the list API and on the Context page', async ({
+	request,
+	page,
+	uniqueName
+}) => {
+	test.setTimeout(120_000);
+	const owner = apiClient(request, ALICE.apiKey);
+	const member = apiClient(request, BOB.apiKey);
+	const project = await body<{ id: string; name: string }>(
+		await owner.post('/api/v1/projects', { name: uniqueName('member-context') })
+	);
+	const issue = await body<{ id: string; number: number }>(
+		await owner.post(`/api/v1/projects/${project.id}/issues`, { title: 'Context owner issue' })
+	);
+	const privateProject = await body<{ id: string }>(
+		await owner.post('/api/v1/projects', { name: uniqueName('member-context-private') })
+	);
+	const names = {
+		ownerPrompt: uniqueName('ctx-owner-prompt'),
+		memberPrompt: uniqueName('ctx-member-prompt'),
+		globalCanary: uniqueName('ctx-global-canary'),
+		privateCanary: uniqueName('ctx-private-canary')
+	};
+	const prompt = (name: string, scope: Record<string, string> = {}) =>
+		owner.post('/api/v1/context', { kind: 'prompt', name, body: `${name} body`, ...scope });
+	// A global item under the shared owner account would reach other specs'
+	// effective context: it is deleted in the `finally` below.
+	const globalCanary = await body<{ id: string }>(await prompt(names.globalCanary));
+	try {
+		await body(await prompt(names.privateCanary, { project_id: privateProject.id }));
+		await body(await prompt(names.ownerPrompt, { project_id: project.id }));
+		await body(
+			await owner.post('/api/v1/context', {
+				kind: 'env',
+				name: 'MEMBER_CONTEXT_TOKEN',
+				value: 'CTX_ENV_VALUE_CANARY',
+				project_id: project.id
+			})
+		);
+		const invite = await body<{ id: string }>(
+			await owner.post(`/api/v1/projects/${project.id}/invitations`, {
+				email: BOB.email,
+				confirm_sharing: true,
+				expected_sharing_revision: 0
+			})
+		);
+		const sink = await body<{ url: string }>(
+			await request.get(`/api/v1/__e2e/invitation-email/${invite.id}`)
+		);
+		await signIn(page.context(), BOB.sessionToken);
+		await gotoHydrated(page, new URL(sink.url).pathname);
+		await page.getByRole('button', { name: 'Join project' }).click();
+		await expect(page.getByRole('link', { name: /Context owner issue/ })).toBeVisible();
+
+		// The reported repro: the member creates a project prompt, then lists.
+		const created = await member.post('/api/v1/context', {
+			kind: 'prompt',
+			name: names.memberPrompt,
+			project_id: project.id,
+			body: 'x'
+		});
+		expect(created.status()).toBe(201);
+		const listed = await body<{ items: { name: string; kind: string; value?: string }[] }>(
+			await member.get('/api/v1/context?limit=200')
+		);
+		const listedNames = listed.items.map((item) => item.name);
+		expect(listedNames).toContain(names.memberPrompt);
+		expect(listedNames).toContain(names.ownerPrompt);
+		expect(listedNames).not.toContain(names.globalCanary);
+		expect(listedNames).not.toContain(names.privateCanary);
+		expect(JSON.stringify(listed)).not.toContain('CTX_ENV_VALUE_CANARY');
+		const byName = await body<{ items: { name: string }[] }>(
+			await member.get(`/api/v1/context?project=${encodeURIComponent(project.name)}`)
+		);
+		expect(byName.items.map((item) => item.name).sort()).toEqual(
+			['MEMBER_CONTEXT_TOKEN', names.memberPrompt, names.ownerPrompt].sort()
+		);
+
+		// The Context page, focused on the shared project, at both reported sizes.
+		await body(await member.patch('/api/v1/preferences', { focused_project_id: project.id }));
+		for (const viewport of [
+			{ width: 1440, height: 900 },
+			{ width: 390, height: 844 }
+		]) {
+			await page.setViewportSize(viewport);
+			await gotoHydrated(page, '/context');
+			for (const name of [names.memberPrompt, names.ownerPrompt, 'MEMBER_CONTEXT_TOKEN'])
+				await expect(
+					page.getByRole('button', { name: new RegExp(name) }),
+					`${name} at ${viewport.width}px`
+				).toBeVisible();
+			await expect(page.getByTestId('member-context-note')).toContainText(
+				`shared by ${ALICE.name}`
+			);
+			await expect(page.getByText(/shared items? \(global and state-scoped\)/)).toHaveCount(0);
+			await expect(page.getByText('Add the starter agent guidance')).toHaveCount(0);
+			const html = await page.content();
+			for (const canary of [names.globalCanary, names.privateCanary, 'CTX_ENV_VALUE_CANARY'])
+				expect(html).not.toContain(canary);
+		}
+
+		// The member edits their own item from the list.
+		await page.setViewportSize({ width: 1440, height: 900 });
+		const editor = page.getByRole('dialog');
+		await clickToOpen(page.getByRole('button', { name: new RegExp(names.memberPrompt) }), editor);
+		await editor.getByLabel('Description').fill('Edited by the member');
+		await editor.getByRole('button', { name: 'Save' }).click();
+		await expect(editor).toHaveCount(0);
+		await expect(page.getByRole('button', { name: new RegExp(names.memberPrompt) })).toContainText(
+			'Edited by the member'
+		);
+
+		// The issue page counts what the member can see, and links to it.
+		await gotoHydrated(page, `/issues/${project.id}/${issue.number}`);
+		await expect(page.getByRole('heading', { name: 'Context (2 prompts, 1 env)' })).toBeVisible();
+		await expect(page.getByRole('link', { name: 'View project context' })).toHaveAttribute(
+			'href',
+			`/projects/${project.id}`
+		);
+	} finally {
+		await owner.delete(`/api/v1/context/${globalCanary.id}`).catch(() => undefined);
+		await member.patch('/api/v1/preferences', { focused_project_id: null }).catch(() => undefined);
+	}
+});
