@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { NOW, PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
+import { NOW, OPEN, PROJECT, USER, addIssue, seedBase } from '../supervisor/test-fixtures';
 import { createTestDb } from './test-db';
 import { TEST_NOOP_DISPATCH_EFFECTS } from './test-dispatch-effects';
-import { createIssue, updateIssue } from './issues';
+import { contextSummaryForIssue, createContextItem } from './context';
+import { createIssue, getIssueDetail, updateIssue } from './issues';
 import { addIssueLink } from './issue-links';
 import { actorForIssue, actorForProject } from './project-access';
 import { memberScopeAllowed, redactForMember, scopeIssueLinksForMember } from './member-context';
@@ -146,5 +147,38 @@ describe('members work on a shared project with the owner scope', () => {
 		const env = { kind: 'env', value: 'TOKEN_CANARY', secret: false } as ContextItem;
 		expect(redactForMember(actor, env)).toEqual({ kind: 'env', secret: false, value_set: true });
 		expect(redactForMember(member, env)).toBe(env);
+	});
+
+	it('counts only the shared project own context for a member, on reads and mutation replies', async () => {
+		const { t, owner, member } = setup();
+		const issueId = addIssue(t, {});
+		const prompt = (name: string, scope: Record<string, string> = {}) =>
+			createContextItem(t.db, t.env, owner, { kind: 'prompt', name, body: 'x', ...scope });
+		await prompt('owner-global');
+		await prompt('owner-state', { workflow_state_id: OPEN });
+		await prompt('project-prompt', { project_id: PROJECT });
+		await prompt('issue-prompt', { issue_id: issueId });
+		const target = { projectId: PROJECT, stateId: OPEN, issueId };
+		const actor = await actorForIssue(t.db, member, issueId);
+
+		// The owner (and any caller that names no actor) counts all four.
+		expect((await contextSummaryForIssue(t.db, USER, target)).prompts).toBe(4);
+		expect((await contextSummaryForIssue(t.db, USER, target, owner)).prompts).toBe(4);
+		// The member: the project- and issue-anchored rows only.
+		expect((await contextSummaryForIssue(t.db, USER, target, actor)).prompts).toBe(2);
+
+		// The issue page hands the delegated actor in as `memberActor`…
+		const detail = await getIssueDetail(t.db, USER, { id: issueId }, { memberActor: actor });
+		expect(detail.context_summary.prompts).toBe(2);
+		expect((await getIssueDetail(t.db, USER, { id: issueId })).context_summary.prompts).toBe(4);
+		// …and a member's mutation reply carries the same narrowed count.
+		const updated = await updateIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, issueId, {
+			title: 'Retitled by a member'
+		});
+		expect(updated.context_summary.prompts).toBe(2);
+		const byOwner = await updateIssue(t.db, t.env, owner, TEST_NOOP_DISPATCH_EFFECTS, issueId, {
+			title: 'Retitled by the owner'
+		});
+		expect(byOwner.context_summary.prompts).toBe(4);
 	});
 });
