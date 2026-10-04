@@ -302,7 +302,10 @@
 		document.getElementById(optionId(highlight))?.scrollIntoView({ block: 'nearest' });
 	}
 
-	/** Keeps the list above the phone tab bar and the on-screen keyboard; null before measuring. */
+	/**
+	 * Keeps the list above the phone's bottom bars and the on-screen keyboard, or
+	 * inside a dialog's scrolling body; null before measuring.
+	 */
 	let maxHeight = $state<number | null>(null);
 	$effect(() => {
 		if (!showList || !ref) return;

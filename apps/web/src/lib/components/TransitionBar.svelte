@@ -112,9 +112,11 @@
 
 <!-- Inside <main>, whose view-transition-name makes it a stacking context, so
      a dialog (portaled to <body>) still covers the bar. -->
+<!-- data-bottom-chrome: in-page popovers end above the bar ($lib/popover-fit.ts). -->
 <div
 	class="bg-background/95 fixed inset-x-0 z-30 border-t backdrop-blur sm:hidden"
 	style="bottom: calc(4rem + env(safe-area-inset-bottom, 0px))"
+	data-bottom-chrome
 	data-testid="transition-bar"
 >
 	<div bind:this={barEl} class="relative flex h-14 items-center gap-2 px-3">

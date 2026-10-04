@@ -1051,9 +1051,28 @@ for (const size of [DESKTOP, PHONE, { width: 1280, height: 720 }, { width: 390, 
 		await scope.fill('Page issue');
 		await expect(options).toHaveCount(8);
 		await expect.poll(() => hittable(options.first())).toBe(true);
-		// At 280px the list is taller than the dialog body, which can only show
-		// its top rows at once; the arrow keys below must scroll the rest in.
-		if (size.height >= 720) await expect.poll(() => hittable(options.last())).toBe(true);
+		const listbox = dialog.getByRole('listbox');
+		const scrollsInside = () => listbox.evaluate((el) => el.scrollHeight > el.clientHeight);
+		if (size.height >= 720) {
+			// The dialog covers the phone tab bar, so the list is sized to the
+			// dialog's body, not to the space above the bar: all eight rows show.
+			await expect.poll(() => hittable(options.last())).toBe(true);
+			expect(await scrollsInside()).toBe(false);
+		} else {
+			// At 280px the body is shorter than eight rows. The list is cut to what
+			// the body can show under the field, so the field stays on screen above
+			// it, and the arrow keys below scroll the rest in.
+			await expect.poll(scrollsInside).toBe(true);
+			await expect
+				.poll(() =>
+					listbox.evaluate((el) => {
+						const body = el.closest('[role="dialog"] > .overflow-y-auto')!;
+						return el.getBoundingClientRect().bottom <= body.getBoundingClientRect().bottom + 0.5;
+					})
+				)
+				.toBe(true);
+			await expect.poll(() => hittable(scope)).toBe(true);
+		}
 
 		for (let i = 1; i < 8; i += 1) {
 			await scope.press('ArrowDown');

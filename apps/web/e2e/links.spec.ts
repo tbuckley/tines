@@ -8,7 +8,7 @@ import type {
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
 import { ALICE, BOB, PAGINATION } from './constants.mjs';
-import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
+import { apiClient, body, errorBody, gotoHydrated, PHONE, runId, signIn } from './helpers';
 
 /**
  * Dependencies & duplicates (specs/issue_dependencies/SPEC.md): blocking
@@ -354,6 +354,57 @@ test.describe.serial('issue links', () => {
 		await expect(card.getByRole('option', { name: new RegExp(competing.title) })).toBeVisible();
 		const detail = await body<IssueDetail>(await api.get(`/api/v1/issues/${current.id}`));
 		expect(detail.links.duplicate_of?.issue_id).toBe(canonical.id);
+	});
+
+	test('on a phone the Relations picker list ends above the bottom bars', async ({
+		request,
+		context,
+		page
+	}) => {
+		// The pagination account's 205 issues fill all eight rows.
+		const api = apiClient(request, PAGINATION.user.apiKey);
+		const project = await body<Project>(
+			await api.post('/api/v1/projects', { name: `link-phone-${runId}` })
+		);
+		try {
+			const current = await body<IssueDetail>(
+				await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Linked from a phone' })
+			);
+			await page.setViewportSize(PHONE);
+			await signIn(context, PAGINATION.user.sessionToken);
+			await gotoHydrated(page, `/issues/${encodeURIComponent(project.name)}/${current.number}`);
+			const card = page.locator('#relations');
+			await card.getByRole('button', { name: 'Add' }).click();
+			const picker = card.getByRole('combobox', { name: 'Issue to link' });
+			const listbox = card.getByRole('listbox');
+			const options = listbox.getByRole('option');
+			const transitions = page.getByTestId('transition-bar');
+			const tabs = page.getByRole('navigation', { name: 'Primary' });
+			await expect(transitions).toBeVisible();
+
+			await picker.focus();
+			await expect(options).toHaveCount(8);
+			const top = async (l: typeof listbox) => (await l.boundingBox())!.y;
+			const bottom = async (l: typeof listbox) => {
+				const b = (await l.boundingBox())!;
+				return b.y + b.height;
+			};
+			// The transition bar sits on top of the tab bar; the list clears both.
+			await expect.poll(async () => (await bottom(listbox)) <= (await top(transitions))).toBe(true);
+			expect(await top(transitions)).toBeLessThan(await top(tabs));
+			const box = (await listbox.boundingBox())!;
+			expect(box.x).toBeGreaterThanOrEqual(0);
+			expect(box.x + box.width).toBeLessThanOrEqual(PHONE.width);
+
+			// Every row can be reached and tapped: the last one links its issue.
+			await options.last().scrollIntoViewIfNeeded();
+			expect(await bottom(options.last())).toBeLessThanOrEqual(await top(transitions));
+			const title = (await options.last().locator('span.truncate').textContent())!;
+			await options.last().click();
+			await expect(card.getByText(title, { exact: true })).toBeVisible();
+		} finally {
+			await api.delete(`/api/v1/projects/${project.id}`).catch(() => undefined);
+		}
 	});
 
 	test('the Relations picker reaches an issue far older than the newest 100', async ({
