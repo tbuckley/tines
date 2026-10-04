@@ -502,11 +502,16 @@ with a different digest, asks for confirmation.
 3. **what changed in what the pack adds**, in the same terms as install — new
    `project/` items, new or wider `run_scope`, new env values and repo URLs,
    new suggested schedules;
-4. **inputs** — new required inputs to fill here; removed ones are dropped;
-5. **state mapping** — every removed state that holds issues must be mapped to
-   a state that exists after the replace, pre-filled from `migrations.yaml`.
-   Project additions and schedules on a removed state move with the mapping.
-   Renamed keys need no mapping;
+4. **inputs** — new required inputs to fill here; removed ones are dropped.
+   As at install, a missing value does not block the replace: the pack is
+   left *needs setup*, and only runs whose effective context references the
+   missing value are refused (see Placeholders);
+5. **state mapping** — every removed state that holds issues, project
+   additions or schedules must be mapped to a state that exists after the
+   replace, pre-filled from `migrations.yaml`. Its issues, project additions
+   and schedules move with the mapping, so a state with no issues still keeps
+   the project's notes and schedules. Only a removed state that holds none of
+   the three needs no mapping, and renamed keys need none;
 6. **replacements** that the new version creates, changes or removes;
 7. the rendered preview.
 
