@@ -1267,6 +1267,75 @@ test('saving over a version that deleted a draft state re-creates it', async ({
 
 // --- issue transitions pin the state visit (Tines/608 Part D) -----------------
 
+test('on a phone the conflict review list wraps a long unbroken state name', async ({
+	page,
+	apiFor,
+	uniqueName
+}) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	const api = apiFor(ALICE);
+	const created = await body<{
+		id: string;
+		revision: number;
+		states: { id: string; name: string }[];
+	}>(
+		await api.post('/api/v1/workflows', {
+			name: uniqueName('Conflict phone', { maxLength: 100 }),
+			description: 'A workflow whose Review state gets a long name under a draft.',
+			initial_state: 'Open',
+			states: [
+				{ name: 'Open', category: 'active' },
+				{ name: 'Review', category: 'awaiting_human' },
+				{ name: 'Done', category: 'done' }
+			],
+			transitions: [
+				{ name: 'Submit', from: 'Open', to: 'Review' },
+				{ name: 'Approve', from: 'Review', to: 'Done' }
+			]
+		})
+	);
+	const idOf = (name: string) => created.states.find((state) => state.name === name)!.id;
+	await gotoHydrated(page, `/workflows/${created.id}`);
+	await page.getByLabel('Description', { exact: true }).fill(B_DESCRIPTION);
+
+	// No spaces, so the browser has nowhere to break it unless the list allows it.
+	const longName = 'Awaiting_security_compliance_and_legal_signoff_from_platform';
+	const renamed = await api.patch(`/api/v1/workflows/${created.id}`, {
+		expected_revision: created.revision,
+		states: [
+			{ id: idOf('Open'), name: 'Open', category: 'active' },
+			{ id: idOf('Review'), name: longName, category: 'awaiting_human' },
+			{ id: idOf('Done'), name: 'Done', category: 'done' }
+		],
+		transitions: [
+			{ name: 'Submit', from: idOf('Open'), to: idOf('Review') },
+			{
+				name: 'Approve',
+				from: idOf('Review'),
+				to: idOf('Done'),
+				requires: [{ artifact: 'sign-off' }]
+			}
+		]
+	});
+	expect(renamed.status()).toBe(200);
+
+	const refused = patchResponse(page, created.id);
+	await page.getByRole('button', { name: 'Save workflow' }).click();
+	expect((await refused).status()).toBe(409);
+	const banner = conflictBanner(page);
+	await banner.getByRole('button', { name: 'Review changes' }).click();
+	const changes = banner.getByRole('list', { name: 'Changes in the latest version' });
+	await expect(changes).toContainText(longName);
+
+	const overflow = (el: Element) => el.scrollWidth - el.clientWidth;
+	const lines = changes.getByRole('listitem');
+	expect(await lines.count()).toBeGreaterThan(1);
+	for (const line of await lines.all()) {
+		expect(await line.evaluate(overflow), await line.innerText()).toBeLessThanOrEqual(0);
+	}
+	expect(await banner.evaluate(overflow)).toBeLessThanOrEqual(0);
+});
+
 test('a transition confirmed after the issue left and returned is refused', async ({
 	page,
 	apiFor,

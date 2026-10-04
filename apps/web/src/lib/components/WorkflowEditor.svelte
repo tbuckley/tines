@@ -837,7 +837,7 @@
 				{#if reviewOpen}
 					<ul
 						id={`workflow-conflict-changes-${previewUid}`}
-						class="text-foreground space-y-1 text-xs"
+						class="text-foreground space-y-1 text-xs wrap-anywhere"
 						aria-label="Changes in the latest version"
 					>
 						{#each conflictChanges as change, index (index)}

@@ -81,6 +81,25 @@ describe('transitionIssue pins the state visit and workflow graph', () => {
 		expect(item).not.toHaveProperty('workflow_revision');
 	});
 
+	it('reads the workflow graph revision after a graph-changing save', async () => {
+		const { t, id } = seed();
+		t.sqlite.exec(`UPDATE workflow SET user_id = '${USER}' WHERE id = 'wf_standard'`);
+		await updateWorkflow(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, 'wf_standard', {
+			transitions: [
+				{ name: 'Submit for review', from: 'Open', to: 'Human Review' },
+				{ name: 'Send back', from: 'Human Review', to: 'Open' },
+				{ name: 'Approve', from: 'Human Review', to: 'Closed' }
+			]
+		});
+		const stored = t.all("SELECT decision_revision AS r FROM workflow WHERE id = 'wf_standard'")[0]
+			.r as number;
+		expect(stored).toBeGreaterThan(0);
+		// A fixture workflow sits at 0, which a constant would also satisfy.
+		expect((await getIssueDetail(t.db, USER, { id })).workflow_revision).toBe(stored);
+		// The move's own response is the witness for the next move.
+		expect((await move(t, id, { action: 'Submit for review' })).workflow_revision).toBe(stored);
+	});
+
 	it('refuses a delayed approve after another approve and send back (502 reproduction 1)', async () => {
 		const { t, id } = seed(REVIEW);
 		const effects = recordDispatchEffects();
@@ -200,6 +219,51 @@ describe('transitionIssue pins the state visit and workflow graph', () => {
 			details: { reason: 'workflow_changed' }
 		});
 		expect(issueById(t, id).state_id).toBe(REVIEW);
+	});
+
+	it('refuses on the graph revision alone, when the transition id survived the save', async () => {
+		// Today a graph save reissues every transition id, so the transition-id
+		// check refuses it first. This holds the graph pin on its own: the
+		// revision advances and the transition row is untouched.
+		const { t, id } = seed(REVIEW);
+		const env = beforeBatch(t, async () => {
+			t.sqlite.exec(
+				"UPDATE workflow SET decision_revision = decision_revision + 1 WHERE id = 'wf_standard'"
+			);
+		});
+		const eventsBefore = eventsOfType(t, 'issue.transitioned').length;
+		await expect(move(t, id, { transition_id: APPROVE }, env)).rejects.toMatchObject({
+			status: 409,
+			code: 'conflict',
+			details: { reason: 'workflow_changed' }
+		});
+		expect(issueById(t, id).state_id).toBe(REVIEW);
+		expect(eventsOfType(t, 'issue.transitioned')).toHaveLength(eventsBefore);
+	});
+
+	it('records one event when two moves to the same state land in one millisecond', async () => {
+		const { t, id } = seed(REVIEW);
+		const frozen = Date.now();
+		const realNow = Date.now;
+		Date.now = () => frozen;
+		try {
+			// The competing Approve commits first, in the same millisecond. The
+			// issue is then in the delayed request's target state with its
+			// timestamp, which is all the old (issue, state, updated_at) guard asked.
+			const env = beforeBatch(t, () => move(t, id, { action: 'Approve' }));
+			await expect(move(t, id, { action: 'Approve' }, env)).rejects.toMatchObject({
+				status: 409,
+				code: 'conflict',
+				details: { reason: 'issue_moved', current_state: { id: CLOSED } }
+			});
+		} finally {
+			Date.now = realNow;
+		}
+		expect(issueById(t, id).updated_at).toBe(frozen);
+		const approvals = eventsOfType(t, 'issue.transitioned').filter(
+			(e) => (e.payload as { transition_id: string }).transition_id === APPROVE
+		);
+		expect(approvals).toHaveLength(1);
 	});
 
 	it('refuses a stale workflow witness before any write', async () => {
