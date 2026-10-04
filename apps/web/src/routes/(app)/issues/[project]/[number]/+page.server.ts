@@ -223,7 +223,12 @@ export const load: PageServerLoad = async ({
 			},
 			issue: issuePromise
 		},
-		{ workflows: workflowsPromise, artifacts: true }
+		{
+			workflows: workflowsPromise,
+			artifacts: true,
+			// A member's context count covers the shared project's own items only.
+			memberActor: isMember ? scopeActor : undefined
+		}
 	);
 	// Nothing awaits these until the issue row lands; a rejection in the
 	// meantime would otherwise be unhandled.

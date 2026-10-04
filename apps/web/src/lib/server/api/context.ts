@@ -2366,7 +2366,7 @@ export async function contextSummaryForIssue(
 			])
 		)
 		.execute();
-	const visible = actor
+	const permitted = actor
 		? rows.filter((row) =>
 				accessAllowed(
 					actor,
@@ -2387,6 +2387,13 @@ export async function contextSummaryForIssue(
 				)
 			)
 		: rows;
+	// A member sees the shared project's own context only (project- and
+	// issue-anchored rows, the `memberScopeAllowed` rule): the owner's global,
+	// state-only and label-only items are not theirs to count.
+	const member = actor?.member;
+	const visible = member
+		? permitted.filter((row) => (row.project_id ?? row.issue_project_id) === member.projectId)
+		: permitted;
 	return {
 		prompts: visible.filter((r) => r.kind === 'prompt').length,
 		skills: new Set(visible.filter((r) => r.kind === 'skill').map((r) => r.name)).size,
