@@ -4,8 +4,15 @@
 	import { slide } from 'svelte/transition';
 	import RunLogViewer from '$lib/components/RunLogViewer.svelte';
 	import RunCostCell from '$lib/components/RunCostCell.svelte';
+	import RunOutcomeIcon from '$lib/components/RunOutcomeIcon.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
-	import { prefersReducedMotion, relativeTime, runElapsedLabel, runStatusClass } from '$lib/format';
+	import {
+		prefersReducedMotion,
+		relativeTime,
+		runElapsedLabel,
+		runOutcomePresentation,
+		runStatusClass
+	} from '$lib/format';
 
 	/**
 	 * The one run row, shared by every surface that lists runs (the Agents tab
@@ -39,6 +46,12 @@
 	let expanded = $state(false);
 	let now = $state(Date.now());
 	let active = $derived(isActiveRun(run.status));
+	/** Same glyph and color as the run's Activity-feed entry; null while live. */
+	let outcomeView = $derived(active ? null : runOutcomePresentation(run.status, run.outcome));
+	/** A failure's error reads red; any other error stays amber and never turns green. */
+	let errorClass = $derived(
+		outcomeView?.tone === 'failure' ? 'text-destructive' : 'text-amber-700 dark:text-amber-400'
+	);
 
 	$effect(() => {
 		const clockKey = `${run.id}:${active ? 1 : 0}:${run.ended_at ?? ''}`;
@@ -99,6 +112,8 @@
 			aria-hidden="true"
 			data-testid="run-live-dot"
 		></span>
+	{:else if outcomeView}
+		<RunOutcomeIcon tone={outcomeView.tone} class={outcomeView.colorClass} />
 	{/if}
 	{#if showIssueRef && run.issue_ref}
 		<a
@@ -131,7 +146,10 @@
 	{:else}
 		<span class="text-muted-foreground text-xs">provider default · unconfirmed</span>
 	{/if}
-	<span class="text-xs font-medium {runStatusClass(run.status)}">
+	<span
+		class="text-xs font-medium {runStatusClass(run.status, run.outcome)}"
+		data-testid="run-status"
+	>
 		{run.status.replaceAll('_', ' ')}
 	</span>
 	{#if run.outcome}
@@ -196,7 +214,7 @@
 		     roughly twice as much of the reason at every width; the tooltip and
 		     the Logs disclosure below carry the rest. -->
 		<span
-			class="line-clamp-2 max-w-64 text-xs break-words text-amber-700 dark:text-amber-400"
+			class="line-clamp-2 max-w-64 text-xs break-words {errorClass}"
 			title={run.error}
 			data-testid="run-error"
 		>
@@ -227,7 +245,7 @@
 	{/if}
 	{#if expanded && showLogs}
 		<div class="w-full" transition:slide={{ duration: dur() }}>
-			<RunLogViewer runId={run.id} runError={run.error} />
+			<RunLogViewer runId={run.id} runError={run.error} {errorClass} />
 		</div>
 	{/if}
 </li>

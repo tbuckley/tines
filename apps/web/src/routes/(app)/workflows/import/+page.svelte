@@ -19,6 +19,11 @@
 	import PackageOperations from '$lib/components/library/PackageOperations.svelte';
 	import PackageReceipt from '$lib/components/library/PackageReceipt.svelte';
 	import TechnicalDetails from '$lib/components/publications/TechnicalDetails.svelte';
+	import {
+		createHostedInstallSession,
+		type HostedInstallSession,
+		type HostedInstallState
+	} from '$lib/publications/hosted-install-session';
 	import PackageReview from '$lib/components/library/PackageReview.svelte';
 	import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
 
@@ -59,7 +64,9 @@
 	let legacyFile = $state(false);
 	let alertEl = $state<HTMLElement | null>(null);
 	let tokenInvoker = $state<HTMLElement | null>(null);
-	let hostedChecking = false;
+	// Owns hosted availability and the plan's lifetime; null for file installs and recovery.
+	let hostedSession: HostedInstallSession | null = null;
+	let hostedSeen: HostedInstallState | null = null;
 	const hostedSnapshotId = $derived(page.url.searchParams.get('publication'));
 	const hostedMode = $derived(!!hostedSnapshotId);
 
@@ -148,6 +155,7 @@
 		return fallback;
 	}
 	function invalidatePlan(next: WorkflowPackageChoices) {
+		hostedSession?.discardPlan();
 		choices = next;
 		plan = null;
 		confirmed = false;
@@ -233,15 +241,22 @@
 
 	async function prepare() {
 		if (!document_ || recovery) return;
-		stage = 'preparing';
 		error = null;
 		errorCode = null;
 		errorTarget = null;
 		confirmed = false;
+		if (hostedSession) {
+			const result = await hostedSession.prepare(choices);
+			if (result.kind === 'prepared') choices = result.plan.resolved.choices;
+			else if (result.kind === 'failed') {
+				error = describe(result.error, 'The package could not be prepared.');
+				await focusError();
+			}
+			return;
+		}
+		stage = 'preparing';
 		try {
-			plan = hostedSnapshotId
-				? await api.prepareHostedWorkflowPackage(hostedSnapshotId, choices)
-				: await api.prepareWorkflowPackage({ document_json: documentJson, choices });
+			plan = await api.prepareWorkflowPackage({ document_json: documentJson, choices });
 			choices = plan.resolved.choices;
 			stage = 'prepared';
 		} catch (err) {
@@ -308,6 +323,7 @@
 					err.code === 'confirmation_mismatch')
 			) {
 				clearRecovery();
+				hostedSession?.commitRejected(false);
 				plan = null;
 				confirmed = false;
 				stage = 'values';
@@ -318,6 +334,7 @@
 						: 'The file or confirmation no longer matches the preview. Nothing was created by this rejected attempt. Choose Preview installation and review it again.';
 			} else {
 				clearRecovery();
+				hostedSession?.commitRejected(true);
 				stage = 'prepared';
 				captureErrorDetails(err);
 				error =
@@ -328,20 +345,10 @@
 	}
 	async function install() {
 		if (plan && confirmed && reviewComplete) {
-			if (hostedSnapshotId) {
-				try {
-					await api.getPublicSnapshotStatus(hostedSnapshotId);
-				} catch {
-					plan = null;
-					document_ = null;
-					documentJson = '';
-					stage = 'values';
-					error = 'This publication is not available.';
-					await focusError();
-					return;
-				}
-			}
-			await installExact(plan.plan_token, plan.plan_digest, plan.plan_id);
+			const current = plan;
+			// A refused commit has already been reported through the session's state.
+			if (hostedSession && !(await hostedSession.beginCommit())) return;
+			await installExact(current.plan_token, current.plan_digest, current.plan_id);
 		}
 	}
 	async function checkResult() {
@@ -366,55 +373,73 @@
 		}
 	}
 
-	function clearHostedReview() {
-		document_ = null;
-		documentJson = '';
-		plan = null;
-		confirmed = false;
-		reviewed = new Set();
-		stage = 'reading';
-	}
-
-	async function loadHostedSnapshot() {
-		if (!hostedSnapshotId || recovery || hostedChecking) return;
-		hostedChecking = true;
-		clearHostedReview();
-		try {
-			await api.getPublicSnapshotStatus(hostedSnapshotId);
-			const snapshot = await api.getPublicSnapshot(hostedSnapshotId);
-			document_ = snapshot.document;
-			documentJson = canonicalizeLibraryValue(snapshot.document);
-			fileName = `public-${hostedSnapshotId}.json`;
-			choices = { schedule_ids: [] };
-			stage = 'values';
-			error = null;
-		} catch {
-			clearHostedReview();
-			stage = 'values';
+	function syncHosted(next: HostedInstallState) {
+		const previous = hostedSeen;
+		hostedSeen = next;
+		if (next.documentEpoch !== previous?.documentEpoch) choices = { schedule_ids: [] };
+		if (next.reviewEpoch !== previous?.reviewEpoch) {
+			confirmed = false;
+			reviewed = new Set();
+		}
+		if (next.document !== previous?.document) {
+			document_ = next.document;
+			documentJson = next.document ? canonicalizeLibraryValue(next.document) : '';
+			if (next.document) fileName = `public-${next.snapshotId}.json`;
+		}
+		if (next.plan !== previous?.plan) plan = next.plan;
+		// Once a commit begins, the install result owns the stage.
+		if (next.phase === 'committing') return;
+		stage =
+			next.availability === 'loading'
+				? 'reading'
+				: next.phase === 'preparing' || next.phase === 'prepared'
+					? next.phase
+					: 'values';
+		if (next.availability === previous?.availability) return;
+		if (next.availability === 'unavailable') {
 			errorCode = null;
 			errorTarget = null;
 			error = 'This publication is not available.';
-			await focusError();
-		} finally {
-			hostedChecking = false;
-		}
+			void focusError();
+		} else if (next.availability === 'available') error = null;
+	}
+
+	function openHostedSession(snapshotId: string) {
+		hostedSession?.dispose();
+		hostedSeen = null;
+		hostedSession = createHostedInstallSession(
+			snapshotId,
+			{
+				getStatus: api.getPublicSnapshotStatus,
+				getSnapshot: api.getPublicSnapshot,
+				prepare: api.prepareHostedWorkflowPackage
+			},
+			syncHosted
+		);
+		void hostedSession.load();
 	}
 
 	onMount(() => {
-		void (async () => {
-			try {
-				const value = JSON.parse(sessionStorage.getItem(recoveryKey) ?? 'null') as Recovery | null;
-				if (value?.actorId === data.user.id && value.destination === location.origin) {
-					recovery = value;
-					stage = 'unknown';
-				} else if (value) sessionStorage.removeItem(recoveryKey);
-			} catch {
-				clearRecovery();
-			}
-			await loadHostedSnapshot();
-		})();
+		try {
+			const value = JSON.parse(sessionStorage.getItem(recoveryKey) ?? 'null') as Recovery | null;
+			if (value?.actorId === data.user.id && value.destination === location.origin) {
+				recovery = value;
+				stage = 'unknown';
+			} else if (value) sessionStorage.removeItem(recoveryKey);
+		} catch {
+			clearRecovery();
+		}
+		// An installation awaiting recovery is resolved from its receipt, not from the snapshot.
+		if (hostedSnapshotId && !recovery) openHostedSession(hostedSnapshotId);
 		const resumed = () => {
-			if (['values', 'prepared', 'preparing'].includes(stage)) void loadHostedSnapshot();
+			if (!hostedSession) return;
+			if (
+				hostedSnapshotId &&
+				hostedSnapshotId !== hostedSession.state.snapshotId &&
+				hostedSession.state.phase !== 'committing'
+			)
+				openHostedSession(hostedSnapshotId);
+			else void hostedSession.recheck();
 		};
 		const timer = setInterval(() => {
 			if (!document.hidden) resumed();
@@ -425,6 +450,7 @@
 			clearInterval(timer);
 			removeEventListener('focus', resumed);
 			removeEventListener('pageshow', resumed);
+			hostedSession?.dispose();
 		};
 	});
 </script>

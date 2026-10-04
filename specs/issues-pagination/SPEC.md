@@ -7,3 +7,5 @@ Both `/issues` and `/projects/:id` render Previous and Next links. Filters remai
 Rows are ordered by `(created_at DESC, id DESC)`. Forward queries use `<` and reverse queries use `>` with ascending SQL order, trimming the extra probe row before reversing. This makes equal timestamps deterministic and does not require the boundary row to continue to exist. Lists request brief issue shapes, while category counts continue to describe the whole filtered population.
 
 An empty bounded page is treated as stale live data: it offers the inferred opposite direction plus a First page recovery link. Initial empty lists retain their normal creation/filter guidance. Page links are ordinary anchors so reload, browser history, nav memory, scrolling, and keyboard behavior remain native.
+
+The Context page (`/context`) reuses the same helper and component (Tines/861), ordered by `(updated_at DESC, id DESC)` with the cursor minted from `updated_at`, and counts “items” rather than “issues”. Its `page_scope` marker works as on the global issues page.

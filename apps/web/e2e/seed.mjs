@@ -24,12 +24,15 @@ import {
 	MANAGED_SETTINGS,
 	NATIVE_MODERATION_PUBLISHER,
 	NATIVE_PUBLICATIONS_PUBLISHER,
+	CONTEXT_PAGINATION,
 	PAGINATION,
 	RUNNER_E2E,
 	RUNNER_CONCURRENCY,
+	RUNNER_PI,
 	RUNROW,
 	RUNROW_ESTIMATED,
 	RUNROW_FAILED,
+	RUNROW_STALLED,
 	SPEND,
 	SCHED,
 	STOPPED_FIRST_RUN,
@@ -58,6 +61,7 @@ for (const user of [
 	API_ISOLATION,
 	RUNNER_E2E,
 	RUNNER_CONCURRENCY,
+	RUNNER_PI,
 	EXPLAINER_REMEDIES,
 	STOPPED_FIRST_RUN,
 	MANAGED_SETTINGS,
@@ -67,6 +71,7 @@ for (const user of [
 	WORKFLOW_MODERATION_PUBLISHER,
 	WORKFLOW_PUBLICATIONS_PUBLISHER,
 	PAGINATION.user,
+	CONTEXT_PAGINATION,
 	SPEND,
 	WEEKLY
 ]) {
@@ -158,6 +163,17 @@ for (let number = 1; number <= 205; number += 1) {
 		`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
 		 VALUES ('iss_e2e_page_${number}', '${PAGINATION.projectId}', ${number}, 'Page issue ${number}',
 		 'large body omitted from list ${number}', 'wf_standard', 'wfs_std_open', ${number}, ${number});`
+	);
+}
+
+// Its own account, because the issue pagination spec leaves PAGINATION focused
+// on a project, which hides global items. Ascending timestamps put
+// page-prompt-101..002 on the first Context page and page-prompt-001 on the second.
+for (let number = 1; number <= 101; number += 1) {
+	const name = `page-prompt-${String(number).padStart(3, '0')}`;
+	statements.push(
+		`INSERT INTO context_item (id, user_id, kind, name, description, body, position, version, created_at, updated_at)
+		 VALUES ('ctx_e2e_${name}', '${CONTEXT_PAGINATION.id}', 'prompt', '${name}', '', 'page fixture', 0, 1, ${number}, ${number});`
 	);
 }
 
@@ -307,6 +323,11 @@ statements.push(
 	 VALUES ('key_e2e_runrow_failed', '${ALICE.id}', '${RUNROW_FAILED.runKeyName}',
 	   '${sha256Hex(RUNROW_FAILED.runKey)}', '${RUNROW_FAILED.runKey.slice(0, 14)}', ${runStart},
 	   '${RUNROW_FAILED.runId}', ${Date.parse(expires)}, ${nowMs});`,
+	// A third run on the same issue: completed without advancing it (stalled).
+	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier, config, created_at, updated_at)
+	 VALUES ('${RUNROW_STALLED.runnerId}', '${ALICE.id}', 'local', '${RUNROW_STALLED.runnerName}', 'paused', 1, 30, 'balanced', '{}', ${nowMs}, ${nowMs});`,
+	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, state_id_at_start, state_id_at_end, log, created_at, started_at, ended_at)
+	 VALUES ('${RUNROW_STALLED.runId}', '${ALICE.id}', '${RUNROW.issueId}', '${RUNROW_STALLED.runnerId}', 'completed', 'stalled', 'balanced', 'wfs_std_open', 'wfs_std_open', 'seeded stalled log tail', ${runStart}, ${runStart}, ${nowMs});`,
 	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier, config, created_at, updated_at)
 	 VALUES ('${RUNROW_ESTIMATED.runnerId}', '${ALICE.id}', 'local', '${RUNROW_ESTIMATED.runnerName}', 'paused', 1, 30, 'balanced', '{}', ${nowMs}, ${nowMs});`,
 	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)

@@ -46,7 +46,7 @@ Options:
   -h, --help               display help for command
 
 Commands:
-  list [options]
+  list [options]           List your API keys
   show [options] <id>      Show stored and effective authority
   current [options]        Inspect the acting credential authority
   create [options] <name>  Create a scoped key
@@ -85,6 +85,8 @@ Options:
   -h, --help       display help for command
 ",
   "tines api-keys list": "Usage: tines api-keys list [options]
+
+List your API keys
 
 Options:
   --run-keys <mode>  run keys to include (choices: "none", "active", "all")
@@ -1329,7 +1331,7 @@ Options:
   --name <name>                  runner name, unique per user; name it
                                  machine-plus-harness, e.g. macbook-claude
                                  (default: this hostname)
-  --harness <harness>            claude-code | codex | custom (default:
+  --harness <harness>            claude-code | codex | pi | custom (default:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},
                                  {workspace}, {model}, {effort})
@@ -1367,7 +1369,7 @@ Options:
   --name <name>                  runner name, unique per user; name it
                                  machine-plus-harness, e.g. macbook-claude
                                  (default: this hostname)
-  --harness <harness>            claude-code | codex | custom (default:
+  --harness <harness>            claude-code | codex | pi | custom (default:
                                  "claude-code")
   --command <template>           custom harness command template ({prompt_file},
                                  {workspace}, {model}, {effort})

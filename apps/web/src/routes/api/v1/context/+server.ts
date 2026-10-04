@@ -13,8 +13,7 @@ import {
 import {
 	actorForContextScope,
 	contextScopeProject,
-	memberScopeAllowed,
-	redactForMember
+	memberScopeAllowed
 } from '$lib/server/api/member-context';
 import { memberWriteRace } from '$lib/server/api/member-e2e-race';
 import type { RequestHandler } from './$types';
@@ -48,7 +47,7 @@ export const GET: RequestHandler = api(async (event) => {
 		? (
 				await Promise.all(
 					items.map(async (item) =>
-						(await memberScopeAllowed(db, actor, item.scope)) ? redactForMember(actor, item) : null
+						(await memberScopeAllowed(db, actor, item.scope)) ? item : null
 					)
 				)
 			).filter((item) => item !== null)
@@ -79,5 +78,5 @@ export const POST: RequestHandler = api(async (event) => {
 		body,
 		memberWriteRace(event.request, db, actor)
 	);
-	return json(redactForMember(actor, item), { status: 201 });
+	return json(item, { status: 201 });
 });

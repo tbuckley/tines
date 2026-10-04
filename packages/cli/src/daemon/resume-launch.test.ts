@@ -13,10 +13,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { keptMarkerPath, workspacesDir } from './store.js';
+import { PI_SESSION_DIR } from './support.js';
 import { CLI_BIN, NODE } from '../test-bin.js';
+import { installFakePi, type FakePiConfig } from '../test-fake-pi.js';
 
 const RUN_ID = 'run_stub2';
 const PREV_RUN_ID = 'run_stub1';
@@ -24,6 +26,8 @@ const PREV_RUN_ID = 'run_stub1';
 interface Harvest {
 	log: string;
 	finish: Record<string, unknown> | null;
+	/** Every effort milestone the daemon sent on a log append, in order. */
+	effort: Array<Record<string, unknown>>;
 }
 
 /** The daemon's own console output — where the retention notice lands. */
@@ -35,8 +39,11 @@ function stubSupervisor(opts: {
 	repos?: unknown[];
 	skills?: unknown[];
 	finishReply?: Record<string, unknown>;
+	model?: string;
+	/** An enforced effort, stamped with the digest of the catalog the daemon polled with. */
+	effort?: string;
 }): { server: Server; done: Promise<Harvest> } {
-	const harvest: Harvest = { log: '', finish: null };
+	const harvest: Harvest = { log: '', finish: null, effort: [] };
 	let handedOut = false;
 	let resolve!: (h: Harvest) => void;
 	const done = new Promise<Harvest>((r) => (resolve = r));
@@ -54,6 +61,8 @@ function stubSupervisor(opts: {
 				return reply({ runner: { id: 'rnr_stub', name: 'stub' }, runner_token: 'rt_stub' });
 			}
 			if (url === '/api/v1/runners/rnr_stub/poll') {
+				const digest = (JSON.parse(body) as { effort_capabilities?: { catalog_digest?: string } })
+					.effort_capabilities?.catalog_digest;
 				const assignments = handedOut
 					? []
 					: [
@@ -62,13 +71,23 @@ function stubSupervisor(opts: {
 									id: RUN_ID,
 									issue_id: 'iss_1',
 									issue_ref: { project_name: 'Stub', number: 1 },
-									model: 'claude-sonnet-5',
+									model: opts.model ?? 'claude-sonnet-5',
 									status: 'launching'
 								},
 								prompt: 'THE CONTINUATION PROMPT',
 								bundle: { skills: opts.skills ?? [], repos: opts.repos ?? [] },
 								run_key: 'trk_stub_run_key',
 								timeout_minutes: 30,
+								...(opts.effort
+									? {
+											effort: {
+												version: 1,
+												value: opts.effort,
+												capability_digest: digest,
+												source: { kind: 'runner_tier', runner_id: 'rnr_stub', tier: 'balanced' }
+											}
+										}
+									: {}),
 								...(opts.resume ? { resume: opts.resume } : {})
 							}
 						];
@@ -76,7 +95,12 @@ function stubSupervisor(opts: {
 				return reply({ assignments, cancels: [] });
 			}
 			if (url === `/api/v1/runs/${RUN_ID}/logs`) {
-				harvest.log += (JSON.parse(body) as { chunk: string }).chunk;
+				const append = JSON.parse(body) as {
+					chunk: string;
+					effort_application?: Record<string, unknown>;
+				};
+				harvest.log += append.chunk;
+				if (append.effort_application) harvest.effort.push(append.effort_application);
 				return reply({ ok: true });
 			}
 			if (url === `/api/v1/runs/${RUN_ID}/finish`) {
@@ -91,7 +115,13 @@ function stubSupervisor(opts: {
 	return { server, done };
 }
 
-function startDaemon(port: number, dir: string, command: string): ChildProcess {
+function startDaemon(
+	port: number,
+	dir: string,
+	command: string,
+	/** Launch as `--harness pi`, with this directory's `pi` first on PATH. */
+	piBin?: string
+): ChildProcess {
 	const proc = spawn(
 		NODE,
 		[
@@ -103,15 +133,18 @@ function startDaemon(port: number, dir: string, command: string): ChildProcess {
 			'--name',
 			'stub',
 			'--harness',
-			'custom',
-			'--command',
-			command,
+			...(piBin ? ['pi'] : ['custom', '--command', command]),
 			'--poll-interval',
 			'1',
 			'--no-cli-refresh'
 		],
 		{
-			env: { ...process.env, TINES_API_KEY: 'usr_stub_key', TINES_CONFIG_DIR: dir },
+			env: {
+				...process.env,
+				TINES_API_KEY: 'usr_stub_key',
+				TINES_CONFIG_DIR: dir,
+				...(piBin ? { PATH: `${piBin}${delimiter}${process.env.PATH ?? ''}` } : {})
+			},
 			stdio: ['ignore', 'pipe', 'pipe']
 		}
 	);
@@ -173,6 +206,10 @@ async function runOnce(opts: {
 	finishReply?: Record<string, unknown>;
 	command?: string;
 	prepare?: (dir: string) => string;
+	/** Run the daemon as `--harness pi` against this fake. */
+	pi?: FakePiConfig;
+	model?: string;
+	effort?: string;
 }): Promise<{ harvest: Harvest; prevWs: string; freshWs: string }> {
 	daemonOut = '';
 	configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
@@ -181,12 +218,19 @@ async function runOnce(opts: {
 		...(opts.resume ? { resume: opts.resume(prevWs) } : {}),
 		...(opts.repos ? { repos: opts.repos } : {}),
 		...(opts.skills ? { skills: opts.skills } : {}),
-		...(opts.finishReply ? { finishReply: opts.finishReply } : {})
+		...(opts.finishReply ? { finishReply: opts.finishReply } : {}),
+		...(opts.model ? { model: opts.model } : {}),
+		...(opts.effort ? { effort: opts.effort } : {})
 	});
 	server = stub.server;
 	await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
 	const port = (server.address() as AddressInfo).port;
-	child = startDaemon(port, configDir, opts.command ?? 'true');
+	child = startDaemon(
+		port,
+		configDir,
+		opts.command ?? 'true',
+		opts.pi ? installFakePi(configDir, opts.pi) : undefined
+	);
 	return {
 		harvest: await stub.done,
 		prevWs,
@@ -312,5 +356,152 @@ describe('resumed launch', () => {
 		expect(harvest.log).not.toContain('resumed=');
 		// The predecessor's own workspace is untouched by the fallback.
 		expect(existsSync(prevWs)).toBe(true);
+	}, 30_000);
+});
+
+/** What the fake `pi` was launched with, written into the workspace it ran in. */
+function piLaunch(ws: string): { args: string[]; stdin: string } {
+	return JSON.parse(readFileSync(join(ws, 'pi-launch.json'), 'utf8')) as {
+		args: string[];
+		stdin: string;
+	};
+}
+
+/** One answered turn, as `pi --mode json` streams it. */
+const piStream = (thinkingLevel: string) => [
+	{ type: 'session', version: 3, id: 'sess-abc' },
+	{
+		type: 'message_end',
+		message: {
+			role: 'assistant',
+			content: [{ type: 'text', text: 'DONE' }],
+			provider: 'mock',
+			model: 'think',
+			usage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+			stopReason: 'stop',
+			thinkingLevel
+		}
+	},
+	{ type: 'turn_end' },
+	{ type: 'agent_settled' }
+];
+
+const piModels = [{ provider: 'mock', id: 'think', levels: ['off', 'low', 'medium', 'high'] }];
+
+/** The kept workspace, with the session file `pi --session sess-abc` reopens. */
+function keptPiWorkspace(dir: string): string {
+	const ws = keptWorkspace(dir);
+	mkdirSync(join(ws, PI_SESSION_DIR));
+	writeFileSync(join(ws, PI_SESSION_DIR, '2026-10-03T19-20-22-711Z_sess-abc.jsonl'), '{}\n');
+	return ws;
+}
+
+describe('pi launch', () => {
+	it('reopens its session in the kept workspace and names each skill', async () => {
+		const { harvest, prevWs } = await runOnce({
+			resume: resumeBlock,
+			prepare: keptPiWorkspace,
+			pi: { rpc: 'serve', models: piModels, stream: piStream('off') },
+			model: 'mock/think',
+			skills: [{ name: 'current', files: [{ path: 'SKILL.md', content: 'current' }] }]
+		});
+		expect(piLaunch(prevWs)).toEqual({
+			args: [
+				'--mode',
+				'json',
+				'--no-approve',
+				'--session-dir',
+				join(prevWs, PI_SESSION_DIR),
+				'--session',
+				'sess-abc',
+				'--model',
+				'mock/think',
+				'--skill',
+				'.agents/skills/current'
+			],
+			stdin: 'THE CONTINUATION PROMPT\n'
+		});
+		// The stream, not the exit code, is what the finish reports from.
+		expect(harvest.finish).toMatchObject({
+			status: 'completed',
+			provider_session_id: 'sess-abc',
+			usage: { input_tokens: 100, output_tokens: 20 },
+			turn_count: 1,
+			conversation_turn_count: 13,
+			workspace_path: prevWs
+		});
+		expect(harvest.finish).not.toHaveProperty('effort_application');
+		expect(harvest.log).toContain('[session] model mock/think thinking=off\n[agent] DONE\n');
+		expect(harvest.log).not.toContain('is gone');
+	}, 30_000);
+
+	it('starts a new session in the kept workspace when the session file is gone', async () => {
+		const { harvest, prevWs } = await runOnce({
+			resume: resumeBlock,
+			pi: { rpc: 'serve', models: piModels, stream: piStream('off') },
+			model: 'mock/think'
+		});
+		expect(piLaunch(prevWs).args).toEqual([
+			'--mode',
+			'json',
+			'--no-approve',
+			'--session-dir',
+			join(prevWs, PI_SESSION_DIR),
+			'--model',
+			'mock/think'
+		]);
+		expect(harvest.log).toContain('pi session sess-abc is gone; launching fresh\n');
+		// The workspace is still the predecessor's; only the conversation is new.
+		expect(harvest.finish).toMatchObject({
+			status: 'completed',
+			turn_count: 1,
+			conversation_turn_count: 1,
+			workspace_path: prevWs
+		});
+		expect(readFileSync(join(prevWs, 'repo', 'edit.txt'), 'utf8')).toBe('work in progress');
+	}, 30_000);
+
+	it('confirms an enforced effort from the thinking level pi records', async () => {
+		const { harvest, freshWs } = await runOnce({
+			pi: { rpc: 'serve', models: piModels, stream: piStream('high') },
+			model: 'mock/think',
+			effort: 'high',
+			finishReply: { resume_expires_at: Date.now() + 48 * 60 * 60 * 1000 }
+		});
+		expect(piLaunch(freshWs).args).toEqual(expect.arrayContaining(['--thinking', 'high']));
+		const confirmed = { status: 'confirmed', attempted_effort: 'high', transport: 'argv' };
+		expect(harvest.finish).toMatchObject({ status: 'completed', effort_application: confirmed });
+		expect(harvest.effort).toEqual([
+			{ status: 'accepted_unconfirmed', attempted_effort: 'high', transport: 'argv' },
+			confirmed
+		]);
+	}, 30_000);
+
+	it('kills a run whose effort pi clamped, and reports the level it applied', async () => {
+		const started = Date.now();
+		const { harvest } = await runOnce({
+			// The fake would idle for a minute after its first answer: only the
+			// daemon's kill ends this run in time.
+			pi: { rpc: 'serve', models: piModels, stream: piStream('low'), lingerMs: 60_000 },
+			model: 'mock/think',
+			effort: 'high'
+		});
+		expect(Date.now() - started).toBeLessThan(20_000);
+		const reason = 'pi applied thinking level low, not the assigned high';
+		const rejected = {
+			status: 'rejected',
+			attempted_effort: 'high',
+			transport: 'argv',
+			reason,
+			observed_effort: 'low'
+		};
+		expect(harvest.finish).toMatchObject({
+			status: 'failed',
+			error: reason,
+			effort_application: rejected
+		});
+		expect(harvest.finish).not.toHaveProperty('judgment');
+		expect(harvest.effort.at(-1)).toEqual(rejected);
+		expect(harvest.log).toContain(`[effort] ${reason}; stopping the run\n`);
 	}, 30_000);
 });

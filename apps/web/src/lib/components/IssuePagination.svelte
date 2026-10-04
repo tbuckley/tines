@@ -7,15 +7,17 @@
 		itemCount,
 		label: landmarkLabel = 'Issue pagination',
 		announceCount = true,
+		noun = 'issue',
 		class: className = ''
 	}: {
 		pagination: IssuePagination;
 		itemCount: number;
 		label?: string;
 		announceCount?: boolean;
+		noun?: string;
 		class?: string;
 	} = $props();
-	const label = $derived(`${itemCount} issue${itemCount === 1 ? '' : 's'} on this page`);
+	const label = $derived(`${itemCount} ${noun}${itemCount === 1 ? '' : 's'} on this page`);
 </script>
 
 {#if pagination.previousHref || pagination.nextHref || pagination.bounded}

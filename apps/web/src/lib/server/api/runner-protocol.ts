@@ -266,7 +266,7 @@ export function validateEffortCapabilities(
 		return { version: raw.version as number, reason: raw.reason };
 	}
 	if (
-		(raw.harness !== 'claude_code' && raw.harness !== 'codex') ||
+		(raw.harness !== 'claude_code' && raw.harness !== 'codex' && raw.harness !== 'pi') ||
 		typeof raw.daemon_version !== 'string' ||
 		raw.daemon_version.length > 100 ||
 		typeof raw.harness_version !== 'string' ||
@@ -754,6 +754,26 @@ export async function pollRunner(
  * deliver (canceled here, or another poll won the flip).
  */
 /** A runner's config column as an object; an unreadable one reads as empty. */
+/**
+ * A daemon's effort milestone, on a log append or repeated at finish. `confirmed`
+ * comes from a harness that reports the level it applied (pi); `observed_effort`
+ * names that level when it differs, which makes the rejection sticky in the merge.
+ */
+function validDaemonEffortApplication(
+	effort: NonNullable<import('@tines/shared').AppendRunLogRequest['effort_application']>,
+	resolvedEffort: string | null
+): boolean {
+	return (
+		['accepted_unconfirmed', 'confirmed', 'rejected'].includes(effort.status) &&
+		effort.transport === 'argv' &&
+		effort.attempted_effort === resolvedEffort &&
+		(effort.reason === undefined ||
+			(typeof effort.reason === 'string' && effort.reason.length <= 500)) &&
+		(effort.observed_effort === undefined ||
+			(typeof effort.observed_effort === 'string' && effort.observed_effort.length <= 100))
+	);
+}
+
 function parseRunnerConfig(raw: string): Record<string, unknown> {
 	try {
 		return JSON.parse(raw) as Record<string, unknown>;
@@ -1381,15 +1401,7 @@ export async function appendRunLog(
 		throw new ApiFail(422, 'invalid_field', '"seq" must be a positive integer', { field: 'seq' });
 	}
 	const run = await loadRunnerRun(db, runner, runId);
-	if (
-		effortApplication &&
-		((effortApplication.status !== 'accepted_unconfirmed' &&
-			effortApplication.status !== 'rejected') ||
-			effortApplication.transport !== 'argv' ||
-			effortApplication.attempted_effort !== run.resolved_effort ||
-			(effortApplication.reason !== undefined &&
-				(typeof effortApplication.reason !== 'string' || effortApplication.reason.length > 500)))
-	) {
+	if (effortApplication && !validDaemonEffortApplication(effortApplication, run.resolved_effort)) {
 		throw new ApiFail(422, 'invalid_field', 'effort application does not match the claimed run', {
 			field: 'effort_application'
 		});
@@ -1836,8 +1848,11 @@ async function retainAwaitingSession(
 			runnerId: runner.id,
 			harness: String(config.harness ?? 'claude_code'),
 			model: input.run.model,
+			// The claim side fingerprints the effort while it is still `pending`,
+			// so every status that means "launched with it" must carry it here.
 			effort:
-				input.run.effort_application_status === 'accepted_unconfirmed'
+				input.run.effort_application_status === 'accepted_unconfirmed' ||
+				input.run.effort_application_status === 'confirmed'
 					? input.run.resolved_effort
 					: null,
 			contributorId: input.run.user_id,
@@ -1896,14 +1911,7 @@ export async function finishRun(
 
 	const run = await loadRunnerRun(db, runner, runId);
 	const finishEffort = body.effort_application;
-	if (
-		finishEffort &&
-		(finishEffort.transport !== 'argv' ||
-			finishEffort.attempted_effort !== run.resolved_effort ||
-			!['accepted_unconfirmed', 'rejected'].includes(finishEffort.status) ||
-			(finishEffort.reason !== undefined &&
-				(typeof finishEffort.reason !== 'string' || finishEffort.reason.length > 500)))
-	) {
+	if (finishEffort && !validDaemonEffortApplication(finishEffort, run.resolved_effort)) {
 		throw new ApiFail(422, 'invalid_field', 'effort application does not match the claimed run', {
 			field: 'effort_application'
 		});
@@ -1953,7 +1961,16 @@ export async function finishRun(
 						};
 	} else if (usage) {
 		// Without evidence nothing is priced, so no catalog (or user rate) is read.
-		usage = priceCodexUsage({ run, usage, now });
+		// Pi reports tokens for models Tines has no rates for (often local ones),
+		// which is a different fact from a daemon that lost its evidence.
+		usage = priceCodexUsage({
+			run,
+			usage,
+			now,
+			...(parseRunnerConfig(runner.config).harness === 'pi'
+				? { missingEvidenceReason: 'harness_unpriced' as const }
+				: {})
+		});
 	}
 	// The daemon marks the ends it knows were its own fault — a shutdown, an
 	// orphan killed after a restart — as interruptions. Honoured only on a

@@ -259,8 +259,8 @@ Things worth knowing about a move:
   either project is archived. Nothing is drained or cancelled on your behalf.
 - Only a human session or an ordinary named key may move an issue. A run key may read the
   review — that is how an agent argues for a move — but never commits one.
-- A project that owns an issue's old address cannot be deleted, even with `--force-context`;
-  archive it instead. Its old refs must keep working.
+- A project that owns an issue's old address cannot be deleted, even with
+  `"force_delete_context": true`; archive it instead. Its old refs must keep working.
 - Activity keeps its history honest: the source project's feed retains the events recorded
   there, the destination's feed picks up the move and everything after it, and the issue's own
   feed stays complete.
@@ -310,7 +310,7 @@ A **runner** is one launch target you own. Two types ship today:
 | Type | What it is | Created by |
 | --- | --- | --- |
 | `claude_managed` | Sessions in Anthropic's managed sandbox, billed to your own Anthropic API key. | Adding the key on the **Agents** tab. |
-| `local` | A daemon on one of your own machines driving a harness — Claude Code (`claude -p`), codex (`codex exec`), or a custom command template — on that machine's subscription and git credentials. | The daemon registering itself on first start. |
+| `local` | A daemon on one of your own machines driving a harness — Claude Code (`claude -p`), codex (`codex exec`), Pi (`pi --mode json`, for local models), or a custom command template — on that machine's subscription and git credentials. | The daemon registering itself on first start. |
 
 #### Your first agent run
 
@@ -325,7 +325,9 @@ Install → key → runner → rule → observe. Automation needs no separate ar
    runner, then use `--harness codex`. Follow the
    [Codex permissions setup](docs/runner-daemon.md#codex-permissions); the
    [OpenAI configuration reference](https://developers.openai.com/codex/config-reference)
-   defines these settings.
+   defines these settings. Using Pi with local models? Use `--harness pi` and read
+   [Pi](docs/runner-daemon.md#pi) first: its model credentials must be readable by the
+   service, and it has no sandbox.
 
    ```sh
    TINES_API_KEY=tines_… tines runner install \

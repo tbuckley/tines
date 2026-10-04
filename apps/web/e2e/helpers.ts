@@ -174,6 +174,27 @@ export async function clickToOpen(trigger: Locator, opened: Locator): Promise<vo
 	}).toPass({ timeout: 15_000 });
 }
 
+/** The issue page's "Issue actions" (⋯) menu, opened. */
+export async function openIssueActions(page: Page): Promise<Locator> {
+	const menu = page.getByRole('menu', { name: 'Issue actions' });
+	await clickToOpen(page.getByTestId('issue-actions'), menu);
+	return menu;
+}
+
+/**
+ * Choose `item` from the issue page's ⋯ menu until `opened` shows. Retries the
+ * whole open-then-choose pair, since a missed click closes the menu.
+ */
+export async function clickIssueAction(page: Page, item: Locator, opened: Locator): Promise<void> {
+	await expect(async () => {
+		if (!(await opened.isVisible())) {
+			if (!(await item.isVisible())) await page.getByTestId('issue-actions').click();
+			await item.click({ timeout: 2_000 });
+		}
+		await expect(opened).toBeVisible({ timeout: 2_000 });
+	}).toPass({ timeout: 15_000 });
+}
+
 /**
  * `read` once its result has stopped changing: two reads a beat apart that
  * agree. For geometry on a page that is still settling — content above the
