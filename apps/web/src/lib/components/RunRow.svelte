@@ -28,8 +28,9 @@
 	 * Every fact has a fixed cell, so the same fact sits at the same place on
 	 * every row and a list scans as a table: one line where the row is wide
 	 * (the Agents tab), three fixed lines where it is narrow (an issue's
-	 * sidebar, a phone). Only the occasional extras — error, resume lineage —
-	 * flow freely, on a line of their own under the cells.
+	 * sidebar, a phone) — four with an issue ref, which takes the first line
+	 * to itself. Only the occasional extras — error, resume lineage — flow
+	 * freely, on a line of their own under the cells.
 	 *
 	 * The parent owns the surrounding `<ul class="divide-y rounded-lg border">`.
 	 */
@@ -100,8 +101,9 @@
 
 <li class="run-row px-4 py-2.5 text-sm" data-run-id={run.id} transition:slide={{ duration: dur() }}>
 	<div class="run-grid" class:with-ref={issueRef}>
-		<!-- One flex line on a narrow row; on a wide one it dissolves and its
-		     children take their own columns. -->
+		<!-- One flex line on a narrow row, two fixed lines when it leads with an
+		     issue ref; on a wide row it dissolves and its children take their
+		     own columns. -->
 		<div class="run-head">
 			<span class="run-glyph">
 				{#if active}
@@ -119,6 +121,7 @@
 					href="/issues/{encodeURIComponent(issueRef.project_name)}/{issueRef.number}"
 					class="run-ref truncate font-medium hover:underline"
 					title="{issueRef.project_name}/#{issueRef.number}"
+					data-testid="run-ref"
 				>
 					{issueRef.project_name}/#{issueRef.number}
 				</a>
@@ -303,8 +306,6 @@
 	.run-ref {
 		grid-area: ref;
 		min-width: 0;
-		flex-shrink: 0;
-		max-width: 50%;
 	}
 	.run-runner {
 		grid-area: runner;
@@ -316,6 +317,23 @@
 	}
 	.run-actions {
 		grid-area: actions;
+	}
+	/* Narrow, with an issue ref: the ref and the runner cannot share a line
+	   with the time and three actions on a phone, and a runner that starts
+	   where the ref ends starts somewhere else on every row. So the ref gets
+	   the first line and gives way to the actions; the runner starts the
+	   second, at the left edge, with the time at the right. */
+	.run-grid.with-ref .run-head {
+		display: grid;
+		grid-template-columns: 1rem minmax(0, 1fr) auto;
+		grid-template-areas:
+			'glyph  ref    actions'
+			'runner runner time';
+		column-gap: 0.5rem;
+		row-gap: 0.125rem;
+	}
+	.run-grid.with-ref .run-time {
+		justify-self: end;
 	}
 	.run-status {
 		grid-area: status;
@@ -348,8 +366,9 @@
 
 	/* Wide: one line, one column per fact. The widths are fixed, not `auto`:
 	   each row is its own grid, so only a fixed track lands at the same x on
-	   every row. */
-	@container (min-width: 66rem) {
+	   every row. 69rem is the fixed tracks plus the widest actions group
+	   (console, Logs, Cancel), so that group never reaches the row's padding. */
+	@container (min-width: 69rem) {
 		.run-grid {
 			grid-template-columns:
 				1rem 9rem 7.5rem 3rem 3.5rem 8.5rem 3rem 6.25rem 3.75rem minmax(0, 1fr)
@@ -367,11 +386,12 @@
 				'glyph ref    runner model effort tier status duration cost time . actions'
 				'.     detail detail detail detail detail detail detail detail detail detail detail';
 		}
-		.run-head {
+		.run-head,
+		.run-grid.with-ref .run-head {
 			display: contents;
 		}
-		.run-ref {
-			max-width: none;
+		.run-grid.with-ref .run-time {
+			justify-self: start;
 		}
 		.run-cost {
 			justify-content: flex-start;

@@ -329,6 +329,10 @@ describe('runModelLabel', () => {
 			effort: null,
 			title: 'Tier balanced'
 		});
+		// No model either: the cell is empty, it does not borrow the tier.
+		expect(
+			runModelLabel({ ...base, model: null, effort_application_status: 'legacy_not_applied' })
+		).toEqual({ model: null, effort: null, title: 'Tier balanced' });
 	});
 
 	it('says nothing visible when no effort was recorded', () => {

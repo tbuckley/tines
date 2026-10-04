@@ -229,7 +229,14 @@ test.describe('shared run row', () => {
 						mid: (r.top + r.bottom) / 2
 					};
 				};
+				// The label inside the cost cell, not the cell: the cell fills its
+				// grid area whichever way the label is aligned within it.
+				const costLabel = li.querySelector('[data-testid="run-cost"] > :is(button, span)');
+				const costRect = costLabel?.getBoundingClientRect();
 				return {
+					costLabel: costRect
+						? { left: Math.round(costRect.left), right: Math.round(costRect.right) }
+						: null,
 					runner: edge('run-runner'),
 					model: edge('run-model'),
 					effort: edge('run-effort'),
@@ -244,9 +251,11 @@ test.describe('shared run row', () => {
 		);
 	type Edges = Awaited<ReturnType<typeof cellEdges>>;
 	/** The distinct positions one cell takes across every row; aligned means one. */
-	const positions = (rows: Edges, cell: keyof Edges[number], side: 'left' | 'right') => [
-		...new Set(rows.map((r) => r[cell][side]))
-	];
+	const positions = (
+		rows: Edges,
+		cell: Exclude<keyof Edges[number], 'costLabel'>,
+		side: 'left' | 'right'
+	) => [...new Set(rows.map((r) => r[cell][side]))];
 
 	test('puts each fact in the same column on every row of the Agents tab', async ({ page }) => {
 		await gotoHydrated(page, '/agents');
@@ -295,9 +304,26 @@ test.describe('shared run row', () => {
 		for (const cell of ['runner', 'status', 'model', 'effort', 'tier'] as const) {
 			expect(positions(rows, cell, 'left'), `${cell} starts at one x`).toHaveLength(1);
 		}
-		for (const cell of ['cost', 'duration', 'actions'] as const) {
-			expect(positions(rows, cell, 'right'), `${cell} ends at one x`).toHaveLength(1);
-		}
+		expect(positions(rows, 'actions', 'right'), 'actions end at one x').toHaveLength(1);
+		// Fixture sanity: the labels compared differ in width ("$1.23" beside
+		// "1,100 tok", "2:00" beside "12:34"), so ending at one x is alignment
+		// and not equal strings.
+		const priced = rows.flatMap((r) => (r.costLabel ? [r.costLabel] : []));
+		expect(new Set(priced.map((c) => c.right - c.left)).size).toBeGreaterThan(1);
+		expect(new Set(rows.map((r) => r.duration.right - r.duration.left)).size).toBeGreaterThan(1);
+		await expect(
+			page
+				.locator('li:not([inert])', { hasText: RUNROW_STALLED.runnerName })
+				.getByTestId('run-duration')
+		).toHaveText(RUNROW_STALLED.durationLabel);
+		// One assertion for both, so a row that breaks either names which.
+		expect(
+			{
+				cost: [...new Set(priced.map((c) => c.right))].length,
+				duration: positions(rows, 'duration', 'right').length
+			},
+			'the cost and duration labels each end at one x'
+		).toEqual({ cost: 1, duration: 1 });
 		for (const r of rows) {
 			// Line 1: who and when. Line 2: how it ended and what it cost.
 			// Line 3: what it ran on and for how long.
@@ -308,6 +334,74 @@ test.describe('shared run row', () => {
 			for (const cell of ['effort', 'tier', 'duration'] as const) {
 				expect(Math.abs(r.model.mid - r[cell].mid)).toBeLessThan(8);
 			}
+		}
+	});
+
+	/**
+	 * The Agents tab below the one-line width (a phone, a 1024px window) leads
+	 * each row with the issue ref. The runner used to share that line, so it
+	 * started wherever the ref ended and, on a phone, an active run with
+	 * Logs and Cancel left it no room at all. The ref now has the first line
+	 * and the runner starts the second.
+	 */
+	test('starts the runner at one x under issue refs of different lengths on a narrow Agents tab', async ({
+		page
+	}) => {
+		for (const viewport of [
+			{ width: 390, height: 844 },
+			{ width: 1024, height: 768 }
+		]) {
+			const at = `${viewport.width}px`;
+			await page.setViewportSize(viewport);
+			await gotoHydrated(page, '/agents');
+			await page.getByLabel('Show ended runs').check();
+			await expect(
+				page.locator('li:not([inert])', { hasText: RUNROW_STALLED.runnerName })
+			).toHaveCount(1);
+			const rows = await page.locator('li[data-run-id]:not([inert])').evaluateAll((lis) =>
+				lis.map((li) => {
+					const cell = (id: string) => li.querySelector<HTMLElement>(`[data-testid="${id}"]`)!;
+					const runner = cell('run-runner');
+					const actions = cell('run-trailing');
+					const box = li.getBoundingClientRect();
+					return {
+						id: li.getAttribute('data-run-id'),
+						ref: cell('run-ref').textContent!.trim(),
+						runnerLeft: Math.round(runner.getBoundingClientRect().left),
+						runnerWidth: runner.clientWidth,
+						runnerClipped: runner.scrollWidth > runner.clientWidth,
+						actionsRight: actions.getBoundingClientRect().right,
+						contentRight: box.right - parseFloat(getComputedStyle(li).paddingRight),
+						consoleLink: actions.querySelector('a') !== null,
+						cancel: [...actions.querySelectorAll('button')].some(
+							(b) => b.textContent!.trim() === 'Cancel'
+						)
+					};
+				})
+			);
+			// Fixture sanity: refs of different lengths, or one x proves nothing.
+			expect(new Set(rows.map((r) => r.ref.length)).size, at).toBeGreaterThan(1);
+			expect(
+				[...new Set(rows.map((r) => r.runnerLeft))],
+				`${at}: runner starts at one x`
+			).toHaveLength(1);
+
+			// The fullest row: an active run with the console link, Logs and
+			// Cancel, under the longest ref.
+			const active = rows.find((r) => r.id === RUNROW.runKeyRunId)!;
+			expect(active, at).toMatchObject({
+				ref: `${RUNROW.projectName}/#${RUNROW.runKeyIssueNumber}`,
+				consoleLink: true,
+				cancel: true
+			});
+			expect(active.runnerWidth, `${at}: active run's runner is visible`).toBeGreaterThan(0);
+			expect(active.runnerClipped, `${at}: active run's runner is shown in full`).toBe(false);
+			expect(active.actionsRight, `${at}: actions stay inside the row`).toBeLessThanOrEqual(
+				active.contentRight + 1
+			);
+			const ended = rows.find((r) => r.id === RUNROW.runId)!;
+			expect(ended.runnerWidth, `${at}: ended run's runner is visible`).toBeGreaterThan(0);
+			expect(ended.runnerClipped, `${at}: ended run's runner is shown in full`).toBe(false);
 		}
 	});
 

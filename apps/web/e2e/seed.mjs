@@ -292,10 +292,12 @@ statements.push(
 	   config, created_at, updated_at)
 	 VALUES ('${RUNROW.runKeyRunnerId}', '${ALICE.id}', 'claude_managed', '${RUNROW.runKeyRunnerName}', 'paused', 1, 30,
 	   'balanced', '{}', ${nowMs + 1}, ${nowMs + 1});`,
+	// `provider_url` without a provider session id: the row shows the console
+	// link beside Logs and Cancel, and the managed sweep has nothing to poll.
 	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, state_id_at_start,
-	   log, created_at, started_at)
+	   provider_url, log, created_at, started_at)
 	 VALUES ('${RUNROW.runKeyRunId}', '${ALICE.id}', '${RUNROW.runKeyIssueId}', '${RUNROW.runKeyRunnerId}', 'running',
-	   'balanced', 'wfs_std_open', 'active run-key fixture', ${nowMs + 1}, ${nowMs + 1});`,
+	   'balanced', 'wfs_std_open', '${RUNROW.runKeyProviderUrl}', 'active run-key fixture', ${nowMs + 1}, ${nowMs + 1});`,
 	// The run's key, for the run-key fence cases in api.spec.ts. Inserted after
 	// the agent_run row it references (api_key.agent_run_id is a FK); expiry is
 	// the same far-future date the sessions use, so the sweep never revokes it.
@@ -329,7 +331,7 @@ statements.push(
 	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier, config, created_at, updated_at)
 	 VALUES ('${RUNROW_STALLED.runnerId}', '${ALICE.id}', 'local', '${RUNROW_STALLED.runnerName}', 'paused', 1, 30, 'balanced', '{}', ${nowMs}, ${nowMs});`,
 	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, state_id_at_start, state_id_at_end, log, created_at, started_at, ended_at)
-	 VALUES ('${RUNROW_STALLED.runId}', '${ALICE.id}', '${RUNROW.issueId}', '${RUNROW_STALLED.runnerId}', 'completed', 'stalled', 'balanced', 'wfs_std_open', 'wfs_std_open', 'seeded stalled log tail', ${runStart}, ${runStart}, ${nowMs});`,
+	 VALUES ('${RUNROW_STALLED.runId}', '${ALICE.id}', '${RUNROW.issueId}', '${RUNROW_STALLED.runnerId}', 'completed', 'stalled', 'balanced', 'wfs_std_open', 'wfs_std_open', 'seeded stalled log tail', ${nowMs - RUNROW_STALLED.durationMs}, ${nowMs - RUNROW_STALLED.durationMs}, ${nowMs});`,
 	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier, config, created_at, updated_at)
 	 VALUES ('${RUNROW_ESTIMATED.runnerId}', '${ALICE.id}', 'local', '${RUNROW_ESTIMATED.runnerName}', 'paused', 1, 30, 'balanced', '{}', ${nowMs}, ${nowMs});`,
 	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
