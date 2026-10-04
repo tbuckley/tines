@@ -594,7 +594,7 @@ test('authors an exact declared use and downloads the reviewed canonical package
 		.last();
 	await draftTier.locator('select').selectOption('balanced');
 	await draftTier.getByRole('checkbox', { name: 'Project-scoped' }).check();
-	await page.getByRole('button', { name: 'Apply automation' }).click();
+	await rebuildCandidate(page);
 	await page.getByLabel('Key').fill('target_workflow');
 	await page.getByLabel('Type').selectOption('workflow');
 	await page.getByLabel('Default').fill('Standard');
@@ -1125,6 +1125,57 @@ test('retains a generated input selection across an equivalent rebuild', async (
 	await rebuildCandidate(page);
 	await expect(destination).toHaveAttribute('aria-pressed', 'true');
 	await expect(candidateInputs(page).getByText('Selected', { exact: true })).toHaveCount(1);
+});
+
+test('holds variable and passage edits until a delayed automation rebuild lands', async ({
+	page
+}) => {
+	await openExport(page);
+	const exportPath = `/api/v1/workflows/${workflowId}/export`;
+	let releaseRebuild!: () => void;
+	const held = new Promise<void>((resolve) => (releaseRebuild = resolve));
+	await page.route(
+		(url) => url.pathname === exportPath,
+		async (route) => {
+			const response = await route.fetch();
+			await held;
+			await route.fulfill({ response });
+		}
+	);
+	await page.getByLabel('Key').fill('held_key');
+	await page.getByLabel('Default').fill('held');
+	await page.getByRole('button', { name: 'Apply automation' }).click();
+	// The rebuild replaces the whole copy when it lands, so nothing may be authored until then.
+	const addVariable = page.getByRole('button', { name: 'Add variable' });
+	await expect(addVariable).toBeDisabled();
+
+	const label = 'instructions — prompt body';
+	const passage = passageSection(page, label);
+	await passage.getByRole('button', { name: `Edit ${label}`, exact: true }).click();
+	const editor = passage.getByRole('textbox', { name: label });
+	const draft = `${await editor.inputValue()}\nHeld edit.`;
+	await editor.fill(draft);
+	await passage.getByRole('button', { name: 'Save text' }).first().click();
+	await expect(
+		page.getByText('Wait for the current change to finish, then save again.').first()
+	).toBeVisible();
+	await expect(editor).toHaveValue(draft);
+
+	const finished = page.waitForEvent('requestfinished', {
+		predicate: (request) => new URL(request.url()).pathname === exportPath
+	});
+	releaseRebuild();
+	await finished;
+	await expect(
+		page.getByText('This copy now uses the latest workflow and automation choices.').first()
+	).toBeVisible();
+	await addVariable.click();
+	await expect(declaredInput(page, 'held_key')).toHaveAttribute('aria-pressed', 'true');
+	await passage.getByRole('button', { name: 'Save text' }).first().click();
+	await expect(page.getByText('Text saved in this copy.').first()).toBeVisible();
+	await expect(editor).toHaveCount(0);
+	await expect(passage).toContainText('Held edit.');
+	await expect(declaredInput(page, 'held_key')).toHaveCount(1);
 });
 
 for (const theme of ['light', 'dark'] as const) {
