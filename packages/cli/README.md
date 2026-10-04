@@ -71,7 +71,8 @@ machine-readable output. Complete list walks have a default 10,000-item safety c
 `--max-items <n>` with `--all-pages` to choose a different positive finite bound; exceeding
 it fails without printing a partial result. `--limit` remains the per-request page size. A
 larger bound keeps more output in memory and makes more requests, so increase it deliberately
-or narrow the list's filters.
+or narrow the list's filters. `usage --evidence … --all-pages` is the one exception: it follows
+every evidence page with no ceiling and takes no `--max-items`.
 `tines <noun> --help` lists the rest: `api-keys`, `workflows`, `labels`, `context`, `journal`,
 `schedules`, `runners`, `runs`, `routing`, `supervisor`, `usage`.
 
@@ -135,6 +136,7 @@ TINES_API_KEY=tines_… tines runner install --name laptop --harness claude-code
 
 registers this machine as a local runner and installs the daemon as a launchd/systemd
 service that polls for work and keeps itself updated (`tines runner daemon` with the same
-flags runs it in the foreground instead). See
+flags runs it in the foreground instead). `--harness` is `claude-code`, `codex`, `pi` or
+`custom`. See
 [docs/runner-daemon.md](https://github.com/tbuckley/tines/blob/main/docs/runner-daemon.md)
 for the flags, token rotation, and what the service does.

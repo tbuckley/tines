@@ -4,12 +4,17 @@
  * unit-testable without a daemon (see support.test.ts). The loop itself
  * lives in daemon.ts.
  */
-import { delimiter, sep } from 'node:path';
+import { delimiter, join, sep } from 'node:path';
 import type { FinishRunRequest } from '@tines/shared';
+import type { ProviderErrorSignal, RateLimitSignal } from './rate-limit.js';
+import type { HarnessOutcome } from './stream-summary.js';
 
-export type HarnessKind = 'claude_code' | 'codex' | 'custom';
+export type HarnessKind = 'claude_code' | 'codex' | 'pi' | 'custom';
 
-export const HARNESS_KINDS: readonly HarnessKind[] = ['claude_code', 'codex', 'custom'];
+export const HARNESS_KINDS: readonly HarnessKind[] = ['claude_code', 'codex', 'pi', 'custom'];
+
+/** Where a `pi` run keeps its sessions, inside the workspace so a kept one can resume. */
+export const PI_SESSION_DIR = '.pi-sessions';
 
 /** `--keep-workspaces`: which settled runs leave their workspace on disk. */
 export type KeepWorkspacesMode = 'never' | 'failed' | 'always';
@@ -48,6 +53,12 @@ export interface HarnessInput {
 	 * only the continuation message.
 	 */
 	resumeSessionId?: string | null;
+	/**
+	 * The materialized skill directories, relative to the workspace
+	 * (`.agents/skills/<name>`). Only `pi` needs them named: it does not load
+	 * project skills from a folder it has not been told to trust.
+	 */
+	skillDirs?: string[];
 }
 
 /**
@@ -72,8 +83,9 @@ export interface HarnessInvocation {
  * The argv to launch a harness with (cwd = the workspace). `claude_code`
  * reads the prompt from prompt.md via stdin redirection — never argv, whose
  * ARG_MAX would truncate a large stitched prompt — with the model via
- * `--model`; codex gets the prompt as its exec argument; a custom template
- * runs under `sh -c` with the placeholders expanded.
+ * `--model`; codex gets the prompt as its exec argument; `pi` reads stdin
+ * like claude_code; a custom template runs under `sh -c` with the
+ * placeholders expanded.
  */
 export function buildHarnessInvocation(
 	spec: { harness: HarnessKind; command?: string },
@@ -107,6 +119,20 @@ export function buildHarnessInvocation(
 					...(input.model ? ['--model', input.model] : []),
 					...(input.effort ? ['-c', `model_reasoning_effort=${JSON.stringify(input.effort)}`] : []),
 					input.prompt
+				]
+			};
+		case 'pi':
+			// `--mode json` is Pi's JSONL event stream, rendered by pi-stream.ts.
+			// `--no-approve` rather than `--approve`: approving the folder would
+			// also trust any `.pi/` extensions a repository ships, so the skills
+			// are named one by one instead. Sessions live in the workspace, and
+			// outside `.pi/` — that is Pi's project-config directory — so a kept
+			// workspace carries the conversation `--session <id>` reopens.
+			return {
+				file: 'sh',
+				args: [
+					'-c',
+					`pi --mode json --no-approve --session-dir ${shellQuote(join(input.workspace, PI_SESSION_DIR))}${input.resumeSessionId ? ` --session ${shellQuote(input.resumeSessionId)}` : ''}${input.model ? ` --model ${shellQuote(input.model)}` : ''}${input.effort ? ` --thinking ${shellQuote(input.effort)}` : ''}${(input.skillDirs ?? []).map((dir) => ` --skill ${shellQuote(dir)}`).join('')} < ${shellQuote(input.promptFile)}`
 				]
 			};
 		case 'custom': {
@@ -174,7 +200,9 @@ export function formatLaunchBanner(
 ): string {
 	const fields = [
 		`harness=${meta.harness}`,
-		`model=${input.model ?? '(fixed)'}`,
+		// Pi with no model named is not fixed: it runs whatever its own
+		// settings default to, and the stream's `[session] model` line says which.
+		`model=${input.model ?? (meta.harness === 'pi' ? '(pi default)' : '(fixed)')}`,
 		`effort=${input.effort ?? '(provider-default)'}`,
 		`timeout=${meta.timeoutMinutes}m`,
 		`cli=${meta.cliVersion}`,
@@ -229,6 +257,128 @@ export function exitLineForRun(
 ): string | null {
 	if (run.settled) return null;
 	return formatExitLine({ ...exit, timedOut: run.timedOut });
+}
+
+// ---------------------------------------------------------------------------
+// The exit verdict: what a closed harness is reported as. Pure, so every
+// branch is a table row in support.test.ts rather than a daemon to boot.
+
+export interface ExitFacts {
+	harness: HarnessKind;
+	/** Exit code, or null when a signal took it. */
+	code: number | null;
+	signal: NodeJS.Signals | null;
+	/** The daemon's own timeout fired. */
+	timedOut: boolean;
+	/** The assignment's timeout, for the timeout report. */
+	timeoutMinutes: number;
+	/**
+	 * Set when the daemon killed the harness because it applied a different
+	 * effort from the assigned one; the reason, in words.
+	 */
+	effortMismatch?: string | null;
+	/** The RateLimitDetector's readings (claude_code); absent where none ran. */
+	limited?: RateLimitSignal | null;
+	providerError?: ProviderErrorSignal | null;
+	/** The stream's own account of how the harness ended (`pi`). */
+	harnessOutcome?: HarnessOutcome;
+	/** Secret env values, masked in every detail that reaches a report. */
+	secrets: readonly string[];
+}
+
+export interface ExitVerdict extends RunJudgment {
+	status: 'completed' | 'failed';
+	error?: string;
+	/** The daemon-console line for an end reported without a strike. */
+	note?: string;
+}
+
+/**
+ * How a closed harness is finish-reported. In order: the daemon's timeout,
+ * an effort mismatch it killed the run for, a signal (ours, or the machine's),
+ * a non-zero exit — where a provider refusing on a usage limit, or a transient
+ * provider failure, is the runner's condition and not the issue's fault, so
+ * it carries a judgment and costs no strike — and only then success.
+ *
+ * `pi` is the exception to "exit 0 is success": it exits 0 when the model
+ * call failed (429, 500, connection refused), so its verdict comes from the
+ * stream. A stream that ended on a rate limit or provider error keeps that
+ * judgment on a non-zero exit too; any other non-zero exit is a plain failure. Pi reports no reset time, so a rate limit carries no `resume_at`
+ * and the supervisor's default backoff applies.
+ */
+export function classifyExit(facts: ExitFacts): ExitVerdict {
+	const mask = (text: string) => redactSecrets(text, facts.secrets);
+	if (facts.timedOut) {
+		return {
+			status: 'failed',
+			error: `run exceeded the ${facts.timeoutMinutes}m timeout; harness killed`
+		};
+	}
+	if (facts.effortMismatch) return { status: 'failed', error: mask(facts.effortMismatch) };
+	// A signal is our own kill, so it keeps its plain report.
+	if (facts.signal) return { status: 'failed', error: `harness killed by ${facts.signal}` };
+	// The stream's account of a refused or unreachable provider holds whatever
+	// pi exits with: it is the runner's condition either way, never a strike.
+	const outcome = facts.harness === 'pi' ? facts.harnessOutcome : undefined;
+	if (facts.code !== 0) {
+		if (facts.limited) {
+			const detail = mask(facts.limited.detail);
+			return {
+				status: 'failed',
+				error: `rate limited: ${detail}`,
+				judgment: 'rate_limited',
+				...(facts.limited.resumeAt !== null ? { resume_at: facts.limited.resumeAt } : {}),
+				note: `harness rate limited (${detail})`
+			};
+		}
+		if (facts.providerError) {
+			const detail = mask(facts.providerError.detail);
+			return {
+				status: 'failed',
+				error: `provider error: ${detail}`,
+				judgment: 'interrupted',
+				note: `transient provider error (${detail})`
+			};
+		}
+		return (
+			(outcome && providerVerdict(outcome, mask)) ?? {
+				status: 'failed',
+				error: `harness exited with code ${facts.code}`
+			}
+		);
+	}
+	if (outcome && outcome.kind !== 'ok') {
+		return (
+			providerVerdict(outcome, mask) ?? { status: 'failed', error: `pi: ${mask(outcome.detail)}` }
+		);
+	}
+	return { status: 'completed' };
+}
+
+/** The no-strike verdict for a stream that ended on the provider's refusal or failure. */
+function providerVerdict(
+	outcome: HarnessOutcome,
+	mask: (text: string) => string
+): ExitVerdict | null {
+	if (outcome.kind === 'rate_limited') {
+		const detail = mask(outcome.detail);
+		return {
+			status: 'failed',
+			error: `rate limited: ${detail}`,
+			judgment: 'rate_limited',
+			note: `harness rate limited (${detail})`
+		};
+	}
+	if (outcome.kind === 'provider_error') {
+		const detail = mask(outcome.detail);
+		return {
+			status: 'failed',
+			error: `provider error: ${detail}`,
+			judgment: 'interrupted',
+			note: `transient provider error (${detail})`
+		};
+	}
+	return null;
 }
 
 // ---------------------------------------------------------------------------

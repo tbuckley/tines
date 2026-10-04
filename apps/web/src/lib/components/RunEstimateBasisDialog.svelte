@@ -24,6 +24,7 @@
 	const reasonText: Record<string, string> = {
 		pricing_evidence_missing:
 			'The runner reported token counts but not the details Tines needs to price them. It is probably running an older version of the Tines CLI.',
+		harness_unpriced: 'The harness reported tokens but no cost. Local models have no price.',
 		invalid_pricing_evidence:
 			'The runner sent pricing details in a format Tines does not recognise.',
 		model_missing: 'Tines does not know which model this run used.',

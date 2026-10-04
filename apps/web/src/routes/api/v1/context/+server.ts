@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { ContextItem, CreateContextItemRequest, ListResponse } from '@tines/shared';
 import { createContextItem, listContextItems } from '$lib/server/api/context';
 import {
+	ApiFail,
 	api,
 	apiContext,
 	encodeCursor,
@@ -13,9 +14,10 @@ import {
 import {
 	actorForContextScope,
 	contextScopeProject,
-	memberScopeAllowed,
-	redactForMember
+	memberScopeAllowed
 } from '$lib/server/api/member-context';
+import { listSharedContextItems, mergeContextPages } from '$lib/server/api/member-context-list';
+import { resolveAccessibleProjectRef } from '$lib/server/api/project-access';
 import { memberWriteRace } from '$lib/server/api/member-e2e-race';
 import type { RequestHandler } from './$types';
 
@@ -23,39 +25,61 @@ export const GET: RequestHandler = api(async (event) => {
 	const { db, actor: requester } = await apiContext(event);
 	const page = readPage(event);
 	const params = event.url.searchParams;
+	// A project may be named by id or by name; a name resolves across the
+	// caller's own and shared projects (as GET /issues does), so a member can
+	// name a shared project either way. An unknown ref keeps the raw value and
+	// lists nothing.
+	const namedProject = params.get('project');
+	let project = namedProject ?? undefined;
+	if (namedProject) {
+		try {
+			project = await resolveAccessibleProjectRef(db, requester, namedProject);
+		} catch (error) {
+			if (error instanceof ApiFail && error.code === 'ambiguous_project') throw error;
+		}
+	}
+	const issue = params.get('issue') ?? undefined;
+	const filters = {
+		kind: params.get('kind') ?? undefined,
+		project,
+		state: params.get('state') ?? undefined,
+		issue,
+		label: params.get('label') ?? undefined,
+		q: params.get('q') ?? undefined,
+		exact: ['1', 'true'].includes(params.get('exact') ?? ''),
+		archived: readArchived(params)
+	};
 	// A member lists a shared project's (or shared issue's) own items; the
 	// owner's global and other-project items are filtered out below.
-	const sharedScope = params.get('issue')
-		? await contextScopeProject(db, { issue_id: params.get('issue') })
-		: params.get('project');
+	const sharedScope = issue
+		? await contextScopeProject(db, { issue_id: issue })
+		: (project ?? null);
 	const actor = await actorForContextScope(db, requester, sharedScope).catch(() => requester);
-	const { items, hasMore } = await listContextItems(
-		db,
-		actor,
-		{
-			kind: params.get('kind') ?? undefined,
-			project: params.get('project') ?? undefined,
-			state: params.get('state') ?? undefined,
-			issue: params.get('issue') ?? undefined,
-			label: params.get('label') ?? undefined,
-			q: params.get('q') ?? undefined,
-			exact: ['1', 'true'].includes(params.get('exact') ?? ''),
-			archived: readArchived(params)
-		},
-		page
-	);
+	const own = await listContextItems(db, actor, filters, page);
 	const visible = actor.member
 		? (
 				await Promise.all(
-					items.map(async (item) =>
-						(await memberScopeAllowed(db, actor, item.scope)) ? redactForMember(actor, item) : null
+					own.items.map(async (item) =>
+						(await memberScopeAllowed(db, actor, item.scope)) ? item : null
 					)
 				)
 			).filter((item) => item !== null)
-		: items;
-	const last = items[items.length - 1];
+		: own.items;
+	// With no place named, the list is the caller's own account plus the items
+	// of every project shared with them. Each source returns its first `limit`
+	// rows after the cursor, so the merge pages without gaps or repeats.
+	const unionShared = !project && !issue && !filters.exact && !requester.agentRunId;
+	const shared = unionShared
+		? await listSharedContextItems(db, requester, filters, page)
+		: { items: [], hasMore: false };
+	const merged = unionShared ? mergeContextPages([...visible, ...shared.items]) : visible;
+	const items = merged.slice(0, page.limit);
+	const hasMore = merged.length > page.limit || own.hasMore || shared.hasMore;
+	// The cursor follows the last row read: of the cut when merging, of the
+	// unfiltered page otherwise (a member's post-filter may drop its tail).
+	const last = unionShared ? items[items.length - 1] : own.items[own.items.length - 1];
 	const body: ListResponse<ContextItem> = {
-		items: visible,
+		items,
 		// The list orders by updated_at; the cursor's timestamp slot carries it.
 		next_cursor: hasMore && last ? encodeCursor(last.updated_at, last.id) : null
 	};
@@ -79,5 +103,5 @@ export const POST: RequestHandler = api(async (event) => {
 		body,
 		memberWriteRace(event.request, db, actor)
 	);
-	return json(redactForMember(actor, item), { status: 201 });
+	return json(item, { status: 201 });
 });

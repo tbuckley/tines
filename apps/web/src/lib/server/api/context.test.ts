@@ -832,6 +832,81 @@ describe('listContextItems workflow filter', () => {
 	});
 });
 
+describe('listContextItems kind exclusion and two-way paging', () => {
+	function seed(rows: [id: string, kind: string, updatedAt: number][]): TestDb {
+		const t = createTestDb();
+		t.sqlite.exec(`
+			INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+				VALUES ('u1', 'alice', 'a@example.com', 1, 0, 0);
+		`);
+		const insert = t.sqlite.prepare(`INSERT INTO context_item
+			(id, user_id, kind, name, description, body, position, version, created_at, updated_at)
+			VALUES (?, 'u1', ?, ?, '', 'b', 0, 1, 0, ?)`);
+		for (const [id, kind, updatedAt] of rows) insert.run(id, kind, id, updatedAt);
+		return t;
+	}
+	const ids = (r: { items: { id: string }[] }) => r.items.map((i) => i.id);
+	const buried: [string, string, number][] = [
+		['ctx_art_3', 'artifact', 4],
+		['ctx_art_2', 'artifact', 3],
+		['ctx_art_1', 'artifact', 2],
+		['ctx_prompt', 'prompt', 1]
+	];
+
+	it('leaves excluded kinds out before the limit, not after', async () => {
+		const t = seed(buried);
+		const result = await listContextItems(
+			t.db,
+			'u1',
+			{ excludeKinds: ['artifact'] },
+			{ cursor: null, limit: 2 }
+		);
+		expect(ids(result)).toEqual(['ctx_prompt']);
+		expect(result.hasMore).toBe(false);
+	});
+
+	it('still returns every kind when nothing is excluded', async () => {
+		const t = seed(buried);
+		const result = await listContextItems(t.db, 'u1', {}, { cursor: null, limit: 2 });
+		expect(ids(result)).toEqual(['ctx_art_3', 'ctx_art_2']);
+		expect(result.hasMore).toBe(true);
+	});
+
+	it('pages both ways on (updated_at, id), newest first in either direction', async () => {
+		// ctx_c and ctx_b share an updated_at, so the id tie-break is load-bearing.
+		const t = seed([
+			['ctx_e', 'prompt', 5],
+			['ctx_d', 'prompt', 4],
+			['ctx_c', 'prompt', 3],
+			['ctx_b', 'prompt', 3],
+			['ctx_a', 'prompt', 1]
+		]);
+		const at = (createdAt: number, id: string) => ({ createdAt, id });
+		const first = await listContextItems(t.db, 'u1', {}, { cursor: null, limit: 2 });
+		expect(ids(first)).toEqual(['ctx_e', 'ctx_d']);
+		expect(first.hasMore).toBe(true);
+		const second = await listContextItems(t.db, 'u1', {}, { cursor: at(4, 'ctx_d'), limit: 2 });
+		expect(ids(second)).toEqual(['ctx_c', 'ctx_b']);
+		expect(second.hasMore).toBe(true);
+		const back = await listContextItems(
+			t.db,
+			'u1',
+			{},
+			{ cursor: at(3, 'ctx_c'), limit: 2, direction: 'before' }
+		);
+		expect(ids(back)).toEqual(['ctx_e', 'ctx_d']);
+		expect(back.hasMore).toBe(false);
+		const middle = await listContextItems(
+			t.db,
+			'u1',
+			{},
+			{ cursor: at(1, 'ctx_a'), limit: 2, direction: 'before' }
+		);
+		expect(ids(middle)).toEqual(['ctx_c', 'ctx_b']);
+		expect(middle.hasMore).toBe(true);
+	});
+});
+
 describe('listContextItems search', () => {
 	const page = { cursor: null, limit: 50 };
 

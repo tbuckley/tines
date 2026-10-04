@@ -400,9 +400,10 @@ test.describe.serial('API keys page', () => {
 			data: { issue_id: RUNROW.runKeyIssueId, body: 'should never land' }
 		});
 		expect(denied.status()).toBe(403);
+		// Refused on where the prompt sits now, before the destination is looked at.
 		expect((await denied.json()).error).toMatchObject({
 			code: 'run_key_forbidden',
-			details: { reason: 'context_not_issue_scoped' }
+			details: { reason: 'outside_run_issue' }
 		});
 		const unchanged = await page.request.get(`/api/v1/context/${original.id}`, {
 			headers: ownerHeaders

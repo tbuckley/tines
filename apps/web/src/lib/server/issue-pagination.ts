@@ -29,17 +29,21 @@ export function readIssuePage(url: URL): WebIssuePage {
 	return { cursor: raw ? decodeCursor(raw) : null, limit: ISSUE_PAGE_SIZE, direction };
 }
 
-export function issuePagination(
+/**
+ * Previous/Next links for any newest-first keyset list; `cursorAt` names the
+ * timestamp the list sorts on (it rides in the cursor's timestamp slot).
+ */
+export function keysetPagination<T extends { id: string }>(
 	url: URL,
 	page: WebIssuePage,
-	items: Pick<IssueListItem, 'id' | 'created_at'>[],
+	items: T[],
 	hasMore: boolean,
+	cursorAt: (item: T) => number,
 	scope?: string
 ): IssuePagination {
 	const bounded = page.cursor !== null;
 	const firstHref = issuePageHref(url);
-	const cursorFor = (item: Pick<IssueListItem, 'id' | 'created_at'>) =>
-		encodeCursor(item.created_at, item.id);
+	const cursorFor = (item: T) => encodeCursor(cursorAt(item), item.id);
 	let previousHref: string | null = null;
 	let nextHref: string | null = null;
 	if (items.length) {
@@ -58,4 +62,14 @@ export function issuePagination(
 		else nextHref = issuePageHref(url, 'after', raw, scope);
 	}
 	return { previousHref, nextHref, firstHref, bounded, empty: items.length === 0 };
+}
+
+export function issuePagination(
+	url: URL,
+	page: WebIssuePage,
+	items: Pick<IssueListItem, 'id' | 'created_at'>[],
+	hasMore: boolean,
+	scope?: string
+): IssuePagination {
+	return keysetPagination(url, page, items, hasMore, (item) => item.created_at, scope);
 }
