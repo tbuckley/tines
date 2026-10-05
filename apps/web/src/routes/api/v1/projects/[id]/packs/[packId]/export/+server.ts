@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import { api, apiContext } from '$lib/server/api/core';
 import { b64ToBytes } from '$lib/server/api/packs/model';
 import { exportPack } from '$lib/server/api/packs/install';
-import { writePackArchive, packFolderName } from '@tines/shared';
+import { writePackArchive, packFolderName } from '@tines/shared/packs';
 import type { RequestHandler } from './$types';
 
 /**

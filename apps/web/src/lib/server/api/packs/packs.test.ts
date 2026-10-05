@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { packFilesFromRecord, type PackWireFile } from '@tines/shared';
+import { type PackWireFile } from '@tines/shared';
+import { packFilesFromRecord } from '@tines/shared/packs';
 import { engineeringPack } from '../../../../../../../packages/shared/src/packs/engineering-fixture';
 import { createTestDb } from '../test-db';
 import { sessionActor, type ActorContext } from '../core';
