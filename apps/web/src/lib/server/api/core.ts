@@ -444,6 +444,20 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 			'run_state.run_scope as run_scope',
 			sql<string>`(SELECT json_group_array(filed.id) FROM issue AS filed
 				WHERE filed.created_by_run_id = api_key.agent_run_id)`.as('run_created_issue_ids'),
+			// What an ordinary key's organization scope is checked against, read
+			// here so it costs no query of its own: each project the person
+			// reaches outside their personal organization, as [id, org, owner].
+			sql<string | null>`CASE WHEN api_key.agent_run_id IS NULL THEN (
+				SELECT json_group_array(json_array(reach.id, reach.org, reach.owner)) FROM (
+					SELECT p.id, COALESCE(p.organization_id, 'org_' || p.user_id) AS org, p.user_id AS owner
+					FROM project p WHERE p.user_id = api_key.user_id
+					AND COALESCE(p.organization_id, 'org_' || p.user_id) <> 'org_' || api_key.user_id
+					UNION ALL
+					SELECT p.id, COALESCE(p.organization_id, 'org_' || p.user_id), p.user_id
+					FROM project_member m JOIN project p ON p.id = m.project_id
+					WHERE m.user_id = api_key.user_id AND m.revoked_at IS NULL
+					AND p.user_id <> api_key.user_id
+				) AS reach) END`.as('org_reach'),
 			'user.name as user_name'
 		])
 		.where('api_key.key_hash', '=', hash)
@@ -535,9 +549,21 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	let hiddenProjectIds: string[] | undefined;
 	if (row.agent_run_id === null) {
 		organizationScope = policyOrganizations(permissions, row.user_id);
-		if (organizationScope !== 'all') {
+		const personal = `org_${row.user_id}`;
+		if (organizationScope !== 'all' && organizationScope.includes(personal)) {
 			// Projects the person can reach whose organization the key does not
-			// name: invisible to it (404), wherever its project scope says.
+			// name: invisible to it (404), wherever its project scope says. A
+			// version-1 key keeps reaching projects shared with its owner the
+			// old, per-project way (a project still in its owner's personal
+			// organization), exactly as before organizations.
+			const named = new Set(organizationScope);
+			const legacy = permissions.organizations === undefined;
+			hiddenProjectIds = (JSON.parse(row.org_reach ?? '[]') as [string, string, string][])
+				.filter(([, org, owner]) => !named.has(org) && !(legacy && org === `org_${owner}`))
+				.map(([id]) => id);
+		} else if (organizationScope !== 'all') {
+			// A key that leaves out the personal organization: its own projects
+			// are hidden too, so read them all.
 			const orgs = JSON.stringify(organizationScope);
 			const hidden = await sql<{ id: string }>`SELECT p.id FROM project p
 				LEFT JOIN project_member m ON m.project_id = p.id AND m.user_id = ${row.user_id}
