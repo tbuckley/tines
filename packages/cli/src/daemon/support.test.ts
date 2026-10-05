@@ -1,5 +1,10 @@
 import { delimiter } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { ClaudeStreamRenderer } from './claude-stream.js';
+import { CodexStreamRenderer } from './codex-stream.js';
+import { PiStreamRenderer } from './pi-stream.js';
+import { RateLimitDetector } from './rate-limit.js';
+import type { RunStreamRenderer } from './stream-summary.js';
 import type { RunJudgment } from './support';
 import {
 	AMBIENT_CLI,
@@ -17,12 +22,14 @@ import {
 	formatExitLine,
 	formatLaunchBanner,
 	formatLaunchCommand,
+	HARNESS_KINDS,
 	LogBatcher,
 	keepWorkspace,
 	RunTable,
 	shellQuote,
 	type AgentCli,
 	type ExitFacts,
+	type HarnessKind,
 	type ManagedRun,
 	type RunOutcome
 } from './support.js';
@@ -540,9 +547,65 @@ describe('classifyExit', () => {
 			{ status: 'failed', error: 'harness exited with code 1' }
 		],
 		[
-			'a non-zero exit never reads the stream outcome of a harness other than pi',
-			{ code: 1, harnessOutcome: { kind: 'rate_limited', detail: '429: x' } },
+			'codex non-zero exit keeps a rate-limited stream and its reset time: no strike',
+			{
+				harness: 'codex',
+				code: 1,
+				harnessOutcome: {
+					kind: 'rate_limited',
+					detail: 'You’ve hit your usage limit.',
+					resumeAt: 1_800_000_000_000
+				}
+			},
+			{
+				status: 'failed',
+				error: 'rate limited: You’ve hit your usage limit.',
+				judgment: 'rate_limited',
+				resume_at: 1_800_000_000_000,
+				note: 'harness rate limited (You’ve hit your usage limit.)'
+			}
+		],
+		[
+			'codex non-zero exit keeps a provider-error stream: interrupted',
+			{
+				harness: 'codex',
+				code: 1,
+				harnessOutcome: { kind: 'provider_error', detail: 'Selected model is at capacity.' }
+			},
+			{
+				status: 'failed',
+				error: 'provider error: Selected model is at capacity.',
+				judgment: 'interrupted',
+				note: 'transient provider error (Selected model is at capacity.)'
+			}
+		],
+		[
+			'codex non-zero exit with a plain-error stream is a plain failure',
+			{ harness: 'codex', code: 1, harnessOutcome: { kind: 'error', detail: 'nope' } },
 			{ status: 'failed', error: 'harness exited with code 1' }
+		],
+		[
+			'codex exit 0 is success whatever its stream said: only pi is judged from the stream there',
+			{
+				harness: 'codex',
+				harnessOutcome: { kind: 'rate_limited', detail: 'limit', resumeAt: 1_800_000_000_000 }
+			},
+			{ status: 'completed' }
+		],
+		[
+			"the detector's usage limit outranks the stream outcome on the same exit",
+			{
+				code: 1,
+				limited,
+				harnessOutcome: { kind: 'provider_error', detail: 'from the stream' }
+			},
+			{
+				status: 'failed',
+				error: 'rate limited: five_hour limit rejected',
+				judgment: 'rate_limited',
+				resume_at: 1_800_000_000_000,
+				note: 'harness rate limited (five_hour limit rejected)'
+			}
 		],
 		[
 			'an effort mismatch the daemon killed the run for outranks the signal it sent',
@@ -590,9 +653,153 @@ describe('classifyExit', () => {
 			expect(JSON.stringify(verdict)).not.toContain('hunter2');
 			expect(verdict.error).toContain('bad key ***');
 		}
+		for (const kind of ['rate_limited', 'provider_error'] as const) {
+			const verdict = classifyExit(
+				facts({
+					harness: 'codex',
+					code: 1,
+					harnessOutcome: { kind, detail: 'key hunter2 refused' },
+					secrets
+				})
+			);
+			expect(JSON.stringify(verdict)).not.toContain('hunter2');
+			expect(verdict.error).toContain('key *** refused');
+			expect(verdict.note).toContain('key *** refused');
+		}
 		expect(
 			classifyExit(facts({ harness: 'pi', effortMismatch: 'model hunter2 clamped', secrets })).error
 		).toBe('model *** clamped');
+	});
+});
+
+describe('provider refusal parity', () => {
+	// Every model harness must turn its provider's usage limit into a hold and
+	// its provider's outage into an interruption. A harness added without a
+	// fixture here fails `tsc` through the Record and the key check below.
+	type ModelHarness = Exclude<HarnessKind, 'custom'>;
+	interface Fixture {
+		/** The harness's stdout, one JSON event per line. */
+		stdout: unknown[];
+		code: number;
+	}
+
+	const codexRefusal = (message: string): Fixture => ({
+		stdout: [
+			{ type: 'thread.started', thread_id: 'thread_123' },
+			{ type: 'turn.started' },
+			{ type: 'error', message },
+			{ type: 'turn.failed', error: { message } }
+		],
+		code: 1
+	});
+	// Pi exits 0 when the model call failed.
+	const piRefusal = (errorMessage: string): Fixture => ({
+		stdout: [
+			{
+				type: 'message_end',
+				message: { role: 'assistant', content: [], stopReason: 'error', errorMessage }
+			}
+		],
+		code: 0
+	});
+
+	const REFUSALS: Record<ModelHarness, { usageLimit: Fixture; providerFailure: Fixture }> = {
+		claude_code: {
+			usageLimit: {
+				stdout: [
+					{
+						type: 'rate_limit_event',
+						rate_limit_info: {
+							status: 'rejected',
+							resetsAt: 1_800_000_000,
+							rateLimitType: 'five_hour'
+						}
+					}
+				],
+				code: 1
+			},
+			providerFailure: {
+				stdout: [{ type: 'result', is_error: true, result: 'API Error: 529 Overloaded' }],
+				code: 1
+			}
+		},
+		codex: {
+			usageLimit: codexRefusal(
+				'You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 7th, 2026 2:58 PM.'
+			),
+			providerFailure: codexRefusal('Selected model is at capacity. Please try a different model.')
+		},
+		pi: {
+			usageLimit: piRefusal('429: {"message":"Rate limit reached","type":"rate_limit_error"}'),
+			providerFailure: piRefusal('503: overloaded')
+		}
+	};
+
+	/**
+	 * Runs a fixture through what the daemon builds for the harness and judges
+	 * it as the daemon's close handler does (`child.on('close')` in daemon.ts).
+	 */
+	function verdictFor(harness: ModelHarness, fixture: Fixture) {
+		const emit = () => {};
+		let limiter: RateLimitDetector | undefined;
+		let renderer: RunStreamRenderer;
+		switch (harness) {
+			case 'claude_code': {
+				const detector = new RateLimitDetector();
+				limiter = detector;
+				renderer = new ClaudeStreamRenderer(emit, (event) => detector.noteStreamEvent(event));
+				break;
+			}
+			case 'codex':
+				renderer = new CodexStreamRenderer(emit);
+				break;
+			case 'pi':
+				renderer = new PiStreamRenderer(emit);
+				break;
+		}
+		renderer.write(fixture.stdout.map((event) => `${JSON.stringify(event)}\n`).join(''));
+		renderer.finish();
+		limiter?.finish();
+		return classifyExit({
+			harness,
+			code: fixture.code,
+			signal: null,
+			timedOut: false,
+			timeoutMinutes: 30,
+			limited: limiter?.signal() ?? null,
+			providerError: limiter?.providerError() ?? null,
+			harnessOutcome: renderer.summary().harnessOutcome,
+			secrets: []
+		});
+	}
+
+	const harnesses = Object.keys(REFUSALS) as ModelHarness[];
+
+	it('has a fixture pair for every model harness', () => {
+		expect([...harnesses].sort()).toEqual(HARNESS_KINDS.filter((kind) => kind !== 'custom').sort());
+	});
+
+	it.each(harnesses)('%s: a usage limit is rate_limited, not a strike', (harness) => {
+		expect(verdictFor(harness, REFUSALS[harness].usageLimit)).toMatchObject({
+			status: 'failed',
+			judgment: 'rate_limited',
+			error: expect.stringMatching(/^rate limited: /)
+		});
+	});
+
+	it.each(harnesses)('%s: a provider failure is interrupted, not a strike', (harness) => {
+		expect(verdictFor(harness, REFUSALS[harness].providerFailure)).toMatchObject({
+			status: 'failed',
+			judgment: 'interrupted',
+			error: expect.stringMatching(/^provider error: /)
+		});
+	});
+
+	it('codex carries the reset time it printed; pi names none', () => {
+		expect(verdictFor('codex', REFUSALS.codex.usageLimit).resume_at).toBe(
+			new Date(2026, 9, 7, 14, 58).getTime() + 60_000
+		);
+		expect(verdictFor('pi', REFUSALS.pi.usageLimit)).not.toHaveProperty('resume_at');
 	});
 });
 

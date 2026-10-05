@@ -187,6 +187,30 @@ exit 0
 	return bin;
 }
 
+/**
+ * A `codex` that fails as the real one does when the provider refuses: the
+ * same message as a top-level `error` and on the failed turn, then exit 1.
+ */
+function fakeCodexRefused(dir: string, message: string): string {
+	const bin = join(dir, 'fakebin');
+	mkdirSync(bin, { recursive: true });
+	const events = [
+		{ type: 'thread.started', thread_id: '01a09350-f9cc-7160-8a73-60d458864a7e' },
+		{ type: 'turn.started' },
+		{ type: 'error', message },
+		{ type: 'turn.failed', error: { message } }
+	];
+	writeFileSync(
+		join(bin, 'codex'),
+		`#!/bin/sh
+printf '%s\\n' ${events.map((event) => `'${JSON.stringify(event)}'`).join(' ')}
+exit 1
+`,
+		{ mode: 0o755 }
+	);
+	return bin;
+}
+
 function fakeCodex(dir: string, exitCode = 0): string {
 	const bin = join(dir, 'fakebin');
 	mkdirSync(bin, { recursive: true });
@@ -573,6 +597,42 @@ describe('the run log a local run leaves behind', () => {
 		expect(harvest.log).not.toContain('"thread.started"');
 	}, 30_000);
 
+	// Codex 0.156.1's own lines (U+2019 apostrophe, which `sh` quoting survives).
+	it.each([
+		[
+			'a usage limit holds the runner until the reset Codex printed',
+			'You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 7th, 2026 2:58 PM.',
+			{
+				judgment: 'rate_limited',
+				resume_at: new Date(2026, 9, 7, 14, 58).getTime() + 60_000,
+				error: expect.stringMatching(/^rate limited: You’ve hit your usage limit\./)
+			}
+		],
+		[
+			'a model at capacity is reported as interrupted',
+			'Selected model is at capacity. Please try a different model.',
+			{
+				judgment: 'interrupted',
+				error: 'provider error: Selected model is at capacity. Please try a different model.'
+			}
+		]
+	])(
+		'a refused Codex run costs no strike: %s',
+		async (_name, message, expected) => {
+			const { server: stub, done } = stubSupervisor(30, 'gpt-5.6-sol');
+			server = stub;
+			await new Promise<void>((r) => stub.listen(0, '127.0.0.1', r));
+			const port = (stub.address() as AddressInfo).port;
+			configDir = mkdtempSync(join(tmpdir(), 'tines-daemon-'));
+
+			child = startDaemon(port, configDir, { fakeCodexDir: fakeCodexRefused(configDir, message) });
+			const harvest = await done;
+			expect(harvest.finish).toMatchObject({ status: 'failed', ...expected });
+			expect(harvest.log.match(/^\[error\] /gm)).toHaveLength(2);
+		},
+		30_000
+	);
+
 	it('does not use rollout proof for a failed Codex attempt', async () => {
 		const { server: stub, done } = stubSupervisor(30, 'gpt-5.6-sol');
 		server = stub;
@@ -582,8 +642,10 @@ describe('the run log a local run leaves behind', () => {
 
 		child = startDaemon(port, configDir, { fakeCodexDir: fakeCodex(configDir, 1) });
 		const harvest = await done;
+		expect(harvest.finish).not.toHaveProperty('judgment');
 		expect(harvest.finish).toMatchObject({
 			status: 'failed',
+			error: 'harness exited with code 1',
 			usage: {
 				input_tokens: 80_000,
 				cache_read_tokens: 210_000,

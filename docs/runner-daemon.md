@@ -541,13 +541,24 @@ thinks; every run's launch banner shows which daemon binary actually ran it (`cl
 - **Cancel / timeout from the supervisor**: the next poll's `cancels` list makes the daemon
   kill the process without reporting — the supervisor already settled the run. The daemon
   also enforces the run timeout locally. Both count as failures for `--keep-workspaces`.
-- **Claude usage limit**: when the harness reports a usage limit — as a rejected
-  `rate_limit_event` on its stream, or as its own message on stderr when the limit was
-  already spent before the process started — the daemon finish-reports the run as rate
-  limited rather than failed. The issue takes no strike, and the runner's card reads
-  "usage limit — resumes <time>" until the window resets. Nothing needs doing: the
-  supervisor dispatches to it again on its own. A weekly limit is re-probed once a day,
-  which costs one run that ends in about a second.
+- **Usage limit or provider outage**: when the harness reports that its provider refused
+  on a usage limit, the daemon finish-reports the run as rate limited rather than failed.
+  The issue takes no strike, and the runner's card reads "usage limit — resumes <time>"
+  until the window resets. Nothing needs doing: the supervisor dispatches to it again on
+  its own. A reset more than 24 hours out (a weekly limit, a multi-day Codex reset) is
+  re-probed once a day, which costs one run that ends in a few seconds. A provider outage
+  is finish-reported as interrupted: no strike either, and no hold. Each model harness
+  says it its own way:
+
+  | Harness     | Usage limit read from                              | Reset time                                               | Provider outage read from            |
+  | ----------- | -------------------------------------------------- | -------------------------------------------------------- | ------------------------------------ |
+  | Claude Code | rejected `rate_limit_event`, or its stderr message | exact (stream) or parsed (stderr)                        | 5xx `API Error` or a transport reset |
+  | Codex       | the start of the `turn.failed` message             | parsed from `try again at …`, in the runner's local time | "at capacity", "high demand"         |
+  | Pi          | a final answer that failed with 429                | none: 30-minute hold                                     | 5xx, refused connection              |
+
+  Only the harness's own failure events are read, never what the agent wrote or a command
+  printed. The messages are vendor text: if one changes, the run fails as it did before
+  (a strike) until the daemon is updated.
 - **Network errors**: polls retry with backoff; the loop never crashes. A 401 (rotated
   token) exits with instructions instead of spinning.
 - **CLI refresh failure**: never fails a run — the last-good copy is used, or the ambient

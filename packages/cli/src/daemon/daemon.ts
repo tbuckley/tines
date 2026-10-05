@@ -997,7 +997,7 @@ export async function runDaemon(opts: DaemonOptions): Promise<void> {
 					timeoutMinutes: assignment.timeout_minutes,
 					limited: run.limiter?.signal() ?? null,
 					providerError: run.limiter?.providerError() ?? null,
-					// pi: its stream, not its exit code, says how the run ended.
+					// The stream's own account of a provider refusal or failure.
 					...(run.renderer ? { harnessOutcome: run.renderer.summary().harnessOutcome } : {}),
 					effortMismatch: run.effortMismatch ?? null,
 					secrets: secretEnvValues
