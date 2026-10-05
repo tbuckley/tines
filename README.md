@@ -35,9 +35,9 @@ create, and the workflows, context, and issues it creates remain editable from
 **Workflows**, **Context**, and the issue page.
 
 **Code repository** needs a project name and a cloneable repository URL; the branch is
-optional and defaults to the repository's default branch. Its editable **How we work**
-conventions cover test commands, base and working branches, pull-request expectations, and
-important paths. It creates or reuses the **Code change** workflow as the project default,
+optional and defaults to the repository's default branch. Its editable **How work is
+done here** conventions cover the test command, branch rules, pull-request expectations, and
+where things live. It creates or reuses the **Code change** workflow as the project default,
 adds repository context and normally conventions, and opens **Find and fix a bug** in **In
 progress**. Follow the Agents checklist (see [Running agents](#running-agents)) to connect and
 route an agent. The agent should verify a real bug, fix and test it on a branch, open and
@@ -63,7 +63,7 @@ prompt; leaving it empty creates no conventions prompt. System and user-created 
 and other context can still be available, and you add the work and project context you
 need.
 
-CLI users can [install and sign in](#installing-the-cli-globally), discover the current
+CLI users can [install and sign in](#installing-the-cli), discover the current
 starters, and create the same projects (replace the example URL, branch, and brief with
 your own):
 
@@ -92,15 +92,16 @@ repository and starts its harness. A machine owner can opt into web-adjustable c
 with `--allow-remote-concurrency --max-concurrent N`; `N` remains a local ceiling that the
 web cannot enable or raise.
 
-### Shared projects (in review)
+### Shared projects
 
-The Tines/669 branch adds invitations, safe member reads, attributed comments
-and awaiting-human decisions, plus personal issue and recurring permission in
-the browser. Only the owner's approved agents may run in this first release;
-member permission can be saved but cannot launch work. API and run keys cannot
-set personal permission. See [Shared projects](docs/shared-projects.md) and the
-[proposed execution handoff](docs/shared-project-execution-contract.md). The
-handoff remains unreviewed until the parent change lands and review completes.
+An owner can invite people to a project from its **People** page or with
+`tines projects invite`. Members get safe reads, attributed comments and
+awaiting-human decisions, plus personal issue and recurring permission in the
+browser. Only the owner's approved agents may run in this release; member
+permission can be saved but cannot launch work. API and run keys cannot set
+personal permission. See [Shared projects](docs/shared-projects.md) and the
+[proposed execution handoff](docs/shared-project-execution-contract.md), whose
+member-admission half has not landed yet.
 
 ### Contributor setup
 
@@ -284,10 +285,10 @@ Things worth knowing:
 - In the browser, `/projects` hides archived projects behind a "Show archived (n)" toggle, and
   an archived project's pages carry a read-only banner with an Unarchive action.
 - The browser's project control is a sticky, per-user focus for Issues, Context, Activity,
-	Workflows, and the Agents presentation. It also links to the focused project, the remembered
-	projects grid, and the existing new-project flow. Primary navigation contains Issues, Workflows,
-	and Agents; Context and Activity remain complete pages linked from relevant detail surfaces.
-	Cross-project issue links preserve the current focus and offer an explicit focus action instead.
+  Workflows, and the Agents presentation. It also links to the focused project, the remembered
+  projects grid, and the existing new-project flow. Primary navigation contains Issues, Workflows,
+  and Agents; Context and Activity remain complete pages linked from relevant detail surfaces.
+  Cross-project issue links preserve the current focus and offer an explicit focus action instead.
 - Focus is presentation only: API lists, CLI commands, launch prompts, runners, fleet queue,
   quotas, and automation controls remain workspace-wide unless explicitly scoped.
 
@@ -406,14 +407,19 @@ All of this is edited on the **Agents** tab, and most of it from the CLI too:
 - **Stage flow** — the Agents tab and `tines supervisor stats --window 7d` compare queue wait,
   work time, runs per visit, outcomes and sent-back rates with the prior window. Project and
   event-window filters keep the board and `tines events list` on the same slice.
-- **Routing rules** decide who takes an issue. A rule is scoped globally, per project, per
-  workflow state, or both (most specific wins), and its payload is an ordered
-  preference list of `<runner>[:tier]` targets:
+- **Routing rules** decide who takes an issue. A rule is scoped globally, or by any
+  combination of project, workflow state and label (most specific wins; a label outranks
+  project and state, and two equally specific label rules tie and dispatch nothing), and
+  its payload is an ordered preference list of `<runner>[:tier]` targets:
   `tines routing set claude:cheapest macbook-claude --state "Docs Change/Writing"`. An issue no rule
   matches never dispatches — automation is opt-in. A single issue can override routing with
   a pin: `tines issues assign <ref> <runner>[:tier]`. A scoped singleton such as
   `tines routing set --state "Docs Change/Writing" '*:smartest'` inherits the next
   lower-priority rule's ordered runners while overriding every entry to that tier.
+  Add exact-model reasoning effort by ordered target number:
+  `tines routing set codex:balanced claude:balanced --project Example --effort 1=low --effort 2=medium`.
+  Re-run the same targets without `--effort` to clear routed effort; `routing clear` deletes
+  the whole scoped rule.
 - **Tiers** — rules say `smartest`, `balanced`, or `cheapest` rather than naming model ids
   that go stale; per-runner overrides live in `tines runners tiers <name>`.
 - **Quota policy** — one per user: a global concurrency cap
@@ -742,8 +748,6 @@ From the repo root:
 - `pnpm build` — build the web app and CLI (`@tines/shared` has no build script; both
   consume it as TypeScript source)
 - `pnpm check` — the migration-numbering and script-name guards in `scripts/` and `apps/web/scripts/`, then typecheck all packages (svelte-check + tsc)
-- `pnpm test` — vitest unit tests (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
+- `pnpm test` — the release-version script's `node --test` tests, then vitest unit tests in every package (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
 - `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/` and its README for the suite's motion, hydration and geometry policies). Run by `ci.yml` on pull requests, but not by `pnpm test`.
 - `pnpm cli <command>` — run the CLI from source against the local dev server (`http://localhost:5173`, pinned; pass `--url` for anything else)
-
-  Add exact-model reasoning effort by ordered target number: `tines routing set codex:balanced claude:balanced --project Example --effort 1=low --effort 2=medium`. Re-run the same targets without `--effort` to clear routed effort; `routing clear` deletes the whole scoped rule.
