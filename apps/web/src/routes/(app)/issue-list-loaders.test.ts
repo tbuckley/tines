@@ -31,6 +31,7 @@ vi.mock('$lib/server/api/context', () => ({
 	listContextItems: vi.fn(async () => ({ items: [], hasMore: false }))
 }));
 vi.mock('$lib/server/api/routing', () => ({ listRoutingRules: vi.fn(async () => []) }));
+vi.mock('$lib/server/api/organizations', () => ({ listOrganizations: vi.fn(async () => []) }));
 vi.mock('$lib/server/api/schedules', () => ({
 	listSchedules: vi.fn(async () => ({ items: [], hasMore: false }))
 }));
