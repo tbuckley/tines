@@ -7,6 +7,7 @@
 		ContextItem,
 		ContextKind,
 		RoutingRule,
+		TransitionIssueRequest,
 		WorkflowState
 	} from '@tines/shared';
 	import { ApiError, usageCostLabel } from '@tines/shared';
@@ -15,14 +16,16 @@
 	import IconBan from '@tabler/icons-svelte/icons/ban';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
 	import IconCopy from '@tabler/icons-svelte/icons/copy';
+	import IconDots from '@tabler/icons-svelte/icons/dots';
 	import IconPencil from '@tabler/icons-svelte/icons/pencil';
 	import IconPlus from '@tabler/icons-svelte/icons/plus';
 	import IconTrash from '@tabler/icons-svelte/icons/trash';
 	import IconRepeat from '@tabler/icons-svelte/icons/repeat';
 	import IconRocket from '@tabler/icons-svelte/icons/rocket';
+	import { DropdownMenu } from 'bits-ui';
 	import { tick, untrack } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
-	import { afterNavigate, goto, invalidate, invalidateAll } from '$app/navigation';
+	import { afterNavigate, goto, invalidate, invalidateAll, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { api } from '$lib/api';
 	import AgentActivityCard from '$lib/components/AgentActivityCard.svelte';
@@ -67,15 +70,16 @@
 	let { data }: { data: PageData } = $props();
 
 	// Data requests cannot server-redirect without losing a fragment that only
-	// the browser knows. Replace the stale alias in place while retaining
-	// meaningful query/hash targets and keyboard focus.
+	// the browser knows. Swap the alias (an address by project name) for the
+	// canonical one in the address bar, keeping query and hash. The page is
+	// already loaded, so this is a shallow replaceState, not a navigation: a
+	// `goto` here loaded every issue opened by name twice and cut its view
+	// transition short. Shallow routing leaves `page.url` on the alias, so the
+	// address bar (`location`) is what says it is done.
 	$effect(() => {
 		if (page.url.pathname === data.canonicalPath) return;
-		void goto(`${data.canonicalPath}${page.url.search}${page.url.hash}`, {
-			replaceState: true,
-			keepFocus: true,
-			noScroll: true
-		});
+		if (location.pathname === data.canonicalPath) return;
+		replaceState(`${data.canonicalPath}${page.url.search}${page.url.hash}`, page.state);
 	});
 
 	// The project move lives on the page, not in the dialog: closing the dialog
@@ -543,10 +547,36 @@
 	let pendingTransition = $state<AllowedTransition | null>(null);
 	let transitionComment = $state('');
 	let transitioning = $state(false);
+	// What the person was looking at when the dialog opened: the state visit,
+	// workflow graph and (in a shared project) permission. Sent as read then,
+	// not as the page holds them at confirm time, so a move that lands while
+	// the dialog is open refuses this one instead of being approved blind.
+	let transitionWitness = $state<Pick<
+		TransitionIssueRequest,
+		| 'expected_state_id'
+		| 'expected_decision_revision'
+		| 'expected_workflow_revision'
+		| 'expected_consent_epoch'
+		| 'expected_consent_revision'
+	> | null>(null);
 
 	function requestMove(transition: AllowedTransition) {
 		transitionComment = '';
 		transitionAllowsAgents = data.permissionReceipt?.my_agents.value !== 'off';
+		const permission = data.permissionReceipt;
+		transitionWitness = permission
+			? {
+					expected_state_id: permission.issue_state.id,
+					expected_decision_revision: permission.issue_state.decision_revision,
+					expected_workflow_revision: permission.issue_state.workflow_revision,
+					expected_consent_epoch: permission.my_agents.epoch,
+					expected_consent_revision: permission.my_agents.revision
+				}
+			: {
+					expected_state_id: data.issue.state.id,
+					expected_decision_revision: data.issue.decision_revision,
+					expected_workflow_revision: data.issue.workflow_revision
+				};
 		// From the phone's State sheet, the confirm dialog takes the sheet's
 		// place rather than stacking on it.
 		stateSheetOpen = false;
@@ -559,22 +589,13 @@
 		try {
 			// Comment BEFORE the transition: re-dispatch can never race past it.
 			if (comment) await api.createComment(data.issue.id, { body: comment });
-			const permission = data.permissionReceipt;
 			await api.transitionIssue(data.issue.id, {
 				transition_id: transition.transition_id,
-				...(permission
+				...transitionWitness,
+				...(data.permissionReceipt && transition.to_state.category === 'active'
 					? {
-							expected_state_id: permission.issue_state.id,
-							expected_decision_revision: permission.issue_state.decision_revision,
-							expected_workflow_revision: permission.issue_state.workflow_revision,
-							expected_consent_epoch: permission.my_agents.epoch,
-							expected_consent_revision: permission.my_agents.revision,
-							...(transition.to_state.category === 'active'
-								? {
-										allow_my_agents: transitionAllowsAgents,
-										...(transitionAllowsAgents ? { disclosure_version: 1 } : {})
-									}
-								: {})
+							allow_my_agents: transitionAllowsAgents,
+							...(transitionAllowsAgents ? { disclosure_version: 1 } : {})
 						}
 					: {})
 			});
@@ -587,6 +608,12 @@
 			await refresh();
 		} catch (e) {
 			showError(e);
+			// The witness is spent: close the dialog and load what the issue is
+			// now, so the next choice is made against the current state.
+			if (e instanceof ApiError && e.code === 'decision_refresh_required') {
+				pendingTransition = null;
+				await refresh();
+			}
 		} finally {
 			// Success: the reload has settled, so server truth already carries
 			// the new state. Failure: dropping the overlay is the revert.
@@ -795,14 +822,58 @@
 {/snippet}
 
 <div class="mb-6">
-	<a
-		href={backList.href}
-		data-testid="issue-back"
-		class="text-muted-foreground hover:text-foreground mb-3 inline-flex max-w-full min-w-0 items-center gap-1 text-sm"
-	>
-		<IconChevronLeft size={16} class="shrink-0" />
-		<span class="truncate">{backList.label}</span>
-	</a>
+	<!-- Back on the left, the issue's actions behind a menu on the right, so
+	     the reference line below reads `Project #n` alone (Tines/770). -->
+	<div class="mb-3 flex items-center justify-between gap-2">
+		<a
+			href={backList.href}
+			data-testid="issue-back"
+			class="text-muted-foreground hover:text-foreground inline-flex min-w-0 items-center gap-1 text-sm"
+		>
+			<IconChevronLeft size={16} class="shrink-0" />
+			<span class="truncate">{backList.label}</span>
+		</a>
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger
+				class="text-muted-foreground hover:text-foreground hover:bg-accent flex size-8 shrink-0 items-center justify-center rounded-md transition-colors"
+				aria-label="Issue actions"
+				title="Issue actions"
+				data-testid="issue-actions"
+			>
+				<IconDots size={18} stroke={2} />
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Portal>
+				<DropdownMenu.Content
+					side="bottom"
+					align="end"
+					sideOffset={4}
+					collisionPadding={8}
+					aria-label="Issue actions"
+					class="bg-popover text-popover-foreground ring-foreground/10 z-50 w-64 max-w-[calc(100vw-1rem)] rounded-lg p-1 text-sm shadow-md ring-1 outline-none"
+				>
+					{#if canOfferFocus}
+						<DropdownMenu.Item
+							class="data-highlighted:bg-accent data-highlighted:text-accent-foreground block w-full cursor-default truncate rounded-md px-2 py-1.5 outline-none data-disabled:opacity-50"
+							onSelect={focusIssueProject}
+							disabled={focusing}
+							title="Focus {data.issue.project_name}"
+						>
+							{focusing ? 'Focusing…' : `Focus ${data.issue.project_name}`}
+						</DropdownMenu.Item>
+					{/if}
+					<DropdownMenu.Item
+						class="data-highlighted:bg-accent data-highlighted:text-accent-foreground block w-full cursor-default rounded-md px-2 py-1.5 outline-none data-disabled:opacity-50"
+						onSelect={() => (transferOpen = true)}
+						disabled={archived}
+						title={archived ? PROJECT_ARCHIVED_TOOLTIP : 'Move this issue to another project'}
+						data-testid="move-to-project"
+					>
+						Move to project…
+					</DropdownMenu.Item>
+				</DropdownMenu.Content>
+			</DropdownMenu.Portal>
+		</DropdownMenu.Root>
+	</div>
 	{#if transferNotice}
 		<p class="text-sm" role="status" data-testid="transfer-notice">
 			{transferNotice}
@@ -814,42 +885,26 @@
 	{/if}
 	<div class="flex flex-wrap items-start justify-between gap-4">
 		<div class="min-w-0">
-			<p class="text-muted-foreground text-sm">
-				<a href="/projects/{data.issue.project_id}" class="hover:underline"
-					>{data.issue.project_name}</a
-				>
-				{#if canOfferFocus}
-					<button
-						class="hover:text-foreground ml-2 underline underline-offset-2"
-						onclick={focusIssueProject}
-						disabled={focusing}
-						title="Focus {data.issue.project_name}"
+			<div class="text-muted-foreground flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
+				<!-- A long project name truncates rather than widening the page (Tines/45). -->
+				<span class="inline-flex max-w-full min-w-0 items-baseline gap-1" data-testid="issue-ref">
+					<a href="/projects/{data.issue.project_id}" class="truncate hover:underline"
+						>{data.issue.project_name}</a
 					>
-						{focusing ? 'Focusing…' : `Focus ${data.issue.project_name}`}
-					</button>
-				{/if}
-				<button
-					class="hover:text-foreground ml-2 underline underline-offset-2"
-					onclick={() => (transferOpen = true)}
-					disabled={archived}
-					title={archived ? PROJECT_ARCHIVED_TOOLTIP : 'Move this issue to another project'}
-					data-testid="move-to-project"
-				>
-					Move to project…
-				</button>
-				<span class="font-mono">#{data.issue.number}</span>
+					<span class="shrink-0 font-mono">#{data.issue.number}</span>
+				</span>
 				{#if data.issue.scheduled_task_id}
 					<a
 						href="/projects/{data.issue.scheduled_task_project_id}?schedule={data.issue
 							.scheduled_task_id}"
-						class="bg-muted text-muted-foreground hover:text-foreground ml-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-middle text-xs"
+						class="bg-muted text-muted-foreground hover:text-foreground inline-flex items-center gap-1 rounded-full px-2 py-0.5 align-middle text-xs"
 						title="Created by schedule “{data.issue.scheduled_task_name}”"
 					>
 						<IconRepeat size={12} stroke={1.75} />
 						{data.issue.scheduled_task_name}
 					</a>
 				{/if}
-			</p>
+			</div>
 			{#if data.issue.schedule_origin}
 				<p class="text-muted-foreground mt-1 text-xs" data-testid="schedule-origin">
 					Created from schedule “{data.issue.schedule_origin.schedule_name}” using
@@ -1315,6 +1370,13 @@
 							<Button size="sm" variant="outline" onclick={() => (promptDialogOpen = true)}>
 								<IconRocket size={14} /> View launch prompt
 							</Button>
+						{:else}
+							<a
+								href="/projects/{data.issue.project_id}"
+								class="text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 rounded-sm text-xs outline-none focus-visible:ring-[3px]"
+							>
+								View project context
+							</a>
 						{/if}
 						<Button
 							size="sm"
@@ -1344,15 +1406,22 @@
 							{@render loadFailed("this issue's context")}
 						{/if}
 					</div>
-					{#if !isMember}<details class="group border-t pt-3">
+					{#if !isMember || (effectiveContextPanel.current.status === 'loaded' && effectiveContextPanel.current.value)}<details
+							class="group border-t pt-3"
+						>
 							<summary
 								class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none"
 							>
-								Effective context
-								<span class="text-xs">
-									— everything that applies while in
-									<span class="font-medium">{currentState.name}</span> (changes as the issue transitions)
-								</span>
+								{#if isMember}
+									View guidance
+									<span class="text-xs">— uses this project's guidance and workflows</span>
+								{:else}
+									Effective context
+									<span class="text-xs">
+										— everything that applies while in
+										<span class="font-medium">{currentState.name}</span> (changes as the issue transitions)
+									</span>
+								{/if}
 							</summary>
 							<div class="mt-3">
 								{#if effectiveContextPanel.current.status === 'pending'}
@@ -1360,7 +1429,20 @@
 										<Skeleton class="h-24 w-full" />
 									</LoadingState>
 								{:else if effectiveContextPanel.current.status === 'loaded' && effectiveContextPanel.current.value}
-									<EffectiveContextView context={effectiveContextPanel.current.value} />
+									{@const panel = effectiveContextPanel.current.value}
+									{#if panel.shared && !isMember}
+										<p class="text-muted-foreground mb-2 text-xs">
+											What agents receive in this shared project
+										</p>
+									{/if}
+									{#if panel.failure}
+										<p class="text-destructive text-sm" role="status">
+											Guidance can't be assembled: {panel.failure}. Agents won't start this issue
+											until the owner fixes it.
+										</p>
+									{:else if panel.context}
+										<EffectiveContextView context={panel.context} />
+									{/if}
 								{:else}
 									{@render loadFailed('the effective context')}
 								{/if}

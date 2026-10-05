@@ -270,6 +270,12 @@ export interface Workflow {
 	transitions: WorkflowTransition[];
 	/** Issues currently bound to this workflow. */
 	issue_count: number;
+	/**
+	 * Definition revision; advances by one on every committed save. Not the
+	 * same as `workflow_revision` on issue permission receipts, which is the
+	 * graph `decision_revision`.
+	 */
+	revision: number;
 	created_at: number;
 	updated_at: number;
 }
@@ -330,9 +336,20 @@ export interface CreateWorkflowRequest {
 /**
  * Updates replace what they include: when `states` is present, existing
  * states not listed (by id) are deleted, subject to the editing rules; when
- * `transitions` is present, the transition set is replaced wholesale.
+ * `transitions` is present, the transition set is replaced wholesale. What is
+ * omitted is not written.
+ *
+ * A save commits only against the definition it read: if the workflow's
+ * `revision` moves before the write lands, the request fails with
+ * `409 workflow_conflict` and nothing is written.
  */
 export interface UpdateWorkflowRequest {
+	/**
+	 * The `Workflow.revision` the caller read and edited. A mismatch is
+	 * refused with `409 workflow_conflict` before anything is written. Omitted,
+	 * the save is still checked against the server's own read of the workflow.
+	 */
+	expected_revision?: number;
 	name?: string;
 	description?: string;
 	initial_state?: string;
@@ -663,6 +680,17 @@ export interface IssueDetail extends Issue {
 	comments: Comment[];
 	/** The named transitions legally available from the current state. */
 	allowed_transitions: AllowedTransition[];
+	/**
+	 * The state visit this read saw: advances on every state change, so a
+	 * leave-and-return to the same state is a different value. Echo it as
+	 * `expected_decision_revision` to bind a transition to this read.
+	 */
+	decision_revision: number;
+	/**
+	 * The workflow graph this read saw (the workflow's `decision_revision`, not
+	 * its definition `revision`). Echo it as `expected_workflow_revision`.
+	 */
+	workflow_revision: number;
 	links: IssueLinks;
 	/** Per-kind counts of the currently effective context, post-dedupe. */
 	context_summary: ContextSummary;
@@ -994,7 +1022,12 @@ export interface TransitionIssueRequest {
 	/** Action name, matched case-insensitively among the allowed transitions. */
 	action?: string;
 	transition_id?: string;
-	/** Optimistic decision/permission witnesses used by shared projects. */
+	/**
+	 * Optimistic witnesses: the state visit, workflow graph and permission the
+	 * caller read. Required from a person in a shared project; optional
+	 * everywhere else, but honored whenever sent — a mismatch is refused with
+	 * `409 decision_refresh_required` and nothing is written.
+	 */
 	expected_state_id?: string;
 	expected_decision_revision?: number;
 	expected_consent_revision?: number;
@@ -1541,6 +1574,27 @@ export interface EffectiveContext {
 }
 
 /** Per-kind counts of the currently effective context, post-dedupe. */
+/**
+ * A library item the owner included in one shared project's guidance
+ * (Tines/752): a global or label-only prompt, skill or repo. A reference to
+ * the live item, never a copy — later edits stay shared.
+ */
+export interface GuidanceInclusion {
+	item_id: string;
+	kind: 'prompt' | 'skill' | 'repo';
+	name: string;
+	scope_label: string;
+	version: number;
+	revision: number;
+	created_at: number;
+}
+
+/** `GET /api/v1/projects/:id/guidance-inclusions`. */
+export interface GuidanceInclusionList {
+	items: GuidanceInclusion[];
+	next_cursor: null;
+}
+
 export interface ContextSummary {
 	prompts: number;
 	skills: number;
@@ -1550,6 +1604,58 @@ export interface ContextSummary {
 	/** Distinct effective env variable names. */
 	envs: number;
 }
+
+/**
+ * The one coherent projection of a shared project's guidance (Tines/752):
+ * what every reader and every launch of the issue receives when shared
+ * execution is on. `digest` identifies the snapshot for transport and
+ * caching only; admission guards on the server-side witness vector.
+ */
+export interface SharedExecutionBundleV1 {
+	version: 1;
+	project: { id: string; name: string; owner: { id: string; name: string } };
+	issue: SharedLaunchIssueV1;
+	target: {
+		project_id: string;
+		workflow_id: string;
+		state_id: string;
+		state_chain: string[];
+		label_ids: string[];
+		launch_state_id: string | null;
+	};
+	/** `env` is always empty: env values travel on the launch channel, never in a bundle. */
+	guidance: EffectiveContext;
+	/** Empty until requirement declarations land (Tines/753). */
+	requirements: SharedRequirementV1[];
+	journal: {
+		scope_label: string;
+		anchor: 'run' | 'current';
+		item_id: string | null;
+		version: number | null;
+	};
+	digest: string;
+}
+
+/** The issue-block inputs of a shared bundle, redacted identically for every reader. */
+export interface SharedLaunchIssueV1 {
+	detail: IssueDetail;
+	artifacts: Artifact[];
+	/** Labels applicable to this project only, capped at 40. */
+	label_vocabulary: string[];
+}
+
+/** Placeholder for P3's requirement declarations; never populated yet. */
+export type SharedRequirementV1 = Record<string, never>;
+
+/** The shared-bundle marker a shared project's `/context` response carries. */
+export interface SharedBundleRef {
+	version: 1;
+	digest: string;
+	owner: { id: string; name: string };
+}
+
+/** `GET /api/v1/issues/:id/context`: the effective context, plus the marker in a shared project. */
+export type IssueContextResponse = EffectiveContext & { shared_bundle?: SharedBundleRef };
 
 /** `GET /api/v1/issues/:id/prompt` — stitched context plus the issue block. */
 export interface LaunchPromptResponse {
@@ -2151,9 +2257,15 @@ export interface Runner {
 	/**
 	 * The built-in tier→model table for this runner's type (and harness), so
 	 * clients can render resolution and the stale-override marker without
-	 * duplicating the table. Null = tiers don't apply (custom harness).
+	 * duplicating the table. Null = no built-in table (custom and pi harnesses).
 	 */
 	tier_models: Record<ModelTier, string> | null;
+	/**
+	 * Whether tiers mean anything on this runner. False only for a local
+	 * `custom` harness; a `pi` runner has no built-in table but still takes
+	 * per-tier model overrides.
+	 */
+	tiers_apply: boolean;
 	/** Per-runner money limits; null = none. */
 	budget: RunnerBudget | null;
 	/** Managed types: whether a provider API key is stored (write-only). */
@@ -2215,7 +2327,7 @@ export interface CreateRunnerRequest {
 	 * `{}` to create one uncapped (the setup flow shows and edits this).
 	 */
 	budget?: RunnerBudget;
-	/** Local runners: { harness?: 'claude_code' | 'codex' | 'custom', … }. */
+	/** Local runners: { harness?: 'claude_code' | 'codex' | 'pi' | 'custom', … }. */
 	config?: Record<string, unknown>;
 }
 
@@ -2262,7 +2374,7 @@ export interface DeleteRunnerRequest {
  */
 export interface RegisterRunnerRequest {
 	name: string;
-	harness?: 'claude_code' | 'codex' | 'custom';
+	harness?: 'claude_code' | 'codex' | 'pi' | 'custom';
 	/** Custom harness only: the command template. */
 	command?: string;
 	max_concurrent?: number;
@@ -2351,6 +2463,11 @@ export interface RunnerAssignment {
 	/** Minutes until the daemon must kill the harness. */
 	timeout_minutes: number;
 	/**
+	 * Present only for a run in a shared project (Tines/752): identifies the
+	 * shared guidance bundle `bundle` was projected from. Old daemons ignore it.
+	 */
+	shared_bundle?: { version: 1; digest: string };
+	/**
 	 * Present only when this run continues the previous run's conversation:
 	 * the daemon skips workspace materialization and cloning, launches the
 	 * harness in `workspace_path`, and resumes `provider_session_id`. The
@@ -2370,7 +2487,7 @@ export interface RunnerAssignmentEnv {
 export interface RunnerAssignmentResume {
 	/** The run whose conversation this one continues. */
 	previous_run_id: string;
-	/** The harness session to reopen (`claude -p --resume <id>`). */
+	/** The harness session to reopen (`claude -p --resume <id>`, `pi --session <id>`). */
 	provider_session_id: string;
 	/** The predecessor's workspace, kept on disk for exactly this. */
 	workspace_path: string;
@@ -2407,12 +2524,17 @@ export interface RunnerPollResponse {
 /** `POST /api/v1/runs/:id/logs` — runner-token auth; appended to the tail. */
 export interface AppendRunLogRequest {
 	chunk: string;
-	/** Local launch milestone; accepted only for this run's resolved effort. */
+	/**
+	 * Local launch milestone; accepted only for this run's resolved effort.
+	 * `confirmed` = the harness reported applying exactly this effort (pi).
+	 */
 	effort_application?: {
-		status: 'accepted_unconfirmed' | 'rejected';
+		status: 'accepted_unconfirmed' | 'confirmed' | 'rejected';
 		attempted_effort: string;
 		transport: 'argv';
 		reason?: string;
+		/** With `rejected`: the level the harness reported applying instead (pi). */
+		observed_effort?: string;
 	};
 	/**
 	 * Per-run, 1-based, monotonic chunk number assigned by the daemon. A
@@ -2612,6 +2734,7 @@ export interface CodexPricingEvidenceV1 {
 
 export type RunPricingReason =
 	| 'pricing_evidence_missing'
+	| 'harness_unpriced'
 	| 'invalid_pricing_evidence'
 	| 'model_missing'
 	| 'model_mismatch'

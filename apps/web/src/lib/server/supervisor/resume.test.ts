@@ -6,6 +6,7 @@ import {
 	claimResumeResource,
 	disposeExpiredResumeResources,
 	isResumeProviderSupported,
+	LOCAL_RESUME_HARNESSES,
 	orderTargetsByResumeAffinity,
 	resumeAffinityByIssue,
 	resumeEligibility,
@@ -88,7 +89,9 @@ describe('resumeEligibility', () => {
 	// kept idle and continued by rotating the vault credential to the new run's
 	// key (the ownership transfer this test previously pinned as missing). A
 	// local runner on any other harness still has no continuation mechanism.
-	it('opens the Claude Code and managed gates, and no other harness', () => {
+	it('opens the Claude Code, Pi and managed gates, and no other harness', () => {
+		expect(LOCAL_RESUME_HARNESSES).toEqual(['claude_code', 'pi']);
+		expect(isResumeProviderSupported('local', { harness: 'pi' })).toBe(true);
 		expect(isResumeProviderSupported('local', { harness: 'claude_code' })).toBe(true);
 		expect(isResumeProviderSupported('local', {})).toBe(true);
 		expect(isResumeProviderSupported('local', { harness: 'codex' })).toBe(false);
@@ -325,6 +328,30 @@ describe('resumeFingerprint', () => {
 		expect(withEnv).not.toBe(resumeFingerprint({ ...base, envDigest: 'abd' }));
 		expect(resumeFingerprint({ ...base, effort: 'high', envDigest: 'abc' })).not.toBe(
 			resumeFingerprint({ ...base, effort: 'high' })
+		);
+	});
+
+	it('keys shared-project runs on contributor and guidance digest, never-shared unchanged', () => {
+		// A contributor without a guidance digest is a never-shared run: unchanged.
+		expect(resumeFingerprint({ ...base, contributorId: 'usr_1', guidanceDigest: null })).toBe(
+			resumeFingerprint(base)
+		);
+		const shared = resumeFingerprint({ ...base, contributorId: 'usr_1', guidanceDigest: 'g1' });
+		expect(JSON.parse(shared)).toEqual({
+			version: 2,
+			runner_id: 'rnr_1',
+			harness: 'claude_managed',
+			model: 'claude-sonnet-5',
+			effort: null,
+			preamble_variant: 'claude_managed',
+			contributor_id: 'usr_1',
+			guidance_digest: 'g1'
+		});
+		expect(shared).not.toBe(
+			resumeFingerprint({ ...base, contributorId: 'usr_2', guidanceDigest: 'g1' })
+		);
+		expect(shared).not.toBe(
+			resumeFingerprint({ ...base, contributorId: 'usr_1', guidanceDigest: 'g2' })
 		);
 	});
 });

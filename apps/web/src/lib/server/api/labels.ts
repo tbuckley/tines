@@ -30,6 +30,7 @@ import { findAttachedContext, sweepAttachedContext } from './context';
 import { routingRuleDeletes, rulesScopedToLabel } from './routing';
 import { eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
+import { assertRunStillBound, runBoundGuard, runStillBoundPredicate } from './project-access';
 import { scopeLabel } from './scope';
 import {
 	accessAllowed,
@@ -706,10 +707,13 @@ export async function addIssueLabels(
 	const added = labels.filter((l) => !already.has(l.id));
 	if (added.length > 0) {
 		const now = Date.now();
-		await runAtomic(env, [
-			...labelInserts(db, actor, toCreate),
-			...issueLabelInserts(db, actor, issue, added, now)
+		const guard = runBoundGuard(actor);
+		const results = await runAtomic(env, [
+			...labelInserts(db, actor, toCreate, guard),
+			...issueLabelInserts(db, actor, issue, added, now, guard)
 		]);
+		// INSERT OR IGNORE may legitimately change nothing; only a lapsed run binding is an error.
+		if (!results.some((r) => r.meta.changes)) await assertRunStillBound(db, actor);
 		effects.signalDispatch();
 	}
 	const final = await loadIssueLabels(db, issue.id);
@@ -764,11 +768,12 @@ export async function removeIssueLabel(
 
 	await assertLabelsDoNotRoute(db, actor, [label]);
 
-	await runAtomic(env, [
+	const results = await runAtomic(env, [
 		db
 			.deleteFrom('issue_label')
 			.where('issue_id', '=', issue.id)
 			.where('label_id', '=', label.id)
+			.where(runStillBoundPredicate(actor))
 			.compile(),
 		eventInsert(db, actor, {
 			type: 'issue.unlabeled',
@@ -777,5 +782,6 @@ export async function removeIssueLabel(
 			payload: { label_id: label.id, name: label.name, color: label.color }
 		})
 	]);
+	if (!results[0]?.meta.changes) await assertRunStillBound(db, actor);
 	effects.signalDispatch();
 }

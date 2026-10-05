@@ -392,3 +392,53 @@ export function eventsOfType(
 export function keyForRun(t: TestDb, runId: string): Record<string, unknown> | undefined {
 	return t.all('SELECT * FROM api_key WHERE agent_run_id = ?', runId)[0];
 }
+
+export const MEMBER = 'u_member';
+
+/**
+ * A member-contributor run (Tines/751): a second user who is a current member
+ * of the shared PROJECT at `revision`, their own runner, and a running run on
+ * `issueId` admitted to PROJECT under that revision, with a run key in their
+ * name whose bearer hashes to `keyHash`.
+ */
+export function addMemberContributorRun(
+	t: TestDb,
+	opts: { issueId: string; keyHash: string; revision?: number; memberId?: string }
+): { memberId: string; runnerId: string; runId: string; keyId: string } {
+	const memberId = opts.memberId ?? MEMBER;
+	const revision = opts.revision ?? 1;
+	t.sqlite.exec(`
+		INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+			VALUES ('${memberId}', 'bob', '${memberId}@example.com', 1, ${NOW}, ${NOW});
+		UPDATE project SET shared_at = coalesce(shared_at, ${NOW}) WHERE id = '${PROJECT}';
+		INSERT OR REPLACE INTO project_member (project_id, user_id, revision, joined_at, updated_at)
+			VALUES ('${PROJECT}', '${memberId}', ${revision}, ${NOW}, ${NOW});
+	`);
+	const runnerId = addRunner(t);
+	t.sqlite.prepare('UPDATE runner SET user_id = ? WHERE id = ?').run(memberId, runnerId);
+	const runId = addRun(t, { issueId: opts.issueId, runnerId, status: 'running' });
+	const token = t.sqlite
+		.prepare('SELECT project_assignment_token AS token FROM issue WHERE id = ?')
+		.get(opts.issueId) as { token: string };
+	t.sqlite
+		.prepare(
+			`UPDATE agent_run SET user_id = ?, admitted_project_id = ?, admitted_project_owner_id = ?,
+				project_assignment_token = ?, admitted_membership_revision = ? WHERE id = ?`
+		)
+		.run(memberId, PROJECT, USER, token.token, revision, runId);
+	const keyId = addRunKey(t, runId);
+	t.sqlite
+		.prepare('UPDATE api_key SET user_id = ?, key_hash = ?, permissions = ? WHERE id = ?')
+		.run(
+			memberId,
+			opts.keyHash,
+			JSON.stringify({
+				version: 1,
+				projects: { access: 'write', scope: 'all' },
+				workspace: 'write',
+				control_plane: 'read'
+			}),
+			keyId
+		);
+	return { memberId, runnerId, runId, keyId };
+}

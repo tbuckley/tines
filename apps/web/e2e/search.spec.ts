@@ -174,7 +174,11 @@ test.describe.serial('literal long search', () => {
 			await expect(page.getByText(asciiContext.name, { exact: true })).toBeVisible();
 			await search.fill(none);
 			await search.press('Enter');
-			await expect(page.getByText('No context items match these filters.')).toBeVisible();
+			await expect(
+				page.getByText('No prompts, skills, repos or environment items match these filters.', {
+					exact: false
+				})
+			).toBeVisible();
 			await expect(page.getByText(asciiContext.name, { exact: true })).toHaveCount(0);
 		});
 	}

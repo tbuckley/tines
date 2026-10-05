@@ -100,8 +100,10 @@ describe('ID-addressed whole-library import', () => {
 	it('removes destination identities when a created workflow fails during later application', async () => {
 		const { document } = await fixture();
 		const dest = setup();
+		// Every workflow save stamps `updated_at`; a save writes a state row only
+		// where it differs (Tines/608), so a state-name trigger would not fire.
 		dest.sqlite.exec(
-			`CREATE TRIGGER fail_library_state_update BEFORE UPDATE OF name ON workflow_state BEGIN SELECT RAISE(ABORT, 'injected state update failure'); END`
+			`CREATE TRIGGER fail_library_workflow_update BEFORE UPDATE OF updated_at ON workflow BEGIN SELECT RAISE(ABORT, 'injected workflow update failure'); END`
 		);
 
 		const result = await applyImport(dest.db, dest.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {

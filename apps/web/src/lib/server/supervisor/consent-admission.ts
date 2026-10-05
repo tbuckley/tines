@@ -59,9 +59,9 @@ export function releaseAssignedIssueQueries(
 				AND assignment_release_token = ${input.token}
 		)`.compile(db),
 		sql`INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
-		SELECT ${input.eventId}, ${input.userId}, 'agent_run.assignments_released', ${input.userId}, NULL,
+		SELECT ${input.eventId}, project.user_id, 'agent_run.assignments_released', ${input.userId}, NULL,
 			${input.issueId}, issue.project_id, ${JSON.stringify({ reason: input.reason })}, ${input.now}
-		FROM issue WHERE issue.id = ${input.issueId}
+		FROM issue JOIN project ON project.id = issue.project_id WHERE issue.id = ${input.issueId}
 			AND EXISTS (SELECT 1 FROM agent_run WHERE issue_id = ${input.issueId}
 				AND assignment_release_token = ${input.token})`.compile(db)
 	];

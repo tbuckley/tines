@@ -270,7 +270,14 @@ Conventions:
 
 The complete **Context** page (`/context`) is reached through “View all context”
 links on issue, project, and workflow detail pages rather than primary
-navigation. Under All projects it lists all items; under a project focus it lists items anchored directly on that project or on one of its issues, plus the count of global and state-scoped library items that also apply. Kind, workflow, label and search filters remain; project scope comes from focus. Create defaults to the focus while the full scope picker remains available. The HTTP API's explicit `project` filter retains its narrower direct-project semantics; the project-touching rule is web presentation only. Legacy `?project=<id|name>` links set focus once and redirect, while ordinary contextual links use plain `/context` so link preloading cannot mutate focus.
+navigation. Under All projects it lists every kind except artifacts; under a project focus it lists the same kinds anchored directly on that project or on one of its issues, plus the count of global and state-scoped library items that also apply. Kind, workflow, label and search filters remain; project scope comes from focus. Create defaults to the focus while the full scope picker remains available. The HTTP API's explicit `project` filter retains its narrower direct-project semantics; the project-touching rule is web presentation only. Legacy `?project=<id|name>` links set focus once and redirect, while ordinary contextual links use plain `/context` so link preloading cannot mutate focus.
+
+**Revised 2026-10 (Tines/861).** The page used to load the 100 most recently updated items of every kind and drop the rest without notice; once agents attached artifacts on every run, those 100 rows were mostly artifacts and the guidance fell off the page. Now:
+
+- The default view (Kind → “All except artifacts”) leaves artifacts out in SQL, before the limit. Kind → Artifacts lists them, including a focused project's issue artifacts. There is no mixed “everything” view. The exclusion is web presentation only: `GET /api/v1/context` and `tines context list` still return every kind.
+- Every view pages 100 rows at a time with Previous and Next, as a two-way keyset on `(updated_at DESC, id DESC)`; see [issue list pagination](../issues-pagination/SPEC.md) for the shared helper. A saved item moves to the first page because `updated_at` is the sort key.
+- Any filter change clears the page boundary. A `page_scope` marker rides with each cursor, so a changed project focus sends a bounded URL back to the first page with its filters kept.
+- The starter-guidance banner asks for the global `agent-guidelines` prompt by exact name instead of scanning the first 100 global prompts.
 
 ### In-place sections
 
@@ -419,3 +426,23 @@ CLI: `tines context create --kind env --name NAME --value <v|@file|-> [--secret]
 # 2026-09-21 — API-key scope enforcement (Tines/648)
 
 Context authorization now derives requirements from every populated anchor. Project and issue anchors require project authority; state, label, and global anchors require workspace authority; env mutations additionally require control-plane authority. Re-scoping checks both source and destination. Run journal writes are limited to the exact project plus launch-state inheritance root described in `../api-keys/SPEC.md`.
+
+## Decision update — 2026-09-27 shared-project guidance projection (Tines/752)
+
+Behind `SHARED_EXECUTION`, a shared project's runs and readers (owner and member
+alike) receive one projection of the **project owner's** effective context, never
+the contributor's library:
+
+- **Auto-shared:** items anchored to the project, the issue, or a workflow state
+  in the issue's chain.
+- **Included:** the owner's global and label-only prompts, skills and repos, only
+  while a `project_guidance_inclusion` row names them. The label clause still
+  applies. A rescoped item's stale row is inert.
+- **Never shared:** env items (values ride a separate launch channel, never the
+  bundle) and artifacts.
+- **Snapshot exception.** "Computed on read, nothing is snapshotted" still holds
+  for storage, but a run's launch material is one D1 batch snapshot guarded by a
+  revision witness at the key mint (see `specs/supervisor/SPEC.md`).
+- **Fail closed:** more than 250 items, a serialized bundle over 1 MiB, or a repo
+  checkout-dir conflict refuses the bundle. It never delivers a partial one.
+  Outside shared projects a dir conflict is still only a warning.

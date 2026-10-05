@@ -40,6 +40,7 @@ tines issues create <project> --title "…" -d @description.md
 tines issues create <project> --title "Linked" --blocked-by Other/12 --blocks Other/14 --duplicate-of Other/9
 tines issues show <project>/<number>
 tines issues move <project>/<number> <action>        # a workflow transition
+tines issues move <project>/<number> <action> --expect-revision <n>   # refuse unless the issue is still at the decision revision `issues show` printed
 tines issues hold <project>/<number>                 # stop new admission, keep permission
 tines issues release <project>/<number>              # resume eligibility if permission remains on
 tines issues cancel-run <project>/<number> <run-id>   # request bounded cancellation
@@ -64,21 +65,28 @@ tines issues list --all --show-duplicates --all-pages --json
 
 Issues are addressed as `<project>/<number>`; schedules as `<project>/<name>`; workflow
 states as `<workflow>/<state>`. Paginated `list` commands return one page — add
-`--all-pages` for the whole list. Four lists instead return the whole collection and take no
-pagination flags: `labels list`, `runners list`, `routing list`, and
+`--all-pages` for the whole list. Five lists instead return the whole collection and take no
+pagination flags: `labels list`, `runners list`, `routing list`, `api-keys list`, and
 `issues artifacts list`. Every leaf command except `login` and `logout` takes `--json` for
 machine-readable output. Complete list walks have a default 10,000-item safety ceiling. Use
 `--max-items <n>` with `--all-pages` to choose a different positive finite bound; exceeding
 it fails without printing a partial result. `--limit` remains the per-request page size. A
 larger bound keeps more output in memory and makes more requests, so increase it deliberately
-or narrow the list's filters.
-`tines <noun> --help` lists the rest: `workflows`, `context`, `journal`, `schedules`,
-`runners`, `runs`, `routing`, `supervisor`.
+or narrow the list's filters. `usage --evidence … --all-pages` is the one exception: it follows
+every evidence page with no ceiling and takes no `--max-items`.
+`tines <noun> --help` lists the rest: `api-keys`, `workflows`, `labels`, `context`, `journal`,
+`schedules`, `runners`, `runs`, `routing`, `supervisor`, `usage`.
 
 `issues create` accepts repeatable `--blocked-by` and `--blocks` references plus one
 `--duplicate-of` reference. The issue and all initial relationships are created atomically.
 When a recurrence is also supplied, the relationships apply only to the first issue; later
 scheduled instances start without copied relationships.
+
+`workflows show` prints a workflow's `revision`, which advances by one on every committed
+save. `workflows edit <workflow> … --expect-revision <n>` (or `"expected_revision"` in the
+JSON body; the flag wins) refuses the update with `workflow_conflict`, writing nothing, when
+the workflow is no longer at that revision. The CLI never fills the revision in for you and
+never retries: re-read with `workflows show`, re-apply your change, and send the new revision.
 
 For a shared project's recurring schedule, `schedules list` and `schedules show` report
 your saved future-instance permission and its epoch. They are read receipts: the CLI and
@@ -135,6 +143,7 @@ TINES_API_KEY=tines_… tines runner install --name laptop --harness claude-code
 
 registers this machine as a local runner and installs the daemon as a launchd/systemd
 service that polls for work and keeps itself updated (`tines runner daemon` with the same
-flags runs it in the foreground instead). See
+flags runs it in the foreground instead). `--harness` is `claude-code`, `codex`, `pi` or
+`custom`. See
 [docs/runner-daemon.md](https://github.com/tbuckley/tines/blob/main/docs/runner-daemon.md)
 for the flags, token rotation, and what the service does.

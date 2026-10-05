@@ -2,18 +2,16 @@ import { json } from '@sveltejs/kit';
 import type { UpdateContextItemRequest } from '@tines/shared';
 import { deleteContextItem, getContextItem, updateContextItem } from '$lib/server/api/context';
 import { api, apiContext, notFound, readJson } from '$lib/server/api/core';
-import {
-	actorForContextItem,
-	contextScopeProject,
-	redactForMember
-} from '$lib/server/api/member-context';
+import { actorForContextItem, contextScopeProject } from '$lib/server/api/member-context';
+import { memberWriteRace } from '$lib/server/api/member-e2e-race';
 import type { RequestHandler } from './$types';
 
 // Items in a shared project are the members' to work on too (member-context.ts).
+// What each actor is shown, on success or in a conflict, is the service's call.
 export const GET: RequestHandler = api(async (event) => {
 	const { db, actor: requester } = await apiContext(event);
 	const actor = await actorForContextItem(db, requester, event.params.id);
-	return json(redactForMember(actor, await getContextItem(db, actor, event.params.id)));
+	return json(await getContextItem(db, actor, event.params.id));
 });
 
 export const PATCH: RequestHandler = api(async (event) => {
@@ -30,8 +28,16 @@ export const PATCH: RequestHandler = api(async (event) => {
 		})) !== actor.member.projectId
 	)
 		throw notFound();
-	const item = await updateContextItem(db, env, actor, event.params.id, body);
-	return json(redactForMember(actor, item));
+	return json(
+		await updateContextItem(
+			db,
+			env,
+			actor,
+			event.params.id,
+			body,
+			memberWriteRace(event.request, db, actor)
+		)
+	);
 });
 
 export const DELETE: RequestHandler = api(async (event) => {

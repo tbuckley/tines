@@ -197,8 +197,9 @@ export function matchRule<T extends MatchableRule>(issue: MatchableIssue, rules:
 /**
  * The built-in tier→model table, maintained in code and updated as providers
  * ship models. Local runners resolve per harness: `claude_code` mirrors the
- * Claude trio (passed via --model), `codex` selects distinct defaults, and a
- * custom harness has no model dimension at all.
+ * Claude trio (passed via --model), `codex` selects distinct defaults, `pi`
+ * has no table because its models are whatever the machine has configured,
+ * and a custom harness has no model dimension at all.
  */
 const BUILTIN_TIER_MODELS: Record<string, Record<ModelTier, string> | null> = {
 	claude_managed: {
@@ -222,6 +223,9 @@ const LOCAL_HARNESS_TIER_MODELS: Record<string, Record<ModelTier, string> | null
 		balanced: 'gpt-5.6-sol',
 		cheapest: 'gpt-5.6-luna'
 	},
+	// Pi's models are per machine, so the runner's tier overrides name them
+	// (`provider/id`). A tier with no override launches on Pi's default model.
+	pi: null,
 	// A custom harness cannot vary its model: it satisfies any tier with its
 	// fixed configuration, and the run records the model as unknown.
 	custom: null
@@ -237,23 +241,37 @@ export interface TierResolvable {
 
 /**
  * The built-in tier→model table applying to a runner (type- and, for local
- * runners, harness-aware). Null = the runner cannot vary its model (custom
- * harness) and tiers don't apply. Serialized as `Runner.tier_models` so the
+ * runners, harness-aware). Null = no built-in table: a custom harness cannot
+ * vary its model at all, and a `pi` runner names its models only through
+ * tier overrides (see `tiersApply`). Serialized as `Runner.tier_models` so the
  * tier editor and the stale-override marker never duplicate the table.
  */
 export function builtinTierModels(
 	runner: Pick<TierResolvable, 'type' | 'config'>
 ): Record<ModelTier, string> | null {
 	if (runner.type === 'local') {
-		const harness = parseJson<{ harness?: string }>(runner.config)?.harness ?? 'claude_code';
-		return LOCAL_HARNESS_TIER_MODELS[harness] ?? null;
+		return LOCAL_HARNESS_TIER_MODELS[localHarness(runner)] ?? null;
 	}
 	return BUILTIN_TIER_MODELS[runner.type] ?? null;
 }
 
+/** A local runner's harness kind; the default is `claude_code`. */
+export function localHarness(runner: Pick<TierResolvable, 'config'>): string {
+	return parseJson<{ harness?: string }>(runner.config)?.harness ?? 'claude_code';
+}
+
+/**
+ * Whether tiers mean anything on a runner: false only for a local `custom`
+ * harness. Serialized as `Runner.tiers_apply`, since a null `tier_models`
+ * no longer says so on its own (`pi` has no table but takes overrides).
+ */
+export function tiersApply(runner: Pick<TierResolvable, 'type' | 'config'>): boolean {
+	return !(runner.type === 'local' && localHarness(runner) === 'custom');
+}
+
 export interface ResolvedTier {
 	tier: ModelTier;
-	/** Null when the runner cannot vary its model (custom harness). */
+	/** Null when no model is named: a custom harness, or a pi tier with no override. */
 	model: string | null;
 	/** Runner-tier fallback, when configured. */
 	effort: string | null;
@@ -326,7 +344,10 @@ export function resolveEffort(
 			deliveryMode: 'none',
 			compatible: false,
 			verification: null,
-			reason: 'unsupported_harness: this harness has no model effort control'
+			reason:
+				runner.type === 'local' && localHarness(runner) === 'pi'
+					? 'model_required: name a model for this tier on the runner to route effort to it'
+					: 'unsupported_harness: this harness has no model effort control'
 		};
 	if (runner.type === 'claude_managed') {
 		const allowed = MANAGED_CLAUDE_EFFORTS[tier.model];

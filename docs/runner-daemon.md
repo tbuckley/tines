@@ -23,7 +23,8 @@ Four setup steps from nothing to an agent working an issue. The hosted app is
 3. **Runner** — install the daemon as a service (or paste the block the dialog shows):
 
    Using Codex? Configure its [permissions](#codex-permissions) before starting the runner,
-   and use `--harness codex`.
+   and use `--harness codex`. Using Pi with local models? Read [Pi](#pi) first, and use
+   `--harness pi`.
 
    ```sh
    TINES_API_KEY=tines_… tines runner install \
@@ -62,7 +63,7 @@ into the unit):
 | Flag | Meaning | Default |
 | --- | --- | --- |
 | `--name` | Runner name, unique per user; name it machine-plus-harness, e.g. `macbook-claude` — routing rules and agent comments address it | the hostname |
-| `--harness` | `claude-code`, `codex`, or `custom` | `claude-code` |
+| `--harness` | `claude-code`, `codex`, `pi`, or `custom` | `claude-code` |
 | `--command` | Custom harness command template; placeholders `{prompt_file}`, `{workspace}`, `{model}`, `{effort}` | — |
 | `--max-concurrent` | Simultaneous runs on this machine (1–100), or the machine-owned ceiling when remote adjustment is enabled | 1 |
 | `--allow-remote-concurrency` | Let signed-in operators request a cap up to the local ceiling; never enabled remotely | off |
@@ -105,8 +106,9 @@ from the working branch the agent creates for its fix.
 
 Rotating a token: `tines runners rotate-token <name>` invalidates the old token and prints
 the new one once. Run it on the daemon machine and the stored token is updated in place —
-just restart the daemon; elsewhere, the daemon exits with a clear 401 message until the new
-token is dropped into its config.
+just restart the daemon. If you rotated it elsewhere, the daemon's next poll gets a 401: it drops
+the stored token and exits, and a restart then fails with "no stored runner token". Restart it
+with `TINES_API_KEY` set, which re-registers the same runner by name.
 
 ## Codex permissions
 
@@ -149,6 +151,121 @@ used by the daemon's OS user and any higher-priority or managed policy, then sta
 run. An online runner confirms only that registration and heartbeat work. These settings do
 not guarantee authentication, DNS, or every Git operation, and Tines does not recommend
 `danger-full-access`, changing approval policy, or bypassing managed restrictions.
+
+## Pi
+
+`--harness pi` drives the [Pi coding agent](https://github.com/earendil-works/pi)
+(`npm install -g @earendil-works/pi-coding-agent`, binary `pi`), usually against models served
+on the same machine. The daemon launches it in the run's workspace as
+
+```sh
+pi --mode json --no-approve --session-dir <workspace>/.pi-sessions \
+  [--session <id>] [--model <provider/id>] [--thinking <effort>] \
+  [--skill .agents/skills/<name>]… < prompt.md
+```
+
+and renders the JSON event stream into the run log as it arrives.
+
+### Install
+
+1. Install `pi` **0.99.2 or newer** for the OS user that runs the daemon. Older versions emit
+   different event shapes: `tines runner install` refuses them, and a foreground daemon
+   reports a capability discovery error instead of a model list.
+2. Configure at least one model in `~/.pi/agent/models.json` (or log in with `/login`) and
+   check `pi --list-models` shows it.
+3. `tines runner install --name <machine>-pi --harness pi`.
+4. On the runner's card, name a model per tier and raise the run timeout (below).
+
+### Model credentials
+
+The service does not have your shell's variables: the unit carries `PATH`, `HOME` and
+nothing else. A `models.json` whose `apiKey` is `$SOME_KEY`, with `SOME_KEY` exported in
+`~/.zshrc`, works in your terminal and lists **no models** under the service, and every run
+then fails. `tines runner install` checks this — it runs `pi --list-models` with only the
+unit's `PATH` and `HOME` — and prints a warning when the list is empty. It is a warning, not
+a refusal, so you can fix the credential and `tines runner restart <name>` without
+reinstalling.
+
+Put the credential where `pi` reads it without a shell: a stored login in
+`~/.pi/agent/auth.json`, a literal `apiKey` in `models.json`, or a `!command` value that
+fetches it from a secret manager. Tines does not write secrets into the launchd plist or
+systemd unit.
+
+An env item attached in Tines still reaches the run's process. It does not reach the
+capability probe, which runs in the daemon's own environment, so a model that needs that
+variable is missing from the runner's model list and cannot be given an effort.
+
+### Trust, skills and no sandbox
+
+- Pi treats a new folder as untrusted and ignores its project-local resources, including
+  `.agents/skills`. The daemon does not approve the workspace (`--approve` would also trust
+  any `.pi/` extensions a cloned repository carries). It passes `--no-approve` and names each
+  materialized skill with `--skill`, so exactly the skills Tines attached are loaded.
+- Sessions are written to `<workspace>/.pi-sessions`, outside Pi's own `.pi/` project
+  directory, and are what a [resumed](#resuming-a-send-back) run continues.
+- **Pi has no sandbox and no permission settings.** Its `bash`, `edit` and `write` tools run
+  as the daemon's OS user with that user's files, network and git credentials. Route only
+  work and repositories you trust to a Pi runner.
+
+### Timeouts
+
+Local models are slow. Two limits matter:
+
+- The run timeout is per runner (`max_run_minutes`, 1–1440, on the runner's card). Raise it
+  for a Pi runner; a run killed by it fails as timed out.
+- Pi's own `httpIdleTimeoutMs` (default 300000, five minutes, in `~/.pi/agent/settings.json`)
+  ends a model request that sends nothing for that long. A model that takes longer than that
+  to produce its first token needs it raised, or set to `0` to disable.
+
+### Tiers, models and effort
+
+- There is no built-in tier table: the models are whatever this machine has. Name a model
+  per tier on the runner's card as `provider/id`; the field suggests the models the daemon
+  found. A tier left blank launches without `--model` and Pi uses its own default; the run
+  records no model, and the log's `[session] model …` line names the one Pi used.
+- The daemon discovers models and their thinking levels over `pi --mode rpc` at boot and
+  every ten minutes. The probe selects each model in turn in a throwaway session; it does
+  not change Pi's saved default model.
+- Effort needs a named model, because the capability check is per exact model. A tier with
+  an effort and no model is not routed (`model_required`).
+- Effort is passed as `--thinking <effort>` and then **confirmed**: Pi clamps an unsupported
+  level silently, so the daemon reads the `thinkingLevel` Pi records on its first answer. A
+  match is recorded as `confirmed`. A mismatch stops the run, which fails with
+  `pi applied thinking level X, not the assigned Y`.
+
+### What a Pi run reports
+
+- **Outcome.** Pi exits 0 when the model call fails, so the daemon judges the run from the
+  stream. A final answer that failed with a 429 fails the run as rate limited (no strike,
+  runner backs off); a 5xx or a refused connection fails it as interrupted (no strike); any
+  other model error fails it as `pi: <detail>`. The rate-limited and interrupted readings
+  hold on a non-zero exit as well.
+- **Tokens.** Summed from each answer's `usage` when the model server reports it. When it
+  reports none, nothing is recorded and the log carries one line with a rough estimate:
+  `[usage] the model server reported no token usage; rough estimate ~N input / ~M output
+  tokens (characters ÷ 4, not recorded)`.
+- **Cost.** Pi's own cost when it is above zero (a hosted provider), recorded as
+  provider-reported. Otherwise the run shows tokens with no cost: local models have no price
+  and Tines does not price Pi models.
+- **Raw stream.** Kept like Claude Code's, minus the per-token `message_update` lines.
+
+### Parity with Claude Code and Codex
+
+| Feature | Pi | Gap and reason |
+| --- | --- | --- |
+| Launch, prompt off argv | Yes, stdin | None |
+| Live rendered log | Yes | None |
+| Raw stream upload | Yes, without per-token updates | Per-token lines would crowd out the rest under the size cap |
+| Model selection | Yes, `--model` | No built-in tier table: models are per machine |
+| Effort | Yes, and confirmed from the stream | No `ultra` (not a Pi level). Needs a named model |
+| Resume | Yes | None |
+| Tokens | When the model server reports usage | Otherwise a log-only estimate; storing estimates needs an accounting marker |
+| Cost | Pi's own cost when non-zero | Local models have no price; Tines does not price Pi models |
+| Rate-limit / provider-error backoff | Yes | No reset time from Pi, so no exact `resume_at` |
+| Skills | Yes, explicit `--skill` | Pi does not auto-load `.agents/skills` in an untrusted folder |
+| Env, redaction, timeout, banner | Yes | None |
+| Install as a service | Yes, with a preflight | Service lacks shell variables; credentials must not depend on them |
+| Sandbox / permission settings | No | Pi has none; it runs tools as the daemon's user |
 
 ## The agent-facing CLI
 
@@ -255,7 +372,7 @@ written by the daemon and by the harness, in this order:
 
    ```
    $ claude -p --output-format stream-json --verbose --model 'claude-sonnet-5' < '/…/prompt.md'
-   # tines runner: harness=claude_code model=claude-sonnet-5 timeout=30m cli=0.0.84 workspace=/…/arun_xxx
+   # tines runner: harness=claude_code model=claude-sonnet-5 effort=(provider-default) timeout=30m cli=0.0.84 workspace=/…/arun_xxx
    ```
 
    The first line is exactly what was executed: for `claude_code` and `custom` it is the
@@ -268,7 +385,7 @@ written by the daemon and by the harness, in this order:
 
 4. The harness's stdout and stderr. Claude Code and Codex both run in structured JSON mode,
 	 which the daemon renders as readable `[agent]`, `[tool]`, `[session]`, and `[error]` lines.
-	 For Claude Code, `--raw` fetches the unrendered NDJSON.
+	 For Claude Code, `tines runs show <id> --logs --raw` fetches the unrendered NDJSON.
 5. The **exit line**: `# tines runner: exit code=0 after 3m12s`, or `signal=SIGTERM` when
    something killed it, with `(timed out)` when that something was the daemon's own
    timeout. A run canceled by the supervisor has no exit line — the daemon stops logging
@@ -286,8 +403,9 @@ complete cumulative input/output/cache-read/cache-write evidence and its thread 
 calculates supported models using the immutable policy in [Codex run pricing](codex-pricing.md).
 Unsupported or incomplete evidence remains visibly Unpriced. Custom harnesses and processes that stop before
 a terminal usage event are marked `unreported`. Usage already emitted is retained even when
-the harness exits unsuccessfully. The session/thread id is shown on the run row and by
-`tines runs show`, and is what a resumed launch continues.
+the harness exits unsuccessfully. The session/thread id is printed by `tines runs show`
+(`provider session:`) and returned by the API; run rows do not show it. It is what a resumed
+launch continues.
 
 ## Resuming a send-back
 
@@ -300,8 +418,9 @@ workspace and its harness session, and the send-back is delivered as a continuat
 - the daemon launches in the **kept workspace** — no wipe and no re-clone; repository edits
   and `repos.json` remain, while `prompt.md` and the generated `.agents/skills` subtree are
   refreshed from the new assignment (including removals);
-- Claude Code is launched as `claude -p --resume <session-id> …`, so the conversation
-  carries on rather than starting over;
+- Claude Code is launched as `claude -p --resume <session-id> …` and Pi as
+  `pi --mode json --session <session-id> …`, so the conversation carries on rather than
+  starting over (Codex and custom harnesses always start cold);
 - the prompt is the reduced continuation message (what changed since the last run, the
   current stage's instructions and the issue block), not the full cold launch prompt;
 - the issue block uses the same essential-comment selection as a cold launch, and the resume
@@ -314,8 +433,18 @@ workspace and its harness session, and the send-back is delivered as a continuat
 Every guard falls back to a normal cold launch, silently: a window that has closed (48h by
 default), a previous conversation that has grown past the runner's size guards, a different
 runner, a changed model or harness, or a workspace that is no longer on disk (the daemon
-logs `resume workspace <path> is gone; launching fresh`). Nothing about a resumed run is
+logs `resume workspace <path> is gone; launching fresh`; for Pi, a session file missing from
+the kept workspace logs `pi session <id> is gone; launching fresh`). Nothing about a resumed run is
 required for correctness — it is only the clone and the re-exploration that are skipped.
+
+## Runs in shared projects
+
+When the server's shared-execution flag is on, an assignment for an issue in a shared
+project is built from that project's shared guidance: the owner's project, issue and
+workflow-stage guidance plus the library items the owner included, never their other
+private items. Such an assignment carries an optional `shared_bundle: { version: 1, digest }`
+naming the bundle it came from. The daemon needs no change and ignores the field; the
+prompt, `bundle` and `env` fields keep their usual shapes.
 
 ## Keep it running
 
@@ -357,12 +486,14 @@ In order, it:
 4. **Writes the unit** — `~/Library/LaunchAgents/dev.tines.runner.<name>.plist` on macOS,
    `~/.config/systemd/user/tines-runner-<name>.service` on Linux. It launches
    `~/.config/tines/cli/node_modules/.bin/tines runner daemon` with the flags you gave, a
-   `PATH` naming the directories `node`, the harness binary (`claude`/`codex`) and `git` were
+   `PATH` naming the directories `node`, the harness binary (`claude`/`codex`/`pi`) and `git` were
    found in, `KeepAlive` / `Restart=always` (the daemon exits 0 on purpose to pick up a
    self-update), and the daemon's console output appended to
    `~/.config/tines/logs/runner-<name>.log`. There is no credential in it. A harness binary
    that is not on your PATH is a warning: install it and run install again to pick up its
-   directory.
+   directory. For `--harness pi` there is a preflight before anything is registered or
+   written: a `pi` older than 0.99.2 stops the install, and a `pi` that lists no models with
+   only the unit's `PATH` and `HOME` is a warning (see [Model credentials](#model-credentials)).
 5. **Loads it** (`launchctl bootstrap gui/$UID …`, or `systemctl --user enable --now` plus
    `loginctl enable-linger` so it runs while nobody is logged in) and **waits up to 30 s**
    for the daemon's own `reconnecting as runner "…"` line in that log. A daemon that never
@@ -486,5 +617,7 @@ directory is assumed to be a live run and is left alone.
 Current Codex and Claude Code daemons discover and report exact-model effort support at boot. Set routed effort by target position, for example `tines routing set codex:balanced claude:balanced --project Example --effort 1=low --effort 2=medium`. A runner-tier effort is the fallback when routing omits it. Explicit routed effort never launches through an old or incompatible daemon; the next compatible ordered target may win.
 
 During daemon rollout, an old daemon may still take a run that has only runner-tier effort. Tines omits the setting and records `legacy_not_applied`; actual provider effort is unknown. After upgrade, Claude receives `--effort VALUE` and Codex receives `-c model_reasoning_effort="VALUE"`. Successful local spawn is recorded as `accepted_unconfirmed`, not proof of internal reasoning depth.
+
+Pi receives `--thinking VALUE` and is the one harness whose effort is recorded as `confirmed`: the daemon checks the level Pi actually applied and fails the run on a mismatch (see [Pi](#tiers-models-and-effort)).
 
 To roll back, save the current route/tier JSON, remove routed effort and every applicable local tier effort, inspect `tines issues dispatch`, then settle active effort assignments before downgrading the server. Clearing a route override alone can reveal a broader override or runner-tier fallback.

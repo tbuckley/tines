@@ -130,6 +130,47 @@ export function register(program: Command): void {
 		}
 	);
 
+	const guidance = projects
+		.command('guidance')
+		.description("Manage library items included in a shared project's guidance");
+	withCommon(
+		guidance.command('list <project>').description("List a project's included library items")
+	).action(async (ref: string, opts: CommonOpts) => {
+		const api = client(opts),
+			project = await resolveProject(api, ref),
+			res = await api.listGuidanceInclusions(project.id);
+		if (opts.json) return printJson(res);
+		if (res.items.length === 0) return console.log('No library items included');
+		table([
+			['KIND', 'NAME', 'SCOPE', 'ID'],
+			...res.items.map((item) => [item.kind, item.name, item.scope_label, item.item_id])
+		]);
+	});
+	withCommon(
+		guidance
+			.command('include <project> <item-id>')
+			.description("Include a library item in a project's shared guidance")
+	).action(async (ref: string, itemId: string, opts: CommonOpts) => {
+		const api = client(opts),
+			project = await resolveProject(api, ref),
+			item = await api.includeGuidanceItem(project.id, itemId);
+		if (opts.json) return printJson(item);
+		console.log(
+			`Included ${item.kind} ${item.name} in ${project.name}'s shared guidance. Everyone in this project and their agents can read it; future edits stay shared.`
+		);
+	});
+	withCommon(
+		guidance
+			.command('exclude <project> <item-id>')
+			.description("Remove a library item from a project's shared guidance")
+	).action(async (ref: string, itemId: string, opts: CommonOpts) => {
+		const api = client(opts),
+			project = await resolveProject(api, ref),
+			item = await api.excludeGuidanceItem(project.id, itemId);
+		if (opts.json) return printJson(item);
+		console.log(`Removed ${item.kind} ${item.name} from ${project.name}'s shared guidance.`);
+	});
+
 	withCommon(
 		projects.command('starters').description('List built-in project starters and their inputs')
 	).action(async (opts: CommonOpts) => {

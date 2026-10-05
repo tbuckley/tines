@@ -7,6 +7,7 @@ import {
 	daemonStartedLine,
 	defaultServiceManager,
 	findOnPath,
+	listedPiModels,
 	matchDaemonProcesses,
 	renderLaunchdPlist,
 	renderSystemdUnit,
@@ -141,6 +142,25 @@ describe('servicePath', () => {
 		expect(missing).toEqual(['claude']);
 		expect(findOnPath('codex', `${nvm}:${brew}`)).toBe(join(brew, 'codex'));
 		expect(findOnPath('nothing', `${nvm}:${brew}`)).toBeNull();
+	});
+});
+
+describe('listedPiModels', () => {
+	it('counts the rows under the header, and reads the no-models sentence as none', () => {
+		expect(
+			listedPiModels(
+				[
+					'provider  model        context  max-out  thinking  images',
+					'local     qwen3-coder  128K     16K      yes       no',
+					'local     gemma        32K      8K       no        yes',
+					''
+				].join('\n')
+			)
+		).toBe(2);
+		expect(
+			listedPiModels('No models available. Use /login to log into a provider.\n  docs/x.md\n')
+		).toBe(0);
+		expect(listedPiModels('')).toBe(0);
 	});
 });
 

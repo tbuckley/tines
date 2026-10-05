@@ -191,8 +191,12 @@ saying what the scope is.
 	 header at 48rem (`md`); below that width they remain in the bottom bar so the
 	 switcher and account control keep a valid width budget. Main content and
 	 workflow import/export action bars reserve the bottom bar's full height and
-	 safe-area inset on the same boundary. Browser coverage sweeps both sides of
-	 the 40rem and 48rem edges so overflow cannot hide at a breakpoint.
+	 safe-area inset on the same boundary. In-page popovers that open below a
+	 field (the invite landing-issue picker) scroll the field under the header on
+	 open and cap their height to end above the bottom bar and the on-screen
+	 keyboard; the bar is marked `data-bottom-chrome` for that measurement.
+	 Browser coverage sweeps both sides of the 40rem and 48rem edges so overflow
+	 cannot hide at a breakpoint.
 7. **Available at every project count.** With no live projects the control
 	 offers Manage projects and New project without an empty radio group. With
 	 one, it also offers All projects and that project, but does not focus it
@@ -249,7 +253,7 @@ else in the non-goals list (membership, per-project labels, nesting) stands.
    highest-numbered issue away cannot free its number for reuse. Old refs
    resolve for reads and authorized writes; old browser URLs canonicalize.
 3. **Deletion.** A project that owns a historical address refuses deletion with
-   `422 project_has_issue_aliases`, `--force-context` included, and offers
+   `422 project_has_issue_aliases`, `"force_delete_context": true` included, and offers
    archive instead.
 4. **Authority.** Human sessions and ordinary named keys commit; a run key may
    read the preview and always gets `403 run_key_forbidden` on the POST.

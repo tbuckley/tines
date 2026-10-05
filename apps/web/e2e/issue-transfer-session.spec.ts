@@ -2,7 +2,7 @@ import type { IssueDetail, Project } from '@tines/shared';
 import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
-import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, signIn } from './helpers';
+import { apiClient, body, clickIssueAction, gotoHydrated, resetFocus, signIn } from './helpers';
 
 test.beforeEach(async ({ page, request }) => {
 	await resetFocus(request);
@@ -72,7 +72,7 @@ for (const closing of ['Escape', 'Close', 'chooser Cancel'] as const) {
 		});
 
 		const modal = page.getByRole('dialog');
-		await clickToOpen(page.getByTestId('move-to-project'), modal);
+		await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 		await modal.getByTestId('transfer-destination').selectOption(destinationA.id);
 		const obsoleteFinished = page.waitForEvent('requestfinished', (candidate) =>
 			candidate.url().includes('/transfer?')
@@ -85,7 +85,7 @@ for (const closing of ['Escape', 'Close', 'chooser Cancel'] as const) {
 		else await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
 		await expect(modal).toHaveCount(0);
 
-		await clickToOpen(page.getByTestId('move-to-project'), modal);
+		await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 		const chooser = modal.getByTestId('transfer-destination');
 		await chooser.selectOption(destinationB.id);
 		await expect(chooser).toHaveValue(destinationB.id);
@@ -135,7 +135,7 @@ test('review Cancel abandons a held stale-preview refresh before a new session',
 	});
 
 	const modal = page.getByRole('dialog');
-	await clickToOpen(page.getByTestId('move-to-project'), modal);
+	await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 	await modal.getByTestId('transfer-destination').selectOption(destinationA.id);
 	await modal.getByRole('button', { name: 'Review move', exact: true }).click();
 	await expect(modal.getByTestId('transfer-review')).toContainText(destinationA.name);
@@ -157,7 +157,7 @@ test('review Cancel abandons a held stale-preview refresh before a new session',
 	await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
 	await expect(modal).toHaveCount(0);
 
-	await clickToOpen(page.getByTestId('move-to-project'), modal);
+	await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 	const chooser = modal.getByTestId('transfer-destination');
 	await chooser.selectOption(destinationB.id);
 	await expect(chooser).toHaveValue(destinationB.id);
@@ -199,7 +199,7 @@ test('changing destination abandons the held preview without leaving loading stu
 	});
 
 	const modal = page.getByRole('dialog');
-	await clickToOpen(page.getByTestId('move-to-project'), modal);
+	await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 	const chooser = modal.getByTestId('transfer-destination');
 	await chooser.selectOption(destinationA.id);
 	const obsoleteFinished = page.waitForEvent('requestfinished', (candidate) =>
@@ -232,7 +232,7 @@ test('the current held preview is accepted and focused', async ({ page, request,
 	});
 
 	const modal = page.getByRole('dialog');
-	await clickToOpen(page.getByTestId('move-to-project'), modal);
+	await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 	await modal.getByTestId('transfer-destination').selectOption(destinationA.id);
 	await modal.getByRole('button', { name: 'Review move', exact: true }).click();
 	await ready;

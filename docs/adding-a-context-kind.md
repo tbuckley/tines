@@ -53,6 +53,12 @@ a kind accepts arbitrary payload.
    refuse, same posture as `repo_dir`.
 4. **Caps.** Every payload is byte-capped (UTF-8), enforced at the API
    layer with structured 422s. Pick the cap when you pick the shape.
+5. **Sharing.** Decide whether the kind can reach a shared project's bundle
+   (Tines/752). It is shared automatically when anchored to the project, issue
+   or a workflow state; say whether a global or label-only item may be
+   *included* by the owner. Kinds carrying secrets or per-person data stay out,
+   as `env` and `artifact` do. Update `sharedGuidancePredicate` and the
+   inclusion admissibility check in `guidance-inclusions.ts` to match.
 
 Write these down as a short section in `specs/context/SPEC.md` (payload
 shape, caps, merge rule, bundle form) as part of the change.
@@ -178,9 +184,13 @@ If a new kind requires edits to any of these, the change is off the rails
 - [ ] Appears in the effective context with dedupe-by-name override
       behavior and in `context_summary`.
 - [ ] `tines issues context --out` writes the agreed bundle form.
-- [ ] Library export/import handles the kind: a serializer in
-      `buildLibraryDocument` and the matching payload mapping in
-      `writeContextEntry` (`apps/web/src/lib/server/api/library.ts`).
-      Without both, items of the new kind silently fail to travel between
-      deployments.
+- [ ] Decide whether the kind travels in library export/import. The
+      default export is `buildLibraryV3Document`
+      (`apps/web/src/lib/server/api/library-v3-export.ts`) and v3 import is
+      `planLibraryV3Import` (`library-v3-import.ts`). The v3 format
+      (`specs/library/FORMAT_V3.md`) carries only prompt, skill and repo, so
+      a new kind needs a format change there. Without one, items of the new
+      kind do not travel between deployments, as with `artifact` and `env`.
+      The `?version=2` exporter (`buildLibraryDocument` and
+      `writeContextEntry` in `library.ts`) is kept only for compatibility.
 - [ ] `pnpm check`, `pnpm test`, and the e2e suite pass.

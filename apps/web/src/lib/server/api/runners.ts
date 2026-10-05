@@ -31,8 +31,14 @@ import { newId, randomString, type Database } from '$lib/server/db';
 import type { DispatchEffects } from '$lib/server/dispatch-effects';
 import { pingAnthropicKey } from '$lib/server/supervisor/claude-adapter';
 import { cancelAssignedRuns } from '$lib/server/supervisor/engine';
-import { builtinTierModels, resolveEffort, resolveTier } from '$lib/server/supervisor/logic';
-import { isResumeProviderSupported } from '$lib/server/supervisor/resume';
+import {
+	builtinTierModels,
+	localHarness,
+	resolveEffort,
+	resolveTier,
+	tiersApply
+} from '$lib/server/supervisor/logic';
+import { LOCAL_RESUME_HARNESSES, isResumeProviderSupported } from '$lib/server/supervisor/resume';
 import {
 	ApiFail,
 	notFound,
@@ -120,7 +126,7 @@ function validateResumeCost(value: unknown): number {
 function supportsResumeHarness(type: string, config: Record<string, unknown>): boolean {
 	return (
 		type === 'claude_managed' ||
-		(type === 'local' && (config.harness ?? 'claude_code') === 'claude_code')
+		(type === 'local' && LOCAL_RESUME_HARNESSES.includes(String(config.harness ?? 'claude_code')))
 	);
 }
 
@@ -129,12 +135,17 @@ function validateResumeEnable(type: RunnerType, config: Record<string, unknown>)
 		throw new ApiFail(
 			422,
 			'resume_unsupported',
-			'Resume is supported only by Claude Code local runners and Claude managed runners',
+			'Resume is supported only by Claude Code and Pi local runners and Claude managed runners',
 			{ field: 'resume_enabled' }
 		);
 	}
 	if (!isResumeProviderSupported(type, config)) {
-		const provider = type === 'local' ? 'Claude Code local' : 'Claude managed';
+		const provider =
+			type !== 'local'
+				? 'Claude managed'
+				: config.harness === 'pi'
+					? 'Pi local'
+					: 'Claude Code local';
 		throw new ApiFail(
 			422,
 			'resume_unavailable',
@@ -144,7 +155,7 @@ function validateResumeEnable(type: RunnerType, config: Record<string, unknown>)
 	}
 }
 
-const LOCAL_HARNESSES = ['claude_code', 'codex', 'custom'] as const;
+const LOCAL_HARNESSES = ['claude_code', 'codex', 'pi', 'custom'] as const;
 
 /**
  * Non-secret config for a local runner. Strict by design: unknown keys are
@@ -410,6 +421,7 @@ function serializeRunner(row: RunnerRow, now = Date.now()): Runner {
 		default_tier: row.default_tier as ModelTier,
 		tiers,
 		tier_models: builtinTierModels(row),
+		tiers_apply: tiersApply(row),
 		budget,
 		has_api_key: row.secret_enc !== null,
 		config,
@@ -868,6 +880,10 @@ export async function updateRunner(
 		const finalTiers = finalRunner.tiers
 			? (JSON.parse(finalRunner.tiers) as RunnerTierOverrides)
 			: null;
+		const unnamedModel =
+			finalRunner.type === 'local' && localHarness(finalRunner) === 'pi'
+				? "Pi's default model"
+				: 'the fixed model';
 		for (const tier of MODEL_TIERS) {
 			const tierOverride = finalTiers?.[tier];
 			const effort =
@@ -887,7 +903,7 @@ export async function updateRunner(
 				throw new ApiFail(
 					422,
 					'effort_incompatible',
-					`"tiers.${tier}.effort" cannot apply ${effort} to ${resolvedTier.model ?? 'the fixed model'}: ${compatibility.reason}`,
+					`"tiers.${tier}.effort" cannot apply ${effort} to ${resolvedTier.model ?? unnamedModel}: ${compatibility.reason}`,
 					{ field: `tiers.${tier}.effort`, model: resolvedTier.model, requested_effort: effort }
 				);
 			}

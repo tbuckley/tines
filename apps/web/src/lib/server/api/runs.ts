@@ -319,6 +319,66 @@ export function serializeRun(row: RunRow): AgentRun {
 	};
 }
 
+/** What an owner-scoped view may show of a run another person contributed (Tines/751). */
+export interface SharedRun {
+	id: string;
+	status: RunStatus;
+	outcome: RunEndOutcome | null;
+	started_at: number | null;
+	ended_at: number | null;
+	contributor: { id: string; name: string | null };
+	runner_name: string | null;
+	stage: string | null;
+}
+
+/**
+ * Selects the columns `serializeSharedRun` needs and nothing else, so usage,
+ * cost, error, model, provider session/URL and log never leave the database
+ * for a run whose contributor is not the viewer. `runQuery`/`serializeRun`
+ * stay contributor-scoped; billing is still one row under `agent_run.user_id`.
+ */
+export function sharedRunQuery(db: Kysely<Database>) {
+	return db
+		.selectFrom('agent_run')
+		.leftJoin('user as contributor', 'contributor.id', 'agent_run.user_id')
+		.leftJoin('runner', 'runner.id', 'agent_run.runner_id')
+		.leftJoin('workflow_state as stage', 'stage.id', 'agent_run.state_id_at_start')
+		.select([
+			'agent_run.id',
+			'agent_run.status',
+			'agent_run.outcome',
+			'agent_run.started_at',
+			'agent_run.ended_at',
+			'agent_run.user_id as contributor_id',
+			'contributor.name as contributor_name',
+			'runner.name as runner_name',
+			'stage.name as stage_name'
+		]);
+}
+
+export function serializeSharedRun(row: {
+	id: string;
+	status: string;
+	outcome: string | null;
+	started_at: number | null;
+	ended_at: number | null;
+	contributor_id: string;
+	contributor_name: string | null;
+	runner_name: string | null;
+	stage_name: string | null;
+}): SharedRun {
+	return {
+		id: row.id,
+		status: row.status as RunStatus,
+		outcome: (row.outcome as RunEndOutcome | null) ?? null,
+		started_at: row.started_at,
+		ended_at: row.ended_at,
+		contributor: { id: row.contributor_id, name: row.contributor_name },
+		runner_name: row.runner_name,
+		stage: row.stage_name
+	};
+}
+
 function serializeRunDetail(row: RunRow): AgentRunDetail {
 	return {
 		...serializeRun(row),

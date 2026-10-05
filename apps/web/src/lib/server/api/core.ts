@@ -231,6 +231,11 @@ export interface ActorContext {
 		scope?: RunScope;
 		/** Issues this run filed; they count as its own for the rest of the run. */
 		createdIssueIds?: readonly string[];
+		/**
+		 * Who the run works for and where it was admitted (Tines/751). Read once
+		 * at authentication; `runStillBoundPredicate` re-checks it at commit.
+		 */
+		binding?: RunBinding;
 	} | null;
 	/**
 	 * Set when a project member acts on a shared project: `userId` is then the
@@ -243,6 +248,71 @@ export interface ActorContext {
 		projectId: string;
 		membershipRevision: number;
 	} | null;
+}
+
+/** The immutable authority a run key was issued under. */
+export interface RunBinding {
+	contributorUserId: string;
+	contributorName: string;
+	projectOwnerId: string;
+	projectOwnerName: string;
+	runnerId: string;
+	assignmentToken: string;
+	/** The contributor's admitted membership revision; NULL for the project owner. */
+	membershipRevision: number | null;
+}
+
+export type RunKeyInactiveReason =
+	| 'contributor_mismatch'
+	| 'cancel_requested'
+	| 'transferred'
+	| 'membership_changed'
+	| 'owner_changed';
+
+/**
+ * Why a run key's binding no longer holds, or null when it still does. Pure so
+ * the auth query and the tests share one decision.
+ */
+export function runBindingFailure(row: {
+	key_user_id: string;
+	run_user_id: string | null;
+	runner_user_id: string | null;
+	cancel_requested_at: number | null;
+	admitted_project_id: string | null;
+	admitted_project_owner_id: string | null;
+	run_assignment_token: string | null;
+	admitted_membership_revision: number | null;
+	issue_project_id: string | null;
+	issue_assignment_token: string | null;
+	project_owner_id: string | null;
+	project_shared_at: number | null;
+	member_revision: number | null;
+	member_revoked_at: number | null;
+}): RunKeyInactiveReason | null {
+	if (row.key_user_id !== row.run_user_id || row.runner_user_id !== row.run_user_id)
+		return 'contributor_mismatch';
+	if (row.cancel_requested_at !== null) return 'cancel_requested';
+	if (
+		row.admitted_project_id !== null &&
+		(row.issue_project_id !== row.admitted_project_id ||
+			row.issue_assignment_token !== row.run_assignment_token)
+	)
+		return 'transferred';
+	if (row.run_user_id !== row.project_owner_id) {
+		if (
+			row.project_shared_at === null ||
+			row.member_revision === null ||
+			row.member_revoked_at !== null ||
+			row.admitted_membership_revision === null ||
+			row.member_revision !== row.admitted_membership_revision
+		)
+			return 'membership_changed';
+	} else if (
+		row.admitted_project_owner_id !== null &&
+		row.admitted_project_owner_id !== row.run_user_id
+	)
+		return 'owner_changed';
+	return null;
 }
 
 /** The person an event, comment or artifact is attributed to. */
@@ -318,6 +388,21 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 		.leftJoin('agent_run as run', 'run.id', 'api_key.agent_run_id')
 		.leftJoin('issue as run_issue', 'run_issue.id', 'run.issue_id')
 		.leftJoin('workflow_state as run_state', 'run_state.id', 'run.state_id_at_start')
+		.leftJoin('runner as run_runner', 'run_runner.id', 'run.runner_id')
+		// The admitted project wins; legacy rows without admission use the issue's.
+		.leftJoin('project as run_project', (join) =>
+			join.on(
+				'run_project.id',
+				'=',
+				sql<string>`coalesce(${sql.ref('run.admitted_project_id')}, ${sql.ref('run_issue.project_id')})`
+			)
+		)
+		.leftJoin('user as run_owner', 'run_owner.id', 'run_project.user_id')
+		.leftJoin('project_member as run_member', (join) =>
+			join
+				.onRef('run_member.project_id', '=', 'run_project.id')
+				.onRef('run_member.user_id', '=', 'run.user_id')
+		)
 		.select([
 			'api_key.id',
 			'api_key.user_id',
@@ -329,7 +414,22 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 			'run.api_key_id as run_api_key_id',
 			'run.issue_id as run_issue_id',
 			'run.state_id_at_start as run_launch_state_id',
-			'run_issue.project_id as run_project_id',
+			'run_issue.project_id as run_issue_project_id',
+			'run_project.id as run_project_id',
+			'run.user_id as run_user_id',
+			'run.runner_id as run_runner_id',
+			'run_runner.user_id as run_runner_user_id',
+			'run.cancel_requested_at as run_cancel_requested_at',
+			'run.admitted_project_id as run_admitted_project_id',
+			'run.admitted_project_owner_id as run_admitted_project_owner_id',
+			'run.project_assignment_token as run_assignment_token',
+			'run.admitted_membership_revision as run_admitted_membership_revision',
+			'run_issue.project_assignment_token as run_issue_assignment_token',
+			'run_project.user_id as run_project_owner_id',
+			'run_project.shared_at as run_project_shared_at',
+			'run_owner.name as run_project_owner_name',
+			'run_member.revision as run_member_revision',
+			'run_member.revoked_at as run_member_revoked_at',
 			'run_state.run_scope as run_scope',
 			sql<string>`(SELECT json_group_array(filed.id) FROM issue AS filed
 				WHERE filed.created_by_run_id = api_key.agent_run_id)`.as('run_created_issue_ids'),
@@ -367,6 +467,24 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 		) {
 			throw new ApiFail(401, 'run_key_inactive', 'This run key is no longer active');
 		}
+		const reason = runBindingFailure({
+			key_user_id: row.user_id,
+			run_user_id: row.run_user_id,
+			runner_user_id: row.run_runner_user_id,
+			cancel_requested_at: row.run_cancel_requested_at,
+			admitted_project_id: row.run_admitted_project_id,
+			admitted_project_owner_id: row.run_admitted_project_owner_id,
+			run_assignment_token: row.run_assignment_token,
+			admitted_membership_revision: row.run_admitted_membership_revision,
+			issue_project_id: row.run_issue_project_id,
+			issue_assignment_token: row.run_issue_assignment_token,
+			project_owner_id: row.run_project_owner_id,
+			project_shared_at: row.run_project_shared_at,
+			member_revision: row.run_member_revision,
+			member_revoked_at: row.run_member_revoked_at
+		});
+		if (reason)
+			throw new ApiFail(401, 'run_key_inactive', 'This run key is no longer active', { reason });
 		runRestriction = {
 			policy: 'run-v1',
 			runId: row.agent_run_id,
@@ -376,7 +494,17 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 			// Read at request time, so the owner widening or narrowing a stage
 			// applies to runs already in flight.
 			scope: row.run_scope ?? 'issue',
-			createdIssueIds: parseIdList(row.run_created_issue_ids)
+			createdIssueIds: parseIdList(row.run_created_issue_ids),
+			binding: {
+				contributorUserId: row.user_id,
+				contributorName: row.user_name,
+				projectOwnerId: row.run_project_owner_id!,
+				projectOwnerName: row.run_project_owner_name ?? '',
+				runnerId: row.run_runner_id!,
+				assignmentToken: row.run_assignment_token!,
+				membershipRevision:
+					row.run_project_owner_id === row.user_id ? null : row.run_admitted_membership_revision
+			}
 		};
 	}
 

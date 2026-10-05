@@ -2,6 +2,7 @@ import type { Actor, ActorRun, TinesEvent } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely, type RawBuilder } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { ApiFail, attributedUserId, type ActorContext } from './core';
+import { sharedEventPayload } from './shared-events';
 
 export interface EventWindowFilters {
 	since?: number;
@@ -34,6 +35,7 @@ export function applyEventWindow<Q>(query: Q, filters: EventWindowFilters): Q {
 	return q as Q;
 }
 import type { QueryGuard } from './query-guard';
+import { runStillBoundPredicate } from './project-access';
 
 export interface EventInput {
 	/** Stable batch allocation; ordinary callers omit these. */
@@ -88,25 +90,32 @@ export function eventInsert(
 	const projectId = input.issueId
 		? sql<string | null>`(SELECT project_id FROM issue WHERE id = ${input.issueId})`
 		: sql<string | null>`${input.projectId ?? null}`;
-	if (!guard)
+	const guarded =
+		guard === undefined
+			? null
+			: 'predicate' in guard
+				? guard.predicate
+				: sql<boolean>`EXISTS (
+			SELECT 1 FROM issue
+			WHERE id = ${guard.issueId} AND state_id = ${guard.stateId} AND updated_at = ${guard.updatedAt}
+		)`;
+	// A run key's event commits only while its binding holds (Tines/751), so a
+	// write refused by the run guard never leaves an event behind.
+	const predicate = actor.runRestriction
+		? guarded
+			? sql<boolean>`${guarded} AND ${runStillBoundPredicate(actor)}`
+			: runStillBoundPredicate(actor)
+		: guarded;
+	if (!predicate)
 		return sql`
 			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 			VALUES (${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
 				${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at})`.compile(db);
-	if ('predicate' in guard)
-		return sql`
-			INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
-			SELECT ${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
-				${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at}
-			WHERE ${guard.predicate}`.compile(db);
 	return sql`
 		INSERT INTO event (id, user_id, type, actor_user_id, actor_api_key_id, issue_id, project_id, payload, created_at)
 		SELECT ${values.id}, ${values.user_id}, ${values.type}, ${values.actor_user_id}, ${values.actor_api_key_id},
 			${values.issue_id}, ${projectId}, ${values.payload}, ${values.created_at}
-		WHERE EXISTS (
-			SELECT 1 FROM issue
-			WHERE id = ${guard.issueId} AND state_id = ${guard.stateId} AND updated_at = ${guard.updatedAt}
-		)`.compile(db);
+		WHERE ${predicate}`.compile(db);
 }
 
 /**
@@ -200,6 +209,7 @@ export function eventQuery(db: Kysely<Database>, userId: string) {
 				'event.project_id',
 				'event.payload',
 				'event.created_at',
+				'event.user_id as stream_user_id',
 				'event.actor_user_id',
 				'actor_user.name as actor_user_name',
 				'event.actor_api_key_id',
@@ -223,12 +233,30 @@ export function eventQuery(db: Kysely<Database>, userId: string) {
 
 type EventRow = Awaited<ReturnType<ReturnType<typeof eventQuery>['execute']>>[number];
 
+/**
+ * A run event in the owner's stream whose run belongs to another contributor
+ * (a member's run on a shared project, Tines/751). The owner sees its status
+ * and outcome, never the contributor's usage, cost, error or provider detail.
+ */
+function isForeignRunEvent(row: EventRow): boolean {
+	return (
+		row.actor_user_id !== row.stream_user_id &&
+		(row.type.startsWith('agent_run.') ||
+			row.type.startsWith('runner.') ||
+			row.type === 'issue.parked')
+	);
+}
+
 export function serializeEvent(row: EventRow): TinesEvent {
 	let payload: Record<string, unknown> = {};
-	try {
-		payload = JSON.parse(row.payload) as Record<string, unknown>;
-	} catch {
-		// Leave the payload empty if it somehow isn't valid JSON.
+	if (isForeignRunEvent(row)) {
+		payload = sharedEventPayload(row.type, row.payload);
+	} else {
+		try {
+			payload = JSON.parse(row.payload) as Record<string, unknown>;
+		} catch {
+			// Leave the payload empty if it somehow isn't valid JSON.
+		}
 	}
 	if (row.other_project_id && typeof payload.other_issue_id === 'string')
 		payload.other_project_id = row.other_project_id;

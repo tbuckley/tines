@@ -111,7 +111,15 @@ export const RUNROW = {
 	runKey: 'tines_e2erunrow000000000000000000000000000000000',
 	runKeyRunId: 'arun_e2e_run_key_active',
 	runKeyIssueId: 'iss_e2e_run_key_active',
-	runKeyIssueNumber: 3,
+	/**
+	 * Five digits on purpose: its ref is wider than the other seeded runs'
+	 * (`runrow-seed/#1`), so the Agents tab has refs of two widths to line the
+	 * rows up against. It must not start with another seeded number — link
+	 * names match by substring.
+	 */
+	runKeyIssueNumber: 30417,
+	/** The active run's console link: the row with the most trailing actions. */
+	runKeyProviderUrl: 'https://console.example.test/session/e2e-run-key-active',
 	runKeyRunnerId: 'rnr_e2e_run_key_active',
 	runKeyRunnerName: 'run-key-fixture',
 	runKeyName: 'run:runrow'
@@ -147,6 +155,25 @@ export const RUNROW_FAILED = {
 	 */
 	runKey: 'tines_e2efailedrun000000000000000000000000000000',
 	runKeyName: 'run:runrow-failed'
+};
+
+/**
+ * Seeded *completed · stalled* run (Alice's), on the same issue as RUNROW: the
+ * run that ended without advancing the issue, which run rows once showed as a
+ * plain "completed" while the Activity feed showed an amber warning. Own
+ * paused runner, for the same one-row selectors as RUNROW_FAILED.
+ */
+export const RUNROW_STALLED = {
+	runnerId: 'rnr_e2e_runrow_stalled',
+	runnerName: 'runrow-stalled',
+	runId: 'run_e2e_runrow_stalled',
+	/**
+	 * Longer than its neighbours' two minutes, so its duration ("12:34") is a
+	 * different width and a right-aligned column is distinguishable from a
+	 * left-aligned one.
+	 */
+	durationMs: 754_000,
+	durationLabel: '12:34'
 };
 
 export const RUNROW_ESTIMATED = {
@@ -275,6 +302,15 @@ export const RUNNER_CONCURRENCY = {
 	apiKeyName: 'runner-concurrency-key',
 	sessionToken: 'e2e-session-runner-concurrency'
 };
+/** Exclusive to runner-pi.spec.ts: a rate-limited Pi run backs its runner off. */
+export const RUNNER_PI = {
+	id: 'usr_e2e_runner_pi',
+	name: 'Runner Pi E2E',
+	email: 'runner-pi@e2e.test',
+	apiKey: 'tines_e2erunnerpi0000000000000000000000000000000',
+	apiKeyName: 'runner-pi-key',
+	sessionToken: 'e2e-session-runner-pi'
+};
 export const EXPLAINER_REMEDIES = {
 	id: 'usr_e2e_explainer_remedies',
 	name: 'Explainer Remedies E2E',
@@ -317,6 +353,16 @@ export const TRANSFER_RUNTIME = {
 	runnerId: 'rnr_e2e_transfer',
 	runnerName: 'transfer-runtime-local',
 	ruleId: 'rrl_e2e_transfer_destination'
+};
+
+/** Never focused on a project: 101 global prompts for Context page pagination. */
+export const CONTEXT_PAGINATION = {
+	id: 'usr_e2e_context_pagination',
+	name: 'Context Pagination E2E',
+	email: 'context-pagination@e2e.test',
+	apiKey: 'tines_e2econtextpagination00000000000000000000000',
+	apiKeyName: 'context-pagination-key',
+	sessionToken: 'e2e-session-context-pagination'
 };
 
 /** Isolated 205-row population for issue-list pagination. */

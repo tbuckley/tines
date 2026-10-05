@@ -411,6 +411,21 @@ describe('updateRunner (managed credentials, tiers, budget)', () => {
 			type: 'local',
 			name: 'claude'
 		});
+		// Pi keeps its session in the kept workspace too, so it opts in like Claude Code.
+		const pi = await createRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			type: 'local',
+			name: 'pi',
+			config: { harness: 'pi' },
+			resume_enabled: true
+		});
+		expect(pi).toMatchObject({ resume_enabled: true, tier_models: null, tiers_apply: true });
+		const custom = await createRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, {
+			type: 'local',
+			name: 'custom',
+			config: { harness: 'custom', command: 'run {prompt_file}' }
+		});
+		expect(custom).toMatchObject({ tier_models: null, tiers_apply: false });
+
 		// A Claude Code local runner may now opt in: this is the shipped path.
 		await expect(
 			updateRunner(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, local.id, {

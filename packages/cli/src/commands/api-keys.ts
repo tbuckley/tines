@@ -113,6 +113,7 @@ export function register(program: Command): void {
 	withCommon(
 		keys
 			.command('list')
+			.description('List your API keys')
 			.addOption(
 				new Option('--run-keys <mode>', 'run keys to include').choices(['none', 'active', 'all'])
 			)

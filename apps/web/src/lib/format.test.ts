@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { nextRunLabel, relativeTimeShort, runElapsedLabel, truncate, untilTime } from './format';
+import {
+	invitationExpiryLabel,
+	invitationStatus,
+	joinedDate,
+	nextRunLabel,
+	relativeTimeShort,
+	runElapsedLabel,
+	runModelLabel,
+	runOutcomePresentation,
+	runStatusClass,
+	truncate,
+	untilTime
+} from './format';
 
 describe('truncate', () => {
 	it('leaves short values alone', () => {
@@ -141,5 +153,220 @@ describe('nextRunLabel', () => {
 	it('drops the prefix once past due, since "next 3h overdue" reads backwards', () => {
 		expect(nextRunLabel(NOW - 1, NOW)).toBe('due now');
 		expect(nextRunLabel(NOW - 3 * HOUR, NOW)).toBe('3h overdue');
+	});
+});
+
+describe('invitationStatus', () => {
+	const invite = (over: Partial<Parameters<typeof invitationStatus>[0]> = {}) => ({
+		accepted_at: null,
+		canceled_at: null,
+		expires_at: NOW + 7 * DAY,
+		delivery_status: 'sent',
+		...over
+	});
+
+	it('reads an open, delivered link as pending', () => {
+		expect(invitationStatus(invite(), NOW)).toBe('pending');
+		expect(invitationStatus(invite({ delivery_status: 'pending' }), NOW)).toBe('pending');
+	});
+
+	it('keeps a removed member as accepted, not canceled', () => {
+		expect(invitationStatus(invite({ accepted_at: NOW - DAY, canceled_at: NOW }), NOW)).toBe(
+			'accepted'
+		);
+	});
+
+	it('reads canceled before expired', () => {
+		expect(invitationStatus(invite({ canceled_at: NOW - DAY, expires_at: NOW - DAY }), NOW)).toBe(
+			'canceled'
+		);
+	});
+
+	it('expires at the instant the server does', () => {
+		expect(invitationStatus(invite({ expires_at: NOW }), NOW)).toBe('expired');
+		expect(invitationStatus(invite({ expires_at: NOW + 1 }), NOW)).toBe('pending');
+	});
+
+	it('reads a lapsed failed delivery as expired, a live one as failed', () => {
+		expect(
+			invitationStatus(invite({ delivery_status: 'failed', expires_at: NOW - HOUR }), NOW)
+		).toBe('expired');
+		expect(invitationStatus(invite({ delivery_status: 'failed' }), NOW)).toBe('failed');
+	});
+});
+
+describe('invitationExpiryLabel', () => {
+	it('phrases a live link in long-form days and hours', () => {
+		expect(invitationExpiryLabel(NOW + 7 * DAY - 5_000, NOW)).toBe('expires in 7 days');
+		expect(invitationExpiryLabel(NOW + DAY, NOW)).toBe('expires in 1 day');
+		expect(invitationExpiryLabel(NOW + 23.6 * HOUR, NOW)).toBe('expires in 1 day');
+		expect(invitationExpiryLabel(NOW + 5 * HOUR, NOW)).toBe('expires in 5 hours');
+		expect(invitationExpiryLabel(NOW + HOUR, NOW)).toBe('expires in 1 hour');
+		expect(invitationExpiryLabel(NOW + 20 * MINUTE, NOW)).toBe('expires in under an hour');
+	});
+
+	it('phrases a lapsed link in the past tense, with no cap', () => {
+		expect(invitationExpiryLabel(NOW, NOW)).toBe('expired under an hour ago');
+		expect(invitationExpiryLabel(NOW - 3 * HOUR, NOW)).toBe('expired 3 hours ago');
+		expect(invitationExpiryLabel(NOW - 2 * DAY, NOW)).toBe('expired 2 days ago');
+		expect(invitationExpiryLabel(NOW - 40 * DAY, NOW)).toBe('expired 40 days ago');
+	});
+});
+
+describe('joinedDate', () => {
+	it('omits the year for this year', () => {
+		const earlier = NOW - 30 * DAY;
+		expect(joinedDate(earlier, NOW)).toBe(
+			new Date(earlier).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+		);
+	});
+
+	it('names the year for an earlier year', () => {
+		const lastYear = NOW - 400 * DAY;
+		expect(joinedDate(lastYear, NOW)).toBe(
+			new Date(lastYear).toLocaleDateString(undefined, {
+				month: 'short',
+				day: 'numeric',
+				year: 'numeric'
+			})
+		);
+	});
+});
+
+describe('runOutcomePresentation', () => {
+	it.each([
+		['completed', 'advanced', 'success'],
+		['completed', null, 'success'],
+		['completed', undefined, 'success'],
+		['completed', 'stalled', 'warning'],
+		['completed', 'interrupted', 'warning'],
+		['failed', 'advanced', 'failure'],
+		['failed', 'stalled', 'failure'],
+		['failed', null, 'failure'],
+		['failed', 'interrupted', 'warning'],
+		['timed_out', null, 'warning'],
+		['canceled', 'advanced', 'warning']
+	])('%s · %s → %s', (status, outcome, tone) => {
+		expect(runOutcomePresentation(status, outcome)?.tone).toBe(tone);
+	});
+
+	it.each([
+		['running', null],
+		['assigned', null],
+		['launching', null],
+		['completed', 'bogus'],
+		['completed', 7],
+		[42, null]
+	])('%s · %s → null', (status, outcome) => {
+		expect(runOutcomePresentation(status, outcome)).toBeNull();
+	});
+
+	it('colors each tone as the Activity feed does', () => {
+		expect(runOutcomePresentation('completed', 'advanced')?.colorClass).toBe(
+			'text-emerald-600 dark:text-emerald-400'
+		);
+		expect(runOutcomePresentation('completed', 'stalled')?.colorClass).toBe(
+			'text-amber-700 dark:text-amber-400'
+		);
+		expect(runOutcomePresentation('failed', null)?.colorClass).toBe('text-destructive');
+	});
+});
+
+describe('runStatusClass', () => {
+	it('keeps live statuses on their phase colors', () => {
+		expect(runStatusClass('running')).toBe('text-emerald-600 dark:text-emerald-400');
+		expect(runStatusClass('launching')).toBe('text-emerald-600 dark:text-emerald-400');
+		expect(runStatusClass('assigned')).toBe('text-sky-600 dark:text-sky-400');
+	});
+
+	it('colors ended statuses by outcome', () => {
+		expect(runStatusClass('completed', 'advanced')).toBe('text-emerald-600 dark:text-emerald-400');
+		expect(runStatusClass('completed', 'stalled')).toBe('text-amber-700 dark:text-amber-400');
+		expect(runStatusClass('failed', 'stalled')).toBe('text-destructive');
+		expect(runStatusClass('completed', 'bogus')).toBe('text-muted-foreground');
+	});
+});
+
+describe('runModelLabel', () => {
+	const base = {
+		tier: 'balanced',
+		model: 'claude-opus-5-5',
+		resolved_effort: 'high',
+		effort_source: { kind: 'runner_tier', runner_id: 'rnr_1', tier: 'balanced' },
+		effort_application_status: 'accepted_unconfirmed'
+	} as const;
+
+	it('gives the model and the bare effort value as separate cells and keeps the rest for the tooltip', () => {
+		expect(runModelLabel(base)).toEqual({
+			model: 'claude-opus-5-5',
+			effort: 'high',
+			title: 'Tier balanced · effort high from runner tier balanced · accepted unconfirmed'
+		});
+	});
+
+	it('names a routing target by its one-based position and scope', () => {
+		const label = runModelLabel({
+			...base,
+			effort_source: {
+				kind: 'routing_target',
+				runner_id: 'rnr_1',
+				tier: 'balanced',
+				rule_id: 'rule_1',
+				scope_label: 'Tines · Design',
+				target_index: 1
+			},
+			effort_application_status: 'confirmed'
+		});
+		expect(label.effort).toBe('high');
+		expect(label.title).toBe(
+			'Tier balanced · effort high from routing target 2 (Tines · Design) · confirmed'
+		);
+	});
+
+	it('shows no effort when an old daemon did not deliver it', () => {
+		expect(runModelLabel({ ...base, effort_application_status: 'legacy_not_applied' })).toEqual({
+			model: 'claude-opus-5-5',
+			effort: null,
+			title: 'Tier balanced'
+		});
+		// No model either: the cell is empty, it does not borrow the tier.
+		expect(
+			runModelLabel({ ...base, model: null, effort_application_status: 'legacy_not_applied' })
+		).toEqual({ model: null, effort: null, title: 'Tier balanced' });
+	});
+
+	it('says nothing visible when no effort was recorded', () => {
+		expect(
+			runModelLabel({
+				...base,
+				resolved_effort: null,
+				effort_source: null,
+				effort_application_status: 'unknown'
+			})
+		).toEqual({
+			model: 'claude-opus-5-5',
+			effort: null,
+			title: 'Tier balanced · effort not recorded'
+		});
+		expect(
+			runModelLabel({
+				...base,
+				resolved_effort: null,
+				effort_source: { kind: 'none', runner_id: 'rnr_1', tier: 'balanced' },
+				effort_application_status: 'not_requested'
+			})
+		).toEqual({
+			model: 'claude-opus-5-5',
+			effort: null,
+			title: 'Tier balanced · provider default effort'
+		});
+	});
+
+	it('leaves the model empty when the run has none: the tier has its own cell', () => {
+		expect(runModelLabel({ ...base, model: null })).toMatchObject({ model: null, effort: 'high' });
+		// A legacy record carries a value but no source.
+		expect(runModelLabel({ ...base, effort_source: null }).title).toContain(
+			'effort high from legacy record'
+		);
 	});
 });

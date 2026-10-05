@@ -98,8 +98,8 @@ const row = (page: Page, issue: IssueDetail): Locator =>
 
 /** The title text — the box the badge used to eat. */
 const title = (row: Locator): Locator => row.locator('.vt-shared').first();
-/** The state cell: glyph plus name, named for the view transition. */
-const stateCell = (row: Locator): Locator => row.locator('[style*="issue-state"]');
+/** The state cell: glyph plus name. */
+const stateCell = (row: Locator): Locator => row.locator('[data-issue-state]');
 /** The `#number`; bare, since the list is filtered to one project. */
 const number = (row: Locator, issue: IssueDetail): Locator =>
 	row.getByText(`#${issue.number}`, { exact: true });

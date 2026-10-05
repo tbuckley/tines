@@ -1,4 +1,5 @@
 import type { RunScope, StateCategory } from '@tines/shared';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Kysely, SqliteAdapter, type Generated } from 'kysely';
 import { D1Dialect } from 'kysely-d1';
 import { traceUsageScaleDb } from './usage-scale-trace';
@@ -25,6 +26,22 @@ export interface ProjectMemberTable {
 	revoked_at: number | null;
 	updated_at: number;
 	last_request_token: string | null;
+}
+
+export interface ProjectGuidanceInclusionTable {
+	project_id: string;
+	context_item_id: string;
+	revision: Generated<number>;
+	created_at: number;
+}
+
+export interface IssueGuidanceBlockTable {
+	issue_id: string;
+	code: 'bundle_too_large' | 'bundle_unavailable';
+	/** `env_unavailable`: the env channel failed to resolve (e.g. a secret no longer decrypts). */
+	reason: 'item_cap' | 'size_cap' | 'repo_dir_conflict' | 'churn' | 'env_unavailable';
+	retry_after: number;
+	created_at: number;
 }
 
 export interface ProjectInvitationTable {
@@ -56,6 +73,11 @@ export interface WorkflowTable {
 	created_at: number;
 	updated_at: number;
 	decision_revision: Generated<number>;
+	/**
+	 * Advances by exactly one per committed updateWorkflow batch; the
+	 * `workflow_definition_revision_step` trigger aborts any other step.
+	 */
+	definition_revision: Generated<number>;
 }
 
 export interface WorkflowStateTable {
@@ -491,6 +513,8 @@ export interface AgentRunTable {
 	admitted_project_id: string | null;
 	admitted_daemon_instance_id: string | null;
 	admitted_at: number | null;
+	/** The project_member revision a member-contributor run was admitted under (Tines/751). */
+	admitted_membership_revision: number | null;
 	admission_evidence: string | null;
 	cancel_requested_at: number | null;
 	cancel_requested_by_user_id: string | null;
@@ -745,6 +769,8 @@ export interface Database {
 	project: ProjectTable;
 	project_member: ProjectMemberTable;
 	project_invitation: ProjectInvitationTable;
+	project_guidance_inclusion: ProjectGuidanceInclusionTable;
+	issue_guidance_block: IssueGuidanceBlockTable;
 	workflow: WorkflowTable;
 	workflow_state: WorkflowStateTable;
 	workflow_transition: WorkflowTransitionTable;
@@ -817,6 +843,106 @@ export class ConcurrentD1Dialect extends D1Dialect {
 	}
 }
 
+type D1Database = Env['DB'];
+type D1Statement = ReturnType<D1Database['prepare']>;
+type D1AllResult = Awaited<ReturnType<D1Statement['all']>>;
+
+/** A read that can share a batch: a SELECT, or a WITH that writes nothing. */
+const BATCHABLE = /^\s*(select|with)\b/i;
+const WRITES = /\b(insert|update|delete|replace)\b/i;
+/** Well under D1's per-batch limits; a wider fan-out simply flushes twice. */
+export const MAX_BATCHED_READS = 50;
+
+type PendingRead = {
+	statement: D1Statement;
+	resolve: (result: D1AllResult) => void;
+	reject: (error: unknown) => void;
+};
+/** One request's reads waiting to be sent, per binding. */
+const readBatchScope = new AsyncLocalStorage<Map<D1Database, PendingRead[]>>();
+
+/**
+ * Runs `fn` with read batching on (see `batchingD1`); `hooks.server.ts` wraps
+ * every request in it. Scoped per request because the Workers runtime cancels
+ * a request whose promise another request's I/O settles, and one isolate
+ * serves many requests with one `getDb` binding.
+ */
+export function withReadBatching<T>(fn: () => T): T {
+	return readBatchScope.run(new Map(), fn);
+}
+
+/**
+ * D1 runs one database's statements one at a time, and every statement sent
+ * on its own pays a fixed request cost on top of its execution time, even
+ * when a `load` issues them together in `Promise.all`. Real users measured
+ * /agents (about 22 reads in 2 waves) at about 280 ms of server time against
+ * a modelled 40 ms (docs/PERFORMANCE.md). So inside `withReadBatching`,
+ * Kysely's reads that start in the same task are sent as one `batch()`: one
+ * request instead of one per read. Outside it (cron, queue handlers, tests
+ * that do not opt in) every read goes alone, as before.
+ *
+ * A batch is all-or-nothing, so when it fails nothing in it applied and each
+ * statement is re-sent alone; each caller then gets its own result or error,
+ * exactly as without batching. Only reads are coalesced; writes keep their
+ * own request (multi-statement writes use `runAtomic()` anyway).
+ */
+export function batchingD1(database: D1Database): D1Database {
+	const alone = async (item: PendingRead) => {
+		try {
+			item.resolve(await item.statement.all());
+		} catch (e) {
+			item.reject(e);
+		}
+	};
+	const send = async (items: PendingRead[]) => {
+		if (items.length === 1) return alone(items[0]);
+		let results: D1AllResult[];
+		try {
+			results = (await database.batch(items.map((i) => i.statement))) as D1AllResult[];
+		} catch {
+			await Promise.all(items.map(alone));
+			return;
+		}
+		items.forEach((item, i) => item.resolve(results[i]));
+	};
+	const enqueue = (queues: Map<D1Database, PendingRead[]>, statement: D1Statement) =>
+		new Promise<D1AllResult>((resolve, reject) => {
+			let queue = queues.get(database);
+			if (!queue) {
+				queue = [];
+				queues.set(database, queue);
+				// A timer, not a microtask: Kysely reaches the driver several
+				// awaits deep, so reads started by one Promise.all land in
+				// different microtasks of the same task.
+				setTimeout(() => {
+					const items = queues.get(database) ?? [];
+					queues.delete(database);
+					for (let i = 0; i < items.length; i += MAX_BATCHED_READS)
+						void send(items.slice(i, i + MAX_BATCHED_READS));
+				}, 0);
+			}
+			queue.push({ statement, resolve, reject });
+		});
+	return {
+		prepare(query: string) {
+			const statement = database.prepare(query);
+			if (!BATCHABLE.test(query) || WRITES.test(query)) return statement;
+			return {
+				bind: (...values: unknown[]) => {
+					const bound = statement.bind(...values);
+					return {
+						all: () => {
+							const queues = readBatchScope.getStore();
+							return queues ? enqueue(queues, bound) : bound.all();
+						}
+					} as unknown as D1Statement;
+				}
+			} as unknown as D1Statement;
+		},
+		batch: (statements: D1Statement[]) => database.batch(statements)
+	} as unknown as D1Database;
+}
+
 const dbs = new WeakMap<object, Kysely<Database>>();
 
 /**
@@ -830,7 +956,7 @@ export function getDb(env: Env): Kysely<Database> {
 	if (!db) {
 		db = new Kysely<Database>({
 			dialect: new ConcurrentD1Dialect({
-				database: env.USAGE_SCALE_SQL_TRACE === '1' ? traceUsageScaleDb(env.DB) : env.DB
+				database: batchingD1(env.USAGE_SCALE_SQL_TRACE === '1' ? traceUsageScaleDb(env.DB) : env.DB)
 			})
 		});
 		dbs.set(env.DB, db);

@@ -102,6 +102,24 @@ function printIssueLinks(links: IssueLinks): void {
 	}
 }
 
+const MOVE_REVISION_HELP = `
+Every state change advances the issue's decision revision by one (\`tines
+issues show\` prints it), so leaving a state and returning to it is a different
+revision. Pass --expect-revision <n> to have the move refused with
+decision_refresh_required — nothing written — when the issue is no longer on
+the state visit you read. Without it, only a change that commits during this
+command is caught.
+`;
+
+/** A decision revision starts at 0, so zero is a valid witness. */
+function parseDecisionRevisionOption(value: string): number {
+	const result = Number(value);
+	if (!/^(0|[1-9]\d*)$/.test(value) || !Number.isSafeInteger(result)) {
+		throw new Error('expect-revision must be a non-negative integer');
+	}
+	return result;
+}
+
 function printIssueDetail(issue: IssueDetail): void {
 	const shared = issue as IssueDetail & {
 		mode?: 'member';
@@ -166,6 +184,9 @@ function printIssueDetail(issue: IssueDetail): void {
 			`own state: ${issue.state.name} (${issue.state.category}) — dormant while this is a duplicate`
 		);
 	}
+	// Absent from a server older than the transition witness.
+	if (issue.decision_revision !== undefined)
+		console.log(`decision revision: ${issue.decision_revision}`);
 	// An archived project is read-only, so say so before the reader tries to write.
 	if (issue.project_archived_at !== null) {
 		console.log(
@@ -574,7 +595,13 @@ export function register(program: Command): void {
 		issues
 			.command('move <ref> <action>')
 			.description('Take a current transition (members: no permission change)')
-	).action(async (ref: string, action: string, opts: CommonOpts) => {
+			.option(
+				'--expect-revision <n>',
+				'refuse the move unless the issue is still at this decision revision (see `tines issues show`)',
+				parseDecisionRevisionOption
+			)
+			.addHelpText('after', MOVE_REVISION_HELP)
+	).action(async (ref: string, action: string, opts: CommonOpts & { expectRevision?: number }) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
 		let request: Parameters<typeof api.transitionIssue>[1] = { action };
@@ -631,7 +658,37 @@ export function register(program: Command): void {
 					: { transition_id: transition.transition_id };
 			}
 		}
-		const moved = await api.transitionIssue(issue.id, request);
+		// The caller's own read, never this command's: filling it from the read
+		// above would vouch for a revision the caller did not see.
+		if (opts.expectRevision !== undefined) {
+			if (request.transition_id === undefined) {
+				const transition = issue.allowed_transitions.find(
+					(candidate) => candidate.name.toLowerCase() === action.toLowerCase()
+				);
+				if (!transition)
+					throw new Error(`No current transition named "${action}"; refresh the issue`);
+				request = { transition_id: transition.transition_id };
+			}
+			request = {
+				...request,
+				expected_state_id: issue.state.id,
+				expected_decision_revision: opts.expectRevision
+			};
+		}
+		const moved = await api.transitionIssue(issue.id, request).catch((error: unknown) => {
+			if (
+				opts.expectRevision === undefined ||
+				!(error instanceof ApiError) ||
+				error.code !== 'decision_refresh_required'
+			)
+				throw error;
+			const current = error.details?.current_decision_revision;
+			die(
+				`${error.message} (${error.code})\n` +
+					`hint: re-read with \`tines issues show ${ref}\`, then retry with ` +
+					`--expect-revision ${typeof current === 'number' ? current : '<decision revision>'}`
+			);
+		});
 		if (opts.json) return printJson(moved);
 		const movedMember = moved as IssueDetail & { project?: { name: string } };
 		console.log(
@@ -974,8 +1031,17 @@ export function register(program: Command): void {
 	).action(async (ref: string, opts: CommonOpts & { out?: string; force?: boolean }) => {
 		const api = client(opts);
 		const issue = await resolveIssue(api, ref);
-		const context = await api.getIssueContext(issue.id);
+		const context = await api.getIssueContext(issue.id).catch((e: unknown) => {
+			// A shared project refuses a bundle it cannot deliver whole; say why
+			// rather than printing a partial one.
+			if (e instanceof ApiError && e.code.startsWith('bundle_'))
+				die(`shared guidance unavailable: ${e.message}`);
+			throw e;
+		});
 		if (opts.json && !opts.out) return printJson(context);
+		// Stderr, so a piped prompt and the --out files stay the bundle alone.
+		if (context.shared_bundle)
+			console.error(`Shared guidance from ${context.shared_bundle.owner.name}'s project`);
 		if (opts.out === undefined) {
 			if (context.prompt.text) console.log(context.prompt.text);
 			if (context.skills.length > 0) {

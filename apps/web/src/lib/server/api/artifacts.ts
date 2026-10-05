@@ -63,6 +63,7 @@ import {
 } from './core';
 import { actorOf, eventInsert } from './events';
 import { insertValues, type QueryGuard } from './query-guard';
+import { assertRunStillBound, runBoundGuard, runStillBoundPredicate } from './project-access';
 import { projectReadPredicate, requireAccess } from './permissions';
 
 const byteLength = (s: string) => new TextEncoder().encode(s).length;
@@ -838,6 +839,22 @@ async function retryVersionRace<T>(write: () => Promise<T>): Promise<T> {
 	}
 }
 
+/**
+ * Runs a standalone artifact batch. Its writes carry the run guard, so a
+ * witness statement that changed nothing may mean the run key's binding
+ * lapsed after preflight (Tines/751): surface that as 401.
+ */
+async function runArtifactWrite(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	queries: CompiledQuery[],
+	witness = 0
+): Promise<void> {
+	const results = await runAtomic(env, queries);
+	if (!results[witness]?.meta.changes) await assertRunStillBound(db, actor);
+}
+
 function scopeEventPayload(issue: IssueRef) {
 	return {
 		project_id: null,
@@ -914,10 +931,12 @@ function appendVersionQueries(
 		if (input.payload.size_bytes !== null) eventPayload.size_bytes = input.payload.size_bytes;
 	}
 	if (input.fileRows) eventPayload.file_count = input.fileRows.length;
+	const guard = runBoundGuard(actor);
 	const queries: CompiledQuery[] = [
-		db
-			.insertInto('artifact_version')
-			.values({
+		insertValues(
+			db,
+			'artifact_version',
+			{
 				id: versionId,
 				context_item_id: input.item.id,
 				version,
@@ -926,9 +945,10 @@ function appendVersionQueries(
 				actor_user_id: attributedUserId(actor),
 				actor_api_key_id: actor.apiKeyId,
 				created_at: now
-			})
-			.compile(),
-		...fileRowInserts(db, versionId, input.fileRows ?? []),
+			},
+			guard
+		),
+		...fileRowInserts(db, versionId, input.fileRows ?? [], guard),
 		db
 			.updateTable('context_item')
 			.set({
@@ -936,6 +956,7 @@ function appendVersionQueries(
 				updated_at: now
 			})
 			.where('id', '=', input.item.id)
+			.where(runStillBoundPredicate(actor))
 			.compile(),
 		eventInsert(db, actor, {
 			type: 'context.updated',
@@ -1260,8 +1281,10 @@ async function upsertArtifactOnce(
 					: prPayload(body);
 		const itemId = newId('ctx');
 		const now = Date.now();
-		await runAtomic(
+		await runArtifactWrite(
+			db,
 			env,
+			actor,
 			createArtifactQueries(
 				db,
 				actor,
@@ -1269,7 +1292,9 @@ async function upsertArtifactOnce(
 				{ name, type, description: description ?? '', payload },
 				itemId,
 				newId('av'),
-				now
+				now,
+				undefined,
+				runBoundGuard(actor)
 			)
 		);
 		return getArtifact(db, actor.userId, issue, name);
@@ -1282,11 +1307,12 @@ async function upsertArtifactOnce(
 	if (fields.length === 0) {
 		// Metadata-only: no version, no freshness change.
 		if (description !== undefined && description !== existing.item.description) {
-			await runAtomic(env, [
+			await runArtifactWrite(db, env, actor, [
 				db
 					.updateTable('context_item')
 					.set({ description, updated_at: Date.now() })
 					.where('id', '=', existing.item.id)
+					.where(runStillBoundPredicate(actor))
 					.compile(),
 				eventInsert(db, actor, {
 					type: 'context.updated',
@@ -1336,7 +1362,7 @@ async function upsertArtifactOnce(
 		newId('av'),
 		Date.now()
 	);
-	await runAtomic(env, queries);
+	await runArtifactWrite(db, env, actor, queries);
 	return getArtifact(db, actor.userId, issue, name);
 }
 
@@ -1419,9 +1445,11 @@ async function uploadArtifactFileOnce(
 				{ name, type: 'file', description: '', payload },
 				itemId,
 				versionId,
-				now
+				now,
+				undefined,
+				runBoundGuard(actor)
 			);
-	await runAtomic(env, queries);
+	await runArtifactWrite(db, env, actor, queries);
 	return getArtifact(db, actor.userId, issue, name);
 }
 
@@ -1555,9 +1583,11 @@ async function uploadArtifactFolderOnce(
 				{ name, type: 'folder', description: '', payload, fileRows },
 				itemId,
 				versionId,
-				now
+				now,
+				undefined,
+				runBoundGuard(actor)
 			);
-	await runAtomic(env, queries);
+	await runArtifactWrite(db, env, actor, queries);
 	return getArtifact(db, actor.userId, issue, name);
 }
 
@@ -1627,7 +1657,7 @@ async function reaffirmArtifactOnce(
 		newId('av'),
 		Date.now()
 	);
-	await runAtomic(env, queries);
+	await runArtifactWrite(db, env, actor, queries);
 	return getArtifact(db, actor.userId, issue, name);
 }
 
@@ -1657,30 +1687,42 @@ export async function deleteArtifact(
 	);
 	await assertWritable(db, actor, artifactProject(issue), { issueId: issue.id });
 	const { item } = await requireArtifact(db, actor.userId, issue, name);
-	await runAtomic(env, [
-		db
-			.deleteFrom('artifact_version_file')
-			.where(
-				'artifact_version_id',
-				'in',
-				db.selectFrom('artifact_version').select('id').where('context_item_id', '=', item.id)
-			)
-			.compile(),
-		db.deleteFrom('artifact_version').where('context_item_id', '=', item.id).compile(),
-		db.deleteFrom('context_item').where('id', '=', item.id).compile(),
-		eventInsert(db, actor, {
-			type: 'context.deleted',
-			issueId: issue.id,
-			projectId: issue.projectId,
-			payload: {
-				context_id: item.id,
-				kind: 'artifact',
-				name: item.name,
-				artifact_type: artifactTypeOf(item.config),
-				scope: scopeEventPayload(issue)
-			}
-		})
-	]);
+	const bound = runStillBoundPredicate(actor);
+	await runArtifactWrite(
+		db,
+		env,
+		actor,
+		[
+			db
+				.deleteFrom('artifact_version_file')
+				.where(
+					'artifact_version_id',
+					'in',
+					db.selectFrom('artifact_version').select('id').where('context_item_id', '=', item.id)
+				)
+				.where(bound)
+				.compile(),
+			db
+				.deleteFrom('artifact_version')
+				.where('context_item_id', '=', item.id)
+				.where(bound)
+				.compile(),
+			db.deleteFrom('context_item').where('id', '=', item.id).where(bound).compile(),
+			eventInsert(db, actor, {
+				type: 'context.deleted',
+				issueId: issue.id,
+				projectId: issue.projectId,
+				payload: {
+					context_id: item.id,
+					kind: 'artifact',
+					name: item.name,
+					artifact_type: artifactTypeOf(item.config),
+					scope: scopeEventPayload(issue)
+				}
+			})
+		],
+		2
+	);
 	// D1 first, then best-effort R2 (the accepted failure mode is an orphaned
 	// object, never a row referencing a missing one).
 	await getArtifactStore(env)
@@ -1849,6 +1891,8 @@ export async function createSiteLink(
 			}
 		);
 	}
+	// Minting writes nothing, so the run guard is a read just before it (Tines/751).
+	await assertRunStillBound(db, actor);
 	const keyMaterial = siteKeyMaterial(env);
 	if (!keyMaterial) {
 		throw new ApiFail(

@@ -135,7 +135,7 @@ node packages/cli/dist/index.js time --url http://localhost:5173
 
 The CLI reads the API base URL from `--url` (accepted by every command that talks to the API), then the `TINES_API_URL` env var, then the file `tines login` writes (`~/.config/tines/config.json`); the default is the production deployment, `https://tines.tbuckley.dev`. The local-only `logout`, `runner restart`, `runner uninstall`, `runner workspaces`, and `runner workspaces prune` commands take no `--url`. The API key resolves the same way (`--api-key`, `TINES_API_KEY`, the file). For local development, `pnpm cli` **always** targets `http://localhost:5173` — its script pins `TINES_API_URL` rather than defaulting it, so a `TINES_API_URL` already in your environment (every agent run has one, pointing at production) is ignored and the snippet above talks to your dev server. To reach any other deployment from source, including a dev server vite moved to another port, pass `--url` (`pnpm cli time --url http://localhost:5174`) or use the installed `tines` / the built binary. `tines config` shows what is in effect and where each value came from.
 
-Paginated `… list` commands return one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command, up to a default 10,000-item safety ceiling; use `--max-items <n>` with `--all-pages` to choose a different positive bound. Exceeding the bound fails without printing a partial result. Without `--all-pages`, `--json` output carries a `next_cursor` and warns on stderr that there is more. Four lists are not paginated and take no such flag: `labels list`, `runners list`, `routing list`, and `issues artifacts list` return the whole collection by design.
+Paginated `… list` commands return one page. Pass `--all-pages` to follow the cursor and fetch the whole list in one command, up to a default 10,000-item safety ceiling; use `--max-items <n>` with `--all-pages` to choose a different positive bound. Exceeding the bound fails without printing a partial result. `tines usage --evidence … --all-pages` is the one exception: it follows every evidence page with no ceiling and takes no `--max-items`. Without `--all-pages`, `--json` output carries a `next_cursor` and warns on stderr that there is more. Five lists are not paginated and take no such flag: `labels list`, `runners list`, `routing list`, `api-keys list`, and `issues artifacts list` return the whole collection by design.
 
 ## Installing the CLI
 
@@ -259,8 +259,8 @@ Things worth knowing about a move:
   either project is archived. Nothing is drained or cancelled on your behalf.
 - Only a human session or an ordinary named key may move an issue. A run key may read the
   review — that is how an agent argues for a move — but never commits one.
-- A project that owns an issue's old address cannot be deleted, even with `--force-context`;
-  archive it instead. Its old refs must keep working.
+- A project that owns an issue's old address cannot be deleted, even with
+  `"force_delete_context": true`; archive it instead. Its old refs must keep working.
 - Activity keeps its history honest: the source project's feed retains the events recorded
   there, the destination's feed picks up the move and everything after it, and the issue's own
   feed stays complete.
@@ -310,7 +310,7 @@ A **runner** is one launch target you own. Two types ship today:
 | Type | What it is | Created by |
 | --- | --- | --- |
 | `claude_managed` | Sessions in Anthropic's managed sandbox, billed to your own Anthropic API key. | Adding the key on the **Agents** tab. |
-| `local` | A daemon on one of your own machines driving a harness — Claude Code (`claude -p`), codex (`codex exec`), or a custom command template — on that machine's subscription and git credentials. | The daemon registering itself on first start. |
+| `local` | A daemon on one of your own machines driving a harness — Claude Code (`claude -p`), codex (`codex exec`), Pi (`pi --mode json`, for local models), or a custom command template — on that machine's subscription and git credentials. | The daemon registering itself on first start. |
 
 #### Your first agent run
 
@@ -325,7 +325,9 @@ Install → key → runner → rule → observe. Automation needs no separate ar
    runner, then use `--harness codex`. Follow the
    [Codex permissions setup](docs/runner-daemon.md#codex-permissions); the
    [OpenAI configuration reference](https://developers.openai.com/codex/config-reference)
-   defines these settings.
+   defines these settings. Using Pi with local models? Use `--harness pi` and read
+   [Pi](docs/runner-daemon.md#pi) first: its model credentials must be readable by the
+   service, and it has no sandbox.
 
    ```sh
    TINES_API_KEY=tines_… tines runner install \

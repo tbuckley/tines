@@ -18,6 +18,7 @@
 	import { authClient } from '$lib/auth-client';
 	import ProjectSwitcher from '$lib/components/ProjectSwitcher.svelte';
 	import { focusHint } from '$lib/focus.svelte';
+	import { morphingIssueHref, nameMorphingRow } from '$lib/issue-morph';
 	import { resolveClientFocus } from '$lib/focus';
 	import { prefersReducedMotion } from '$lib/format';
 	import { navMemory } from '$lib/nav-memory.svelte';
@@ -125,10 +126,16 @@
 			document.documentElement.dataset.tabSlide = to > from ? 'forward' : 'back';
 		}
 
+		// Name only the list row this navigation morphs, on the old page now and
+		// on the new one before its capture (lib/issue-morph.ts).
+		const morph = morphingIssueHref(navigation.from, navigation.to);
+		nameMorphingRow(morph);
+
 		return new Promise((resolve) => {
 			const transition = document.startViewTransition(async () => {
 				resolve();
 				await navigation.complete;
+				nameMorphingRow(morph);
 			});
 			transition.finished.finally(() => {
 				delete document.documentElement.dataset.tabSlide;
@@ -275,10 +282,12 @@
 	</main>
 
 	<!-- Compact chrome bottom tab bar below md. -->
+	<!-- In-page popovers measure data-bottom-chrome ($lib/popover-fit.ts) so they end above it. -->
 	<nav
 		class="bg-background/95 fixed inset-x-0 bottom-0 z-40 border-t backdrop-blur md:hidden"
 		style="padding-bottom: env(safe-area-inset-bottom)"
 		aria-label="Primary"
+		data-bottom-chrome
 		style:view-transition-name="tab-bar"
 	>
 		<div class="grid h-16 grid-cols-3">

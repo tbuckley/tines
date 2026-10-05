@@ -7,6 +7,7 @@ import { ApiFail, notFound, type ActorContext } from './core';
 import { resolveIssueAccess, resolveProjectAccess } from './project-access';
 import { sharedEventPayload } from './shared-events';
 import { projectReadPredicate } from './permissions';
+import { serializeSharedRun, sharedRunQuery } from './runs';
 
 const SAFE_EVENTS = [
 	'issue.created',
@@ -194,11 +195,10 @@ export async function readSharedIssue(
 			.where('issue_id', '=', row.id)
 			.where('user_id', '=', row.owner_id)
 			.executeTakeFirst(),
-		db
-			.selectFrom('agent_run')
-			.select(['status', 'started_at', 'ended_at'])
-			.where('issue_id', '=', row.id)
-			.orderBy('created_at desc')
+		// Any contributor's run may be latest, so only the shared allowlist leaves.
+		sharedRunQuery(db)
+			.where('agent_run.issue_id', '=', row.id)
+			.orderBy('agent_run.created_at desc')
 			.executeTakeFirst()
 	]);
 	// Resolve link targets through current access. Inaccessible blockers become a generic flag.
@@ -346,9 +346,7 @@ export async function readSharedIssue(
 						: 'unset'
 			}))
 		],
-		latest_run: run
-			? { status: run.status, started_at: run.started_at, ended_at: run.ended_at }
-			: null,
+		latest_run: run ? serializeSharedRun(run) : null,
 		schedule_source: row.schedule_id ? { id: row.schedule_id, name: row.schedule_name } : null,
 		my_choice: {
 			value:

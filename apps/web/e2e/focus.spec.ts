@@ -13,6 +13,7 @@ import {
 	clickUntil,
 	DESKTOP,
 	gotoHydrated,
+	openIssueActions,
 	PHONE,
 	readSettled,
 	resetFocus,
@@ -512,9 +513,11 @@ focusTest.describe.serial('project focus', () => {
 				await gotoHydrated(page, `/issues?project=${RUNROW.projectId}`);
 				await gotoHydrated(page, '/agents');
 				await page.getByLabel('Show ended runs').check();
+				// The RUNROW issue carries three seeded runs: RUNROW, RUNROW_FAILED
+				// and RUNROW_STALLED.
 				await expect(
 					page.getByRole('link', { name: `${RUNROW.projectName}/#${RUNROW.issueNumber}` })
-				).toHaveCount(2);
+				).toHaveCount(3);
 				const ruleDialog = page.getByRole('dialog', { name: 'New routing rule' });
 				await gotoHydrated(page, `/issues?project=${world.aId}`);
 				await gotoHydrated(page, '/agents');
@@ -523,7 +526,10 @@ focusTest.describe.serial('project focus', () => {
 				await page.keyboard.press('Escape');
 
 				await gotoHydrated(page, `/issues/${encodeURIComponent(world.bName)}/1`);
-				await expect(page.getByRole('button', { name: `Focus ${world.bName}` })).toBeVisible();
+				await expect(
+					(await openIssueActions(page)).getByRole('menuitem', { name: `Focus ${world.bName}` })
+				).toBeVisible();
+				await page.keyboard.press('Escape');
 				await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${world.aName}`);
 				const back = page.locator('main').getByRole('link', { name: 'Issues', exact: true });
 				await expect(back).toHaveAttribute('href', '/issues');
@@ -536,7 +542,11 @@ focusTest.describe.serial('project focus', () => {
 				).toHaveCount(0);
 
 				await gotoHydrated(page, `/issues/${encodeURIComponent(world.bName)}/1`);
-				await page.getByRole('button', { name: `Focus ${world.bName}` }).click();
+				await (
+					await openIssueActions(page)
+				)
+					.getByRole('menuitem', { name: `Focus ${world.bName}` })
+					.click();
 				await expect(switcher(page)).toHaveAttribute('aria-label', `Project focus: ${world.bName}`);
 				await page.locator('main').getByRole('link', { name: 'Issues', exact: true }).click();
 				await expect(
@@ -1007,7 +1017,10 @@ focusTest.describe.serial('project focus', () => {
 				await expect(issue).toBeVisible();
 				await issue.click();
 				await expect(page).toHaveURL(`/issues/${encodeURIComponent(world.aId)}/1`);
-				await expect(page.getByRole('button', { name: `Focus ${world.aName}` })).toHaveCount(0);
+				await expect(
+					(await openIssueActions(page)).getByRole('menuitem', { name: `Focus ${world.aName}` })
+				).toHaveCount(0);
+				await page.keyboard.press('Escape');
 				await expect(
 					page.locator('main').getByRole('link', { name: 'Issues', exact: true })
 				).toHaveAttribute('href', '/issues');
@@ -1071,7 +1084,9 @@ focusTest.describe.serial('project focus', () => {
 					await expect(
 						page.locator('main').getByRole('link', { name: 'Issues', exact: true })
 					).toHaveAttribute('href', '/issues');
-					await expect(page.getByRole('button', { name: `Focus ${world.bName}` })).toHaveCount(0);
+					await expect(
+						(await openIssueActions(page)).getByRole('menuitem', { name: `Focus ${world.bName}` })
+					).toHaveCount(0);
 				} finally {
 					await api.post(`/api/v1/projects/${world.bId}/unarchive`);
 					await page.close();

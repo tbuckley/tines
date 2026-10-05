@@ -141,6 +141,30 @@ describe('run scope', () => {
 		).rejects.toMatchObject({ status: 403, code: 'run_key_forbidden' });
 	});
 
+	it('keeps a project run from moving a shared prompt onto its issue to rewrite it', async () => {
+		const { t, own } = await setup();
+		const owner = sessionActor({ id: USER, name: 'alice' });
+		const prompt = await createContextItem(t.db, t.env, owner, {
+			kind: 'prompt',
+			name: 'house',
+			body: 'House rules.',
+			project_id: PROJECT
+		});
+		const stored = () => t.all('SELECT * FROM context_item WHERE id = ?', prompt.id);
+		const before = { row: stored(), events: t.all('SELECT id FROM event ORDER BY id') };
+		scope(t, OPEN, 'project');
+		// It cannot edit the prompt in place, so the item's current scope decides,
+		// not the issue it asks to move it to.
+		await expect(
+			updateContextItem(t.db, t.env, await runActor(t), prompt.id, {
+				issue_id: own,
+				body: 'Rewritten'
+			})
+		).rejects.toMatchObject(forbidden('outside_run_issue'));
+		expect(stored()).toEqual(before.row);
+		expect(t.all('SELECT id FROM event ORDER BY id')).toEqual(before.events);
+	});
+
 	it('never lets a run put an issue into a stage that reaches further than its own', async () => {
 		const { t, other } = await setup();
 		scope(t, OPEN, 'project');

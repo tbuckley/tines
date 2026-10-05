@@ -24,12 +24,15 @@ import {
 	MANAGED_SETTINGS,
 	NATIVE_MODERATION_PUBLISHER,
 	NATIVE_PUBLICATIONS_PUBLISHER,
+	CONTEXT_PAGINATION,
 	PAGINATION,
 	RUNNER_E2E,
 	RUNNER_CONCURRENCY,
+	RUNNER_PI,
 	RUNROW,
 	RUNROW_ESTIMATED,
 	RUNROW_FAILED,
+	RUNROW_STALLED,
 	SPEND,
 	SCHED,
 	STOPPED_FIRST_RUN,
@@ -58,6 +61,7 @@ for (const user of [
 	API_ISOLATION,
 	RUNNER_E2E,
 	RUNNER_CONCURRENCY,
+	RUNNER_PI,
 	EXPLAINER_REMEDIES,
 	STOPPED_FIRST_RUN,
 	MANAGED_SETTINGS,
@@ -67,6 +71,7 @@ for (const user of [
 	WORKFLOW_MODERATION_PUBLISHER,
 	WORKFLOW_PUBLICATIONS_PUBLISHER,
 	PAGINATION.user,
+	CONTEXT_PAGINATION,
 	SPEND,
 	WEEKLY
 ]) {
@@ -158,6 +163,17 @@ for (let number = 1; number <= 205; number += 1) {
 		`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
 		 VALUES ('iss_e2e_page_${number}', '${PAGINATION.projectId}', ${number}, 'Page issue ${number}',
 		 'large body omitted from list ${number}', 'wf_standard', 'wfs_std_open', ${number}, ${number});`
+	);
+}
+
+// Its own account, because the issue pagination spec leaves PAGINATION focused
+// on a project, which hides global items. Ascending timestamps put
+// page-prompt-101..002 on the first Context page and page-prompt-001 on the second.
+for (let number = 1; number <= 101; number += 1) {
+	const name = `page-prompt-${String(number).padStart(3, '0')}`;
+	statements.push(
+		`INSERT INTO context_item (id, user_id, kind, name, description, body, position, version, created_at, updated_at)
+		 VALUES ('ctx_e2e_${name}', '${CONTEXT_PAGINATION.id}', 'prompt', '${name}', '', 'page fixture', 0, 1, ${number}, ${number});`
 	);
 }
 
@@ -258,11 +274,13 @@ statements.push(
 	   'balanced', '{}', 1, ${nowMs}, ${nowMs});`,
 	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, model, usage,
 	   state_id_at_start, state_id_at_end, provider_session_id, provider_url, log, error,
+	   resolved_effort, effort_application_status, effort_source,
 	   created_at, started_at, ended_at)
 	 VALUES ('${RUNROW.runId}', '${ALICE.id}', '${RUNROW.issueId}', '${RUNROW.runnerId}', 'completed',
 	   '${RUNROW.outcome}',
 	   'balanced', 'claude-opus-4', '{"input_tokens":1000,"output_tokens":2000,"cost_usd":${RUNROW.costUsd},"cost_source":"provider"}',
 	   'wfs_std_open', 'wfs_std_open', '${RUNROW.providerSessionId}', '${RUNROW.providerUrl}', 'seeded log tail', NULL,
+	   'high', 'accepted_unconfirmed', '{"kind":"runner_tier","runner_id":"${RUNROW.runnerId}","tier":"balanced"}',
 	   ${runStart}, ${runStart}, ${nowMs});`,
 	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)
 	 VALUES ('${RUNROW.runKeyIssueId}', '${RUNROW.projectId}', ${RUNROW.runKeyIssueNumber}, 'Run key fixture', '',
@@ -274,10 +292,12 @@ statements.push(
 	   config, created_at, updated_at)
 	 VALUES ('${RUNROW.runKeyRunnerId}', '${ALICE.id}', 'claude_managed', '${RUNROW.runKeyRunnerName}', 'paused', 1, 30,
 	   'balanced', '{}', ${nowMs + 1}, ${nowMs + 1});`,
+	// `provider_url` without a provider session id: the row shows the console
+	// link beside Logs and Cancel, and the managed sweep has nothing to poll.
 	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, tier, state_id_at_start,
-	   log, created_at, started_at)
+	   provider_url, log, created_at, started_at)
 	 VALUES ('${RUNROW.runKeyRunId}', '${ALICE.id}', '${RUNROW.runKeyIssueId}', '${RUNROW.runKeyRunnerId}', 'running',
-	   'balanced', 'wfs_std_open', 'active run-key fixture', ${nowMs + 1}, ${nowMs + 1});`,
+	   'balanced', 'wfs_std_open', '${RUNROW.runKeyProviderUrl}', 'active run-key fixture', ${nowMs + 1}, ${nowMs + 1});`,
 	// The run's key, for the run-key fence cases in api.spec.ts. Inserted after
 	// the agent_run row it references (api_key.agent_run_id is a FK); expiry is
 	// the same far-future date the sessions use, so the sweep never revokes it.
@@ -307,6 +327,11 @@ statements.push(
 	 VALUES ('key_e2e_runrow_failed', '${ALICE.id}', '${RUNROW_FAILED.runKeyName}',
 	   '${sha256Hex(RUNROW_FAILED.runKey)}', '${RUNROW_FAILED.runKey.slice(0, 14)}', ${runStart},
 	   '${RUNROW_FAILED.runId}', ${Date.parse(expires)}, ${nowMs});`,
+	// A third run on the same issue: completed without advancing it (stalled).
+	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier, config, created_at, updated_at)
+	 VALUES ('${RUNROW_STALLED.runnerId}', '${ALICE.id}', 'local', '${RUNROW_STALLED.runnerName}', 'paused', 1, 30, 'balanced', '{}', ${nowMs}, ${nowMs});`,
+	`INSERT INTO agent_run (id, user_id, issue_id, runner_id, status, outcome, tier, state_id_at_start, state_id_at_end, log, created_at, started_at, ended_at)
+	 VALUES ('${RUNROW_STALLED.runId}', '${ALICE.id}', '${RUNROW.issueId}', '${RUNROW_STALLED.runnerId}', 'completed', 'stalled', 'balanced', 'wfs_std_open', 'wfs_std_open', 'seeded stalled log tail', ${nowMs - RUNROW_STALLED.durationMs}, ${nowMs - RUNROW_STALLED.durationMs}, ${nowMs});`,
 	`INSERT INTO runner (id, user_id, type, name, status, max_concurrent, max_run_minutes, default_tier, config, created_at, updated_at)
 	 VALUES ('${RUNROW_ESTIMATED.runnerId}', '${ALICE.id}', 'local', '${RUNROW_ESTIMATED.runnerName}', 'paused', 1, 30, 'balanced', '{}', ${nowMs}, ${nowMs});`,
 	`INSERT INTO issue (id, project_id, number, title, description, workflow_id, state_id, created_at, updated_at)

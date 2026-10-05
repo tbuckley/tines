@@ -1,16 +1,42 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
+	import IconAlertTriangle from '@tabler/icons-svelte/icons/alert-triangle';
 	import IconChevronLeft from '@tabler/icons-svelte/icons/chevron-left';
+	import IconClock from '@tabler/icons-svelte/icons/clock';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
+	import IssueCombobox from '$lib/components/IssueCombobox.svelte';
 	import PersonalPermissionWarning from '$lib/components/PersonalPermissionWarning.svelte';
+	import { formatDateTime, invitationExpiryLabel, invitationStatus, joinedDate } from '$lib/format';
+	import type { IssuePick } from '$lib/issue-picker';
 	let { data } = $props();
+	// An accepted invitation is a member now: it shows in the roster, not here.
+	const openInvitations = $derived(data.invitations.filter((i) => i.accepted_at === null));
 	let email = $state('');
-	let issueId = $state('');
+	let landing = $state<IssuePick | null>(null);
+	let landingText = $state('');
+	let emailInput = $state<HTMLInputElement | null>(null);
+	let landingInput = $state<HTMLInputElement | null>(null);
+	/** Invite errors, each shown under the field it belongs to. */
+	let errors = $state<{ email?: string; landing?: string; form?: string }>({});
+	const EMAIL_CODES = new Set(['invalid_email', 'self_invite', 'already_member', 'invite_pending']);
+	// A new pick or new text makes the landing error stale.
+	$effect(() => {
+		void landing;
+		void landingText;
+		untrack(() => (errors.landing = undefined));
+	});
 	let confirmSharing = $state(false);
 	let busy = $state(false);
 	let message = $state<string | null>(null);
-	async function request(path: string, method: string, body: object) {
+	/** With `onerror`, a failure goes to the caller instead of the page-level status line. */
+	async function request(
+		path: string,
+		method: string,
+		body: object,
+		onerror?: (code: string | null, message: string) => void
+	) {
 		busy = true;
 		message = null;
 		try {
@@ -20,11 +46,18 @@
 				body: JSON.stringify(body)
 			});
 			const value = response.status === 204 ? null : await response.json();
-			if (!response.ok) throw new Error(value?.error?.message ?? 'Request failed');
+			if (!response.ok) {
+				const text = value?.error?.message ?? 'Request failed';
+				if (!onerror) throw new Error(text);
+				onerror(value?.error?.code ?? null, text);
+				return null;
+			}
 			await invalidateAll();
 			return value;
 		} catch (error) {
-			message = error instanceof Error ? error.message : 'Request failed';
+			const text = error instanceof Error ? error.message : 'Request failed';
+			if (onerror) onerror(null, text);
+			else message = text;
 			return null;
 		} finally {
 			busy = false;
@@ -32,15 +65,38 @@
 	}
 	async function invite(event: SubmitEvent) {
 		event.preventDefault();
-		const result = await request(`/api/v1/projects/${data.projectId}/invitations`, 'POST', {
-			email,
-			...(issueId.trim() ? { landing_issue_id: issueId.trim() } : {}),
-			confirm_sharing: confirmSharing,
-			expected_sharing_revision: data.project.sharing_revision
-		});
+		errors = {};
+		// Typed text that was never picked is not an issue; never send it.
+		if (!landing && landingText.trim()) {
+			errors = { landing: 'Choose an issue from the list, or clear this field.' };
+			landingInput?.focus();
+			return;
+		}
+		const result = await request(
+			`/api/v1/projects/${data.projectId}/invitations`,
+			'POST',
+			{
+				email,
+				...(landing ? { landing_issue_id: landing.id } : {}),
+				confirm_sharing: confirmSharing,
+				expected_sharing_revision: data.project.sharing_revision
+			},
+			(code, text) => {
+				if (code && EMAIL_CODES.has(code)) {
+					errors = { email: text };
+					emailInput?.focus();
+				} else if (code === 'invalid_landing_issue') {
+					errors = {
+						landing: 'That issue is no longer in this project. Pick another, or clear the field.'
+					};
+					landingInput?.focus();
+				} else errors = { form: text };
+			}
+		);
 		if (result) {
 			email = '';
-			issueId = '';
+			landing = null;
+			landingText = '';
 			message =
 				result.delivery_status === 'sent'
 					? 'Invitation sent.'
@@ -55,7 +111,7 @@
 	}
 </script>
 
-<main class="mx-auto max-w-3xl">
+<div class="mx-auto max-w-3xl">
 	<a
 		class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-sm"
 		href={`/projects/${data.projectId}`}><IconChevronLeft size={16} />{data.project.name}</a
@@ -77,7 +133,14 @@
 			</li>
 			{#each data.people.members as member (member.id)}
 				<li class="flex flex-wrap items-center justify-between gap-2">
-					<span>{member.name}{member.id === data.viewerId ? ' · You' : ''}</span>
+					<span
+						>{member.name}
+						<span class="text-muted-foreground"
+							>Member · joined {joinedDate(member.joined_at)}{member.id === data.viewerId
+								? ' · You'
+								: ''}</span
+						></span
+					>
 					{#if data.role === 'owner'}<Button
 							size="sm"
 							variant="outline"
@@ -101,12 +164,45 @@
 		<section class="mt-6 rounded-lg border p-4" aria-labelledby="invite-heading">
 			<h2 id="invite-heading" class="font-semibold">Invite someone</h2>
 			<form class="mt-3 space-y-4" onsubmit={invite}>
-				<label class="block"
-					>Verified email<Input class="mt-1" type="email" bind:value={email} required /></label
-				>
-				<label class="block"
-					>Landing issue ID (optional)<Input class="mt-1" bind:value={issueId} /></label
-				>
+				<div>
+					<label class="block" for="invite-email">Verified email</label>
+					<Input
+						id="invite-email"
+						class="mt-1"
+						type="email"
+						bind:value={email}
+						bind:ref={emailInput}
+						required
+						aria-describedby={errors.email ? 'invite-email-error' : undefined}
+						aria-invalid={errors.email ? true : undefined}
+						oninput={() => (errors.email = undefined)}
+					/>
+					{#if errors.email}<p id="invite-email-error" class="text-destructive mt-1 text-sm">
+							{errors.email}
+						</p>{/if}
+				</div>
+				<div>
+					<label class="block" for="invite-landing">Landing issue (optional)</label>
+					<p id="invite-landing-hint" class="text-muted-foreground text-sm">
+						Leave empty and they start on the project's open issues.
+					</p>
+					<div class="mt-1">
+						<IssueCombobox
+							projectId={data.projectId}
+							id="invite-landing"
+							bind:selected={landing}
+							bind:text={landingText}
+							bind:ref={landingInput}
+							describedby={errors.landing
+								? 'invite-landing-hint invite-landing-error'
+								: 'invite-landing-hint'}
+							invalid={!!errors.landing}
+						/>
+					</div>
+					{#if errors.landing}<p id="invite-landing-error" class="text-destructive mt-1 text-sm">
+							{errors.landing}
+						</p>{/if}
+				</div>
 				{#if data.people.shared_at === null}
 					<label class="flex items-start gap-3 text-sm"
 						><input
@@ -123,26 +219,59 @@
 					>
 					<PersonalPermissionWarning role="owner" />
 				{/if}
+				{#if data.includedGuidance !== null}
+					<p class="text-muted-foreground text-sm">
+						Shares this project's guidance ({data.includedGuidance} included from your library){#if data.people.shared_at !== null}
+							· <a
+								class="text-primary underline-offset-4 hover:underline"
+								href={`/projects/${data.projectId}#shared-guidance`}>Review</a
+							>{/if}
+					</p>
+				{/if}
+				{#if errors.form}<p class="text-destructive text-sm" role="alert">{errors.form}</p>{/if}
 				<Button type="submit" disabled={busy}>Send invitation</Button>
 			</form>
 		</section>
 		<section class="mt-6 rounded-lg border p-4" aria-labelledby="invites-heading">
 			<h2 id="invites-heading" class="font-semibold">Invitations</h2>
-			{#if data.invitations.length === 0}<p class="mt-3">No invitations yet.</p>{:else}
+			{#if openInvitations.length === 0}<p class="mt-3">No pending invitations.</p>{:else}
 				<ul class="mt-3 space-y-4">
-					{#each data.invitations as invitation (invitation.id)}
+					{#each openInvitations as invitation (invitation.id)}
+						{@const status = invitationStatus(invitation)}
 						<li class="flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-sm">
-							<!-- Only the link expires: an accepted member stays until removed. -->
-							<span
-								>{invitation.email} · {invitation.accepted_at
-									? `Accepted · joined ${new Date(invitation.accepted_at).toLocaleDateString()}`
-									: invitation.canceled_at
-										? 'Canceled'
-										: `${
-												invitation.delivery_status === 'failed' ? 'Delivery failed' : 'Pending'
-											} · link expires ${new Date(invitation.expires_at).toLocaleString()}`}</span
-							>
-							{#if !invitation.accepted_at && !invitation.canceled_at}
+							<div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+								<span class="break-all">{invitation.email}</span>
+								{#if status === 'pending'}
+									<span
+										class="flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+										><IconClock size={12} stroke={2} /> Pending</span
+									>
+								{:else if status === 'failed'}
+									<span
+										class="bg-destructive/10 text-destructive flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium"
+										><IconAlertTriangle size={12} stroke={2} /> Delivery failed</span
+									>
+								{:else if status === 'expired'}
+									<span
+										class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs font-medium"
+										>Expired</span
+									>
+								{:else}
+									<span
+										class="bg-muted text-muted-foreground rounded-full px-2 py-0.5 text-xs font-medium"
+										>Canceled</span
+									>
+								{/if}
+								{#if status !== 'canceled'}
+									<time
+										class="text-muted-foreground"
+										datetime={new Date(invitation.expires_at).toISOString()}
+										title={formatDateTime(invitation.expires_at)}
+										>{invitationExpiryLabel(invitation.expires_at)}</time
+									>
+								{/if}
+							</div>
+							{#if status !== 'canceled'}
 								<div class="flex gap-2">
 									<Button
 										size="sm"
@@ -174,4 +303,4 @@
 			{/if}
 		</section>
 	{/if}
-</main>
+</div>

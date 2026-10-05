@@ -28,8 +28,8 @@ candidate after a lost response; it never prepares a new revision.
 
 A hosted snapshot is rechecked before inspection, download, install preview, and install commit. Withdrawal stops those hosted operations, but cannot recall a file already downloaded or an installation already completed. Public pages never fetch declared repositories or publisher-controlled media. Cross-instance browser transfer is download followed by the destination's ordinary file import; do not send destination credentials to a source host.
 
-`workflows preview` and `workflows install` also accept a canonical `/p/<snapshot>` or
-`/p/<snapshot>/download` URL. A URL on the destination Tines origin uses a hosted signed plan, so
+`workflows preview` and `workflows install` also accept a `/p/<snapshot>` URL (or the
+legacy `/p/<snapshot>/download` form). A URL on the destination Tines origin uses a hosted signed plan, so
 withdrawal is checked in the destination transaction. A URL on another origin is downloaded by the
 CLI and passed to the destination as package bytes; the destination never fetches the URL. The CLI
 sends the source no API key, cookie, proxy authorization, or referrer, pins an allowed DNS result for
@@ -59,7 +59,7 @@ expired plan creates nothing. A definite server failure keeps the same plan avai
 lost response is different: use **Check result** first. Recovery is kept per browser tab and scoped to
 the account, destination, and plan. A missing receipt may mean the request is still in flight, so it
 is never treated as proof of rollback or used to prepare a replacement automatically. After a reload,
-choose the exact same file again to enable **Retry same plan safely**; this reuses the saved signed
+choose the exact same file again to enable **Retry installation**; this reuses the saved signed
 plan and confirmation, without preparing another copy. If the retry committed but its response was
 lost, **Check result** recovers that same receipt.
 During uncertain-result recovery, choosing a different, invalid, or whole-library file preserves Check result and the original saved installation identity. Same-plan retry stays disabled until the original workflow file validates with the saved digest. A failed retry does not prove the original request rolled back; Check result remains available.
@@ -135,8 +135,8 @@ labelled placeholders that are never fetched, and an escaped literal such as `\{
 renders as ordinary text rather than a substitutable use, so the proof marks exactly the
 occurrences that installation replaces. Rebuilding from source drops any candidate-only input
 selection. Required skill and repository declarations must each be reviewed
-again after a candidate change. **Validate & download** sends the exact candidate through the
-shared validator and downloads the same canonical JSON bytes emitted by the CLI. The page fetches
+again after a candidate change. **Check file** sends the exact candidate through the
+shared validator, and **Download file** downloads the same canonical JSON bytes emitted by the CLI. The page fetches
 neither repositories nor other external package dependencies, and download does not install or
 publish anything. If the candidate or a required review changes while validation is pending, the
 older result is discarded and no file is downloaded.

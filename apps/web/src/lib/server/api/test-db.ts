@@ -258,7 +258,21 @@ export function instrumentLatency(t: TestDb, latencyMs: number) {
 				}
 			};
 		},
-		batch: t.env.DB.batch.bind(t.env.DB)
+		// One round trip however many statements it carries: that is the point
+		// of `batchingD1` (db.ts), which sends a load's same-tick reads this way.
+		batch: async (statements: BoundStatement[]) => {
+			const wave = waves.completed + 1;
+			waves.max = Math.max(waves.max, wave);
+			for (const s of statements) {
+				sqls.push(s.sqlText);
+				waves.bySql.push({ sql: s.sqlText, wave });
+			}
+			conc.max = Math.max(conc.max, ++inFlight);
+			await new Promise((r) => setTimeout(r, latencyMs));
+			inFlight--;
+			waves.completed = Math.max(waves.completed, wave);
+			return t.env.DB.batch(statements as never);
+		}
 	};
 	return { env: { ...t.env, DB } as unknown as Env, sqls, conc, waves };
 }

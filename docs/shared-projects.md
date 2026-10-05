@@ -16,6 +16,11 @@ starts on for a nonterminal issue and explains that enabling agents lets them
 use the owner's runner and account resources. No runner is needed to save the
 choice. A done issue stores no choice.
 
+An issue an agent files in a shared project — a follow-up, a subtask, or a
+linked child — starts with the owner's agents off. It is a proposal: nothing
+runs it until a person allows it in the browser. Issues agents file in a
+project that was never shared keep the default, on.
+
 Choices are revisioned per issue and carry the issue's consent epoch. A
 separate issue permission write includes the expected choice revision, issue
 epoch, and decision revision. The server rejects stale requests without
@@ -34,6 +39,19 @@ consent epoch in the write transaction. A lost comparison returns a conflict
 and requires a fresh browser decision. The CLI fetches the current witness and
 submits an exact transition once; it has no consent flag and never retries a
 different decision after a conflict.
+
+The state-visit and workflow-graph half of that comparison is not specific to
+shared projects (Tines/608). Every transition write, in every project, commits
+only while the issue is still at the decision revision and the workflow at the
+graph revision the request read; a lost comparison returns `409 conflict` with
+`details.reason` `issue_moved` or `workflow_changed`. Outside a shared project
+the witnesses (`expected_state_id`, `expected_decision_revision`,
+`expected_workflow_revision`) are optional, but one that is sent is honored for
+every caller, run keys included: a mismatch returns
+`409 decision_refresh_required` and writes nothing. Issue reads carry
+`decision_revision` and `workflow_revision` to echo; the browser sends the
+values it held when the confirmation dialog opened, and
+`tines issues move --expect-revision <n>` sends the caller's own.
 
 ## Admission, holds, and cancellation
 
@@ -191,8 +209,9 @@ increments a tombstone revision, clears issue and schedule choices, revokes
 project run keys and requests cancellation of admitted member work. Sharing
 mode remains on even after the last member leaves.
 
-The People page lists active names and membership revisions. Pending invitees
-and outsiders cannot read project content. Member project and issue pages load
+The People page lists active members with their role and join date. Its
+Invitations list shows pending, expired, failed-delivery and canceled links; an
+accepted invitation appears only as a member. Pending invitees and outsiders cannot read project content. Member project and issue pages load
 only explicit shared projections before any owner context, runner, routing,
 usage or workflow-library loader starts. Shared reads include project and issue
 identity, safe workflow/state descriptors, comments, filtered history,
@@ -241,3 +260,26 @@ through current membership and an explicit type/payload allowlist. Historical
 events do not grant access after removal or transfer. Owner private fields,
 run logs, key metadata, and arbitrary context payloads stay out of shared
 projections.
+
+## Shared guidance (Tines/752, behind `SHARED_EXECUTION`)
+
+With the flag on, every agent run and every reader in a shared project gets one
+projection of the **owner's** guidance. That covers the issue page (owner and
+member), `tines issues context` and `tines issues prompt`, local runner delivery
+and managed launch.
+
+- **Shared automatically:** items anchored to the project, the issue, or a
+  workflow stage the issue is in.
+- **Private until included:** the owner's global and label-only prompts, skills
+  and repos. Include them with `tines projects guidance include <project>
+  <item-id>` or the project page's **Include from library**, and remove them with
+  `exclude`. Only the owner can do this.
+- **Never shared:** env items and artifacts. Env values reach only the owner's
+  own runs, beside the bundle and never inside it.
+- **Fail closed:** more than 250 items, a bundle over 1 MiB, or two repos
+  checking out into one directory refuses the bundle. The issue page says why,
+  and agents do not start that issue until the owner fixes it. A launch whose
+  guidance changes mid-admission rebuilds once, then backs off for 30 s. A cap or
+  conflict backs off for 10 min. Neither counts as a strike.
+- Member execution is still disabled. Members can read the guidance but their
+  agents are never admitted.

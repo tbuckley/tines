@@ -41,20 +41,26 @@ export interface ResumeCandidateInput {
 export type ResumeEligibility =
 	{ eligible: true } | { eligible: false; reason: ResumeFallbackReason };
 
+/** Local harnesses that keep their session in the kept workspace and can reopen it. */
+export const LOCAL_RESUME_HARNESSES: readonly string[] = ['claude_code', 'pi'];
+
 /**
- * Which providers can actually continue a conversation. Claude Code local
- * runners resume in their kept workspace (`claude -p --resume <session-id>`);
- * Claude managed sessions are kept idle past their run and continued by
- * rotating the vault credential to the new run's key, retagging the session
- * and sending the continuation as a `user.message`. Anything else (a
- * different local harness, a future provider) launches fresh.
+ * Which providers can actually continue a conversation. Claude Code and Pi
+ * local runners resume in their kept workspace (`claude -p --resume
+ * <session-id>`, `pi --session <session-id>`); Claude managed sessions are
+ * kept idle past their run and continued by rotating the vault credential to
+ * the new run's key, retagging the session and sending the continuation as a
+ * `user.message`. Anything else (a different local harness, a future
+ * provider) launches fresh.
  */
 export function isResumeProviderSupported(
 	type: Runner['type'],
 	config: Record<string, unknown>
 ): boolean {
 	if (type === 'claude_managed') return true;
-	return type === 'local' && (config.harness ?? 'claude_code') === 'claude_code';
+	return (
+		type === 'local' && LOCAL_RESUME_HARNESSES.includes(String(config.harness ?? 'claude_code'))
+	);
 }
 
 /**
@@ -76,8 +82,16 @@ export function resumeFingerprint(input: {
 	 * and takes the cold-launch path, which builds a fresh vault.
 	 */
 	envDigest?: string | null;
+	/**
+	 * Shared-project runs only: who the run acts for and a digest of the
+	 * shared guidance it launched with (never the whole bundle digest, which
+	 * moves with every comment). Serialized only when given, so never-shared
+	 * fingerprints stay byte-identical.
+	 */
+	contributorId?: string | null;
+	guidanceDigest?: string | null;
 }): string {
-	if (input.effort || input.envDigest) {
+	if (input.effort || input.envDigest || input.guidanceDigest) {
 		return JSON.stringify({
 			version: 2,
 			runner_id: input.runnerId,
@@ -85,7 +99,10 @@ export function resumeFingerprint(input: {
 			model: input.model,
 			effort: input.effort ?? null,
 			preamble_variant: input.preambleVariant,
-			...(input.envDigest ? { env_digest: input.envDigest } : {})
+			...(input.envDigest ? { env_digest: input.envDigest } : {}),
+			...(input.guidanceDigest
+				? { contributor_id: input.contributorId ?? null, guidance_digest: input.guidanceDigest }
+				: {})
 		});
 	}
 	return [
@@ -252,7 +269,11 @@ export async function retainResumeResource(
 		runnerId: string;
 		issueId: string;
 		ownerRunId: string;
-		/** `local_claude` keeps a workspace; `claude_managed` keeps a vault. */
+		/**
+		 * `local_claude` = any local harness that keeps its session in the kept
+		 * workspace (Claude Code, Pi), guarded by turn count; the resume
+		 * fingerprint carries the harness. `claude_managed` keeps a vault.
+		 */
 		kind?: 'local_claude' | 'claude_managed';
 		providerSessionId: string;
 		workspacePath: string | null;
@@ -453,6 +474,8 @@ export async function prepareManagedResume(
 		model: string | null;
 		effort?: string | null;
 		envDigest?: string | null;
+		/** Shared-project runs only; see `resumeFingerprint`. */
+		guidanceDigest?: string | null;
 		now: number;
 	}
 ): Promise<{
@@ -518,6 +541,8 @@ export async function prepareManagedResume(
 			model: input.model,
 			effort: input.effort,
 			envDigest: input.envDigest,
+			contributorId: input.userId,
+			guidanceDigest: input.guidanceDigest,
 			preambleVariant: 'claude_managed'
 		})
 	});

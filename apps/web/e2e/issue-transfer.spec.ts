@@ -5,7 +5,15 @@ import type { EffectiveContext, IssueDetail, IssueTransferPreview, Project } fro
 import type { Browser, Page } from '@playwright/test';
 import { expect, test as base } from './fixtures';
 import { ALICE, BASE_URL } from './constants.mjs';
-import { apiClient, body, clickToOpen, gotoHydrated, resetFocus, signIn } from './helpers';
+import {
+	apiClient,
+	body,
+	clickIssueAction,
+	openIssueActions,
+	gotoHydrated,
+	resetFocus,
+	signIn
+} from './helpers';
 
 const CLI_DIR = fileURLToPath(new URL('../../../packages/cli', import.meta.url));
 const TSX = join(CLI_DIR, 'node_modules', '.bin', 'tsx');
@@ -20,6 +28,7 @@ base.beforeEach(async ({ request }) => {
 type TransferWorld = {
 	sourceName: string;
 	destinationName: string;
+	destinationId: string;
 	longName: string;
 	issueId: string;
 	sourceId: string;
@@ -188,6 +197,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				await use({
 					sourceName,
 					destinationName,
+					destinationId: destination.id,
 					longName,
 					issueId,
 					sourceId,
@@ -208,7 +218,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const { sourceName, sourceNumber, longId, longName } = world;
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			const modal = page.getByRole('dialog');
-			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 			const chooser = modal.getByTestId('transfer-destination');
 			await expect(chooser).toBeFocused();
 			await chooser.selectOption(longId);
@@ -248,7 +258,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				});
 			});
 			const modal = page.getByRole('dialog');
-			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 			await modal.getByTestId('transfer-destination').selectOption({ label: destinationName });
 			await modal.getByRole('button', { name: 'Review move' }).click();
 			await expect(modal.getByTestId('transfer-blocker')).toContainText('arun_busy');
@@ -335,7 +345,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				});
 			});
 			const modal = page.getByRole('dialog');
-			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 			await modal.getByTestId('transfer-destination').selectOption({ label: destinationName });
 			await modal.getByRole('button', { name: 'Review move' }).click();
 			const review = modal.getByTestId('transfer-review');
@@ -366,7 +376,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const { sourceName, sourceNumber, destinationName, issueId, conflictIds } = world;
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			const modal = page.getByRole('dialog');
-			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 
 			await modal.getByTestId('transfer-destination').selectOption({ label: destinationName });
 			const [previewResponse] = await Promise.all([
@@ -512,14 +522,14 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			request,
 			world
 		}) => {
-			const { sourceName, sourceId, sourceNumber, destinationName, issueId } = world;
+			const { sourceName, sourceId, sourceNumber, destinationName, destinationId, issueId } = world;
 			const api = apiClient(request, ALICE.apiKey);
 			expect((await api.patch('/api/v1/preferences', { focused_project_id: sourceId })).ok()).toBe(
 				true
 			);
 			const page = await open(browser, `/issues/${sourceName}/${sourceNumber}`);
 			const modal = page.getByRole('dialog');
-			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 			await modal.getByTestId('transfer-destination').selectOption({ label: destinationName });
 			await modal.getByRole('button', { name: 'Review move' }).click();
 			await expect(page.getByTestId('transfer-review')).toBeVisible();
@@ -546,8 +556,9 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			});
 
 			// The destination's number is its next one (its first is taken), and
-			// the browser lands on that canonical URL without leaving the issue.
-			await expect(page).toHaveURL(new RegExp(`/issues/${destinationName}/2$`));
+			// the address bar ends on the issue's canonical (project id) URL without
+			// leaving the issue.
+			await expect(page).toHaveURL(new RegExp(`/issues/${destinationId}/2$`));
 			await expect(page.getByRole('status')).toContainText(
 				`Moved ${sourceName}/${sourceNumber} to ${destinationName}/2`
 			);
@@ -556,7 +567,10 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await expect(
 				page.getByRole('button', { name: `Project focus: ${sourceName}` })
 			).toBeVisible();
-			await expect(page.getByRole('button', { name: `Focus ${destinationName}` })).toBeVisible();
+			await expect(
+				(await openIssueActions(page)).getByRole('menuitem', { name: `Focus ${destinationName}` })
+			).toBeVisible();
+			await page.keyboard.press('Escape');
 
 			// The record and the identity survive; only the address changed.
 			const moved = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
@@ -578,7 +592,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			await expect(page).toHaveURL(new RegExp(`/issues/${moved.project_id}/2\\?keep=1#activity$`));
 
 			// The issue's own project no longer offers itself as a destination.
-			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 			const options = await modal
 				.getByTestId('transfer-destination')
 				.locator('option')
@@ -655,7 +669,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const api = apiClient(request, ALICE.apiKey);
 			const page = await open(browser, `/issues/${destinationName}/2`);
 			const modal = page.getByRole('dialog');
-			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 			const chooser = modal.getByTestId('transfer-destination');
 			await chooser.selectOption({ label: sourceName });
 			await modal.getByRole('button', { name: 'Review move' }).click();
@@ -673,7 +687,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			// And an archived project is not offered as a destination at all.
 			await modal.getByRole('button', { name: 'Cancel' }).click();
 			await gotoHydrated(page, `/issues/${destinationName}/2`);
-			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 			expect(await chooser.locator('option').allTextContents()).not.toContain(sourceName);
 
 			await api.post(`/api/v1/projects/${sourceId}/unarchive`, {});
@@ -690,7 +704,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const lateGuidanceName = uniqueName(`late-guidance-${label}`);
 			const page = await open(browser, `/issues/${destinationName}/2`);
 			const modal = page.getByRole('dialog');
-			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 			await modal.getByTestId('transfer-destination').selectOption({ label: sourceName });
 			await modal.getByRole('button', { name: 'Review move' }).click();
 			await expect(page.getByTestId('transfer-review')).toBeVisible();
@@ -734,7 +748,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 			const before = await body<IssueDetail>(await api.get(`/api/v1/issues/${issueId}`));
 			const page = await open(browser, `/issues/${before.project_name}/${before.number}`);
 			const modal = page.getByRole('dialog');
-			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 
 			// Tab walks the dialog's own controls and never escapes to the page.
 			for (let i = 0; i < 8; i++) {
@@ -769,7 +783,7 @@ function suite(label: string, viewport: { width: number; height: number }) {
 				await route.abort('failed');
 			});
 			const modal = page.getByRole('dialog');
-			await clickToOpen(page.getByTestId('move-to-project'), modal);
+			await clickIssueAction(page, page.getByTestId('move-to-project'), modal);
 			await modal.getByTestId('transfer-destination').selectOption({ label: target });
 			await modal.getByRole('button', { name: 'Review move' }).click();
 			await modal.getByTestId('transfer-confirm').click();

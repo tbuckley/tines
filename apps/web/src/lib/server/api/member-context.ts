@@ -2,7 +2,7 @@ import type { ContextItem, ContextScope, IssueLinks, IssueRef, LinkedIssue } fro
 import type { Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { notFound, type ActorContext } from './core';
-import { actorForProject } from './project-access';
+import { actorForProject, runProjectActor } from './project-access';
 
 /**
  * Members of a shared project work on the context that belongs to it: items
@@ -37,7 +37,8 @@ export async function actorForContextScope(
 	requester: ActorContext,
 	projectId: string | null
 ): Promise<ActorContext> {
-	if (!projectId || requester.agentRunId) return requester;
+	if (!projectId) return requester;
+	if (requester.agentRunId) return runProjectActor(requester, projectId) ?? requester;
 	return actorForProject(db, requester, projectId);
 }
 
@@ -52,8 +53,10 @@ export async function actorForContextItem(
 		.select(['user_id', 'project_id', 'issue_id'])
 		.where('id', '=', itemId)
 		.executeTakeFirst();
-	if (!item || item.user_id === requester.userId || requester.agentRunId) return requester;
+	if (!item || item.user_id === requester.userId) return requester;
 	const projectId = await contextScopeProject(db, item);
+	if (requester.agentRunId)
+		return (projectId && runProjectActor(requester, projectId)) || requester;
 	if (!projectId) throw notFound();
 	return actorForProject(db, requester, projectId);
 }
@@ -72,6 +75,21 @@ export function redactForMember<T extends ContextItem>(actor: ActorContext, item
 	if (!actor.member || item.kind !== 'env') return item;
 	const { value: _value, ...rest } = item;
 	return { ...rest, value_set: true } as T;
+}
+
+/**
+ * The disclosure policy for a stored item: what `actor` may be shown of it,
+ * or null when it is not theirs to see. Every item the context service
+ * returns goes through here, a conflict's `current` included, so a refused
+ * or failed write can never say more than the ordinary read does.
+ */
+export async function discloseContextItem<T extends ContextItem>(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	item: T
+): Promise<T | null> {
+	if (!(await memberScopeAllowed(db, actor, item.scope))) return null;
+	return redactForMember(actor, item);
 }
 
 /** An issue in one of the owner's other projects, as a member sees it. */

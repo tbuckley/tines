@@ -1,5 +1,5 @@
-import type { AgentRun } from '@tines/shared';
-import { isActiveRun } from '@tines/shared';
+import type { AgentRun, EffortSource } from '@tines/shared';
+import { RUN_END_OUTCOMES, isActiveRun } from '@tines/shared';
 
 /** Absolute fallback for timestamps too far out to phrase as a duration. */
 function shortDate(ms: number): string {
@@ -20,6 +20,47 @@ export function relativeTime(ms: number, now = Date.now()): string {
 	const days = Math.floor(hours / 24);
 	if (days < 30) return `${days}d ago`;
 	return shortDate(ms);
+}
+
+/** Where a run's effort value came from, for the run row's tooltip. */
+function effortSourceLabel(source: EffortSource | null): string {
+	if (!source) return 'legacy record';
+	if (source.kind === 'routing_target')
+		return `routing target ${source.target_index + 1} (${source.scope_label})`;
+	if (source.kind === 'runner_tier') return `runner tier ${source.tier}`;
+	return 'provider default';
+}
+
+/**
+ * A run row's model and effort cells: the resolved model (null when the
+ * harness cannot vary its model — the tier column already names the tier)
+ * and, when one was set, the bare effort value. Effort source and
+ * application status are the tooltip.
+ */
+export function runModelLabel(
+	run: Pick<
+		AgentRun,
+		'tier' | 'model' | 'resolved_effort' | 'effort_source' | 'effort_application_status'
+	>
+): { model: string | null; effort: string | null; title: string } {
+	const tier = `Tier ${run.tier}`;
+	// An old daemon dropped the value: the row's amber warning says so, and a
+	// bare "high" beside the model would claim the opposite.
+	if (run.effort_application_status === 'legacy_not_applied')
+		return { model: run.model, effort: null, title: tier };
+	if (run.resolved_effort) {
+		const status = run.effort_application_status.replaceAll('_', ' ');
+		return {
+			model: run.model,
+			effort: run.resolved_effort,
+			title: `${tier} · effort ${run.resolved_effort} from ${effortSourceLabel(run.effort_source)} · ${status}`
+		};
+	}
+	return {
+		model: run.model,
+		effort: null,
+		title: `${tier} · ${run.effort_application_status === 'unknown' ? 'effort not recorded' : 'provider default effort'}`
+	};
 }
 
 /** Capacity elapsed since assignment, ticking only while a run is active. */
@@ -117,6 +158,59 @@ export function nextRunLabel(nextRunAt: number, now = Date.now()): string {
 	return nextRunAt >= now ? `next ${until}` : until;
 }
 
+export type InvitationStatus = 'accepted' | 'canceled' | 'expired' | 'failed' | 'pending';
+
+/**
+ * What an invitation row means to the owner. Order matters: an accepted invite
+ * later canceled by removing the member is still "accepted" (a member, not an
+ * invite), and a failed delivery whose link has lapsed is "expired". Mirrors
+ * the server's `expires_at <= now` test in invitationLanding.
+ */
+export function invitationStatus(
+	invitation: {
+		accepted_at: number | null;
+		canceled_at: number | null;
+		expires_at: number;
+		delivery_status: string;
+	},
+	now = Date.now()
+): InvitationStatus {
+	if (invitation.accepted_at !== null) return 'accepted';
+	if (invitation.canceled_at !== null) return 'canceled';
+	if (invitation.expires_at <= now) return 'expired';
+	if (invitation.delivery_status === 'failed') return 'failed';
+	return 'pending';
+}
+
+/**
+ * An invitation link's lifetime in words: "expires in 7 days" or "expired 2
+ * hours ago". Rounds through hours so 23.6h reads "1 day", and treats
+ * `expiresAt === now` as expired to agree with invitationStatus.
+ */
+export function invitationExpiryLabel(expiresAt: number, now = Date.now()): string {
+	const diff = expiresAt - now;
+	const span = durationWords(Math.abs(diff));
+	return diff > 0 ? `expires in ${span}` : `expired ${span} ago`;
+}
+
+function durationWords(ms: number): string {
+	const hours = Math.round(ms / 3_600_000);
+	if (hours < 1) return 'under an hour';
+	if (hours < 24) return hours === 1 ? '1 hour' : `${hours} hours`;
+	const days = Math.round(hours / 24);
+	return days === 1 ? '1 day' : `${days} days`;
+}
+
+/** A member's join day ("Sep 26"), with the year only when it is not this year. */
+export function joinedDate(ms: number, now = Date.now()): string {
+	const sameYear = new Date(ms).getFullYear() === new Date(now).getFullYear();
+	return new Date(ms).toLocaleDateString(undefined, {
+		month: 'short',
+		day: 'numeric',
+		...(sameYear ? {} : { year: 'numeric' })
+	});
+}
+
 /** Date only, in the user's locale — for banners that name a day, not a moment. */
 export function formatDate(ms: number): string {
 	return new Date(ms).toLocaleString(undefined, {
@@ -165,13 +259,51 @@ export function prefersReducedMotion(): boolean {
 	);
 }
 
-/** Text color for a run status, shared by every run row rendering. */
-export function runStatusClass(status: string): string {
+export type RunOutcomeTone = 'success' | 'warning' | 'failure';
+
+const RUN_OUTCOME_CLASSES: Record<RunOutcomeTone, string> = {
+	success: 'text-emerald-600 dark:text-emerald-400',
+	warning: 'text-amber-700 dark:text-amber-400',
+	failure: 'text-destructive'
+};
+
+const TERMINAL_RUN_STATUSES = ['completed', 'failed', 'timed_out', 'canceled'];
+
+/**
+ * How an ended run's outcome reads on every surface (Activity feed, run rows):
+ * green check = advanced, amber warning = stalled/interrupted/timed out/canceled,
+ * red X = failed. Accepts `unknown` because event payloads are untyped.
+ * Null for active or unrecognised input — callers fall back to muted.
+ */
+export function runOutcomePresentation(
+	status: unknown,
+	outcome: unknown
+): { tone: RunOutcomeTone; colorClass: string } | null {
+	if (
+		typeof status !== 'string' ||
+		!TERMINAL_RUN_STATUSES.includes(status) ||
+		(outcome !== undefined &&
+			outcome !== null &&
+			(typeof outcome !== 'string' || !(RUN_END_OUTCOMES as readonly string[]).includes(outcome)))
+	)
+		return null;
+	const tone: RunOutcomeTone =
+		outcome === 'interrupted'
+			? 'warning'
+			: status === 'failed'
+				? 'failure'
+				: outcome === 'stalled' || status !== 'completed'
+					? 'warning'
+					: 'success';
+	return { tone, colorClass: RUN_OUTCOME_CLASSES[tone] };
+}
+
+/** The run status word's color: live states by phase, ended ones by outcome. */
+export function runStatusClass(status: string, outcome?: unknown): string {
 	if (status === 'running' || status === 'launching')
 		return 'text-emerald-600 dark:text-emerald-400';
 	if (status === 'assigned') return 'text-sky-600 dark:text-sky-400';
-	if (status === 'completed') return 'text-muted-foreground';
-	return 'text-amber-700 dark:text-amber-400';
+	return runOutcomePresentation(status, outcome)?.colorClass ?? 'text-muted-foreground';
 }
 
 /** Clamps user- or URL-supplied text before it lands in a message. */
