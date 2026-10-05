@@ -99,15 +99,24 @@ An installed pack's items and workflows are read-only to everyone, people and ru
 
 **New pack** creates an authored pack with a random id. Copy a workflow used in the project into it
 (its states, transitions, run scopes and state context, not journals; inheritance is flattened),
-then optionally move this project's issues and schedules onto the copy through a state mapping. Add
-prompts, env and repo items at any reach, move one of the project's own project-wide items in,
-declare inputs, and **Suggest in pack** an existing schedule on one of the pack's workflows. Skills
-are added as files: export to a folder, edit, and `tines packs replace` (Replace works on authored
-packs too, as the round trip for a pack kept in git). Every authored edit is checked by writing the
-pack out and parsing it again, so it is refused with the same message `validate` would print.
+then optionally move this project's issues and schedules onto the copy through a state mapping.
+Declare **inputs** in the pack page's Inputs section (a form per input: name, type, description and
+the type's default; an input in use cannot be removed, and its name is fixed once created because
+items refer to it). Add or edit prompts, skills, env and repo items at any reach in the Context
+section: text fields take an input through **Insert input**, which writes `{{ inputs.<name> }}` at
+the cursor, and an env or repo item can take its whole value from an input instead (a secret input
+only this way). A skill is written in the browser as a name, a description and its `SKILL.md`
+instructions (the frontmatter is generated); skills with more files still come in from a folder
+with `tines packs replace` (Replace works on authored packs too, as the round trip for a pack kept
+in git), and their other files are kept when the instructions are edited. Move one of the project's
+own project-wide items in, and **Suggest in pack** an existing schedule on one of the pack's
+workflows. Every authored edit is checked by writing the pack out and parsing it again, so it is
+refused with the same message `validate` would print.
 
 An authored pack's items are edited through the ordinary context API, except their scope, which
-their reach sets. Workflows from packs are offered only in their pack's project.
+their reach sets, and where an env or repo item's value comes from (an input or a fixed value),
+which `PATCH /api/v1/projects/:id/packs/:packId/items/:itemId` sets. Workflows from packs are
+offered only in their pack's project.
 
 ## Suggested schedules
 

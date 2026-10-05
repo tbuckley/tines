@@ -19,6 +19,7 @@ import {
 	removePack,
 	removePreview,
 	setMySecrets,
+	setPackItemBinding,
 	setPackValues,
 	updatePack
 } from './authoring';
@@ -376,6 +377,67 @@ describe('packs: replace', () => {
 });
 
 describe('packs: authored', () => {
+	it('binds an env or repo item to an input and back to a fixed value', async () => {
+		const t = fixture();
+		const pack = await createPack(t.db, t.env, t.owner, 'prj', { name: 'Ops' });
+		await updatePack(t.db, t.env, t.owner, 'prj', pack.id, {
+			inputs: {
+				team: { type: 'text', description: 'Team' },
+				token: { type: 'secret', description: 'Token' },
+				app: { type: 'repo', description: 'App' }
+			}
+		});
+		let detail = await createPackItem(t.db, t.env, t.owner, 'prj', pack.id, {
+			reach: 'project',
+			kind: 'env',
+			name: 'TEAM',
+			value: 'core'
+		});
+		detail = await createPackItem(t.db, t.env, t.owner, 'prj', pack.id, {
+			reach: 'project',
+			kind: 'repo',
+			name: 'app',
+			repo_url: 'https://github.com/acme/app'
+		});
+		const envItem = detail.items.find((i) => i.name === 'TEAM')!;
+		const repoItem = detail.items.find((i) => i.name === 'app')!;
+		expect(envItem.pack).toMatchObject({ input: null, input_refs: [] });
+
+		detail = await setPackItemBinding(t.db, t.env, t.owner, 'prj', pack.id, envItem.id, {
+			input: 'token'
+		});
+		expect(detail.items.find((i) => i.id === envItem.id)).toMatchObject({
+			secret: true,
+			pack: { input: 'token', input_refs: ['token'] }
+		});
+		detail = await setPackItemBinding(t.db, t.env, t.owner, 'prj', pack.id, envItem.id, {
+			input: null,
+			value: 'team {{ inputs.team }}'
+		});
+		expect(detail.items.find((i) => i.id === envItem.id)).toMatchObject({
+			secret: false,
+			value: 'team {{ inputs.team }}',
+			pack: { input: null, input_refs: ['team'] }
+		});
+		detail = await setPackItemBinding(t.db, t.env, t.owner, 'prj', pack.id, repoItem.id, {
+			input: 'app'
+		});
+		expect(detail.items.find((i) => i.id === repoItem.id)?.pack).toMatchObject({
+			input: 'app',
+			input_refs: ['app']
+		});
+		// A repo cannot take its value from a text input.
+		await expect(
+			setPackItemBinding(t.db, t.env, t.owner, 'prj', pack.id, repoItem.id, { input: 'team' })
+		).rejects.toMatchObject({ code: 'invalid_pack' });
+		// An input still in use cannot be removed.
+		await expect(
+			updatePack(t.db, t.env, t.owner, 'prj', pack.id, {
+				inputs: { team: { type: 'text', description: 'Team' } }
+			})
+		).rejects.toMatchObject({ code: 'invalid_pack' });
+	});
+
 	it('authors a pack from a copied workflow, exports versions, and round-trips through install', async () => {
 		const t = fixture();
 		const pack = await createPack(t.db, t.env, t.owner, 'prj', { name: 'Ops' });

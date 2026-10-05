@@ -24,6 +24,7 @@ import {
 	type PackSchedule,
 	type SchedulePreset,
 	type SuggestPackScheduleRequest,
+	type UpdatePackItemBindingRequest,
 	type UpdatePackRequest,
 	WEEKDAY_NAMES
 } from '@tines/shared';
@@ -677,6 +678,114 @@ export async function createPackItem(
 			ids,
 			now
 		})
+	]);
+	return detailFor(db, pp.actor, projectId, packId, pp.personId);
+}
+
+/**
+ * Rebinds an authored pack's env or repo item: to an input, or to a fixed value.
+ * The item keeps its id, name and place; the pack is validated as it would be
+ * after the change.
+ */
+export async function setPackItemBinding(
+	db: Kysely<Database>,
+	env: Env,
+	actor: ActorContext,
+	projectId: string,
+	packId: string,
+	itemId: string,
+	body: UpdatePackItemBindingRequest
+): Promise<PackDetail> {
+	const pp = await packProject(db, actor, projectId, 'write', 'pack.update');
+	const pack = await loadPack(db, projectId, packId);
+	assertAuthored(pack, 'Editing context');
+	const row = await db
+		.selectFrom('context_item')
+		.leftJoin('workflow as reach_wf', 'reach_wf.id', 'context_item.workflow_id')
+		.leftJoin('workflow_state as st', 'st.id', 'context_item.workflow_state_id')
+		.leftJoin('workflow as st_wf', 'st_wf.id', 'st.workflow_id')
+		.select([
+			'context_item.id',
+			'context_item.kind',
+			'context_item.name',
+			'context_item.reach',
+			'context_item.version',
+			'reach_wf.key as reach_workflow_key',
+			'st.key as state_key',
+			'st_wf.key as state_workflow_key'
+		])
+		.where('context_item.id', '=', itemId)
+		.where('context_item.pack_id', '=', pack.id)
+		.executeTakeFirst();
+	if (!row) throw notFound();
+	if (row.kind !== 'env' && row.kind !== 'repo')
+		throw new ApiFail(422, 'invalid_field', 'Only env and repo items take a value from an input', {
+			field: 'input'
+		});
+	if (body.expected_version !== undefined && body.expected_version !== row.version)
+		throw new ApiFail(
+			409,
+			'version_conflict',
+			'This item changed since you opened it; reload and try again'
+		);
+	const input = typeof body.input === 'string' && body.input ? body.input : null;
+	const loc: PackLocation = {
+		reach: row.reach!,
+		workflow:
+			row.reach === 'workflow'
+				? (row.reach_workflow_key ?? null)
+				: row.reach === 'state'
+					? (row.state_workflow_key ?? null)
+					: null,
+		state: row.reach === 'state' ? (row.state_key ?? null) : null
+	};
+	const same = (e: PackLocation & { name: string }) =>
+		e.name === row.name &&
+		e.reach === loc.reach &&
+		e.workflow === loc.workflow &&
+		e.state === loc.state;
+	const model = await packModelFromDb(db, pack);
+	const inputs = model.manifest.inputs;
+	let set: Record<string, unknown>;
+	let next: PackModel;
+	if (row.kind === 'env') {
+		const value = input ? { input } : { template: String(body.value ?? '') };
+		next = { ...model, env: model.env.map((e) => (same(e) ? { ...e, value } : e)) };
+		const secret = input !== null && inputs[input]?.type === 'secret';
+		set = {
+			env_value: secret ? null : 'template' in value ? value.template : '',
+			env_value_enc: secret ? '' : null,
+			env_hint: input ? `pack input ${input}` : null,
+			config: input ? JSON.stringify({ input }) : null,
+			input_refs: JSON.stringify(
+				packInputRefs(inputs, 'template' in value ? [value.template] : [], input)
+			)
+		};
+	} else {
+		const url = input ? null : String(body.repo_url ?? '').trim();
+		const branch = input ? null : (body.repo_branch ?? null) || null;
+		next = {
+			...model,
+			repos: model.repos.map((r) => (same(r) ? { ...r, input, url, branch } : r))
+		};
+		set = {
+			repo_url: input ? '' : url,
+			repo_branch: branch,
+			config: input ? JSON.stringify({ input }) : null,
+			input_refs: input ? JSON.stringify([input]) : null
+		};
+	}
+	await assertValidAfter(next);
+	if (set.input_refs === '[]') set.input_refs = null;
+	const now = Date.now();
+	await runClaimed(db, env, projectId, pack, [
+		...claimRevision(db, pack, now),
+		db
+			.updateTable('context_item')
+			.set({ ...set, version: row.version + 1, updated_at: now })
+			.where('id', '=', row.id)
+			.where('version', '=', row.version)
+			.compile()
 	]);
 	return detailFor(db, pp.actor, projectId, packId, pp.personId);
 }

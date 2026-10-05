@@ -9,7 +9,9 @@
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
+	import PackInputDeclarations from '$lib/components/packs/PackInputDeclarations.svelte';
 	import PackInputsForm from '$lib/components/packs/PackInputsForm.svelte';
+	import PackItemEditor from '$lib/components/packs/PackItemEditor.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Textarea } from '$lib/components/ui/textarea/index.js';
@@ -94,38 +96,30 @@
 	let draftDescription = $state('');
 	let draftReadme = $state('');
 	let draftChangelog = $state('');
-	let draftInputs = $state('');
 	function startEdit() {
 		draftName = pack.name;
 		draftDescription = pack.description;
 		draftReadme = pack.readme ?? '';
 		draftChangelog = pack.changelog ?? '';
-		draftInputs = JSON.stringify(
-			Object.fromEntries(pack.inputs.map((v) => [v.name, v.decl])),
-			null,
-			2
-		);
 		editing = true;
 	}
 	async function saveDetails() {
-		let inputs: Record<string, PackInputDecl>;
-		try {
-			inputs = JSON.parse(draftInputs || '{}');
-		} catch {
-			message = 'Inputs must be valid JSON: { "name": { "type": "text", "description": "…" } }';
-			return;
-		}
 		const ok = await act('details', () =>
 			packApi(base, 'PATCH', {
 				expected_revision: pack.revision,
 				name: draftName,
 				description: draftDescription,
 				readme: draftReadme || null,
-				changelog: draftChangelog || null,
-				inputs
+				changelog: draftChangelog || null
 			})
 		);
 		if (ok) editing = false;
+	}
+	async function saveInputs(inputs: Record<string, PackInputDecl>): Promise<boolean> {
+		const ok = await act('inputs', () =>
+			packApi(base, 'PATCH', { expected_revision: pack.revision, inputs })
+		);
+		return ok !== null;
 	}
 
 	// --- Workflows
@@ -207,47 +201,6 @@
 			return `${item.scope.workflow_name ?? ''} / ${item.scope.workflow_state_name ?? ''}`;
 		return '';
 	}
-	let newItem = $state({
-		reach: 'project',
-		target: '',
-		kind: 'prompt',
-		name: '',
-		body: '',
-		value: '',
-		input: '',
-		repo_url: '',
-		repo_branch: ''
-	});
-	async function addItem(event: SubmitEvent) {
-		event.preventDefault();
-		const n = newItem;
-		const ok = await act('item', () =>
-			packApi(`${base}/items`, 'POST', {
-				reach: n.reach,
-				...(n.reach === 'workflow' ? { workflow_id: n.target } : {}),
-				...(n.reach === 'state' ? { state_id: n.target } : {}),
-				kind: n.kind,
-				name: n.name,
-				...(n.kind === 'prompt' ? { body: n.body } : {}),
-				...(n.kind === 'env' ? (n.input ? { input: n.input } : { value: n.value }) : {}),
-				...(n.kind === 'repo'
-					? n.input
-						? { input: n.input }
-						: { repo_url: n.repo_url, repo_branch: n.repo_branch || null }
-					: {})
-			})
-		);
-		if (ok)
-			newItem = {
-				...newItem,
-				name: '',
-				body: '',
-				value: '',
-				input: '',
-				repo_url: '',
-				repo_branch: ''
-			};
-	}
 	let moveItemId = $state('');
 	async function moveItemIn() {
 		const id = moveItemId;
@@ -255,16 +208,13 @@
 		const ok = await act('move-item', () => packApi(`${base}/items`, 'POST', { move_item_id: id }));
 		if (ok) moveItemId = '';
 	}
+	/** The item open in the editor: its id, 'new', or null. */
 	let editingItem = $state<string | null>(null);
-	let itemBody = $state('');
-	async function saveItem(item: ContextItem) {
-		const ok = await act('save-item', () =>
-			packApi(`/api/v1/context/${item.id}`, 'PATCH', {
-				body: itemBody,
-				expected_version: item.version
-			})
-		);
-		if (ok) editingItem = null;
+	function bindingLabel(item: ContextItem): string {
+		if (item.pack?.input) return `from input ${item.pack.input}`;
+		if (item.kind === 'env')
+			return item.secret ? `secret — ${item.hint ?? ''}` : (item.value ?? '');
+		return `${item.repo_url}${item.repo_branch ? ` @ ${item.repo_branch}` : ''}`;
 	}
 	async function deleteItem(item: ContextItem) {
 		if (!confirm(`Delete ${item.kind} “${item.name}” from the pack?`)) return;
@@ -408,13 +358,33 @@
 
 	<!-- Inputs -->
 	<section class="mt-6 rounded-lg border p-4" aria-labelledby="inputs-heading">
-		<div class="flex items-center justify-between">
-			<h2 id="inputs-heading" class="font-semibold">Inputs</h2>
-		</div>
-		<p class="text-muted-foreground mb-3 text-sm">
-			This project's values. A change takes effect at the next run.
-		</p>
-		<PackInputsForm views={pack.inputs} bind:drafts {workflowOptions} />
+		<h2 id="inputs-heading" class="font-semibold">Inputs</h2>
+		{#if authored && editable}
+			<p class="text-muted-foreground mb-3 text-sm">
+				What a project fills in when it installs this pack. Use them in the pack's prompts, skills
+				and env variables below.
+			</p>
+			<PackInputDeclarations
+				inputs={pack.inputs}
+				items={pack.items}
+				workflows={pack.workflows}
+				pending={busy === 'inputs'}
+				onsave={saveInputs}
+			/>
+			{#if pack.inputs.length}
+				<h3 class="mt-6 text-sm font-medium">This project's values</h3>
+				<p class="text-muted-foreground mb-3 text-xs">
+					What this project uses itself. A change takes effect at the next run.
+				</p>
+			{/if}
+		{:else}
+			<p class="text-muted-foreground mb-3 text-sm">
+				This project's values. A change takes effect at the next run.
+			</p>
+		{/if}
+		{#if !(authored && editable) || pack.inputs.length}
+			<PackInputsForm views={pack.inputs} bind:drafts {workflowOptions} />
+		{/if}
 		{#if pack.inputs.length && editable}
 			<div class="mt-4 flex justify-end">
 				<PendingButton pending={busy === 'values'} onclick={saveValues}>Save values</PendingButton>
@@ -456,19 +426,6 @@
 						class="mt-1 font-mono text-xs"
 						rows={4}
 						bind:value={draftChangelog}
-					/>
-				</div>
-				<div>
-					<label for="pd-inputs" class="text-sm font-medium">Input declarations (JSON)</label>
-					<p class="text-muted-foreground text-xs">
-						Each input is <code>text</code>, <code>secret</code>, <code>repo</code> or
-						<code>workflow</code>, as in <code>pack.yaml</code>.
-					</p>
-					<Textarea
-						id="pd-inputs"
-						class="mt-1 font-mono text-xs"
-						rows={8}
-						bind:value={draftInputs}
 					/>
 				</div>
 				<div class="flex justify-end gap-2">
@@ -557,56 +514,41 @@
 									{#if itemPlace(item)}<span class="text-muted-foreground text-xs"
 											>— {itemPlace(item)}</span
 										>{/if}
+									{#if item.pack?.input_refs?.length}<span class="text-muted-foreground text-xs"
+											>· reads {item.pack.input_refs.join(', ')}</span
+										>{/if}
 								</summary>
 								<div class="mt-1 ml-4">
-									{#if item.kind === 'prompt'}
-										{#if editingItem === item.id}
-											<Textarea class="font-mono text-xs" rows={8} bind:value={itemBody} />
-											<div class="mt-2 flex gap-2">
-												<PendingButton
-													size="sm"
-													pending={busy === 'save-item'}
-													onclick={() => saveItem(item)}>Save</PendingButton
-												>
-												<Button size="sm" variant="outline" onclick={() => (editingItem = null)}
-													>Cancel</Button
-												>
-											</div>
-										{:else}
+									{#if editingItem === item.id}
+										<PackItemEditor
+											{pack}
+											{base}
+											{item}
+											pending={busy === 'item'}
+											run={act}
+											ondone={() => (editingItem = null)}
+										/>
+									{:else}
+										{#if item.kind === 'prompt'}
 											<pre
 												class="bg-muted max-h-72 overflow-auto rounded p-2 text-xs whitespace-pre-wrap">{item.body}</pre>
+										{:else if item.kind === 'env' || item.kind === 'repo'}
+											<p class="text-xs">{bindingLabel(item)}</p>
+										{:else if item.kind === 'skill'}
+											<p class="text-muted-foreground text-xs">
+												{item.file_count ?? 0} file(s) — {item.description}
+											</p>
 										{/if}
-									{:else if item.kind === 'env'}
-										<p class="text-xs">
-											{item.secret ? `secret — ${item.hint ?? ''}` : (item.value ?? '')}
-										</p>
-									{:else if item.kind === 'repo'}
-										<p class="text-xs">
-											{item.repo_url || 'from an input'}{item.repo_branch
-												? ` @ ${item.repo_branch}`
-												: ''}
-										</p>
-									{:else if item.kind === 'skill'}
-										<p class="text-muted-foreground text-xs">
-											{item.file_count ?? 0} file(s) — {item.description}
-										</p>
-									{/if}
-									{#if authored && editable && editingItem !== item.id}
-										<div class="mt-2 flex gap-2">
-											{#if item.kind === 'prompt'}
-												<Button
-													size="sm"
-													variant="outline"
-													onclick={() => {
-														editingItem = item.id;
-														itemBody = item.body ?? '';
-													}}>Edit</Button
+										{#if authored && editable}
+											<div class="mt-2 flex gap-2">
+												<Button size="sm" variant="outline" onclick={() => (editingItem = item.id)}
+													>Edit</Button
 												>
-											{/if}
-											<Button size="sm" variant="outline" onclick={() => deleteItem(item)}
-												>Delete</Button
-											>
-										</div>
+												<Button size="sm" variant="outline" onclick={() => deleteItem(item)}
+													>Delete</Button
+												>
+											</div>
+										{/if}
 									{/if}
 								</div>
 							</details>
@@ -626,94 +568,12 @@
 		{/if}
 
 		{#if authored && editable}
-			<form class="mt-5 space-y-3 border-t pt-4" onsubmit={addItem}>
-				<h3 class="text-sm font-medium">Add context</h3>
-				<div class="grid gap-2 sm:grid-cols-3">
-					<select
-						aria-label="Where it applies"
-						class="border-input dark:bg-input/30 h-9 rounded-md border bg-transparent px-3 text-sm"
-						bind:value={newItem.reach}
-					>
-						{#each reaches as [reach, label] (reach)}<option value={reach}>{label}</option>{/each}
-					</select>
-					{#if newItem.reach === 'workflow' || newItem.reach === 'state'}
-						<select
-							aria-label="Which"
-							class="border-input dark:bg-input/30 h-9 rounded-md border bg-transparent px-3 text-sm"
-							bind:value={newItem.target}
-						>
-							<option value="">Choose…</option>
-							{#each pack.workflows as wf (wf.id)}
-								{#if newItem.reach === 'workflow'}
-									<option value={wf.id}>{wf.name}</option>
-								{:else}
-									{#each wf.states as s (s.id)}<option value={s.id}>{wf.name} / {s.name}</option
-										>{/each}
-								{/if}
-							{/each}
-						</select>
-					{/if}
-					<select
-						aria-label="Kind"
-						class="border-input dark:bg-input/30 h-9 rounded-md border bg-transparent px-3 text-sm"
-						bind:value={newItem.kind}
-					>
-						<option value="prompt">Prompt</option>
-						<option value="env">Env variable</option>
-						<option value="repo">Repo</option>
-					</select>
-				</div>
-				<Input
-					aria-label="Name"
-					placeholder={newItem.kind === 'env' ? 'VARIABLE_NAME' : 'name'}
-					bind:value={newItem.name}
-					required
-				/>
-				{#if newItem.kind === 'prompt'}
-					<Textarea
-						aria-label="Prompt"
-						class="font-mono text-xs"
-						rows={5}
-						placeholder={'Markdown. Use {{ inputs.<name> }} for an input value.'}
-						bind:value={newItem.body}
-					/>
-				{:else}
-					<div class="grid gap-2 sm:grid-cols-2">
-						<select
-							aria-label="Value from"
-							class="border-input dark:bg-input/30 h-9 rounded-md border bg-transparent px-3 text-sm"
-							bind:value={newItem.input}
-						>
-							<option value="">A fixed value</option>
-							{#each pack.inputs.filter( (i) => (newItem.kind === 'env' ? i.decl.type === 'text' || i.decl.type === 'secret' : i.decl.type === 'repo') ) as i (i.name)}
-								<option value={i.name}>Input {i.name}</option>
-							{/each}
-						</select>
-						{#if !newItem.input}
-							{#if newItem.kind === 'env'}
-								<Input aria-label="Value" placeholder="value" bind:value={newItem.value} />
-							{:else}
-								<div class="flex gap-2">
-									<Input
-										aria-label="Repository URL"
-										placeholder="https://github.com/…"
-										bind:value={newItem.repo_url}
-									/>
-									<Input
-										aria-label="Branch"
-										class="w-28"
-										placeholder="branch"
-										bind:value={newItem.repo_branch}
-									/>
-								</div>
-							{/if}
-						{/if}
-					</div>
-				{/if}
-				<div class="flex justify-end">
-					<PendingButton type="submit" pending={busy === 'item'}>Add</PendingButton>
-				</div>
-			</form>
+			<div class="mt-5 border-t pt-4">
+				<h3 class="mb-2 text-sm font-medium">Add context</h3>
+				{#key pack.items.length}
+					<PackItemEditor {pack} {base} pending={busy === 'item'} run={act} ondone={() => {}} />
+				{/key}
+			</div>
 			{#if data.projectItems.length}
 				<div class="mt-4 flex flex-wrap items-end gap-2 border-t pt-4">
 					<div class="min-w-0 flex-1">
@@ -736,11 +596,6 @@
 					>
 				</div>
 			{/if}
-			<p class="text-muted-foreground mt-3 text-xs">
-				Skills are added from files: write them into the pack folder and <code
-					>tines packs replace</code
-				>.
-			</p>
 		{/if}
 	</section>
 

@@ -151,3 +151,37 @@ export function browserTimezone(): string {
 		return 'UTC';
 	}
 }
+
+/** The placeholder that reads an input. */
+export function placeholderFor(name: string): string {
+	return `{{ inputs.${name} }}`;
+}
+
+/**
+ * `value` with `text` inserted at the field's cursor (or appended), and where
+ * the cursor lands after it.
+ */
+export function insertAtCursor(
+	value: string,
+	text: string,
+	field: HTMLInputElement | HTMLTextAreaElement | null | undefined
+): { value: string; cursor: number } {
+	const start = field?.selectionStart ?? value.length;
+	const end = field?.selectionEnd ?? start;
+	return { value: value.slice(0, start) + text + value.slice(end), cursor: start + text.length };
+}
+
+/**
+ * A pack skill's `SKILL.md`: frontmatter naming the skill and describing it
+ * (the pack format requires both, and the name must match the skill's), then
+ * the instructions.
+ */
+export function skillMarkdown(name: string, description: string, body: string): string {
+	return `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\n\n${body.replace(/^\n+/, '')}`;
+}
+
+/** The instructions of a `SKILL.md`, without its frontmatter. */
+export function skillBody(markdown: string): string {
+	const m = /^---\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/.exec(markdown);
+	return (m ? markdown.slice(m[0].length) : markdown).replace(/^\n+/, '');
+}
