@@ -426,3 +426,23 @@ CLI: `tines context create --kind env --name NAME --value <v|@file|-> [--secret]
 # 2026-09-21 — API-key scope enforcement (Tines/648)
 
 Context authorization now derives requirements from every populated anchor. Project and issue anchors require project authority; state, label, and global anchors require workspace authority; env mutations additionally require control-plane authority. Re-scoping checks both source and destination. Run journal writes are limited to the exact project plus launch-state inheritance root described in `../api-keys/SPEC.md`.
+
+## Decision update — 2026-09-27 shared-project guidance projection (Tines/752)
+
+Behind `SHARED_EXECUTION`, a shared project's runs and readers (owner and member
+alike) receive one projection of the **project owner's** effective context, never
+the contributor's library:
+
+- **Auto-shared:** items anchored to the project, the issue, or a workflow state
+  in the issue's chain.
+- **Included:** the owner's global and label-only prompts, skills and repos, only
+  while a `project_guidance_inclusion` row names them. The label clause still
+  applies. A rescoped item's stale row is inert.
+- **Never shared:** env items (values ride a separate launch channel, never the
+  bundle) and artifacts.
+- **Snapshot exception.** "Computed on read, nothing is snapshotted" still holds
+  for storage, but a run's launch material is one D1 batch snapshot guarded by a
+  revision witness at the key mint (see `specs/supervisor/SPEC.md`).
+- **Fail closed:** more than 250 items, a serialized bundle over 1 MiB, or a repo
+  checkout-dir conflict refuses the bundle. It never delivers a partial one.
+  Outside shared projects a dir conflict is still only a warning.

@@ -703,6 +703,8 @@ esac
 			.filter({ hasText: `${PROJECT_NAME}/#${issue.number}` })
 			.filter({ hasText: 'running' });
 		await expect(activeRow).toHaveCount(1);
+		// A live row carries no cost placeholder: it said the same on every one.
+		await expect(activeRow).not.toContainText('Pending');
 		const duration = activeRow.getByTestId('run-duration');
 		const firstDuration = await duration.textContent();
 		await expect.poll(() => duration.textContent(), { timeout: 4000 }).not.toBe(firstDuration);
