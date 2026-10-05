@@ -52,7 +52,7 @@ import type {
 	DeleteAnchorResponse,
 	DeleteRunnerRequest,
 	DispatchExplainer,
-	EffectiveContext,
+	IssueContextResponse,
 	IssueTransferPreview,
 	IssueTransferRequest,
 	IssueTransferResult,
@@ -70,6 +70,8 @@ import type {
 	IssueLink,
 	IssueListItem,
 	ListResponse,
+	GuidanceInclusion,
+	GuidanceInclusionList,
 	ListStartersResponse,
 	PageParams,
 	Project,
@@ -351,6 +353,17 @@ export function createApiClient(options: ApiClientOptions) {
 			request<void>('DELETE', `/api/v1/projects/${id}/invitations/${inviteId}`, {
 				expected_generation: expectedGeneration
 			}),
+		listGuidanceInclusions: (id: string) =>
+			get<GuidanceInclusionList>(`/api/v1/projects/${id}/guidance-inclusions`),
+		includeGuidanceItem: (id: string, itemId: string) =>
+			request<GuidanceInclusion>('POST', `/api/v1/projects/${id}/guidance-inclusions`, {
+				item_id: itemId
+			}),
+		excludeGuidanceItem: (id: string, itemId: string) =>
+			request<GuidanceInclusion>(
+				'DELETE',
+				`/api/v1/projects/${id}/guidance-inclusions/${encodeURIComponent(itemId)}`
+			),
 		removeProjectMember: (id: string, userId: string, expectedRevision: number) =>
 			request<{ project_id: string; user_id: string; revision: number }>(
 				'DELETE',
@@ -507,7 +520,7 @@ export function createApiClient(options: ApiClientOptions) {
 			request<ContextItem>('POST', `/api/v1/context/${id}/append`, body),
 		/** Effective context for an issue: the assembled bundle. */
 		getIssueContext: (issueId: string) =>
-			get<EffectiveContext>(`/api/v1/issues/${issueId}/context`),
+			get<IssueContextResponse>(`/api/v1/issues/${issueId}/context`),
 		/**
 		 * Which journal this caller's `tines journal` commands target — the
 		 * run's launch state for a run key, the issue's current state otherwise.

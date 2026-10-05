@@ -1398,11 +1398,14 @@
 					readonly
 					aria-describedby={copyState === 'failed' ? 'copy-help' : undefined}
 				/>
+				<!-- `aria-disabled` rather than `disabled` while the write is pending: Chromium drops
+				     focus from a disabled button and does not give it back. copyLink() ignores a second
+				     activation. -->
 				<Button
 					data-testid="copy-share-link"
 					class="min-h-11 w-full min-w-24 sm:w-auto"
 					onclick={copyLink}
-					disabled={copyState === 'copying'}
+					aria-disabled={copyState === 'copying' || undefined}
 				>
 					{copyState === 'copied' ? 'Copied' : 'Copy link'}
 				</Button>

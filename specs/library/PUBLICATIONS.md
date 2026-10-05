@@ -127,6 +127,12 @@ workspace read, and publish/withdraw/restore require workspace write. Run keys m
 prepare only within their semantic ceiling and can never commit publication state. Replay rechecks
 current authority; a proof or candidate is not a capability. See `specs/api-keys/SPEC.md`.
 
+## Decision update — 2026-10-04 Copy keeps focus (Tines/899)
+
+While the clipboard write is pending the receipt's Copy action is `aria-disabled`, not `disabled`:
+a natively disabled button loses focus in Chromium and does not get it back. After a successful
+copy, focus stays on Copy; after a failed one it moves to the share field, as before.
+
 ## Decision update — 2026-10-04 rebuild holds authoring (Tines/897)
 
 Apply automation replaces the whole copy when its request returns. While that request is out,

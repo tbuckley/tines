@@ -232,6 +232,12 @@ await cdp.send('Emulation.setCPUThrottlingRate', { rate: 20 });
 // ... trigger the swap the locator races ...
 ```
 
+CPU throttling slows the renderer only. When the locator races something outside it — a
+clipboard write, a network response — throttling will not give N/N (Tines/899: 1 red in 10 at
+20x). Delay that call instead: wrap the API in `page.evaluate`, or hold the response in
+`page.route`. `workflow-publications.spec.ts` holds `navigator.clipboard.writeText` open for
+200 ms.
+
 When the locator races a network response rather than a render, throttling does not force it:
 delay or hold that request with `page.route` instead (Tines/897).
 

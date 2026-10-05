@@ -7,7 +7,8 @@
 	let open = $state(false);
 	let trigger = $state<HTMLButtonElement>();
 	const usage = $derived(run.usage);
-	const label = $derived(isActiveRun(run.status) ? 'Pending' : runCostLabel(run));
+	/** Nothing while the run is live: every active row would say the same "Pending". */
+	const label = $derived(isActiveRun(run.status) ? null : runCostLabel(run));
 	const inspectable = $derived(
 		usage?.pricing?.status === 'calculated' ||
 			usage?.pricing?.status === 'unpriced' ||

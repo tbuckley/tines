@@ -37,7 +37,10 @@ test.describe('shared run row', () => {
 		const issueRow = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
 		await expect(issueRow).toHaveCount(1);
 		await expect(issueRow).toContainText(RUNROW.costLabel);
-		await expect(issueRow).toContainText(`session: ${RUNROW.providerSessionId}`);
+		// The session id and the effort disclosure are `tines runs show`'s, not
+		// the row's: neither helps a person scanning runs (Tines/920).
+		await expect(issueRow).not.toContainText(RUNROW.providerSessionId);
+		await expect(issueRow).not.toContainText('Effort details');
 		// How the end was judged, beside the status: the difference between a
 		// run that cost the issue a strike and one that cost it nothing.
 		await expect(issueRow).toContainText(RUNROW.outcome);
@@ -57,7 +60,8 @@ test.describe('shared run row', () => {
 		const agentsRow = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
 		await expect(agentsRow).toHaveCount(1);
 		await expect(agentsRow).toContainText(RUNROW.costLabel);
-		await expect(agentsRow).toContainText(`session: ${RUNROW.providerSessionId}`);
+		await expect(agentsRow).not.toContainText(RUNROW.providerSessionId);
+		await expect(agentsRow).not.toContainText('Effort details');
 		await expect(agentsRow).toContainText(RUNROW.outcome);
 		await expect(agentsRow.getByRole('link', { name: /console/ })).toHaveAttribute(
 			'href',
@@ -124,11 +128,299 @@ test.describe('shared run row', () => {
 		await expect(row.getByTestId('run-log-waiting')).toHaveCount(0);
 	});
 
-	test('shows unpriced Codex tokens and a local thread id', async ({ page }) => {
+	test('shows model, bare effort and tier in their own cells, and the rest in a tooltip, on both surfaces', async ({
+		page
+	}) => {
+		for (const surface of ['issue', 'agents'] as const) {
+			if (surface === 'issue') {
+				await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
+			} else {
+				await gotoHydrated(page, '/agents');
+				await page.getByLabel('Show ended runs').check();
+			}
+			const row = page.locator('li:not([inert])', { hasText: RUNROW.runnerName });
+			await expect(row.getByTestId('run-model'), surface).toHaveText('claude-opus-4');
+			await expect(row.getByTestId('run-tier'), surface).toHaveText('balanced');
+			// Just "high": where the value came from and whether the provider
+			// confirmed it are a hover away, not three more lines.
+			const effort = row.getByTestId('run-effort');
+			await expect(effort, surface).toHaveText('high');
+			await expect(effort, surface).toHaveAttribute('title', /Tier balanced/);
+			await expect(effort, surface).toHaveAttribute(
+				'title',
+				/effort high from runner tier balanced/
+			);
+			await expect(effort, surface).toHaveAttribute('title', /accepted unconfirmed/);
+			await expect(row, surface).not.toContainText('accepted unconfirmed');
+			await expect(row, surface).not.toContainText('effort high');
+
+			// No model and no effort recorded: the cells stay in place, empty, so
+			// the tier still sits under every other row's tier. No filler text.
+			const failed = page.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName });
+			await expect(failed.getByTestId('run-model'), surface).toHaveText('—');
+			await expect(failed.getByTestId('run-effort'), surface).toHaveText('');
+			await expect(failed.getByTestId('run-tier'), surface).toHaveText('balanced');
+			await expect(failed, surface).not.toContainText('effort unknown');
+			await expect(failed, surface).not.toContainText('provider default');
+		}
+	});
+
+	test('keeps status with its outcome, and the time with Logs at the right, on a phone', async ({
+		page
+	}) => {
+		await page.setViewportSize({ width: 390, height: 844 });
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`
+		);
+		await page.getByRole('button', { name: /^Agent activity/ }).click();
+		const row = page.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName });
+		const trailing = row.getByTestId('run-trailing');
+		const logs = trailing.getByRole('button', { name: 'Logs' });
+		await expect(logs).toBeVisible();
+
+		// "failed · stalled" is one unit: the outcome never wraps alone.
+		const result = row.getByTestId('run-status').locator('xpath=..');
+		await expect(result).toHaveText(/^failed\s+·\s+stalled$/);
+		expect(await result.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe('nowrap');
+
+		// Read every box inside one layout pass: rows keep settling as the
+		// log-tail fetches resolve.
+		const boxes = await row.evaluate((li) => {
+			const rect = (el: Element) => {
+				const r = el.getBoundingClientRect();
+				return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+			};
+			const group = li.querySelector('[data-testid="run-trailing"]')!;
+			return {
+				row: rect(li),
+				paddingRight: parseFloat(getComputedStyle(li).paddingRight),
+				group: rect(group),
+				time: rect(li.querySelector('[data-testid="run-time"]')!),
+				logs: rect(group.querySelector('button')!)
+			};
+		});
+		// Same line: the time's vertical centre falls inside the button's box.
+		const timeCentre = (boxes.time.top + boxes.time.bottom) / 2;
+		expect(timeCentre).toBeGreaterThan(boxes.logs.top);
+		expect(timeCentre).toBeLessThan(boxes.logs.bottom);
+		expect(boxes.time.right).toBeLessThanOrEqual(boxes.logs.left);
+		// Right-aligned as a group, where Logs alone used to wrap to the left edge.
+		expect(Math.abs(boxes.row.right - boxes.paddingRight - boxes.group.right)).toBeLessThanOrEqual(
+			2
+		);
+	});
+
+	/**
+	 * Tines/920: a row used to be one wrapping line, so each fact landed
+	 * wherever the ones before it ended and no two rows lined up. Every fact
+	 * now has a fixed cell. Each row is its own grid, so this only holds while
+	 * the tracks are fixed widths — the edges below are compared across rows
+	 * with different runner names, models, statuses and costs.
+	 */
+	const cellEdges = (page: Page) =>
+		page.locator('li[data-run-id]:not([inert])').evaluateAll((rows) =>
+			rows.map((li) => {
+				const edge = (id: string) => {
+					const r = li.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect();
+					return {
+						left: Math.round(r.left),
+						right: Math.round(r.right),
+						mid: (r.top + r.bottom) / 2
+					};
+				};
+				// The label inside the cost cell, not the cell: the cell fills its
+				// grid area whichever way the label is aligned within it.
+				const costLabel = li.querySelector('[data-testid="run-cost"] > :is(button, span)');
+				const costRect = costLabel?.getBoundingClientRect();
+				return {
+					costLabel: costRect
+						? { left: Math.round(costRect.left), right: Math.round(costRect.right) }
+						: null,
+					runner: edge('run-runner'),
+					model: edge('run-model'),
+					effort: edge('run-effort'),
+					tier: edge('run-tier'),
+					status: edge('run-status'),
+					duration: edge('run-duration'),
+					cost: edge('run-cost'),
+					time: edge('run-time'),
+					actions: edge('run-trailing')
+				};
+			})
+		);
+	type Edges = Awaited<ReturnType<typeof cellEdges>>;
+	/** The distinct positions one cell takes across every row; aligned means one. */
+	const positions = (
+		rows: Edges,
+		cell: Exclude<keyof Edges[number], 'costLabel'>,
+		side: 'left' | 'right'
+	) => [...new Set(rows.map((r) => r[cell][side]))];
+
+	test('puts each fact in the same column on every row of the Agents tab', async ({ page }) => {
+		await gotoHydrated(page, '/agents');
+		await page.getByLabel('Show ended runs').check();
+		await expect(
+			page.locator('li:not([inert])', { hasText: RUNROW_STALLED.runnerName })
+		).toHaveCount(1);
+		const rows = await cellEdges(page);
+		expect(rows.length).toBeGreaterThanOrEqual(3);
+		for (const cell of [
+			'runner',
+			'model',
+			'effort',
+			'tier',
+			'status',
+			'duration',
+			'cost',
+			'time'
+		] as const) {
+			expect(positions(rows, cell, 'left'), `${cell} starts at one x`).toHaveLength(1);
+		}
+		expect(positions(rows, 'actions', 'right'), 'actions end at one x').toHaveLength(1);
+		// The fullest actions group (console link, Logs, Cancel) fits its
+		// column: it does not run into the row's right padding.
+		const overflow = await page
+			.locator(`li[data-run-id="${RUNROW.runKeyRunId}"]:not([inert])`)
+			.evaluate((li) => {
+				const actions = li.querySelector('[data-testid="run-trailing"]')!;
+				const contentRight =
+					li.getBoundingClientRect().right - parseFloat(getComputedStyle(li).paddingRight);
+				return actions.getBoundingClientRect().right - contentRight;
+			});
+		expect(overflow, 'actions stay inside the row').toBeLessThanOrEqual(1);
+		// One line: the last column sits level with the first.
+		for (const r of rows) expect(Math.abs(r.runner.mid - r.time.mid)).toBeLessThan(8);
+		// Columns in reading order, none overlapping the next.
+		const first = rows[0];
+		expect(first.runner.left).toBeLessThan(first.model.left);
+		expect(first.model.right).toBeLessThanOrEqual(first.effort.left);
+		expect(first.effort.right).toBeLessThanOrEqual(first.tier.left);
+		expect(first.tier.right).toBeLessThanOrEqual(first.status.left);
+		expect(first.duration.right).toBeLessThanOrEqual(first.cost.left);
+		expect(first.cost.right).toBeLessThanOrEqual(first.time.left);
+	});
+
+	test('keeps the same three fixed lines on every row of an issue sidebar', async ({ page }) => {
+		await gotoHydrated(
+			page,
+			`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`
+		);
+		await expect(
+			page.locator('li:not([inert])', { hasText: RUNROW_STALLED.runnerName })
+		).toHaveCount(1);
+		const rows = await cellEdges(page);
+		expect(rows.length).toBeGreaterThanOrEqual(3);
+		// Words start at one x, numbers end at one x.
+		for (const cell of ['runner', 'status', 'model', 'effort', 'tier'] as const) {
+			expect(positions(rows, cell, 'left'), `${cell} starts at one x`).toHaveLength(1);
+		}
+		expect(positions(rows, 'actions', 'right'), 'actions end at one x').toHaveLength(1);
+		// Fixture sanity: the labels compared differ in width ("$1.23" beside
+		// "1,100 tok", "2:00" beside "12:34"), so ending at one x is alignment
+		// and not equal strings.
+		const priced = rows.flatMap((r) => (r.costLabel ? [r.costLabel] : []));
+		expect(new Set(priced.map((c) => c.right - c.left)).size).toBeGreaterThan(1);
+		expect(new Set(rows.map((r) => r.duration.right - r.duration.left)).size).toBeGreaterThan(1);
+		await expect(
+			page
+				.locator('li:not([inert])', { hasText: RUNROW_STALLED.runnerName })
+				.getByTestId('run-duration')
+		).toHaveText(RUNROW_STALLED.durationLabel);
+		// One assertion for both, so a row that breaks either names which.
+		expect(
+			{
+				cost: [...new Set(priced.map((c) => c.right))].length,
+				duration: positions(rows, 'duration', 'right').length
+			},
+			'the cost and duration labels each end at one x'
+		).toEqual({ cost: 1, duration: 1 });
+		for (const r of rows) {
+			// Line 1: who and when. Line 2: how it ended and what it cost.
+			// Line 3: what it ran on and for how long.
+			expect(Math.abs(r.runner.mid - r.time.mid)).toBeLessThan(8);
+			expect(r.status.mid).toBeGreaterThan(r.runner.mid + 8);
+			expect(Math.abs(r.status.mid - r.cost.mid)).toBeLessThan(8);
+			expect(r.model.mid).toBeGreaterThan(r.status.mid + 8);
+			for (const cell of ['effort', 'tier', 'duration'] as const) {
+				expect(Math.abs(r.model.mid - r[cell].mid)).toBeLessThan(8);
+			}
+		}
+	});
+
+	/**
+	 * The Agents tab below the one-line width (a phone, a 1024px window) leads
+	 * each row with the issue ref. The runner used to share that line, so it
+	 * started wherever the ref ended and, on a phone, an active run with
+	 * Logs and Cancel left it no room at all. The ref now has the first line
+	 * and the runner starts the second.
+	 */
+	test('starts the runner at one x under issue refs of different lengths on a narrow Agents tab', async ({
+		page
+	}) => {
+		for (const viewport of [
+			{ width: 390, height: 844 },
+			{ width: 1024, height: 768 }
+		]) {
+			const at = `${viewport.width}px`;
+			await page.setViewportSize(viewport);
+			await gotoHydrated(page, '/agents');
+			await page.getByLabel('Show ended runs').check();
+			await expect(
+				page.locator('li:not([inert])', { hasText: RUNROW_STALLED.runnerName })
+			).toHaveCount(1);
+			const rows = await page.locator('li[data-run-id]:not([inert])').evaluateAll((lis) =>
+				lis.map((li) => {
+					const cell = (id: string) => li.querySelector<HTMLElement>(`[data-testid="${id}"]`)!;
+					const runner = cell('run-runner');
+					const actions = cell('run-trailing');
+					const box = li.getBoundingClientRect();
+					return {
+						id: li.getAttribute('data-run-id'),
+						ref: cell('run-ref').textContent!.trim(),
+						runnerLeft: Math.round(runner.getBoundingClientRect().left),
+						runnerWidth: runner.clientWidth,
+						runnerClipped: runner.scrollWidth > runner.clientWidth,
+						actionsRight: actions.getBoundingClientRect().right,
+						contentRight: box.right - parseFloat(getComputedStyle(li).paddingRight),
+						consoleLink: actions.querySelector('a') !== null,
+						cancel: [...actions.querySelectorAll('button')].some(
+							(b) => b.textContent!.trim() === 'Cancel'
+						)
+					};
+				})
+			);
+			// Fixture sanity: refs of different lengths, or one x proves nothing.
+			expect(new Set(rows.map((r) => r.ref.length)).size, at).toBeGreaterThan(1);
+			expect(
+				[...new Set(rows.map((r) => r.runnerLeft))],
+				`${at}: runner starts at one x`
+			).toHaveLength(1);
+
+			// The fullest row: an active run with the console link, Logs and
+			// Cancel, under the longest ref.
+			const active = rows.find((r) => r.id === RUNROW.runKeyRunId)!;
+			expect(active, at).toMatchObject({
+				ref: `${RUNROW.projectName}/#${RUNROW.runKeyIssueNumber}`,
+				consoleLink: true,
+				cancel: true
+			});
+			expect(active.runnerWidth, `${at}: active run's runner is visible`).toBeGreaterThan(0);
+			expect(active.runnerClipped, `${at}: active run's runner is shown in full`).toBe(false);
+			expect(active.actionsRight, `${at}: actions stay inside the row`).toBeLessThanOrEqual(
+				active.contentRight + 1
+			);
+			const ended = rows.find((r) => r.id === RUNROW.runId)!;
+			expect(ended.runnerWidth, `${at}: ended run's runner is visible`).toBeGreaterThan(0);
+			expect(ended.runnerClipped, `${at}: ended run's runner is shown in full`).toBe(false);
+		}
+	});
+
+	test('shows unpriced Codex tokens and resume lineage, not the thread id', async ({ page }) => {
 		await page.goto(`/issues/${encodeURIComponent(RUNROW.projectName)}/${RUNROW.issueNumber}`);
 		const row = page.locator('li:not([inert])', { hasText: RUNROW_FAILED.runnerName });
 		await expect(row).toContainText(RUNROW_FAILED.tokenLabel);
-		await expect(row).toContainText(`session: ${RUNROW_FAILED.providerSessionId}`);
+		await expect(row).not.toContainText(RUNROW_FAILED.providerSessionId);
 		await expect(row).toContainText(`resumed run ${RUNROW_FAILED.resumedFromRunId}`);
 		await expect(row.getByRole('link', { name: /resumed run/ })).toHaveCount(0);
 	});
