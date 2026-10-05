@@ -9,6 +9,7 @@ import {
 	pickWorkflow,
 	printJson,
 	printList,
+	resolveOrganization,
 	resolveProject,
 	resolveUrl,
 	resolveWorkflow,
@@ -18,7 +19,7 @@ import {
 	type CommonOpts,
 	type ListOpts
 } from '../common.js';
-import { formatTable } from '../format.js';
+import { formatTable, runScopeLabel } from '../format.js';
 import { assertNewStatesHavePrompts, parseJsonObject } from '../refs.js';
 import {
 	listAll,
@@ -384,7 +385,9 @@ function printWorkflowDetail(wf: WorkflowResponse, lib: Library): void {
 					wf.states.map((s) => [
 						`  ${s.name}`,
 						s.category,
-						s.id === wf.initial_state_id ? '(initial)' : ''
+						s.id === wf.initial_state_id ? '(initial)' : '',
+						// Only a state whose runs reach past their own issue says so.
+						s.run_scope && s.run_scope !== 'issue' ? `run scope: ${runScopeLabel(s.run_scope)}` : ''
 					])
 				).split('\n');
 	for (const [i, row] of rows.entries()) {
@@ -483,9 +486,16 @@ export function register(program: Command): void {
 			)
 			.option('-f, --file <path>', 'read the JSON definition from a file ("-" for stdin)')
 			.option('--no-prompts', 'allow states without initial "prompt" instructions')
+			.option(
+				'--org <org>',
+				'organization the workflow belongs to (default: your personal one; a shared one needs its owner)'
+			)
 			.addHelpText('after', WORKFLOW_JSON_HELP)
 	).action(
-		async (inline: string | undefined, opts: CommonOpts & { file?: string; prompts?: boolean }) => {
+		async (
+			inline: string | undefined,
+			opts: CommonOpts & { file?: string; prompts?: boolean; org?: string }
+		) => {
 			const body = readJsonBody(inline, opts.file);
 			if (!body) {
 				die(
@@ -495,6 +505,8 @@ export function register(program: Command): void {
 			}
 			assertNewStatesHavePrompts(body.states, opts.prompts);
 			const api = client(opts);
+			// The flag wins over an "organization_id" in the body.
+			if (opts.org) body.organization_id = (await resolveOrganization(api, opts.org)).id;
 			await resolveStateBases(body.states, () => loadLibrary(api));
 			const wf = await api.createWorkflow(body as unknown as CreateWorkflowRequest);
 			if (opts.json) return printJson(wf);

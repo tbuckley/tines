@@ -510,6 +510,8 @@ export interface CreateLabelRequest {
 	/** Defaults to `defaultLabelColor(name)`. */
 	color?: LabelColor;
 	description?: string;
+	/** Creates the label in this organization (default: your personal one). */
+	organization_id?: string;
 }
 
 export interface UpdateLabelRequest {

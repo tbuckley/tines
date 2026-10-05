@@ -18,6 +18,7 @@ import {
 	quotaLabel,
 	roundLines,
 	roundSummaryLabel,
+	runScopeLabel,
 	sinceLastRunLines,
 	recurrenceLabel,
 	ruleTargetsLabel,
@@ -750,5 +751,16 @@ describe('ageLabel delegation', () => {
 		for (const ms of [12_000, 900_000, 40_000_000, 400_000_000]) {
 			expect(ageLabel(new Date(now - ms).toISOString(), now)).toBe(sharedAgeLabel(now - ms, now));
 		}
+	});
+});
+
+describe('runScopeLabel', () => {
+	// `workspace` was renamed `organization`; a server still storing the old
+	// value is shown the new name, and the other scopes pass through.
+	it('shows workspace as organization', () => {
+		expect(runScopeLabel('workspace')).toBe('organization');
+		expect(runScopeLabel('organization')).toBe('organization');
+		expect(runScopeLabel('project')).toBe('project');
+		expect(runScopeLabel('issue')).toBe('issue');
 	});
 });

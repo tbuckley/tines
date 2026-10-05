@@ -4,20 +4,24 @@ import {
 	client,
 	die,
 	fetchList,
+	orgLabel,
 	printJson,
 	printList,
+	resolveOrganization,
 	resolveUrl,
 	resolveProject,
 	resolveIssue,
 	resolveWorkflow,
 	table,
+	webUrl,
 	withCommon,
 	withList,
 	type CommonOpts,
 	type ListOpts
 } from '../common.js';
-import { timestamp } from '../format.js';
+import { formatMovePreview, timestamp } from '../format.js';
 import {
+	type ApiClient,
 	type CreateProjectRequest,
 	type StarterInputSpec,
 	type StarterSummary,
@@ -25,14 +29,27 @@ import {
 } from '@tines/shared';
 import type { Command } from 'commander';
 
+const ORG_FLAG_HELP = 'look the project up in this organization only (names repeat across them)';
+
+/** `--org <org>`: names are unique within an organization, not across them. */
+function withOrg(cmd: Command): Command {
+	return cmd.option('--org <org>', ORG_FLAG_HELP);
+}
+
+/** Resolves `<project>`, within `--org` when given. */
+async function projectFor(api: ApiClient, ref: string, opts: CommonOpts & { org?: string }) {
+	const orgId = opts.org ? (await resolveOrganization(api, opts.org)).id : undefined;
+	return resolveProject(api, ref, orgId);
+}
+
 export function register(program: Command): void {
 	const projects = program.command('projects').description('Manage projects');
 
 	withCommon(
-		projects.command('people <project>').description('List the owner and active members')
+		withOrg(projects.command('people <project>').description('List the owner and active members'))
 	).action(async (ref: string, opts: CommonOpts) => {
 		const api = client(opts),
-			project = await resolveProject(api, ref),
+			project = await projectFor(api, ref, opts),
 			people = await api.getProjectPeople(project.id);
 		if (opts.json) return printJson(people);
 		console.log(`${people.owner.name} [${people.owner.id}] — owner`);
@@ -40,14 +57,16 @@ export function register(program: Command): void {
 			console.log(`${person.name} [${person.id}] — member (revision ${person.revision})`);
 	});
 	withCommon(
-		projects
-			.command('invite <project> <email>')
-			.description('Invite someone to the whole project')
-			.option('--issue <ref>', 'issue to open after acceptance')
-			.option(
-				'--confirm-sharing',
-				'acknowledge that first sharing gives members the whole project and restarts assigned work'
-			)
+		withOrg(
+			projects
+				.command('invite <project> <email>')
+				.description('Invite someone to the whole project')
+				.option('--issue <ref>', 'issue to open after acceptance')
+				.option(
+					'--confirm-sharing',
+					'acknowledge that first sharing gives members the whole project and restarts assigned work'
+				)
+		)
 	).action(
 		async (
 			ref: string,
@@ -55,7 +74,7 @@ export function register(program: Command): void {
 			opts: CommonOpts & { issue?: string; confirmSharing?: boolean }
 		) => {
 			const api = client(opts),
-				project = await resolveProject(api, ref);
+				project = await projectFor(api, ref, opts);
 			if (project.shared_at == null && !opts.confirmSharing)
 				die(
 					'First sharing gives access to the whole project. Your agents keep working on its issues and schedules unless you turn them off in the browser; members need their own permission. Assigned work is restarted and admitted work may finish. Rerun with --confirm-sharing to send the invite.'
@@ -76,12 +95,14 @@ export function register(program: Command): void {
 		}
 	);
 	withCommon(
-		projects
-			.command('invite-resend <project> <invite-id>')
-			.description('Rotate and resend an invitation')
+		withOrg(
+			projects
+				.command('invite-resend <project> <invite-id>')
+				.description('Rotate and resend an invitation')
+		)
 	).action(async (ref: string, inviteId: string, opts: CommonOpts) => {
 		const api = client(opts),
-			project = await resolveProject(api, ref);
+			project = await projectFor(api, ref, opts);
 		const invite = (await api.listProjectInvitations(project.id)).items.find(
 			(item) => item.id === inviteId
 		);
@@ -91,10 +112,12 @@ export function register(program: Command): void {
 		console.log(`Invitation ${inviteId} rotated; delivery ${result.delivery_status}`);
 	});
 	withCommon(
-		projects.command('invite-cancel <project> <invite-id>').description('Cancel an invitation')
+		withOrg(
+			projects.command('invite-cancel <project> <invite-id>').description('Cancel an invitation')
+		)
 	).action(async (ref: string, inviteId: string, opts: CommonOpts) => {
 		const api = client(opts),
-			project = await resolveProject(api, ref);
+			project = await projectFor(api, ref, opts);
 		const invite = (await api.listProjectInvitations(project.id)).items.find(
 			(item) => item.id === inviteId
 		);
@@ -104,10 +127,12 @@ export function register(program: Command): void {
 		console.log(`Canceled invitation ${inviteId}`);
 	});
 	withCommon(
-		projects.command('remove-member <project> <user-id>').description('Remove a project member')
+		withOrg(
+			projects.command('remove-member <project> <user-id>').description('Remove a project member')
+		)
 	).action(async (ref: string, userId: string, opts: CommonOpts) => {
 		const api = client(opts),
-			project = await resolveProject(api, ref);
+			project = await projectFor(api, ref, opts);
 		const member = (await api.getProjectPeople(project.id)).members.find(
 			(person) => person.id === userId
 		);
@@ -116,28 +141,30 @@ export function register(program: Command): void {
 		if (opts.json) return printJson(result);
 		console.log(`Removed ${member.name} from ${project.name}`);
 	});
-	withCommon(projects.command('leave <project>').description('Leave a shared project')).action(
-		async (ref: string, opts: CommonOpts) => {
-			const api = client(opts),
-				project = await resolveProject(api, ref);
-			const people = await api.getProjectPeople(project.id);
-			// The server enforces the actor identity; the CLI only needs the current revision.
-			const revision = people.members.find((person) => person.id === people.viewer_id)?.revision;
-			if (!revision) die('No active membership to leave');
-			const result = await api.leaveProject(project.id, revision);
-			if (opts.json) return printJson(result);
-			console.log(`Left ${project.name}`);
-		}
-	);
+	withCommon(
+		withOrg(projects.command('leave <project>').description('Leave a shared project'))
+	).action(async (ref: string, opts: CommonOpts) => {
+		const api = client(opts),
+			project = await projectFor(api, ref, opts);
+		const people = await api.getProjectPeople(project.id);
+		// The server enforces the actor identity; the CLI only needs the current revision.
+		const revision = people.members.find((person) => person.id === people.viewer_id)?.revision;
+		if (!revision) die('No active membership to leave');
+		const result = await api.leaveProject(project.id, revision);
+		if (opts.json) return printJson(result);
+		console.log(`Left ${project.name}`);
+	});
 
 	const guidance = projects
 		.command('guidance')
 		.description("Manage library items included in a shared project's guidance");
 	withCommon(
-		guidance.command('list <project>').description("List a project's included library items")
+		withOrg(
+			guidance.command('list <project>').description("List a project's included library items")
+		)
 	).action(async (ref: string, opts: CommonOpts) => {
 		const api = client(opts),
-			project = await resolveProject(api, ref),
+			project = await projectFor(api, ref, opts),
 			res = await api.listGuidanceInclusions(project.id);
 		if (opts.json) return printJson(res);
 		if (res.items.length === 0) return console.log('No library items included');
@@ -147,12 +174,14 @@ export function register(program: Command): void {
 		]);
 	});
 	withCommon(
-		guidance
-			.command('include <project> <item-id>')
-			.description("Include a library item in a project's shared guidance")
+		withOrg(
+			guidance
+				.command('include <project> <item-id>')
+				.description("Include a library item in a project's shared guidance")
+		)
 	).action(async (ref: string, itemId: string, opts: CommonOpts) => {
 		const api = client(opts),
-			project = await resolveProject(api, ref),
+			project = await projectFor(api, ref, opts),
 			item = await api.includeGuidanceItem(project.id, itemId);
 		if (opts.json) return printJson(item);
 		console.log(
@@ -160,12 +189,14 @@ export function register(program: Command): void {
 		);
 	});
 	withCommon(
-		guidance
-			.command('exclude <project> <item-id>')
-			.description("Remove a library item from a project's shared guidance")
+		withOrg(
+			guidance
+				.command('exclude <project> <item-id>')
+				.description("Remove a library item from a project's shared guidance")
+		)
 	).action(async (ref: string, itemId: string, opts: CommonOpts) => {
 		const api = client(opts),
-			project = await resolveProject(api, ref),
+			project = await projectFor(api, ref, opts),
 			item = await api.excludeGuidanceItem(project.id, itemId);
 		if (opts.json) return printJson(item);
 		console.log(`Removed ${item.kind} ${item.name} from ${project.name}'s shared guidance.`);
@@ -203,19 +234,28 @@ export function register(program: Command): void {
 			.command('list')
 			.description('List projects')
 			.option('--archived', 'include archived projects (hidden by default)')
-	).action(async (opts: ListOpts & { archived?: boolean }) => {
+			.option('--org <org>', 'only projects in this organization (filters the fetched page)')
+	).action(async (opts: ListOpts & { archived?: boolean; org?: string }) => {
 		const api = client(opts);
-		const res = await fetchList(opts, (page) =>
+		const org = opts.org ? await resolveOrganization(api, opts.org) : undefined;
+		const fetched = await fetchList(opts, (page) =>
 			api.listProjects({ ...page, ...(opts.archived ? { archived: 'all' as const } : {}) })
 		);
+		// The API has no organization filter; this one is applied to what was
+		// fetched, so without --all-pages it narrows one page.
+		const res = org
+			? { ...fetched, items: fetched.items.filter((p) => p.organization?.id === org.id) }
+			: fetched;
 		printList(res, opts, (items) => {
-			if (items.length === 0) return console.log('no projects');
+			if (items.length === 0)
+				return console.log(org ? `no projects in ${org.name}` : 'no projects');
 			// The ARCHIVED column only appears with the flag, so the default
 			// output is unchanged for everyone who never archives anything.
 			table([
-				['NAME', 'ISSUES', 'ID', 'CREATED', ...(opts.archived ? ['ARCHIVED'] : [])],
+				['NAME', 'ORGANIZATION', 'ISSUES', 'ID', 'CREATED', ...(opts.archived ? ['ARCHIVED'] : [])],
 				...items.map((p) => [
 					p.name,
+					p.organization ? orgLabel(p.organization) : '-',
 					String(p.issue_count),
 					p.id,
 					timestamp(p.created_at),
@@ -236,6 +276,10 @@ export function register(program: Command): void {
 				'-w, --default-workflow <id-or-name>',
 				'default workflow for new issues (conflicts with a starter that sets one)'
 			)
+			.option(
+				'--org <org>',
+				'organization to create it in (default: your personal one; see `tines orgs list`)'
+			)
 			.option('--starter <id>', 'built-in starter (discover with `tines projects starters`)')
 			.option('--repo <url>', 'repository URL for the code starter')
 			.option('--branch <branch>', 'repository branch for the code starter')
@@ -254,6 +298,7 @@ export function register(program: Command): void {
 			opts: CommonOpts & {
 				description?: string;
 				defaultWorkflow?: string;
+				org?: string;
 				starter?: string;
 				repo?: string;
 				branch?: string;
@@ -273,6 +318,7 @@ export function register(program: Command): void {
 				);
 			}
 			const api = client(opts);
+			const org = opts.org ? await resolveOrganization(api, opts.org) : undefined;
 			let starter: StarterSummary | undefined;
 			let starterRequest: CreateProjectRequest['starter'];
 			if (opts.starter) {
@@ -320,6 +366,7 @@ export function register(program: Command): void {
 				? (await resolveWorkflow(api, opts.defaultWorkflow)).id
 				: undefined;
 			const body: CreateProjectRequest = {
+				...(org ? { organization_id: org.id } : {}),
 				name,
 				description: opts.description,
 				default_workflow_id: workflowId,
@@ -333,7 +380,7 @@ export function register(program: Command): void {
 			const project = await api.createProject(body);
 			if (opts.json) return printJson(project);
 			console.log(
-				`created project "${project.name}" (${project.id})${typeof opts.prompt === 'string' ? ' with its "conventions" prompt' : ''}`
+				`created project "${project.name}" (${project.id})${org ? ` in ${org.name}` : ''}${typeof opts.prompt === 'string' ? ' with its "conventions" prompt' : ''}`
 			);
 			if (project.starter) {
 				for (const workflow of project.starter.workflows) {
@@ -353,12 +400,14 @@ export function register(program: Command): void {
 		}
 	);
 
-	withCommon(projects.command('show <id-or-name>').description('Show a project')).action(
+	withCommon(withOrg(projects.command('show <id-or-name>').description('Show a project'))).action(
 		async (ref: string, opts: CommonOpts) => {
 			const api = client(opts);
-			const project = await resolveProject(api, ref);
+			const project = await projectFor(api, ref, opts);
 			if (opts.json) return printJson(project);
 			console.log(`${project.name}  [${project.id}]`);
+			if (project.organization)
+				console.log(`organization: ${orgLabel(project.organization)} [${project.organization.id}]`);
 			if (project.viewer_role === 'member')
 				console.log(`shared by ${project.owner?.name ?? 'project owner'} — read only`);
 			if (project.description) console.log(project.description);
@@ -377,20 +426,22 @@ export function register(program: Command): void {
 	);
 
 	withCommon(
-		projects
-			.command('edit <id-or-name>')
-			.description('Edit a project')
-			.option('-n, --name <name>', 'rename the project')
-			.option('-d, --description <text>', 'set the description')
-			.option('-w, --default-workflow <id-or-name>', 'set the default workflow for new issues')
-			.option('--no-default-workflow', 'clear the default workflow (fall back to standard)')
+		withOrg(
+			projects
+				.command('edit <id-or-name>')
+				.description('Edit a project')
+				.option('-n, --name <name>', 'rename the project')
+				.option('-d, --description <text>', 'set the description')
+				.option('-w, --default-workflow <id-or-name>', 'set the default workflow for new issues')
+				.option('--no-default-workflow', 'clear the default workflow (fall back to standard)')
+		)
 	).action(
 		async (
 			ref: string,
 			opts: CommonOpts & { name?: string; description?: string; defaultWorkflow?: string | false }
 		) => {
 			const api = client(opts);
-			const project = await resolveProject(api, ref);
+			const project = await projectFor(api, ref, opts);
 			const body: UpdateProjectRequest = {};
 			if (opts.name !== undefined) body.name = opts.name;
 			if (opts.description !== undefined) body.description = opts.description;
@@ -410,14 +461,16 @@ export function register(program: Command): void {
 	);
 
 	withCommon(
-		projects
-			.command('archive <id-or-name>')
-			.description(
-				'Archive a project: pause its schedules, stop dispatch, make its issues read-only'
-			)
+		withOrg(
+			projects
+				.command('archive <id-or-name>')
+				.description(
+					'Archive a project: pause its schedules, stop dispatch, make its issues read-only'
+				)
+		)
 	).action(async (ref: string, opts: CommonOpts) => {
 		const api = client(opts);
-		const project = await resolveProject(api, ref);
+		const project = await projectFor(api, ref, opts);
 		const res = await api.archiveProject(project.id);
 		if (opts.json) return printJson(res);
 		// Archiving drains: runs already under way finish on their own issue.
@@ -436,12 +489,14 @@ export function register(program: Command): void {
 	});
 
 	withCommon(
-		projects
-			.command('unarchive <id-or-name>')
-			.description('Unarchive a project: schedules resume from their next occurrence')
+		withOrg(
+			projects
+				.command('unarchive <id-or-name>')
+				.description('Unarchive a project: schedules resume from their next occurrence')
+		)
 	).action(async (ref: string, opts: CommonOpts) => {
 		const api = client(opts);
-		const project = await resolveProject(api, ref);
+		const project = await projectFor(api, ref, opts);
 		const res = await api.unarchiveProject(project.id);
 		if (opts.json) return printJson(res);
 		console.log(
@@ -451,12 +506,57 @@ export function register(program: Command): void {
 	});
 
 	withCommon(
-		projects
-			.command('delete <id-or-name>')
-			.description('Delete a project (refused while it still contains issues)')
+		withOrg(
+			projects
+				.command('move <project> <org>')
+				.description(
+					'Preview moving a project to another organization; the move itself is confirmed in the browser'
+				)
+		)
+	).action(async (ref: string, orgRef: string, opts: CommonOpts & { org?: string }) => {
+		const api = client(opts);
+		const project = await projectFor(api, ref, opts);
+		const to = await resolveOrganization(api, orgRef);
+		// Only the preview is fetched: the API refuses keys a move
+		// (session_required), so there is nothing here to confirm.
+		const preview = await api.previewProjectMove(project.id, to.id);
+		if (opts.json) return printJson(preview);
+		console.log(formatMovePreview(preview));
+		console.log(
+			`\nTo move it, open ${webUrl(opts, `/projects/${project.id}`)} in the browser and choose Move` +
+				' (moving a project needs your browser session; API keys cannot confirm it).'
+		);
+	});
+
+	withCommon(
+		withOrg(
+			projects
+				.command('share <project>')
+				.description(
+					'Share this project: a new shared organization with the project moved in — browser only; prints where'
+				)
+		)
+	).action(async (ref: string, opts: CommonOpts & { org?: string }) => {
+		const api = client(opts);
+		const project = await projectFor(api, ref, opts);
+		if (project.organization?.kind === 'shared')
+			die(
+				`"${project.name}" is already in the shared organization ${project.organization.name}; invite people with \`tines orgs invite ${project.organization.id} <email>\``
+			);
+		die(
+			`sharing a project needs your browser session (API keys are refused): open ${webUrl(opts, `/projects/${project.id}`)} and choose Share`
+		);
+	});
+
+	withCommon(
+		withOrg(
+			projects
+				.command('delete <id-or-name>')
+				.description('Delete a project (refused while it still contains issues)')
+		)
 	).action(async (ref: string, opts: CommonOpts) => {
 		const api = client(opts);
-		const project = await resolveProject(api, ref);
+		const project = await projectFor(api, ref, opts);
 		await api.deleteProject(project.id);
 		console.log(`deleted project "${project.name}" (${project.id})`);
 	});

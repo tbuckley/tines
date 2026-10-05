@@ -15,6 +15,7 @@ import {
 	type ArtifactRequirementCheck,
 	type IssueDetail,
 	type ListResponse,
+	type OrganizationSummary,
 	type PageParams,
 	type Project,
 	type Runner,
@@ -268,27 +269,76 @@ export function table(rows: string[][]): void {
 // ---------------------------------------------------------------------------
 // Reference resolution (names are the human interface; the API wants ids)
 
+/** An organization as a person reads it: its name, marked when it is a personal one. */
+export function orgLabel(org: { name: string; kind: 'personal' | 'shared' }): string {
+	return org.kind === 'personal' ? `${org.name} (personal)` : org.name;
+}
+
+/**
+ * Resolves `<org>`: an organization id (`org_…`), then an exact name among
+ * the organizations this credential reaches. Two with one name is refused
+ * with their ids, like a duplicate project name.
+ */
+export async function resolveOrganization(
+	api: ApiClient,
+	ref: string
+): Promise<OrganizationSummary> {
+	const items = (await api.listOrganizations()).items;
+	const byId = items.find((o) => o.id === ref);
+	if (byId) return byId;
+	const byName = items.filter((o) => o.name === ref);
+	if (byName.length === 1) return byName[0];
+	if (byName.length > 1) {
+		die(
+			`organization name "${ref}" is ambiguous; use an id: ${byName.map((o) => `${o.id} (${o.kind}, owner ${o.owner.name})`).join(', ')}`
+		);
+	}
+	die(
+		`no organization "${ref}" (have: ${items.map((o) => `${orgLabel(o)} [${o.id}]`).join(', ') || 'none'})`
+	);
+}
+
+/** The web app's address for a path, from the API base URL in effect. */
+export function webUrl(opts: CommonOpts, path: string): string {
+	return `${resolveUrl(opts).replace(/\/+$/, '')}${path}`;
+}
+
 /**
  * Archived projects still resolve — an issue ref or an unarchive call must
  * keep naming one — so this asks for the unfiltered list rather than the
  * API's non-archived default.
+ *
+ * Names are unique within an organization, not across them: pass `orgId`
+ * (from `--org`) to look only in one, and an ambiguous name is refused with
+ * each project's organization so the caller can choose.
  */
-export async function resolveProject(api: ApiClient, ref: string): Promise<Project> {
+export async function resolveProject(
+	api: ApiClient,
+	ref: string,
+	orgId?: string
+): Promise<Project> {
 	// A historical issue address may belong to any project in the workspace,
 	// including an archived project beyond the first page. Reference resolution
 	// must therefore consume the whole namespace, not the list UI's first page.
-	const items = await listAll((page) => api.listProjects({ ...page, archived: 'all' }));
+	const all = await listAll((page) => api.listProjects({ ...page, archived: 'all' }));
+	const items = orgId ? all.filter((p) => p.organization?.id === orgId) : all;
 	const byId = items.find((p) => p.id === ref);
 	if (byId) return byId;
 	const byName = items.filter((p) => p.name === ref);
 	if (byName.length === 1) return byName[0];
 	if (byName.length > 1) {
+		const where = (p: Project) =>
+			p.organization
+				? ` (${orgLabel(p.organization)} [${p.organization.id}])`
+				: p.owner
+					? ` (${p.owner.name})`
+					: '';
 		die(
-			`project name "${ref}" is ambiguous; use an id: ${byName.map((p) => `${p.id}${p.owner ? ` (${p.owner.name})` : ''}`).join(', ')}`
+			`project name "${ref}" is ambiguous; use an id: ${byName.map((p) => `${p.id}${where(p)}`).join(', ')}`
 		);
 	}
 	const have = items.map((p) => (p.archived_at ? `${p.name} (archived)` : p.name)).join(', ');
-	die(`no project named "${ref}" (have: ${have || 'none'})`);
+	die(`no project named "${ref}"${orgId ? ` in ${orgId}` : ''} (have: ${have || 'none'})`);
 }
 
 /**
