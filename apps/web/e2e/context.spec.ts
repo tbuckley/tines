@@ -9,9 +9,19 @@ import type {
 	TinesEvent,
 	WorkflowResponse
 } from '@tines/shared';
-import { expect, test } from '@playwright/test';
-import { ALICE, BOB, RUNROW } from './constants.mjs';
-import { apiClient, body, errorBody, gotoHydrated, issuePath, runId, signIn } from './helpers';
+import { expect, test, type Locator } from '@playwright/test';
+import { ALICE, BOB, PAGINATION, RUNROW } from './constants.mjs';
+import {
+	apiClient,
+	body,
+	DESKTOP,
+	errorBody,
+	gotoHydrated,
+	issuePath,
+	PHONE,
+	runId,
+	signIn
+} from './helpers';
 
 /**
  * The context-attachments acceptance loop (specs/context/SPEC.md): scoped
@@ -906,3 +916,197 @@ test.describe.serial('context list state chips', () => {
 		await expect(row).not.toContainText(engName);
 	});
 });
+
+test('the context editor scopes an item to an issue far older than the newest 100', async ({
+	request,
+	context,
+	page
+}) => {
+	// The pagination account owns 205 seeded issues; #1 is the oldest, so no
+	// newest-first page of 100 can contain it.
+	const api = apiClient(request, PAGINATION.user.apiKey);
+	const name = `old-issue-scope-${runId}`;
+	let created: ContextItem | undefined;
+	try {
+		await signIn(context, PAGINATION.user.sessionToken);
+		await gotoHydrated(page, `/projects/${PAGINATION.projectId}`);
+		await page.getByRole('button', { name: 'Add context' }).click();
+		const dialog = page.getByRole('dialog');
+		await expect(dialog.getByRole('heading', { name: 'New context item' })).toBeVisible();
+		await dialog.getByLabel('Name', { exact: true }).fill(name);
+		await dialog.getByLabel('Body (Markdown)').fill('Only for the oldest issue.');
+		const scope = dialog.getByLabel('Only for issue');
+
+		await test.step('typed text that was never picked does not save as "any issue"', async () => {
+			await scope.fill('Page issue');
+			await expect(dialog.getByRole('listbox').getByRole('option').first()).toBeVisible();
+			// Moving focus closes the list, which would otherwise sit over the button.
+			await dialog.getByLabel('Name', { exact: true }).focus();
+			await dialog.getByRole('button', { name: 'Create' }).click();
+			await expect(dialog).toContainText(
+				'Choose an issue from the list, or clear the issue field.'
+			);
+			const { items } = await body<ListResponse<ContextItem>>(
+				await api.get(`/api/v1/context?q=${encodeURIComponent(name)}`)
+			);
+			expect(items).toEqual([]);
+		});
+
+		await test.step('the oldest issue is found by number and saved as the scope', async () => {
+			await scope.fill('#1');
+			await expect(dialog.getByRole('listbox').getByRole('option').first()).toHaveText(
+				'#1 Page issue 1'
+			);
+			await dialog.getByRole('listbox').getByRole('option').first().click();
+			await expect(scope).toHaveValue('#1 Page issue 1');
+			await expect(dialog).toContainText('The issue implies its project.');
+			await dialog.getByRole('button', { name: 'Create' }).click();
+			await expect(dialog).toHaveCount(0);
+			const { items } = await body<ListResponse<ContextItem>>(
+				await api.get(`/api/v1/context?q=${encodeURIComponent(name)}`)
+			);
+			expect(items.map((i) => i.scope.issue_id)).toEqual(['iss_e2e_page_1']);
+			created = items[0];
+		});
+
+		await test.step('reopening the item shows its bound issue', async () => {
+			await gotoHydrated(page, `/context?q=${encodeURIComponent(name)}`);
+			await page
+				.locator('li:not([inert])')
+				.filter({ hasText: name })
+				.getByRole('button')
+				.first()
+				.click();
+			await expect(page.getByRole('dialog').getByLabel('Only for issue')).toHaveValue(
+				`${PAGINATION.projectName}/#1 Page issue 1`
+			);
+		});
+	} finally {
+		if (!created) {
+			const { items } = await body<ListResponse<ContextItem>>(
+				await api.get(`/api/v1/context?q=${encodeURIComponent(name)}`)
+			).catch(() => ({ items: [] as ContextItem[] }));
+			created = items[0];
+		}
+		if (created) await api.delete(`/api/v1/context/${created.id}`).catch(() => undefined);
+	}
+});
+
+test("changing the project in the context editor drops the old project's issue results", async ({
+	request,
+	context,
+	page
+}) => {
+	// Both projects own an issue #1, so a stale list offers the wrong one.
+	const api = apiClient(request, PAGINATION.user.apiKey);
+	const other = await body<Project>(
+		await api.post('/api/v1/projects', { name: `scope-switch-${runId}` })
+	);
+	try {
+		await api.post(`/api/v1/projects/${other.id}/issues`, { title: 'Other first issue' });
+		await signIn(context, PAGINATION.user.sessionToken);
+		await gotoHydrated(page, '/context');
+		await page.getByRole('button', { name: 'New item' }).click();
+		const dialog = page.getByRole('dialog');
+		const project = dialog.getByLabel('Project', { exact: true });
+		const scope = dialog.getByLabel('Only for issue');
+		const first = dialog.getByRole('listbox').getByRole('option').first();
+
+		await project.selectOption(PAGINATION.projectId);
+		await scope.fill('#1');
+		await expect(first).toHaveText('#1 Page issue 1');
+
+		await project.selectOption(other.id);
+		await scope.focus();
+		await expect(first).toHaveText('#1 Other first issue');
+		await expect(dialog.getByRole('listbox').getByRole('option')).toHaveCount(1);
+		await scope.press('Enter');
+		await expect(scope).toHaveValue('#1 Other first issue');
+	} finally {
+		await api.delete(`/api/v1/projects/${other.id}`).catch(() => undefined);
+	}
+});
+
+for (const size of [DESKTOP, PHONE, { width: 1280, height: 720 }, { width: 390, height: 280 }]) {
+	test(`the context editor's issue list is reachable without scrolling by hand at ${size.width}x${size.height}`, async ({
+		context,
+		page
+	}) => {
+		// The issue field is the last one in the dialog, so its list opens past
+		// the end of the dialog's scrolling body.
+		const hittable = (option: Locator) =>
+			option.evaluate((el) => {
+				const box = el.getBoundingClientRect();
+				const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+				return hit !== null && el.contains(hit);
+			});
+		await page.setViewportSize(size);
+		await signIn(context, PAGINATION.user.sessionToken);
+		await gotoHydrated(page, `/projects/${PAGINATION.projectId}`);
+		await page.getByRole('button', { name: 'Add context' }).click();
+		const dialog = page.getByRole('dialog');
+		const scope = dialog.getByLabel('Only for issue');
+		const options = dialog.getByRole('listbox').getByRole('option');
+
+		await scope.fill('Page issue');
+		await expect(options).toHaveCount(8);
+		await expect.poll(() => hittable(options.first())).toBe(true);
+		const listbox = dialog.getByRole('listbox');
+		const scrollsInside = () => listbox.evaluate((el) => el.scrollHeight > el.clientHeight);
+		if (size.height >= 720) {
+			// The dialog covers the phone tab bar, so the list is sized to the
+			// dialog's body, not to the space above the bar: all eight rows show.
+			await expect.poll(() => hittable(options.last())).toBe(true);
+			expect(await scrollsInside()).toBe(false);
+		} else {
+			// At 280px the body is shorter than eight rows. The list is cut to what
+			// the body can show under the field, so the field stays on screen above
+			// it, and the arrow keys below scroll the rest in.
+			await expect.poll(scrollsInside).toBe(true);
+			await expect
+				.poll(() =>
+					listbox.evaluate((el) => {
+						const body = el.closest('[role="dialog"] > .overflow-y-auto')!;
+						return el.getBoundingClientRect().bottom <= body.getBoundingClientRect().bottom + 0.5;
+					})
+				)
+				.toBe(true);
+			await expect.poll(() => hittable(scope)).toBe(true);
+			// It takes all of that room, down past where the covered tab bar starts.
+			const room = await listbox.evaluate((el) => {
+				const body = el.closest('[role="dialog"] > .overflow-y-auto')!;
+				const field = document.getElementById('ctx-scope-issue')!;
+				return { list: el.offsetHeight, most: body.clientHeight - field.offsetHeight };
+			});
+			expect(room.list).toBeGreaterThanOrEqual(room.most - 16);
+		}
+
+		for (let i = 1; i < 8; i += 1) {
+			await scope.press('ArrowDown');
+			await expect(options.nth(i)).toHaveAttribute('aria-selected', 'true');
+			await expect.poll(() => hittable(options.nth(i)), { message: `option ${i}` }).toBe(true);
+		}
+
+		// Opened again with its rows already loaded, the list is in view at once.
+		// On a phone the page version then slides the field up under the header;
+		// in a dialog that slide would push the list back out of the body.
+		await scope.fill('');
+		await expect(options.first()).toHaveText('#205 Page issue 205');
+		await scope.blur();
+		await expect(listbox).toBeHidden();
+		await scope.focus();
+		await expect(options).toHaveCount(8);
+		// The slide starts a frame after the list opens (and is instant here: reduced motion).
+		await page.evaluate(
+			() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+		);
+		expect(await hittable(options.first()), 'first row after reopening').toBe(true);
+		expect(
+			await listbox.evaluate((el) => {
+				const body = el.closest('[role="dialog"] > .overflow-y-auto')!;
+				return el.getBoundingClientRect().bottom <= body.getBoundingClientRect().bottom + 0.5;
+			}),
+			'list inside the dialog body after reopening'
+		).toBe(true);
+	});
+}

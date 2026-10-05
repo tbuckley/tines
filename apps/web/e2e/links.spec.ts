@@ -7,8 +7,8 @@ import type {
 	TinesEvent
 } from '@tines/shared';
 import { expect, test } from '@playwright/test';
-import { ALICE, BOB } from './constants.mjs';
-import { apiClient, body, errorBody, gotoHydrated, runId, signIn } from './helpers';
+import { ALICE, BOB, PAGINATION } from './constants.mjs';
+import { apiClient, body, errorBody, gotoHydrated, PHONE, runId, signIn } from './helpers';
 
 /**
  * Dependencies & duplicates (specs/issue_dependencies/SPEC.md): blocking
@@ -311,7 +311,7 @@ test.describe.serial('issue links', () => {
 
 		await kind.selectOption('blocks');
 		await picker.fill(source.title);
-		await card.getByRole('button', { name: new RegExp(source.title) }).click();
+		await card.getByRole('option', { name: new RegExp(source.title) }).click();
 		const cycle = card.getByText('Adding this link would create a cycle:');
 		await expect(cycle).toBeVisible();
 		await expect(cycle.getByRole('link')).toHaveCount(4);
@@ -321,7 +321,7 @@ test.describe.serial('issue links', () => {
 		await expect(card.getByText(source.title, { exact: true })).toHaveCount(1);
 
 		await picker.fill(valid.title);
-		await card.getByRole('button', { name: new RegExp(valid.title) }).click();
+		await card.getByRole('option', { name: new RegExp(valid.title) }).click();
 		await expect(cycle).toHaveCount(0);
 		await expect(card.getByText(valid.title, { exact: true })).toBeVisible();
 
@@ -342,7 +342,7 @@ test.describe.serial('issue links', () => {
 		);
 		await kind.selectOption('duplicate_of');
 		await picker.fill(competing.title);
-		await card.getByRole('button', { name: new RegExp(competing.title) }).click();
+		await card.getByRole('option', { name: new RegExp(competing.title) }).click();
 		const duplicate = card.getByText('Already a duplicate of');
 		await expect(duplicate).toBeVisible();
 		await expect(duplicate).toContainText(`${project.name}/#${canonical.number}`);
@@ -351,8 +351,112 @@ test.describe.serial('issue links', () => {
 			`/issues/${project.name}/${canonical.number}`
 		);
 		await expect(picker).toBeVisible();
-		await expect(card.getByRole('button', { name: new RegExp(competing.title) })).toBeVisible();
+		await expect(card.getByRole('option', { name: new RegExp(competing.title) })).toBeVisible();
 		const detail = await body<IssueDetail>(await api.get(`/api/v1/issues/${current.id}`));
 		expect(detail.links.duplicate_of?.issue_id).toBe(canonical.id);
+	});
+
+	test('on a phone the Relations picker list ends above the bottom bars', async ({
+		request,
+		context,
+		page
+	}) => {
+		// The pagination account's 205 issues fill all eight rows.
+		const api = apiClient(request, PAGINATION.user.apiKey);
+		const project = await body<Project>(
+			await api.post('/api/v1/projects', { name: `link-phone-${runId}` })
+		);
+		try {
+			const current = await body<IssueDetail>(
+				await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Linked from a phone' })
+			);
+			await page.setViewportSize(PHONE);
+			await signIn(context, PAGINATION.user.sessionToken);
+			await gotoHydrated(page, `/issues/${encodeURIComponent(project.name)}/${current.number}`);
+			// On a phone the card starts folded.
+			await page.getByRole('button', { name: 'Relations none' }).click();
+			const card = page.locator('#relations');
+			await card.getByRole('button', { name: 'Add' }).click();
+			const picker = card.getByRole('combobox', { name: 'Issue to link' });
+			const listbox = card.getByRole('listbox');
+			const options = listbox.getByRole('option');
+			const transitions = page.getByTestId('transition-bar');
+			const tabs = page.getByRole('navigation', { name: 'Primary' });
+			await expect(transitions).toBeVisible();
+
+			await picker.focus();
+			await expect(options).toHaveCount(8);
+			const top = async (l: typeof listbox) => (await l.boundingBox())!.y;
+			const bottom = async (l: typeof listbox) => {
+				const b = (await l.boundingBox())!;
+				return b.y + b.height;
+			};
+			// The transition bar sits on top of the tab bar; the list clears both.
+			await expect.poll(async () => (await bottom(listbox)) <= (await top(transitions))).toBe(true);
+			expect(await top(transitions)).toBeLessThan(await top(tabs));
+			const box = (await listbox.boundingBox())!;
+			expect(box.x).toBeGreaterThanOrEqual(0);
+			expect(box.x + box.width).toBeLessThanOrEqual(PHONE.width);
+
+			// Every row can be reached and tapped: the last one links its issue.
+			await options.last().scrollIntoViewIfNeeded();
+			expect(await bottom(options.last())).toBeLessThanOrEqual(await top(transitions));
+			const title = (await options.last().locator('span.truncate').textContent())!;
+			await options.last().click();
+			await expect(card.getByText(title, { exact: true })).toBeVisible();
+		} finally {
+			await api.delete(`/api/v1/projects/${project.id}`).catch(() => undefined);
+		}
+	});
+
+	test('the Relations picker reaches an issue far older than the newest 100', async ({
+		request,
+		context,
+		page
+	}) => {
+		// The pagination account owns 205 seeded issues; #1 is the oldest, so no
+		// newest-first page of 100 can contain it.
+		const api = apiClient(request, PAGINATION.user.apiKey);
+		const project = await body<Project>(
+			await api.post('/api/v1/projects', { name: `link-old-${runId}` })
+		);
+		try {
+			const current = await body<IssueDetail>(
+				await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Needs an old blocker' })
+			);
+			await signIn(context, PAGINATION.user.sessionToken);
+			await gotoHydrated(page, `/issues/${encodeURIComponent(project.name)}/${current.number}`);
+			const card = page.locator('#relations');
+			await card.getByRole('button', { name: 'Add' }).click();
+			const picker = card.getByRole('combobox', { name: 'Issue to link' });
+			const options = card.getByRole('listbox').getByRole('option');
+
+			// A bare #N means the current issue's own project.
+			const sibling = await body<IssueDetail>(
+				await api.post(`/api/v1/projects/${project.id}/issues`, { title: 'Sibling issue' })
+			);
+			await picker.fill(`#${sibling.number}`);
+			await expect(options.first()).toHaveText(`${project.name}/#${sibling.number} Sibling issue`);
+
+			// By ref: Project/N is looked up directly and listed first, whatever
+			// case the project name is typed in.
+			await picker.fill(`${PAGINATION.projectName.toUpperCase()}/1`);
+			await expect(options.first()).toHaveText(`${PAGINATION.projectName}/#1 Page issue 1`);
+			await options.first().click();
+			await expect(card.getByText('Page issue 1', { exact: true })).toBeVisible();
+			await expect(picker).toHaveValue('');
+			await expect
+				.poll(async () => {
+					const detail = await body<IssueDetail>(await api.get(`/api/v1/issues/${current.id}`));
+					return detail.links.blocked_by.map((l) => l.issue_id);
+				})
+				.toEqual(['iss_e2e_page_1']);
+
+			// Already linked, so it is no longer offered.
+			await picker.fill(`${PAGINATION.projectName}/1`);
+			await expect(card.getByRole('listbox')).toHaveText('No issues match');
+		} finally {
+			await api.delete(`/api/v1/projects/${project.id}`).catch(() => undefined);
+		}
 	});
 });
