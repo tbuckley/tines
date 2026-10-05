@@ -305,6 +305,22 @@ export interface CreatePackItemRequest {
 	repo_dir?: string | null;
 }
 
+/**
+ * `PATCH …/packs/:packId/items/:itemId` — where an authored pack's env or repo
+ * item takes its value from: an input (`input`), or a fixed value (`input: null`
+ * plus `value`, or `repo_url`/`repo_branch`). Other fields of a pack item are
+ * edited through the ordinary context API.
+ */
+export interface UpdatePackItemBindingRequest {
+	input: string | null;
+	/** env, unbound: the value (a template; `{{ inputs.x }}` placeholders allowed). */
+	value?: string;
+	/** repo, unbound. */
+	repo_url?: string;
+	repo_branch?: string | null;
+	expected_version?: number;
+}
+
 export interface SuggestPackScheduleRequest {
 	/** An existing schedule on one of the pack's workflows. */
 	schedule_id: string;

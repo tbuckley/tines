@@ -482,6 +482,16 @@ function serializeItem(row: ItemRow): ContextItem {
 	return item;
 }
 
+function inputRefList(raw: string | null): string[] {
+	if (!raw) return [];
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+	} catch {
+		return [];
+	}
+}
+
 function itemPack(row: ItemRow): NonNullable<ContextItem['pack']> {
 	return {
 		id: row.pack_id!,
@@ -489,7 +499,9 @@ function itemPack(row: ItemRow): NonNullable<ContextItem['pack']> {
 		kind: (row.pack_kind ?? 'installed') as 'authored' | 'installed',
 		reach: row.reach!,
 		workflow_id: row.workflow_id ?? row.scope_workflow_id ?? null,
-		workflow_name: row.reach_workflow_name ?? row.scope_workflow_name ?? null
+		workflow_name: row.reach_workflow_name ?? row.scope_workflow_name ?? null,
+		input: boundInput(row),
+		input_refs: inputRefList(row.input_refs ?? null)
 	};
 }
 

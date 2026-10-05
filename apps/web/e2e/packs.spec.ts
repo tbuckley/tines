@@ -108,3 +108,108 @@ test('installs a pack from a file, renders its inputs, and exports it unchanged'
 	);
 	expect(exported).toMatchObject({ version: 2, digest: pack.digest, new_version: false });
 });
+
+test('authors a pack in the browser: declares inputs with a form and plugs them into context', async ({
+	page,
+	context,
+	request,
+	uniqueName
+}) => {
+	const alice = apiClient(request, ALICE.apiKey);
+	const project = await body<{ id: string }>(
+		await alice.post('/api/v1/projects', { name: uniqueName('pack-author') })
+	);
+	const pack = await body<PackSummary>(
+		await alice.post(`/api/v1/projects/${project.id}/packs`, { name: 'Ops kit' })
+	);
+	await signIn(context, ALICE.sessionToken);
+	await gotoHydrated(page, `/projects/${project.id}/packs/${pack.id}`);
+
+	// Declare a text input and a secret input in the Inputs section.
+	const inputs = page.getByRole('region', { name: 'Inputs' });
+	await inputs.getByRole('button', { name: 'Add input' }).click();
+	await inputs.getByLabel('Name').fill('team');
+	await inputs.getByLabel('Description').fill('The team that owns this project');
+	await inputs.getByRole('button', { name: 'Add input' }).click();
+	await expect(inputs.getByText('Not used by any item yet')).toBeVisible();
+	await inputs.getByRole('button', { name: 'Add input' }).click();
+	await inputs.getByLabel('Name').fill('api_token');
+	await inputs.getByLabel('Type').selectOption('secret');
+	await inputs.getByLabel('Description').fill('Your API token');
+	await inputs.getByRole('button', { name: 'Add input' }).click();
+	await expect(inputs.getByRole('listitem').filter({ hasText: 'Your API token' })).toBeVisible();
+
+	// A prompt that reads the text input, inserted from the menu.
+	const add = page.getByRole('form', { name: 'Add context' });
+	await add.getByLabel('Name').fill('conventions');
+	await add.getByLabel('Prompt', { exact: true }).fill('You work for ');
+	await add.getByLabel('Insert input').selectOption('team');
+	await expect(add.getByLabel('Prompt', { exact: true })).toHaveValue(
+		'You work for {{ inputs.team }}'
+	);
+	await add.getByRole('button', { name: 'Add' }).click();
+	await expect(page.getByText('· reads team')).toBeVisible();
+
+	// An env variable bound to the secret input.
+	await add.getByLabel('Kind').selectOption('env');
+	await add.getByLabel('Name').fill('API_TOKEN');
+	await add.getByLabel('Value', { exact: true }).selectOption('api_token');
+	await add.getByRole('button', { name: 'Add' }).click();
+	await expect(page.getByText('· reads api_token')).toBeVisible();
+
+	// A skill, written in the browser.
+	await add.getByLabel('Kind').selectOption('skill');
+	await add.getByLabel('Name').fill('release-notes');
+	await add.getByLabel('Description').fill('Write release notes');
+	await add.getByLabel('Instructions (SKILL.md)').fill('Sign them as ');
+	await add.getByLabel('Insert input').selectOption('team');
+	await add.getByRole('button', { name: 'Add' }).click();
+	await expect(page.getByText('release-notes', { exact: true })).toBeVisible();
+
+	// Inputs in use cannot be removed, and the list says who uses them.
+	const team = inputs.getByRole('listitem').filter({ hasText: 'The team that owns this project' });
+	await expect(team).toContainText('conventions');
+	await expect(team).toContainText('release-notes');
+	await expect(team.getByRole('button', { name: 'Remove' })).toBeDisabled();
+
+	// Edit the skill: its instructions load into the editor, and saving keeps it valid.
+	const skillRow = page
+		.getByRole('listitem')
+		.filter({ has: page.getByText('release-notes', { exact: true }) });
+	await skillRow.locator('summary').click();
+	await skillRow.getByRole('button', { name: 'Edit' }).click();
+	const editSkill = page.getByRole('form', { name: 'Edit skill release-notes' });
+	await expect(editSkill.getByLabel('Instructions (SKILL.md)')).toHaveValue(
+		'Sign them as {{ inputs.team }}'
+	);
+	await editSkill
+		.getByLabel('Instructions (SKILL.md)')
+		.fill('Sign them as the {{ inputs.team }} team.');
+	await editSkill.getByRole('button', { name: 'Save' }).click();
+	await expect(editSkill).toBeHidden();
+	await page.screenshot({
+		path: '/tmp/claude-0/-home-user-tines/cde374f5-126f-5c1d-8fea-27f57a4b129d/scratchpad/authoring.png',
+		fullPage: true
+	});
+
+	const detail = await body<{
+		inputs: { name: string; decl: { type: string } }[];
+		items: { kind: string; name: string; body?: string; pack?: { input?: string | null } }[];
+	}>(await alice.get(`/api/v1/projects/${project.id}/packs/${pack.id}`));
+	expect(detail.inputs.map((i) => [i.name, i.decl.type])).toEqual([
+		['team', 'text'],
+		['api_token', 'secret']
+	]);
+	expect(detail.items.find((i) => i.name === 'conventions')?.body).toBe(
+		'You work for {{ inputs.team }}'
+	);
+	expect(detail.items.find((i) => i.name === 'API_TOKEN')?.pack?.input).toBe('api_token');
+	const exported = await body<PackExport>(
+		await alice.get(`/api/v1/projects/${project.id}/packs/${pack.id}/export`)
+	);
+	const skill = exported.files.find((f) => f.path === 'project/skills/release-notes/SKILL.md');
+	expect(skill).toBeTruthy();
+	expect(Buffer.from(skill!.content_b64, 'base64').toString()).toContain(
+		'Sign them as the {{ inputs.team }} team.'
+	);
+});

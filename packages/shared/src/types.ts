@@ -1274,6 +1274,10 @@ export interface ContextItemPack {
 	/** Workflow reach: the workflow. */
 	workflow_id: string | null;
 	workflow_name: string | null;
+	/** env/repo: the input this item takes its value from, if any. */
+	input?: string | null;
+	/** The inputs this item reads (placeholders and its bound input). */
+	input_refs?: string[];
 }
 
 export interface CreateContextItemRequest {
