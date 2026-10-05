@@ -43,6 +43,8 @@
 	import { Select } from '$lib/components/ui/select/index.js';
 	import { prefersReducedMotion } from '$lib/format';
 
+	const WAIT_FOR_CHANGE = 'Wait for the current change to finish, then save again.';
+
 	let { data } = $props();
 	function initialCandidate(): WorkflowPackageDocument {
 		return structuredClone(data.candidate);
@@ -251,6 +253,8 @@
 		)
 			return;
 		busy = true;
+		// The response replaces the whole copy, so authoring waits for it rather than being overwritten.
+		candidateUpdating = true;
 		status = 'Applying automation from the latest workflow…';
 		try {
 			const options = sourceOptions();
@@ -283,6 +287,7 @@
 			}
 		} finally {
 			busy = false;
+			candidateUpdating = false;
 		}
 	}
 	async function prepareForPublication() {
@@ -628,7 +633,10 @@
 		await finishInputEdit(inputId);
 	}
 	async function saveInlineText(recordId: string, field: TextUseField, value: string) {
-		if (candidateUpdating) return false;
+		if (candidateUpdating) {
+			status = WAIT_FOR_CHANGE;
+			return false;
+		}
 		let next: WorkflowPackageDocument;
 		try {
 			next = saveAuthoredField(candidate, { recordId, field }, value);
@@ -663,7 +671,10 @@
 		inputId?: string;
 		draft?: InputDraft;
 	}) {
-		if (candidateUpdating) return null;
+		if (candidateUpdating) {
+			status = WAIT_FOR_CHANGE;
+			return { error: WAIT_FOR_CHANGE };
+		}
 		let result;
 		try {
 			result = replaceSelectionWithVariable(candidate, {
@@ -706,7 +717,10 @@
 		recordId: string,
 		field: TextUseField
 	) {
-		if (candidateUpdating) return false;
+		if (candidateUpdating) {
+			status = WAIT_FOR_CHANGE;
+			return false;
+		}
 		if (!(await guardInlineEdits('updating this variable', inputId, `${recordId}:${field}`)))
 			return false;
 		let next: WorkflowPackageDocument;
@@ -1384,11 +1398,14 @@
 					readonly
 					aria-describedby={copyState === 'failed' ? 'copy-help' : undefined}
 				/>
+				<!-- `aria-disabled` rather than `disabled` while the write is pending: Chromium drops
+				     focus from a disabled button and does not give it back. copyLink() ignores a second
+				     activation. -->
 				<Button
 					data-testid="copy-share-link"
 					class="min-h-11 w-full min-w-24 sm:w-auto"
 					onclick={copyLink}
-					disabled={copyState === 'copying'}
+					aria-disabled={copyState === 'copying' || undefined}
 				>
 					{copyState === 'copied' ? 'Copied' : 'Copy link'}
 				</Button>

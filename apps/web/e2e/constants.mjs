@@ -111,7 +111,15 @@ export const RUNROW = {
 	runKey: 'tines_e2erunrow000000000000000000000000000000000',
 	runKeyRunId: 'arun_e2e_run_key_active',
 	runKeyIssueId: 'iss_e2e_run_key_active',
-	runKeyIssueNumber: 3,
+	/**
+	 * Five digits on purpose: its ref is wider than the other seeded runs'
+	 * (`runrow-seed/#1`), so the Agents tab has refs of two widths to line the
+	 * rows up against. It must not start with another seeded number — link
+	 * names match by substring.
+	 */
+	runKeyIssueNumber: 30417,
+	/** The active run's console link: the row with the most trailing actions. */
+	runKeyProviderUrl: 'https://console.example.test/session/e2e-run-key-active',
 	runKeyRunnerId: 'rnr_e2e_run_key_active',
 	runKeyRunnerName: 'run-key-fixture',
 	runKeyName: 'run:runrow'
@@ -158,7 +166,14 @@ export const RUNROW_FAILED = {
 export const RUNROW_STALLED = {
 	runnerId: 'rnr_e2e_runrow_stalled',
 	runnerName: 'runrow-stalled',
-	runId: 'run_e2e_runrow_stalled'
+	runId: 'run_e2e_runrow_stalled',
+	/**
+	 * Longer than its neighbours' two minutes, so its duration ("12:34") is a
+	 * different width and a right-aligned column is distinguishable from a
+	 * left-aligned one.
+	 */
+	durationMs: 754_000,
+	durationLabel: '12:34'
 };
 
 export const RUNROW_ESTIMATED = {

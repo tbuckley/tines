@@ -346,7 +346,7 @@ export function runRow(run: AgentRun): string[] {
 		run.id,
 		run.issue_ref ? issueRef(run.issue_ref) : run.issue_id,
 		run.runner_name,
-		`${run.tier}${run.model ? ` (${run.model})` : ''}${run.resolved_effort ? ` · effort ${run.resolved_effort} · ${run.effort_application_status}` : ''}`,
+		`${run.tier}${run.model ? ` (${run.model})` : ''}${run.resolved_effort ? ` · ${run.resolved_effort}${run.effort_application_status === 'legacy_not_applied' ? ' not delivered' : ''}` : ''}`,
 		`${run.status}${run.resumed_from_run_id ? ` · resumed run ${run.resumed_from_run_id}` : ''}`,
 		runDurationLabel(run),
 		runCostLabel(run) ?? '—',

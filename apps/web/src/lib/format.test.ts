@@ -6,6 +6,7 @@ import {
 	nextRunLabel,
 	relativeTimeShort,
 	runElapsedLabel,
+	runModelLabel,
 	runOutcomePresentation,
 	runStatusClass,
 	truncate,
@@ -283,5 +284,89 @@ describe('runStatusClass', () => {
 		expect(runStatusClass('completed', 'stalled')).toBe('text-amber-700 dark:text-amber-400');
 		expect(runStatusClass('failed', 'stalled')).toBe('text-destructive');
 		expect(runStatusClass('completed', 'bogus')).toBe('text-muted-foreground');
+	});
+});
+
+describe('runModelLabel', () => {
+	const base = {
+		tier: 'balanced',
+		model: 'claude-opus-5-5',
+		resolved_effort: 'high',
+		effort_source: { kind: 'runner_tier', runner_id: 'rnr_1', tier: 'balanced' },
+		effort_application_status: 'accepted_unconfirmed'
+	} as const;
+
+	it('gives the model and the bare effort value as separate cells and keeps the rest for the tooltip', () => {
+		expect(runModelLabel(base)).toEqual({
+			model: 'claude-opus-5-5',
+			effort: 'high',
+			title: 'Tier balanced · effort high from runner tier balanced · accepted unconfirmed'
+		});
+	});
+
+	it('names a routing target by its one-based position and scope', () => {
+		const label = runModelLabel({
+			...base,
+			effort_source: {
+				kind: 'routing_target',
+				runner_id: 'rnr_1',
+				tier: 'balanced',
+				rule_id: 'rule_1',
+				scope_label: 'Tines · Design',
+				target_index: 1
+			},
+			effort_application_status: 'confirmed'
+		});
+		expect(label.effort).toBe('high');
+		expect(label.title).toBe(
+			'Tier balanced · effort high from routing target 2 (Tines · Design) · confirmed'
+		);
+	});
+
+	it('shows no effort when an old daemon did not deliver it', () => {
+		expect(runModelLabel({ ...base, effort_application_status: 'legacy_not_applied' })).toEqual({
+			model: 'claude-opus-5-5',
+			effort: null,
+			title: 'Tier balanced'
+		});
+		// No model either: the cell is empty, it does not borrow the tier.
+		expect(
+			runModelLabel({ ...base, model: null, effort_application_status: 'legacy_not_applied' })
+		).toEqual({ model: null, effort: null, title: 'Tier balanced' });
+	});
+
+	it('says nothing visible when no effort was recorded', () => {
+		expect(
+			runModelLabel({
+				...base,
+				resolved_effort: null,
+				effort_source: null,
+				effort_application_status: 'unknown'
+			})
+		).toEqual({
+			model: 'claude-opus-5-5',
+			effort: null,
+			title: 'Tier balanced · effort not recorded'
+		});
+		expect(
+			runModelLabel({
+				...base,
+				resolved_effort: null,
+				effort_source: { kind: 'none', runner_id: 'rnr_1', tier: 'balanced' },
+				effort_application_status: 'not_requested'
+			})
+		).toEqual({
+			model: 'claude-opus-5-5',
+			effort: null,
+			title: 'Tier balanced · provider default effort'
+		});
+	});
+
+	it('leaves the model empty when the run has none: the tier has its own cell', () => {
+		expect(runModelLabel({ ...base, model: null })).toMatchObject({ model: null, effort: 'high' });
+		// A legacy record carries a value but no source.
+		expect(runModelLabel({ ...base, effort_source: null }).title).toContain(
+			'effort high from legacy record'
+		);
 	});
 });

@@ -122,7 +122,9 @@ declaration and registers that exact range, then returns focus to the new occurr
 labelled chip with its use count and an edit action. **Preview values** accepts an ephemeral sample
 per variable and re-renders every occurrence with canonical substitution without touching defaults,
 drafts, downloads or publications. Unsaved passage text or an open variable form blocks rebuild,
-Check file/download and publication Preview until saved or cancelled. The declaration inventory
+Check file/download and publication Preview until saved or cancelled. While **Apply automation** is
+rebuilding the copy, adding or saving a variable or passage waits until the rebuilt copy is in
+place; an open passage draft is kept. The declaration inventory
 below the passages only declares, selects and edits variables; it has no field chooser. Use
 **Edit** to correct any browser-authored declaration in place: its ID,
 ordering, unrelated candidate work, and unfinished add draft are preserved. If its key or default
