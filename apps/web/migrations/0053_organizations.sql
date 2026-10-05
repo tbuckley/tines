@@ -89,3 +89,14 @@ DROP INDEX IF EXISTS `label_user_name_uq`;
 CREATE UNIQUE INDEX IF NOT EXISTS `label_org_name_uq` ON `label` (
 	`user_id`, COALESCE(`organization_id`, 'org_' || `user_id`), `name` COLLATE NOCASE
 );
+
+-- Context names are unique per exact scope within an organization: an
+-- owner's personal global `conventions` and their shared organization's
+-- both exist.
+DROP INDEX IF EXISTS `context_item_name_scope_uq`;
+CREATE UNIQUE INDEX `context_item_name_scope_uq` ON `context_item` (
+	`user_id`, `kind`, `name`,
+	COALESCE(`project_id`, ''), COALESCE(`workflow_state_id`, ''), COALESCE(`issue_id`, ''),
+	COALESCE(`label_id`, ''), COALESCE(`pack_id`, ''), COALESCE(`reach`, ''),
+	COALESCE(`workflow_id`, ''), COALESCE(`organization_id`, 'org_' || `user_id`)
+);

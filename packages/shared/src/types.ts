@@ -289,6 +289,8 @@ export interface Workflow {
 	 * pack's project, and an installed pack's workflow is read-only.
 	 */
 	pack?: WorkflowPack | null;
+	/** The organization it belongs to (absent for system workflows). It is offered only there. */
+	organization_id?: string;
 }
 
 export interface WorkflowPack {
@@ -346,6 +348,8 @@ export interface WorkflowTransitionInput {
 
 export interface CreateWorkflowRequest {
 	name: string;
+	/** The organization it belongs to (default: your personal one); a shared one needs its owner. */
+	organization_id?: string;
 	description?: string;
 	/** State id or name; must be categorized `backlog` or `active`. */
 	initial_state: string;
@@ -1210,6 +1214,8 @@ export interface ContextScope {
 	label_color: LabelColor | null;
 	/** The canonical display string — a scope label, not an issue label. */
 	label: string;
+	/** The item's organization, when it is not its owner's personal one. */
+	organization_id?: string;
 }
 
 export interface ContextFile {
@@ -1272,6 +1278,11 @@ export interface CreateContextItemRequest {
 	kind: ContextKind;
 	name: string;
 	description?: string;
+	/**
+	 * For an item with no project or issue: the organization it belongs to
+	 * (default: your personal one). Naming a shared organization needs its owner.
+	 */
+	organization_id?: string;
 	/** Scope: no dimensions set = global (applies to every issue). */
 	project_id?: string | null;
 	workflow_state_id?: string | null;

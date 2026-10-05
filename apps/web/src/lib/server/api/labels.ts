@@ -1,3 +1,5 @@
+import { personalOrgId, projectOrganization } from './org-core';
+import { ownedOrganization } from './workflows';
 import {
 	defaultLabelColor,
 	LABEL_COLORS,
@@ -122,12 +124,17 @@ const chip = (l: { id: string; name: string; color: string }): IssueLabel => ({
 export async function resolveLabelRef(
 	db: Kysely<Database>,
 	userId: string,
-	ref: string
+	ref: string,
+	/** Only labels of this organization (an issue's); absent = any of the owner's. */
+	orgId?: string
 ): Promise<Label | null> {
 	const row = await db
 		.selectFrom('label')
 		.selectAll()
 		.where('user_id', '=', userId)
+		.$if(orgId !== undefined, (q) =>
+			q.where(sql<boolean>`COALESCE(organization_id, 'org_' || user_id) = ${orgId!}`)
+		)
 		.where((eb) => eb.or([eb('id', '=', ref), eb(sql`name COLLATE NOCASE`, '=', ref)]))
 		// An id match wins over a name that happens to look like an id.
 		.orderBy(sql`CASE WHEN id = ${ref} THEN 0 ELSE 1 END`)
@@ -190,12 +197,14 @@ export function listLabelsInternal(
 async function resolveByName(
 	db: Kysely<Database>,
 	userId: string,
-	name: string
+	name: string,
+	orgId: string = personalOrgId(userId)
 ): Promise<Label | null> {
 	const row = await db
 		.selectFrom('label')
 		.selectAll()
 		.where('user_id', '=', userId)
+		.where(sql<boolean>`COALESCE(organization_id, 'org_' || user_id) = ${orgId}`)
 		.where(sql`name COLLATE NOCASE`, '=', name)
 		.executeTakeFirst();
 	return row ? serializeLabel(row) : null;
@@ -205,9 +214,10 @@ async function assertNameFree(
 	db: Kysely<Database>,
 	userId: string,
 	name: string,
-	exceptId?: string
+	exceptId?: string,
+	orgId?: string
 ): Promise<void> {
-	const existing = await resolveByName(db, userId, name);
+	const existing = await resolveByName(db, userId, name, orgId);
 	if (existing && existing.id !== exceptId) {
 		throw new ApiFail(409, 'conflict', `A label named "${existing.name}" already exists`, {
 			field: 'name',
@@ -221,10 +231,15 @@ export function labelInsertQueries(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	label: Label,
-	options: { guard?: QueryGuard; eventId?: string } = {}
+	options: { guard?: QueryGuard; eventId?: string; organizationId?: string | null } = {}
 ): CompiledQuery[] {
 	return [
-		insertValues(db, 'label', { ...label, user_id: actor.userId }, options.guard),
+		insertValues(
+			db,
+			'label',
+			{ ...label, user_id: actor.userId, organization_id: options.organizationId ?? null },
+			options.guard
+		),
 		eventInsert(
 			db,
 			actor,
@@ -249,7 +264,12 @@ export async function createLabel(
 	const name = normalizeLabelName(body.name);
 	const color = normalizeColor(body.color, defaultLabelColor(name));
 	const description = optionalString(body.description, 'description') ?? '';
-	await assertNameFree(db, actor.userId, name);
+	const organizationId = await ownedOrganization(
+		db,
+		actor,
+		(body as { organization_id?: unknown }).organization_id
+	);
+	await assertNameFree(db, actor.userId, name, undefined, organizationId ?? undefined);
 
 	const now = Date.now();
 	const label: Label = {
@@ -260,7 +280,7 @@ export async function createLabel(
 		created_at: now,
 		updated_at: now
 	};
-	await runAtomic(env, labelInsertQueries(db, actor, label));
+	await runAtomic(env, labelInsertQueries(db, actor, label, { organizationId }));
 	return label;
 }
 
@@ -473,7 +493,9 @@ export async function resolveOrCreateLabels(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	refs: unknown,
-	field = 'labels'
+	field = 'labels',
+	/** The issue's organization: labels resolve and are created there. */
+	orgId?: string
 ): Promise<ResolvedLabels> {
 	if (!Array.isArray(refs)) {
 		throw new ApiFail(422, 'invalid_field', `"${field}" must be an array of label names`, {
@@ -491,7 +513,7 @@ export async function resolveOrCreateLabels(
 		const key = name.toLowerCase();
 		if (seen.has(key)) continue;
 		seen.add(key);
-		const existing = await resolveLabelRef(db, actor.userId, name);
+		const existing = await resolveLabelRef(db, actor.userId, name, orgId);
 		if (existing) {
 			labels.push(existing);
 			continue;
@@ -547,12 +569,14 @@ export function labelInserts(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	toCreate: Label[],
-	guard?: QueryGuard
+	guard?: QueryGuard,
+	orgId?: string
 ): CompiledQuery[] {
+	const organizationId = orgId && orgId !== personalOrgId(actor.userId) ? orgId : null;
 	return toCreate.flatMap((l) => [
-		sql`INSERT OR IGNORE INTO label (id, user_id, name, color, description, created_at, updated_at)
+		sql`INSERT OR IGNORE INTO label (id, user_id, name, color, description, created_at, updated_at, organization_id)
 			SELECT ${l.id}, ${actor.userId}, ${l.name}, ${l.color}, ${l.description},
-				${l.created_at}, ${l.updated_at}
+				${l.created_at}, ${l.updated_at}, ${organizationId}
 			${guard ? sql`WHERE ${guard.predicate}` : sql``}`.compile(db),
 		eventInsert(
 			db,
@@ -573,15 +597,17 @@ export function issueLabelInserts(
 	issue: { id: string; project_id: string },
 	labels: Label[],
 	now: number,
-	guard?: QueryGuard
+	guard?: QueryGuard,
+	orgId?: string
 ): CompiledQuery[] {
+	const sameOrg = orgId ? sql`AND COALESCE(organization_id, 'org_' || user_id) = ${orgId}` : sql``;
 	return labels.flatMap((l) => [
 		// By name, not by the id in hand: if this label was created on the fly
 		// and a concurrent request won the insert, the winner's id is the one
 		// that exists. For an already-resolved label the name is its own id.
 		sql`INSERT OR IGNORE INTO issue_label (issue_id, label_id, created_at)
 			SELECT ${issue.id}, id, ${now} FROM label
-			WHERE user_id = ${actor.userId} AND name = ${l.name} COLLATE NOCASE
+			WHERE user_id = ${actor.userId} AND name = ${l.name} COLLATE NOCASE ${sameOrg}
 				${guard ? sql`AND ${guard.predicate}` : sql``}`.compile(db),
 		eventInsert(
 			db,
@@ -697,7 +723,8 @@ export async function addIssueLabels(
 		{ projectId: issue.project_id, issueId: issue.id }
 	);
 	await assertWritable(db, actor, issueProject(issue), { issueId: issue.id });
-	const { labels, toCreate } = await resolveOrCreateLabels(db, actor, refs);
+	const orgId = (await projectOrganization(db, issue.project_id))?.id;
+	const { labels, toCreate } = await resolveOrCreateLabels(db, actor, refs, 'labels', orgId);
 	if (toCreate.length > 0) {
 		requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'label.create');
 	}
@@ -709,8 +736,8 @@ export async function addIssueLabels(
 		const now = Date.now();
 		const guard = runBoundGuard(actor);
 		const results = await runAtomic(env, [
-			...labelInserts(db, actor, toCreate, guard),
-			...issueLabelInserts(db, actor, issue, added, now, guard)
+			...labelInserts(db, actor, toCreate, guard, orgId),
+			...issueLabelInserts(db, actor, issue, added, now, guard, orgId)
 		]);
 		// INSERT OR IGNORE may legitimately change nothing; only a lapsed run binding is an error.
 		if (!results.some((r) => r.meta.changes)) await assertRunStillBound(db, actor);
