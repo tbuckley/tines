@@ -99,6 +99,13 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 	'workflow.created': { name: 'Engineering' },
 	'workflow.updated': { name: 'Engineering' },
 	'workflow.deleted': { name: 'Engineering' },
+	'pack.created': { name: 'Engineering' },
+	'pack.installed': { name: 'Engineering', version: 4 },
+	'pack.replaced': { name: 'Engineering', version: 5 },
+	'pack.updated': { name: 'Engineering' },
+	'pack.exported': { name: 'Engineering', version: 5 },
+	'pack.detached': { name: 'Engineering' },
+	'pack.removed': { name: 'Engineering' },
 	'workflow.run_scope_changed': {
 		name: 'Engineering',
 		state_name: 'Triaging',

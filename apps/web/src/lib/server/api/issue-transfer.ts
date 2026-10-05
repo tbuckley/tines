@@ -98,12 +98,42 @@ async function activeRun(
 		.executeTakeFirst();
 }
 
+/** The pack workflow an issue is on, when it is on one. */
+async function issuePackWorkflow(
+	db: Kysely<Database>,
+	issueId: string
+): Promise<PackWorkflowRef | null> {
+	const row = await db
+		.selectFrom('issue')
+		.innerJoin('workflow', 'workflow.id', 'issue.workflow_id')
+		.innerJoin('pack', 'pack.id', 'workflow.pack_id')
+		.select(['workflow.name as workflow_name', 'pack.name as pack_name', 'pack.project_id'])
+		.where('issue.id', '=', issueId)
+		.executeTakeFirst();
+	return row ?? null;
+}
+
+type PackWorkflowRef = { workflow_name: string; pack_name: string; project_id: string | null };
+
 function blockersFor(
 	actor: ActorContext,
 	section: WitnessIssueSection,
-	run: { id: string; status: string } | undefined
+	run: { id: string; status: string } | undefined,
+	packWorkflow: PackWorkflowRef | null = null
 ): IssueTransferBlocker[] {
 	const blockers: IssueTransferBlocker[] = [];
+	// A pack's workflow is offered only in the pack's project (docs/packs.md).
+	if (
+		packWorkflow &&
+		section.source.id !== section.destination.id &&
+		packWorkflow.project_id !== section.destination.id
+	) {
+		blockers.push({
+			code: 'pack_workflow',
+			message: `The issue is on "${packWorkflow.workflow_name}" from pack "${packWorkflow.pack_name}", which ${section.destination.name} does not have`,
+			remedy: 'Move the issue to a workflow the destination can use first'
+		});
+	}
 	if (actor.agentRunId) {
 		blockers.push({
 			code: 'run_key_forbidden',
@@ -353,7 +383,7 @@ export async function previewIssueTransfer(
 	);
 	const noop = section.source.id === section.destination.id;
 	const run = await activeRun(db, issueId);
-	const blockers = blockersFor(actor, section, run);
+	const blockers = blockersFor(actor, section, run, await issuePackWorkflow(db, issueId));
 	const keyMaterial = transferKeyMaterial(env);
 	if (!keyMaterial) {
 		throw new ApiFail(
@@ -616,7 +646,7 @@ export async function commitIssueTransfer(
 		);
 	}
 	const run = await activeRun(db, issueId);
-	const blockers = blockersFor(actor, section, run);
+	const blockers = blockersFor(actor, section, run, await issuePackWorkflow(db, issueId));
 	if (blockers.length) {
 		const blocker = blockers[0];
 		throw new ApiFail(blocker.code === 'issue_busy' ? 409 : 422, blocker.code, blocker.message, {

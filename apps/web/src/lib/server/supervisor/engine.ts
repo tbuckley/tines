@@ -49,6 +49,7 @@ import { loadSealableRun, sealRunLog, spillEvicted, sweepRunLogs } from './run-l
 import { effectiveAutomationEnabled } from './settings';
 import { mergeEffortEvidence, type EffortMilestone } from './effort-evidence';
 import { ownerIssueConsentPredicate } from './consent-admission';
+import { packInputsMissingPredicate } from '../api/pack-render';
 import { admitSharedRun, usesSharedLaunch } from './shared-launch';
 
 const ACTIVE = [...ACTIVE_RUN_STATUSES];
@@ -244,6 +245,8 @@ export async function loadEligibleIssues(
 				SELECT 1 FROM agent_run
 				WHERE issue_id = issue.id AND status IN (${sql.join(ACTIVE)})
 			)
+			-- A pack input this issue's context reads has no value (docs/packs.md).
+			AND NOT ${packInputsMissingPredicate(userId)}
 		ORDER BY issue.updated_at ASC, issue.id ASC`.execute(db);
 	return result.rows.map(({ label_ids_json, created_at, state_entered_at, ...row }) => {
 		// A malformed aggregate degrades to "carries no labels" — the issue
@@ -427,6 +430,7 @@ export async function claimRun(
 			AND st.category = 'active'
 			AND issue.needs_attention = 0
 			AND ${ownerIssueConsentPredicate(input.userId)}
+			AND NOT ${packInputsMissingPredicate(input.userId)}
 			-- A shared issue whose guidance bundle could not be admitted waits out
 			-- its backoff (Tines/752); the table is empty with the flag off.
 			AND NOT EXISTS (

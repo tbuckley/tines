@@ -141,6 +141,9 @@ importers:
 
   packages/shared:
     dependencies:
+      fflate:
+        specifier: ^0.8.3
+        version: 0.8.3
       mdast-util-from-markdown:
         specifier: ^2.0.3
         version: 2.0.3
@@ -150,6 +153,9 @@ importers:
       micromark-extension-gfm:
         specifier: ^3.0.0
         version: 3.0.0
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
     devDependencies:
       '@types/node':
         specifier: ^26.2.0
@@ -1399,6 +1405,9 @@ packages:
 
   fflate@0.6.11:
     resolution: {integrity: sha512-3JyEFWGjFn7zHmoa9+zG1BmW7X2okcmAB+0Cnu9UFbVs/jCBnl2A8o065ZlXiw145K3eBM3uLuzrYXC0RK7eDg==}
+
+  fflate@0.8.3:
+    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
 
   fsevents@2.3.3:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
@@ -3052,6 +3061,8 @@ snapshots:
       picomatch: 4.0.5
 
   fflate@0.6.11: {}
+
+  fflate@0.8.3: {}
 
   fsevents@2.3.3:
     optional: true

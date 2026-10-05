@@ -22,6 +22,7 @@ import { sql, type Kysely, type RawBuilder } from 'kysely';
 import type { Database } from '../db';
 import { sha256Hex } from '../crypto';
 import { listArtifacts } from './artifacts';
+import { renderPackRows } from './pack-render';
 import {
 	assembleEffectiveContext,
 	journalTarget,
@@ -444,9 +445,11 @@ async function assemble(
 ): Promise<SharedExecutionBundleV1> {
 	if (snap.rows.length > BUNDLE_ITEM_CAP)
 		throw bundleFailure('item_cap', { items: snap.rows.length, cap: BUNDLE_ITEM_CAP });
+	// Pack text renders with the project's input values, as everywhere else.
+	const rendered = await renderPackRows(db, snap.rows, snap.files, snap.target.owner_id);
 	const matched = assembleEffectiveContext(
-		snap.rows,
-		snap.files,
+		rendered.rows,
+		rendered.fileMap,
 		snap.match,
 		await journalTarget(db, snap.rows, snap.match)
 	);

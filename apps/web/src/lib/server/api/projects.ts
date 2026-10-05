@@ -9,6 +9,7 @@ import type {
 	UnarchiveProjectResponse,
 	UpdateProjectRequest
 } from '@tines/shared';
+import { assertWorkflowIdInProject } from './pack-items';
 import { ACTIVE_RUN_STATUSES, PROJECT_NAME_MAX, PROJECT_PROMPT_NAME } from '@tines/shared';
 import type { Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
@@ -173,6 +174,13 @@ export async function createProject(
 	if (body.default_workflow_id != null) {
 		requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'project.create');
 		await assertWorkflowAccessible(db, actor.userId, body.default_workflow_id);
+		// A new project has no packs yet, so no pack workflow can be its default.
+		await assertWorkflowIdInProject(
+			db,
+			String(body.default_workflow_id),
+			null,
+			'default_workflow_id'
+		);
 	}
 	const now = Date.now();
 	const id = newId('prj');
@@ -261,6 +269,7 @@ export async function updateProject(
 			projectId: id
 		});
 		await assertWorkflowAccessible(db, actor.userId, defaultWorkflowId);
+		await assertWorkflowIdInProject(db, defaultWorkflowId, id, 'default_workflow_id');
 	}
 
 	const changed: string[] = [];
