@@ -121,46 +121,70 @@ export async function listOrganizations(
 	actor: ActorContext
 ): Promise<OrganizationSummary[]> {
 	const person = personOf(actor);
-	const user = await db
-		.selectFrom('user')
-		.select(['name', 'email'])
-		.where('id', '=', person)
-		.executeTakeFirst();
-	await ensurePersonalOrganization(db, { id: person, name: user?.name, email: user?.email });
-	const rows = await db
-		.selectFrom('organization as o')
-		.innerJoin('organization_member as m', (join) =>
-			join.onRef('m.organization_id', '=', 'o.id').on('m.user_id', '=', person)
-		)
-		.leftJoin('user as owner', 'owner.id', 'o.owner_user_id')
-		.select([
-			'o.id',
-			'o.name',
-			'o.kind',
-			'o.revision',
-			'o.created_at',
-			'o.owner_user_id',
-			'owner.name as owner_name',
-			'm.role',
-			(eb) =>
-				eb
-					.selectFrom('organization_member as mm')
-					.whereRef('mm.organization_id', '=', 'o.id')
-					.where('mm.revoked_at', 'is', null)
-					.select((eb2) => eb2.fn.countAll<number>().as('n'))
-					.as('member_count'),
-			(eb) =>
-				eb
-					.selectFrom('project as p')
-					.where(sql<boolean>`COALESCE(p.organization_id, 'org_' || p.user_id) = o.id`)
-					.select((eb2) => eb2.fn.countAll<number>().as('n'))
-					.as('project_count')
-		])
-		.where('m.revoked_at', 'is', null)
-		.orderBy(sql`o.kind = 'shared'`)
-		.orderBy('o.name')
-		.execute();
-	return rows
+	const personalId = personalOrgId(person);
+	// One wave of reads (page loads budget it): an account made after
+	// migration 0053 has no personal row until something writes to it
+	// (`requireOrg`), so it is synthesized here rather than inserted on a read.
+	const [user, personalProjects, rows] = await Promise.all([
+		db.selectFrom('user').select(['name', 'email']).where('id', '=', person).executeTakeFirst(),
+		db
+			.selectFrom('project')
+			.where('user_id', '=', person)
+			.where(sql<boolean>`COALESCE(organization_id, 'org_' || user_id) = ${personalId}`)
+			.select((eb) => eb.fn.countAll<number>().as('n'))
+			.executeTakeFirst(),
+		db
+			.selectFrom('organization as o')
+			.innerJoin('organization_member as m', (join) =>
+				join.onRef('m.organization_id', '=', 'o.id').on('m.user_id', '=', person)
+			)
+			.leftJoin('user as owner', 'owner.id', 'o.owner_user_id')
+			.select([
+				'o.id',
+				'o.name',
+				'o.kind',
+				'o.revision',
+				'o.created_at',
+				'o.owner_user_id',
+				'owner.name as owner_name',
+				'm.role',
+				(eb) =>
+					eb
+						.selectFrom('organization_member as mm')
+						.whereRef('mm.organization_id', '=', 'o.id')
+						.where('mm.revoked_at', 'is', null)
+						.select((eb2) => eb2.fn.countAll<number>().as('n'))
+						.as('member_count'),
+				(eb) =>
+					eb
+						.selectFrom('project as p')
+						.where(sql<boolean>`COALESCE(p.organization_id, 'org_' || p.user_id) = o.id`)
+						.select((eb2) => eb2.fn.countAll<number>().as('n'))
+						.as('project_count')
+			])
+			.where('m.revoked_at', 'is', null)
+			.orderBy(sql`o.kind = 'shared'`)
+			.orderBy('o.name')
+			.execute()
+	]);
+	const all = rows.some((r) => r.id === personalId)
+		? rows
+		: [
+				{
+					id: personalId,
+					name: user?.name || user?.email || 'Personal',
+					kind: 'personal' as const,
+					revision: 0,
+					created_at: Date.now(),
+					owner_user_id: person,
+					owner_name: user?.name ?? null,
+					role: 'owner' as const,
+					member_count: 1,
+					project_count: Number(personalProjects?.n ?? 0)
+				},
+				...rows
+			];
+	return all
 		.filter((r) => keyReachesOrg(actor, r.id))
 		.map((r) => ({
 			id: r.id,

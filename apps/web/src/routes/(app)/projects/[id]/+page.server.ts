@@ -81,7 +81,8 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		workflows,
 		{ items: schedules },
 		{ items: contextItems },
-		routingRules
+		routingRules,
+		organizations
 	] = await Promise.all([
 		listIssues(
 			db,
@@ -100,7 +101,8 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 		loadWorkflows(db, ownerId),
 		listSchedules(db, ownerId, { projectId: project.id }, { cursor: null, limit: 100 }),
 		listContextItems(db, scopeActor, { project: project.id }, { cursor: null, limit: 100 }),
-		isMember ? Promise.resolve([]) : listRoutingRules(db, ownerId)
+		isMember ? Promise.resolve([]) : listRoutingRules(db, ownerId),
+		listOrganizations(db, sessionActor({ id: userId, name: locals.user!.name }))
 	]);
 	// The inline agent-routing rows: this project's own rules, or — when it
 	// has none — the global rule its issues would fall back to.
@@ -125,10 +127,7 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 			? await loadSharedGuidance(db, platform!.env, actor, project.id, contextItems, workflows)
 			: null;
 	return {
-		organizations: await listOrganizations(
-			db,
-			sessionActor({ id: userId, name: locals.user!.name })
-		),
+		organizations,
 		viewerRole: access.role,
 		sharedGuidance,
 		owner: isMember ? { id: ownerId, name: scopeActor.userName } : null,

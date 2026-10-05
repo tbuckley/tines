@@ -96,6 +96,23 @@ describe('organizations', () => {
 		expect((await listOrganizations(t.db, t.owner)).map((o) => o.name)).toEqual(['owner', 'Acme']);
 	});
 
+	it('lists a personal organization that has no row yet without writing one', async () => {
+		const t = fixture();
+		await createProject(t.db, t.env, t.bob, { name: 'bobs' });
+		// As for an account whose personal row was never written.
+		t.sqlite.prepare("DELETE FROM organization_member WHERE organization_id = 'org_bob'").run();
+		t.sqlite.prepare("DELETE FROM organization WHERE id = 'org_bob'").run();
+		const [personal] = await listOrganizations(t.db, t.bob);
+		expect(personal).toMatchObject({
+			id: 'org_bob',
+			kind: 'personal',
+			role: 'owner',
+			project_count: 1
+		});
+		const row = t.sqlite.prepare("SELECT id FROM organization WHERE id = 'org_bob'").get();
+		expect(row).toBeUndefined();
+	});
+
 	it('keeps personal context out of a shared organization, and the organization’s out of personal projects', async () => {
 		const t = fixture();
 		const org = await createOrganization(t.db, t.env, t.owner, { name: 'Acme' });
