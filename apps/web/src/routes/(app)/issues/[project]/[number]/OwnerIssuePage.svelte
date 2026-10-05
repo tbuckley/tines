@@ -1496,6 +1496,7 @@
 		<PhoneFold title="Relations" summary={countLabel(relationCount)} bind:open={relationsOpen}>
 			<RelationsCard
 				issueId={data.issue.id}
+				projectId={data.issue.project_id}
 				{links}
 				bind:adds={linkAdds}
 				bind:removals={linkRemovals}

@@ -4,8 +4,6 @@
 		ContextItem,
 		ContextKind,
 		CreateContextItemRequest,
-		Issue,
-		IssueListItem,
 		LabelWithUsage,
 		Project,
 		UpdateContextItemRequest,
@@ -24,10 +22,12 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import ContextKindIcon from '$lib/components/ContextKindIcon.svelte';
+	import IssueCombobox from '$lib/components/IssueCombobox.svelte';
 	import { confirmDialog } from '$lib/components/dialogs.svelte';
 	import Markdown from '$lib/components/Markdown.svelte';
 	import Modal from '$lib/components/Modal.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
+	import { issueLabel, type IssuePick } from '$lib/issue-picker';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Select } from '$lib/components/ui/select/index.js';
@@ -163,8 +163,11 @@
 			// Until they arrive, saving is blocked — a PATCH built from the
 			// placeholder empty list would delete every file in the skill.
 			filesReady = true;
-			boundIssue = null;
-			boundIssueRequested = '';
+			selectedIssue = null;
+			issueText = '';
+			issueLoading = false;
+			issueLoad += 1;
+			if (issueId) loadBoundIssue(issueId);
 			if (item && item.kind === 'skill' && item.files === undefined) {
 				filesReady = false;
 				const itemId = item.id;
@@ -220,56 +223,35 @@
 
 	// --- scope coherence, enforced live -------------------------------------
 
-	// Issues for the issue selector, constrained to the chosen project. Only
-	// the latest request may land: switching projects fires overlapping
-	// fetches whose responses can resolve out of order.
-	let issues = $state<IssueListItem[]>([]);
-	let issuesRequest = 0;
-	$effect(() => {
-		if (!open) return;
-		const project = projectId;
-		const token = ++issuesRequest;
-		api
-			// A duplicate remains a valid direct context scope.
-			.listIssues({ project: project || undefined, hide_duplicates: false, limit: 100 })
-			.then((res) => {
-				if (token === issuesRequest) issues = res.items;
-			})
-			.catch(() => {
-				if (token === issuesRequest) issues = [];
-			});
-	});
+	// The issue scope is picked in a search box, so every issue is reachable,
+	// not just the newest page. `issueId` stays the value that is saved; the
+	// pick carries the project and workflow the other scope fields follow.
+	let selectedIssue = $state<IssuePick | null>(null);
+	let issueText = $state('');
+	/** True while an item's bound issue is being fetched for display. */
+	let issueLoading = $state(false);
 
-	// The list is capped at 100 issues, so an item's bound issue may not be in
-	// it — without this fetch the select would render blank, hiding the item's
-	// real scope from whoever is editing it.
-	let boundIssue = $state<Issue | null>(null);
-	let boundIssueRequested = '';
-	$effect(() => {
-		const id = issueId;
-		if (!id || issues.some((i) => i.id === id) || boundIssueRequested === id) return;
-		boundIssueRequested = id;
+	let issueLoad = 0;
+
+	function loadBoundIssue(id: string) {
+		const mine = ++issueLoad;
+		issueLoading = true;
 		api
 			.getIssue(id)
 			.then((full) => {
-				if (issueId === id) boundIssue = full;
+				if (mine !== issueLoad || issueId !== id) return;
+				selectedIssue = full;
+				issueText = issueLabel(full, true);
 			})
-			.catch(() => {});
-	});
-
-	const selectedIssue = $derived(
-		issues.find((i) => i.id === issueId) ?? (boundIssue?.id === issueId ? boundIssue : undefined)
-	);
-	/** The fetched list, with the bound issue prepended when it isn't in it. */
-	const issueOptions = $derived(
-		selectedIssue && !issues.some((i) => i.id === selectedIssue.id)
-			? [selectedIssue, ...issues]
-			: issues
-	);
+			.catch(() => {})
+			.finally(() => {
+				if (mine === issueLoad) issueLoading = false;
+			});
+	}
 
 	// Picking an issue constrains the state list to its bound workflow.
 	const stateWorkflows = $derived(
-		selectedIssue ? workflows.filter((w) => w.id === selectedIssue.workflow_id) : workflows
+		selectedIssue ? workflows.filter((w) => w.id === selectedIssue?.workflow_id) : workflows
 	);
 
 	// Keep the selections coherent as constraints change.
@@ -284,6 +266,8 @@
 
 	const derivedDir = $derived(repoUrl.trim() ? repoDirFromUrl(repoUrl.trim()) : '');
 	const isGlobal = $derived(!projectId && !stateId && !labelId && !issueId);
+	/** Typed text that was never picked would save as "any issue"; block that instead. */
+	const issueUnpicked = $derived(kind !== 'artifact' && !issueId && issueText.trim() !== '');
 
 	function changeKind(nextKind: ContextKind) {
 		if (nextKind === kind) return;
@@ -354,6 +338,10 @@
 		// Backstop behind the disabled button: never send a file list that was
 		// never actually loaded.
 		if (kind === 'skill' && (!filesReady || folderReading || draftValidation.error)) return;
+		if (issueUnpicked) {
+			errorMessage = 'Choose an issue from the list, or clear the issue field.';
+			return;
+		}
 		saving = true;
 		errorMessage = null;
 		try {
@@ -794,12 +782,34 @@
 					<label class="text-muted-foreground text-xs font-medium" for="ctx-scope-issue"
 						>Only for issue</label
 					>
-					<Select id="ctx-scope-issue" bind:value={issueId} class="h-8 text-xs">
-						<option value="">Any issue</option>
-						{#each issueOptions as issue (issue.id)}
-							<option value={issue.id}>{issue.project_name}/{issue.number} — {issue.title}</option>
-						{/each}
-					</Select>
+					<!-- A duplicate or a done issue remains a valid direct context scope. -->
+					<IssueCombobox
+						id="ctx-scope-issue"
+						projectId={projectId || undefined}
+						includeDone
+						includeDuplicates
+						bind:selected={
+							() => selectedIssue,
+							(pick) => {
+								selectedIssue = pick;
+								issueId = pick?.id ?? '';
+							}
+						}
+						bind:text={issueText}
+						class="h-8 text-xs"
+						placeholder={issueLoading
+							? 'Loading issue…'
+							: projectId
+								? 'Any issue — search by # or title'
+								: 'Any issue — search by title or Project/N'}
+						disabled={issueLoading}
+						invalid={issueUnpicked}
+					/>
+					{#if issueUnpicked}
+						<p class="text-muted-foreground text-xs">
+							Choose an issue from the list, or clear this field.
+						</p>
+					{/if}
 					{#if issueId}
 						<p class="text-muted-foreground text-xs">The issue implies its project.</p>
 					{/if}

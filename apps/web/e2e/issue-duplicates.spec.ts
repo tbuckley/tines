@@ -174,13 +174,13 @@ test('direct duplicate selectors remain available outside ordinary lists', async
 	await relations.getByRole('button', { name: 'Add' }).click();
 	const picker = relations.getByRole('combobox', { name: 'Issue to link' });
 	await picker.fill(duplicate.title);
-	await expect(relations.getByRole('button', { name: new RegExp(duplicate.title) })).toBeVisible();
+	await expect(relations.getByRole('option', { name: new RegExp(duplicate.title) })).toBeVisible();
 
 	await gotoHydrated(page, `/projects/${mixedProject.id}`);
 	await page.getByRole('button', { name: 'Add context' }).click();
 	await expect(page.getByRole('heading', { name: 'New context item' })).toBeVisible();
-	const issueScope = page.getByLabel('Only for issue');
-	await expect(issueScope.locator(`option[value="${duplicate.id}"]`)).toHaveText(
-		`${mixedProject.name}/${duplicate.number} — ${duplicate.title}`
-	);
+	await page.getByLabel('Only for issue').fill(duplicate.title);
+	await expect(page.getByRole('dialog').getByRole('listbox').getByRole('option')).toHaveText([
+		`#${duplicate.number} ${duplicate.title}`
+	]);
 });
