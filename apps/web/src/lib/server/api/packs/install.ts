@@ -6,12 +6,6 @@
  */
 import {
 	PACK_ARCHIVE_MAX_BYTES,
-	normalizePackFiles,
-	packDigest,
-	packFolderName,
-	parsePack,
-	readPackArchive,
-	writePackFiles,
 	type InstallPackRequest,
 	type PackAdds,
 	type PackExport,
@@ -27,6 +21,14 @@ import {
 	type PackUpload,
 	type ReplacePackRequest
 } from '@tines/shared';
+import {
+	normalizePackFiles,
+	packDigest,
+	packFolderName,
+	parsePack,
+	readPackArchive,
+	writePackFiles
+} from '@tines/shared/packs';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, randomString, type Database, type PackRow } from '$lib/server/db';
 import { ApiFail, notFound, runAtomic, type ActorContext } from '../core';

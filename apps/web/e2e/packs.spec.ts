@@ -4,13 +4,8 @@
  * project's values, that an installed pack is read-only, and that export
  * gives back the same digest.
  */
-import {
-	packFilesFromRecord,
-	writePackArchive,
-	type EffectiveContext,
-	type PackExport,
-	type PackSummary
-} from '@tines/shared';
+import { type EffectiveContext, type PackExport, type PackSummary } from '@tines/shared';
+import { packFilesFromRecord, writePackArchive } from '@tines/shared/packs';
 import { expect, test } from './fixtures';
 import { ALICE } from './constants.mjs';
 import { apiClient, body, errorBody, gotoHydrated, signIn } from './helpers';

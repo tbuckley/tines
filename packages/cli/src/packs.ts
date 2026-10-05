@@ -9,11 +9,7 @@
 import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-	isPackClutterPath,
 	PACK_ARCHIVE_MAX_BYTES,
-	packDigest,
-	parsePack,
-	readPackArchive,
 	type PackAdds,
 	type PackDetail,
 	type PackFile,
@@ -29,6 +25,7 @@ import {
 	type PackSummary,
 	type PackUpload
 } from '@tines/shared';
+import { isPackClutterPath, packDigest, parsePack, readPackArchive } from '@tines/shared/packs';
 import { CliError } from './errors.js';
 import { runScopeLabel } from './format.js';
 

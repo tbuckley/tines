@@ -11,11 +11,6 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
-	packDigest,
-	packFilesFromRecord,
-	parsePack,
-	readPackArchive,
-	writePackArchive,
 	type PackDetail,
 	type PackExport,
 	type PackInputView,
@@ -23,6 +18,13 @@ import {
 	type PackReview,
 	type PackSummary
 } from '@tines/shared';
+import {
+	packDigest,
+	packFilesFromRecord,
+	parsePack,
+	readPackArchive,
+	writePackArchive
+} from '@tines/shared/packs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { engineeringPack } from '../../shared/src/packs/engineering-fixture.js';
 import { CLI_BIN, NODE } from './test-bin.js';

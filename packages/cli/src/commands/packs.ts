@@ -12,9 +12,6 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import {
-	normalizePackFiles,
-	packFolderName,
-	writePackArchive,
 	type ApiClient,
 	type PackFile,
 	type PackInputValueInput,
@@ -24,6 +21,7 @@ import {
 	type PackUpload,
 	type Project
 } from '@tines/shared';
+import { normalizePackFiles, packFolderName, writePackArchive } from '@tines/shared/packs';
 import type { Command } from 'commander';
 import {
 	client,
