@@ -232,6 +232,12 @@ await cdp.send('Emulation.setCPUThrottlingRate', { rate: 20 });
 // ... trigger the swap the locator races ...
 ```
 
+CPU throttling slows the renderer only. When the locator races something outside it — a
+clipboard write, a network response — throttling will not give N/N (Tines/899: 1 red in 10 at
+20x). Delay that call instead: wrap the API in `page.evaluate`, or hold the response in
+`page.route`. `workflow-publications.spec.ts` holds `navigator.clipboard.writeText` open for
+200 ms.
+
 **`--repeat-each N` is not a flake probe for this suite** — it re-runs the fixture-creating
 tests too, and they write to the one shared D1, so every repeat sees the rows the previous
 repeats left. `run-row.spec.ts:178` counts failed-run rows and goes 1 → 2 → 4 → 6 across

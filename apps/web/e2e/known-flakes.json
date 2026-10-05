@@ -3,6 +3,5 @@
 	"e2e/native-install.spec.ts:853 › native D1 workflow install gate › makes true initial concurrent retries one-copy and recovers a dropped response": "Tines/896",
 	"e2e/workflow-package-export.spec.ts:567 › authors an exact declared use and downloads the reviewed canonical package": "Tines/897",
 	"e2e/issue-duplicates.spec.ts:122 › project list has truthful counts and keyboard-operable duplicate controls on a phone": "Tines/898",
-	"e2e/workflow-publications.spec.ts:102 › public workflow snapshots › publishes exact bytes and exposes a responsive anonymous text-only inspection": "Tines/899",
 	"e2e/runner-fencing.spec.ts:19 › native D1 polling fences the immediate predecessor and preserves legacy omission": "Tines/831"
 }
