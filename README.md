@@ -32,9 +32,9 @@ create, and the workflows, context, and issues it creates remain editable from
 **Workflows**, **Context**, and the issue page.
 
 **Code repository** needs a project name and a cloneable repository URL; the branch is
-optional and defaults to the repository's default branch. Its editable **How we work**
-conventions cover test commands, base and working branches, pull-request expectations, and
-important paths. It creates or reuses the **Code change** workflow as the project default,
+optional and defaults to the repository's default branch. Its editable **How work is
+done here** conventions cover the test command, branch rules, pull-request expectations, and
+where things live. It creates or reuses the **Code change** workflow as the project default,
 adds repository context and normally conventions, and opens **Find and fix a bug** in **In
 progress**. Follow the Agents checklist (see [Running agents](#running-agents)) to connect and
 route an agent. The agent should verify a real bug, fix and test it on a branch, open and
@@ -60,7 +60,7 @@ prompt; leaving it empty creates no conventions prompt. System and user-created 
 and other context can still be available, and you add the work and project context you
 need.
 
-CLI users can [install and sign in](#installing-the-cli-globally), discover the current
+CLI users can [install and sign in](#installing-the-cli), discover the current
 starters, and create the same projects (replace the example URL, branch, and brief with
 your own):
 
@@ -745,6 +745,6 @@ From the repo root:
 - `pnpm build` — build the web app and CLI (`@tines/shared` has no build script; both
   consume it as TypeScript source)
 - `pnpm check` — the migration-numbering and script-name guards in `scripts/` and `apps/web/scripts/`, then typecheck all packages (svelte-check + tsc)
-- `pnpm test` — vitest unit tests (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
+- `pnpm test` — the release-version script's `node --test` tests, then vitest unit tests in every package (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
 - `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/` and its README for the suite's motion, hydration and geometry policies). Run by `ci.yml` on pull requests, but not by `pnpm test`.
 - `pnpm cli <command>` — run the CLI from source against the local dev server (`http://localhost:5173`, pinned; pass `--url` for anything else)
