@@ -32,6 +32,12 @@
 					><IconLock size={11} /> standard</span
 				>
 			{/if}
+			{#if workflow.pack}
+				<span class="text-muted-foreground bg-muted rounded-full px-2 py-0.5 text-xs"
+					>{workflow.pack.kind === 'installed' ? 'installed' : 'authored'} · {workflow.pack
+						.name}</span
+				>
+			{/if}
 			{#if isDefault(workflow)}
 				<span class="bg-primary/10 text-primary rounded-full px-2 py-0.5 text-xs"
 					>Project default</span

@@ -219,6 +219,12 @@ function query(params: object): string {
 	return s ? `?${s}` : '';
 }
 
+/** `/api/v1/projects/:id/packs[/:packId][suffix]`. */
+function packsPath(projectId: string, packId?: string, suffix = ''): string {
+	const base = `/api/v1/projects/${encodeURIComponent(projectId)}/packs`;
+	return packId === undefined ? base : `${base}/${encodeURIComponent(packId)}${suffix}`;
+}
+
 export function createApiClient(options: ApiClientOptions) {
 	const base = options.baseUrl.replace(/\/+$/, '');
 	const fetchFn = options.fetch ?? globalThis.fetch;
@@ -866,7 +872,100 @@ export function createApiClient(options: ApiClientOptions) {
 			),
 		/** Plan-then-apply; `dry_run: true` returns the preview the apply follows. */
 		importLibrary: (body: ImportLibraryRequest) =>
-			request<ImportLibraryResponse>('POST', '/api/v1/import', body)
+			request<ImportLibraryResponse>('POST', '/api/v1/import', body),
+
+		// Packs (specs/packs/MVP_SPEC.md)
+		validatePack: (upload: import('./pack-api.js').PackUpload) =>
+			request<{
+				digest: string;
+				errors: import('./packs/types.js').PackIssue[];
+				warnings: import('./packs/types.js').PackIssue[];
+				model: import('./packs/types.js').PackModel | null;
+				files: string[];
+			}>('POST', '/api/v1/packs/validate', upload),
+		listPackSources: (projectId?: string) =>
+			get<ListResponse<import('./pack-api.js').PackSourceCandidate>>(
+				`/api/v1/packs/sources${query({ project: projectId })}`
+			),
+		listPacks: (projectId: string) =>
+			get<ListResponse<import('./pack-api.js').PackSummary>>(`${packsPath(projectId)}`),
+		createPack: (projectId: string, body: import('./pack-api.js').CreatePackRequest) =>
+			request<import('./pack-api.js').PackDetail>('POST', packsPath(projectId), body),
+		getPack: (projectId: string, packId: string) =>
+			get<import('./pack-api.js').PackDetail>(packsPath(projectId, packId)),
+		updatePack: (
+			projectId: string,
+			packId: string,
+			body: import('./pack-api.js').UpdatePackRequest
+		) => request<import('./pack-api.js').PackDetail>('PATCH', packsPath(projectId, packId), body),
+		removePack: (projectId: string, packId: string, body: { expected_revision?: number } = {}) =>
+			request<{ removed: true; additions_deleted: number; inputs_unbound: number }>(
+				'DELETE',
+				packsPath(projectId, packId),
+				body
+			),
+		getPackRemovePreview: (projectId: string, packId: string) =>
+			get<import('./pack-api.js').PackRemovePreview>(
+				packsPath(projectId, packId, '/remove-preview')
+			),
+		prepareInstallPack: (
+			projectId: string,
+			body: import('./pack-api.js').PackUpload | { source_pack_id: string }
+		) =>
+			request<import('./pack-api.js').PackReview>(
+				'POST',
+				`${packsPath(projectId)}/install/prepare`,
+				body
+			),
+		installPack: (
+			projectId: string,
+			body: import('./pack-api.js').InstallPackRequest &
+				(import('./pack-api.js').PackUpload | { source_pack_id: string })
+		) =>
+			request<import('./pack-api.js').PackReceipt>('POST', `${packsPath(projectId)}/install`, body),
+		prepareReplacePack: (
+			projectId: string,
+			packId: string,
+			body: import('./pack-api.js').PackUpload | { from_source: true }
+		) =>
+			request<import('./pack-api.js').PackReview>(
+				'POST',
+				packsPath(projectId, packId, '/replace/prepare'),
+				body
+			),
+		replacePack: (
+			projectId: string,
+			packId: string,
+			body: import('./pack-api.js').ReplacePackRequest &
+				(import('./pack-api.js').PackUpload | { from_source: true })
+		) =>
+			request<import('./pack-api.js').PackReceipt>(
+				'POST',
+				packsPath(projectId, packId, '/replace'),
+				body
+			),
+		exportPack: (projectId: string, packId: string) =>
+			get<import('./pack-api.js').PackExport>(packsPath(projectId, packId, '/export')),
+		detachPack: (projectId: string, packId: string, body: { expected_revision?: number } = {}) =>
+			request<import('./pack-api.js').PackDetail>(
+				'POST',
+				packsPath(projectId, packId, '/detach'),
+				body
+			),
+		setPackValues: (
+			projectId: string,
+			packId: string,
+			values: Record<string, import('./pack-api.js').PackInputValueInput | null>
+		) =>
+			request<import('./pack-api.js').PackDetail>('PUT', packsPath(projectId, packId, '/values'), {
+				values
+			}),
+		setPackMySecrets: (projectId: string, packId: string, secrets: Record<string, string | null>) =>
+			request<import('./pack-api.js').PackDetail>(
+				'PUT',
+				packsPath(projectId, packId, '/my-secrets'),
+				{ secrets }
+			)
 	};
 }
 

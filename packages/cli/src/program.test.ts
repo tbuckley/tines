@@ -64,6 +64,7 @@ describe('command tree', () => {
 				'labels',
 				'login',
 				'logout',
+				'packs',
 				'projects',
 				'routing',
 				'runner',
@@ -181,6 +182,7 @@ describe('the --url flag means the API base URL, everywhere', () => {
 	 */
 	const OFFLINE_LEAVES = [
 		'tines logout',
+		'tines packs validate',
 		'tines runner restart',
 		'tines runner uninstall',
 		'tines runner workspaces prune'

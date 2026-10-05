@@ -28,8 +28,8 @@ tines config                                        # what is in effect, and fro
 The URL defaults to `https://tines.tbuckley.dev`. Or set `TINES_API_URL` and `TINES_API_KEY`
 in the environment — that is how agent runs are configured, and the env vars win over the
 stored config. On commands that talk to the API, `--url` and `--api-key` win over both. The
-local-only `logout`, `runner restart`, `runner uninstall`, `runner workspaces`, and
-`runner workspaces prune` commands take no `--url`.
+local-only `logout`, `packs validate`, `runner restart`, `runner uninstall`, `runner workspaces`,
+and `runner workspaces prune` commands take no `--url`.
 
 ## Everyday commands
 
@@ -74,7 +74,7 @@ it fails without printing a partial result. `--limit` remains the per-request pa
 larger bound keeps more output in memory and makes more requests, so increase it deliberately
 or narrow the list's filters. `usage --evidence … --all-pages` is the one exception: it follows
 every evidence page with no ceiling and takes no `--max-items`.
-`tines <noun> --help` lists the rest: `api-keys`, `workflows`, `labels`, `context`, `journal`,
+`tines <noun> --help` lists the rest: `api-keys`, `workflows`, `packs`, `labels`, `context`, `journal`,
 `schedules`, `runners`, `runs`, `routing`, `supervisor`, `usage`.
 
 `issues create` accepts repeatable `--blocked-by` and `--blocks` references plus one
@@ -134,6 +134,46 @@ no blanket `--yes`. A retry checks the durable receipt first and reuses the same
 keep the package and plan together until the receipt is returned. Plan files contain the API
 base, reviewed response, and signed token, but never the API key; protect them like temporary
 authorization material.
+
+## Packs
+
+A pack is a folder (or a zipped `.tinespack`) of workflows, the context that goes with them,
+the inputs an installer supplies, and suggested schedules. `validate` runs offline, with the
+same validator the server uses; the rest talk to the API. `<pack>` is the pack's row id, its
+`pack.yaml` id, or its name when that is unique in the project.
+
+```sh
+tines packs validate ./engineering                  # errors, warnings, digest, summary (no server)
+tines packs install ./engineering acme --dry-run    # print the review only
+tines packs install ./engineering acme \
+  --value staging_url=https://staging.acme.test \
+  --repo app_repo=https://github.com/acme/app#main \
+  --workflow bugs=pack:engineering/triage \
+  --secret github_token --schedule weekly-triage@Europe/London --yes
+tines packs install ./engineering acme --authored   # as an editable authored pack
+tines packs sources acme                            # packs in your other projects
+tines packs install --from <source-pack> acme
+tines packs replace ./engineering acme <pack> --diff --map engineering/qa-check=engineering/review
+tines packs replace --from-source acme <pack>
+tines packs export acme <pack>                      # e.g. engineering-v4.tinespack, in the current folder
+tines packs export acme <pack> --dir ./engineering  # or as files (refuses a non-empty folder without --force)
+tines packs list acme
+tines packs show acme <pack>
+tines packs set-input acme <pack> staging_url https://staging.acme.test
+tines packs set-secret acme <pack> github_token     # hidden prompt, or pipe the value on stdin
+tines packs detach acme <pack>
+tines packs remove acme <pack>                      # prints what is deleted and unbound first
+```
+
+Install and replace print the review (README, what the pack adds, replacements, inputs,
+suggested schedules; for replace also the CHANGELOG, changed files, state mapping and version
+warnings), then ask for confirmation on a terminal; elsewhere pass `--yes`. The confirmation
+carries the reviewed digest, so the server refuses anything else. A workflow input takes a
+workflow id or name (optionally `/<state>`), or `pack:<workflow>[/<state>]` for one of the
+pack's own workflows. Missing inputs do not block: the pack is installed as *needs setup*.
+A pack with a state whose `run_scope` is `project` or `organization` (or a replace that widens
+one) can only be confirmed in the browser; the CLI stops before confirming and says so. A
+lower version, or the same version with different content, needs `--confirm-version`.
 
 ## Running agents on your own machine
 

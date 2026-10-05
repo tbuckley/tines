@@ -498,9 +498,11 @@
 			<div class="space-y-1.5">
 				<label class="text-sm font-medium" for="schedule-workflow">Workflow</label>
 				<Select id="schedule-workflow" bind:value={editWorkflowId} onchange={onEditWorkflowChange}>
-					{#each workflows as workflow (workflow.id)}
+					{#each workflows.filter((w) => !w.pack || w.pack.project_id === editing?.project_id) as workflow (workflow.id)}
 						<option value={workflow.id}
-							>{workflow.name}{workflow.is_system ? ' (standard)' : ''}</option
+							>{workflow.name}{workflow.pack ? ` · ${workflow.pack.name}` : ''}{workflow.is_system
+								? ' (standard)'
+								: ''}</option
 						>
 					{/each}
 				</Select>

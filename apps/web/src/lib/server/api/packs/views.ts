@@ -390,3 +390,42 @@ async function packItems(db: Kysely<Database>, actor: ActorContext, pack: PackRo
 	}
 	return out;
 }
+
+/**
+ * Choices for a workflow input in this project: each usable workflow, and
+ * each of its states, as `<workflow id>[|<state id>]`. Pack workflows of other
+ * projects are left out.
+ */
+export async function workflowInputOptions(
+	db: Kysely<Database>,
+	ownerId: string,
+	projectId: string
+): Promise<{ value: string; label: string }[]> {
+	const rows = await db
+		.selectFrom('workflow')
+		.leftJoin('pack', 'pack.id', 'workflow.pack_id')
+		.select(['workflow.id', 'workflow.name', 'workflow.initial_state_id', 'pack.name as pack_name'])
+		.where((eb) =>
+			eb.or([eb('workflow.user_id', '=', ownerId), eb('workflow.user_id', 'is', null)])
+		)
+		.where((eb) =>
+			eb.or([eb('workflow.pack_id', 'is', null), eb('pack.project_id', '=', projectId)])
+		)
+		.orderBy('workflow.name')
+		.execute();
+	const states = await db
+		.selectFrom('workflow_state')
+		.select(['id', 'name', 'workflow_id'])
+		.where('workflow_id', 'in', rows.map((r) => r.id).concat(['']))
+		.orderBy('position')
+		.execute();
+	return rows.flatMap((w) => {
+		const name = w.pack_name ? `${w.name} · ${w.pack_name}` : w.name;
+		return [
+			{ value: w.id, label: name },
+			...states
+				.filter((s) => s.workflow_id === w.id && s.id !== w.initial_state_id)
+				.map((s) => ({ value: `${w.id}|${s.id}`, label: `${name}, starting in ${s.name}` }))
+		];
+	});
+}
