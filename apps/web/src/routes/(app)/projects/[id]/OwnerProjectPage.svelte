@@ -21,6 +21,7 @@
 	import Modal from '$lib/components/Modal.svelte';
 	import NewIssueModal from '$lib/components/NewIssueModal.svelte';
 	import PendingButton from '$lib/components/PendingButton.svelte';
+	import ProjectMoveDialog from '$lib/components/ProjectMoveDialog.svelte';
 	import ScheduleList from '$lib/components/ScheduleList.svelte';
 	import SharedGuidanceCard from '$lib/components/SharedGuidanceCard.svelte';
 	import StateBadge from '$lib/components/StateBadge.svelte';
@@ -35,6 +36,8 @@
 	import { eligibleStarterIssue, type StarterLandingMarker } from '$lib/starter-landing';
 
 	let { data }: { data: PageData } = $props();
+	let orgDialogOpen = $state(false);
+	let orgDialogMode = $state<'move' | 'share'>('move');
 	/**
 	 * A shared project's member gets this page too. Routing, archiving,
 	 * deleting and account-wide context stay the owner's, so their controls
@@ -286,6 +289,15 @@
 		{#if data.project.description}
 			<p class="text-muted-foreground mt-1 max-w-xl text-sm">{data.project.description}</p>
 		{/if}
+		{#if data.project.organization?.kind === 'shared'}
+			<p class="text-muted-foreground mt-1 text-sm">
+				In <a
+					class="underline-offset-4 hover:underline"
+					href={`/organizations/${data.project.organization.id}`}
+					>{data.project.organization.name}</a
+				>
+			</p>
+		{/if}
 		{#if isMember && data.owner}
 			<p class="text-muted-foreground mt-1 text-sm">Shared by {data.owner.name}</p>
 		{:else}
@@ -306,6 +318,16 @@
 			class="inline-flex items-center rounded-md border px-4 py-2 text-sm"
 			href={`/projects/${data.project.id}/packs`}>Packs</a
 		>
+		{#if !archived && data.project.organization?.kind !== 'shared' && !isMember}
+			<Button variant="outline" onclick={() => ((orgDialogMode = 'share'), (orgDialogOpen = true))}
+				>Share</Button
+			>
+		{/if}
+		{#if !archived && data.organizations.filter((o) => o.role !== 'member').length > 1}
+			<Button variant="outline" onclick={() => ((orgDialogMode = 'move'), (orgDialogOpen = true))}
+				>Move</Button
+			>
+		{/if}
 		<Button variant="outline" onclick={() => (settingsOpen = true)}>
 			<IconSettings size={16} /> Settings
 		</Button>
@@ -645,3 +667,10 @@
 		</div>
 	</form>
 </Modal>
+
+<ProjectMoveDialog
+	bind:open={orgDialogOpen}
+	mode={orgDialogMode}
+	project={data.project}
+	organizations={data.organizations}
+/>

@@ -82,7 +82,14 @@
 	);
 	/** A pack's workflows are offered only in the pack's project. */
 	const usableWorkflows = $derived(
-		workflows.filter((w) => !w.pack || w.pack.project_id === (selectedProject?.id ?? null))
+		workflows.filter(
+			(w) =>
+				(!w.pack || w.pack.project_id === (selectedProject?.id ?? null)) &&
+				// A workflow is offered only in its own organization's projects.
+				(!w.organization_id ||
+					!selectedProject?.organization ||
+					w.organization_id === selectedProject.organization.id)
+		)
 	);
 	const pickedWorkflow = $derived(workflows.find((w) => w.id === workflowId));
 	const pickedState = $derived(pickedWorkflow?.states.find((state) => state.id === stateId));

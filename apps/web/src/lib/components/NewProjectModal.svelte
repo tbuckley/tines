@@ -23,12 +23,16 @@
 
 	let {
 		open = $bindable(false),
-		starters
+		starters,
+		organizations = []
 	}: {
 		open?: boolean;
 		/** The starter menu, from the page load (`listStarters()`). */
 		starters: StarterSummary[];
+		/** Where the project can be created; the personal one is the default. */
+		organizations?: { id: string; name: string; kind: 'personal' | 'shared' }[];
 	} = $props();
+	let organizationId = $state('');
 
 	/** Blank is preselected, so a returning user's flow is unchanged. */
 	const firstId = $derived(starters[0]?.id ?? 'blank');
@@ -155,6 +159,7 @@
 			const project = await api.createProject({
 				name,
 				description,
+				...(organizationId ? { organization_id: organizationId } : {}),
 				// Verbatim: the dialog owns this field, so a present '' means
 				// "no conventions item" and never falls back to the template.
 				initial_prompt: conventions,
@@ -233,6 +238,23 @@
 				{/if}
 			</div>
 		{/each}
+
+		{#if organizations.some((o) => o.kind === 'shared')}
+			<div class="space-y-1.5">
+				<label class="text-sm font-medium" for="project-organization">Organization</label>
+				<select
+					id="project-organization"
+					class="border-input dark:bg-input/30 h-9 w-full rounded-md border bg-transparent px-3 text-sm"
+					bind:value={organizationId}
+				>
+					{#each organizations as o (o.id)}
+						<option value={o.kind === 'personal' ? '' : o.id}
+							>{o.kind === 'personal' ? 'Personal' : o.name}</option
+						>
+					{/each}
+				</select>
+			</div>
+		{/if}
 
 		<div class="space-y-1.5">
 			<label class="text-sm font-medium" for="project-name">Name</label>

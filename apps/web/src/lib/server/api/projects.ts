@@ -276,9 +276,17 @@ export async function createProject(
 		}),
 		...(seed?.queries ?? []),
 		...(plan?.after ?? []),
-		// In a shared organization everyone else in it is a member of the new project.
+		// In a shared organization everyone else in it is a member of the new project,
+		// and a starter's workflows belong to the organization.
 		...(org.org.kind === 'shared'
 			? [
+					db
+						.updateTable('workflow')
+						.set({ organization_id: orgId })
+						.where('user_id', '=', actor.userId)
+						.where('created_at', '=', now)
+						.where('organization_id', 'is', null)
+						.compile(),
 					...firstShareQueries(db, id, { userId: person, apiKeyId: actor.apiKeyId }, now),
 					...(await orgMemberIds(db, orgId, owner)).flatMap((memberId) =>
 						grantProjectMemberQueries(

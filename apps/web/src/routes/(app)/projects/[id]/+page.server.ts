@@ -6,6 +6,7 @@ import { countIssuesByCategory, listIssues } from '$lib/server/api/issues';
 import { listLabelsInternal } from '$lib/server/api/labels';
 import { listInclusionCandidates, listInclusions } from '$lib/server/api/guidance-inclusions';
 import { getProject } from '$lib/server/api/projects';
+import { listOrganizations } from '$lib/server/api/organizations';
 import { actorForProject, resolveProjectAccess } from '$lib/server/api/project-access';
 import { readScheduleConsent } from '$lib/server/api/schedule-consent';
 import { redactForMember, scopeBlockersForMember } from '$lib/server/api/member-context';
@@ -124,6 +125,10 @@ export const load: PageServerLoad = async ({ locals, platform, params, url }) =>
 			? await loadSharedGuidance(db, platform!.env, actor, project.id, contextItems, workflows)
 			: null;
 	return {
+		organizations: await listOrganizations(
+			db,
+			sessionActor({ id: userId, name: locals.user!.name })
+		),
 		viewerRole: access.role,
 		sharedGuidance,
 		owner: isMember ? { id: ownerId, name: scopeActor.userName } : null,

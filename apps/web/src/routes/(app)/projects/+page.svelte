@@ -118,4 +118,8 @@
 	</div>
 {/if}
 
-<NewProjectModal bind:open={createOpen} starters={data.starters} />
+<NewProjectModal
+	bind:open={createOpen}
+	starters={data.starters}
+	organizations={data.organizations.filter((o) => o.role !== 'member')}
+/>
