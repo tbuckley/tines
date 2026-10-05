@@ -44,12 +44,21 @@ describe('API key permissions', () => {
 		],
 		[
 			{
-				version: 2,
+				version: 3,
 				projects: { access: 'read', scope: 'all' },
 				workspace: 'read',
 				control_plane: 'none'
 			},
 			'permissions.version'
+		],
+		[
+			{
+				organizations: ['not-an-org'],
+				projects: { access: 'read', scope: 'all' },
+				workspace: 'read',
+				control_plane: 'none'
+			},
+			'permissions.organizations'
 		],
 		[
 			{
@@ -99,5 +108,22 @@ describe('API key permissions', () => {
 			control_plane: 'none'
 		});
 		expect(intersectApiKeyPermissions(FULL_API_KEY_PERMISSIONS, scoped)).toEqual(scoped);
+	});
+
+	it('carries an organizations scope as version 2', () => {
+		const base = {
+			projects: { access: 'read', scope: 'all' },
+			workspace: 'read',
+			control_plane: 'none'
+		};
+		expect(parseApiKeyPermissions(base)).not.toHaveProperty('organizations');
+		expect(parseApiKeyPermissions(base).version).toBe(1);
+		expect(
+			parseApiKeyPermissions({ ...base, organizations: ['org_b', 'org_a', 'org_b'] })
+		).toMatchObject({
+			version: 2,
+			organizations: ['org_a', 'org_b']
+		});
+		expect(parseApiKeyPermissions({ ...base, organizations: 'all' }).organizations).toBe('all');
 	});
 });

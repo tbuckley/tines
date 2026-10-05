@@ -5,7 +5,7 @@ import { newId, type Database } from '$lib/server/db';
 import { encryptSecret } from '../../crypto';
 import { ApiFail } from '../core';
 import { encryptionKeyOr503 } from '../context';
-import { assertWorkflowInProject } from '../pack-items';
+import { assertWorkflowIdInProject } from '../pack-items';
 
 export interface ValueRow {
 	name: string;
@@ -115,12 +115,7 @@ export async function resolveValues(
 						)
 						.executeTakeFirst();
 					if (!wf) fail(name, `Workflow "${ref}" does not exist`);
-					if (wf.pack_id)
-						assertWorkflowInProject(
-							{ name: wf.name, pack: { project_id: wf.project_id, name: wf.pack_name ?? '' } },
-							projectId,
-							name
-						);
+					await assertWorkflowIdInProject(db, wf.id, projectId, name);
 					row.workflow_id = wf.id;
 					if (typeof raw.state_id === 'string' && raw.state_id) {
 						const st = await db

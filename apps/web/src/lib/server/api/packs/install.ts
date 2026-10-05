@@ -440,6 +440,7 @@ export async function installPack(
 		{
 			ownerId: pp.actor.userId,
 			packId,
+			projectId,
 			now,
 			renamed: new Map()
 		}
@@ -675,6 +676,7 @@ async function planReplace(
 	const plan = planPackWorkflows(db, model, existing, {
 		ownerId: pp.actor.userId,
 		packId: pack.id,
+		projectId: pp.project.id,
 		now,
 		renamed
 	});

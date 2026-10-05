@@ -92,6 +92,7 @@ const PAYLOADS: Record<KnownEventType, Record<string, unknown>> = {
 		issues_read_only: 91
 	},
 	'project.unarchived': { name: 'Tines', schedules_resumed: 2 },
+	'project.moved': { to_organization_name: 'Acme' },
 	'project.sharing_started': {},
 	'project.invitation_created': {},
 	'project.member_joined': {},

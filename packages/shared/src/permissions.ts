@@ -3,7 +3,14 @@ export type AccessLevel = (typeof ACCESS_LEVELS)[number];
 export type ProjectAccessLevel = Exclude<AccessLevel, 'none'>;
 
 export interface ApiKeyPermissions {
-	version: 1;
+	/** 2 when `organizations` is present. */
+	version: 1 | 2;
+	/**
+	 * Which organizations the key reaches (docs/organizations.md). Absent on
+	 * a version-1 policy, which reaches only its owner's personal
+	 * organization. `'all'` includes organizations joined later.
+	 */
+	organizations?: 'all' | string[];
 	projects: {
 		access: ProjectAccessLevel;
 		scope: 'all' | string[];
@@ -133,13 +140,36 @@ function projectScopeAt(value: unknown): 'all' | string[] {
 	return [...seen].sort();
 }
 
+function organizationsAt(value: unknown): 'all' | string[] {
+	if (value === 'all') return 'all';
+	if (!Array.isArray(value))
+		throw new ApiKeyPermissionsValidationError(
+			'"permissions.organizations" must be "all" or an array of organization IDs',
+			'permissions.organizations'
+		);
+	const seen = new Set<string>();
+	for (const id of value) {
+		if (typeof id !== 'string' || id.length > 120 || !/^org_[A-Za-z0-9_-]+$/.test(id))
+			throw new ApiKeyPermissionsValidationError(
+				'"permissions.organizations" entries must be valid organization IDs',
+				'permissions.organizations'
+			);
+		seen.add(id);
+	}
+	return [...seen].sort();
+}
+
 /** Parse the public policy shape and return its canonical versioned form. */
 export function parseApiKeyPermissions(value: unknown): ApiKeyPermissions {
 	const policy = objectAt(value, 'permissions');
-	rejectUnknownKeys(policy, ['version', 'projects', 'workspace', 'control_plane'], 'permissions');
-	if (policy.version !== undefined && policy.version !== 1) {
+	rejectUnknownKeys(
+		policy,
+		['version', 'organizations', 'projects', 'workspace', 'control_plane'],
+		'permissions'
+	);
+	if (policy.version !== undefined && policy.version !== 1 && policy.version !== 2) {
 		throw new ApiKeyPermissionsValidationError(
-			'"permissions.version" must be 1',
+			'"permissions.version" must be 1 or 2',
 			'permissions.version'
 		);
 	}
@@ -160,8 +190,11 @@ export function parseApiKeyPermissions(value: unknown): ApiKeyPermissions {
 			`permissions.projects.${missing}`
 		);
 	}
+	const organizations =
+		policy.organizations === undefined ? undefined : organizationsAt(policy.organizations);
 	return {
-		version: 1,
+		version: organizations === undefined ? 1 : 2,
+		...(organizations === undefined ? {} : { organizations }),
 		projects: {
 			access: accessAt(projects.access, 'permissions.projects.access', false) as ProjectAccessLevel,
 			scope: projectScopeAt(projects.scope)
@@ -169,6 +202,17 @@ export function parseApiKeyPermissions(value: unknown): ApiKeyPermissions {
 		workspace: accessAt(policy.workspace, 'permissions.workspace', true),
 		control_plane: accessAt(policy.control_plane, 'permissions.control_plane', true)
 	};
+}
+
+/**
+ * The organizations a policy reaches, with a version-1 policy's implicit
+ * personal organization made explicit.
+ */
+export function policyOrganizations(
+	permissions: ApiKeyPermissions,
+	userId: string
+): 'all' | string[] {
+	return permissions.organizations ?? [`org_${userId}`];
 }
 
 export function accessIncludes(actual: AccessLevel, required: AccessLevel): boolean {
@@ -193,6 +237,12 @@ export function apiKeyPermissionsSubset(
 ): boolean {
 	if (!accessIncludes(granter.workspace, proposed.workspace)) return false;
 	if (!accessIncludes(granter.control_plane, proposed.control_plane)) return false;
+	if (granter.organizations !== undefined && granter.organizations !== 'all') {
+		const proposedOrgs = proposed.organizations;
+		if (proposedOrgs === 'all') return false;
+		if (proposedOrgs && !proposedOrgs.every((id) => granter.organizations!.includes(id)))
+			return false;
+	}
 	if (proposed.projects.scope.length === 0) return true;
 	if (!accessIncludes(granter.projects.access, proposed.projects.access)) return false;
 	if (granter.projects.scope === 'all') return true;
@@ -210,8 +260,18 @@ export function intersectApiKeyPermissions(
 	else scope = left.projects.scope.filter((id) => right.projects.scope.includes(id));
 	const lower = <T extends AccessLevel>(a: T, b: T): T =>
 		ACCESS_RANK[a] <= ACCESS_RANK[b] ? a : b;
+	let organizations: 'all' | string[] | undefined;
+	if (left.organizations === undefined || left.organizations === 'all')
+		organizations = right.organizations ?? left.organizations;
+	else if (right.organizations === undefined || right.organizations === 'all')
+		organizations = left.organizations;
+	else
+		organizations = left.organizations.filter((id) =>
+			(right.organizations as string[]).includes(id)
+		);
 	return {
-		version: 1,
+		version: organizations === undefined ? 1 : 2,
+		...(organizations === undefined ? {} : { organizations }),
 		projects: {
 			access: lower(left.projects.access, right.projects.access),
 			scope: scope === 'all' ? 'all' : [...scope].sort()

@@ -9,6 +9,7 @@ import type { PackMigrationEntry, PackModel } from '@tines/shared';
 import { sql, type CompiledQuery, type Kysely } from 'kysely';
 import { newId, type Database } from '$lib/server/db';
 import { stateRef, storedRunScope, type PackIds } from './model';
+import { projectOrgExpr } from '../org-core';
 
 export interface ExistingPackWorkflows {
 	workflows: {
@@ -115,7 +116,14 @@ export function planPackWorkflows(
 	db: Kysely<Database>,
 	model: PackModel,
 	existing: ExistingPackWorkflows,
-	ctx: { ownerId: string; packId: string; now: number; renamed: Map<string, string> }
+	ctx: {
+		ownerId: string;
+		packId: string;
+		/** The pack's project: its workflows belong to the project's organization. */
+		projectId: string;
+		now: number;
+		renamed: Map<string, string>;
+	}
 ): WorkflowWritePlan {
 	const ids: PackIds = { workflows: new Map(), states: new Map() };
 	const upserts: CompiledQuery[] = [];
@@ -183,6 +191,7 @@ export function planPackWorkflows(
 						initial_state_id: initialId,
 						pack_id: ctx.packId,
 						key: wf.key,
+						organization_id: projectOrgExpr(ctx.projectId),
 						created_at: ctx.now,
 						updated_at: ctx.now
 					})

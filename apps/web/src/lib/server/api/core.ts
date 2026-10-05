@@ -2,6 +2,7 @@ import type { D1Result } from '@cloudflare/workers-types';
 import {
 	FULL_API_KEY_PERMISSIONS,
 	parseApiKeyPermissions,
+	policyOrganizations,
 	type ApiErrorBody,
 	type ApiKeyPermissions,
 	type ArchivedFilter,
@@ -221,6 +222,16 @@ export interface ActorContext {
 	agentRunId?: string | null;
 	/** Required on request actors. Optional only for legacy session test fixtures. */
 	permissions?: ApiKeyPermissions;
+	/**
+	 * API keys: the organizations the key reaches (its policy intersected
+	 * with the person's memberships). Absent for browser sessions and run keys.
+	 */
+	organizationScope?: 'all' | string[];
+	/**
+	 * API keys: projects the person can reach in organizations the key does
+	 * not name. The key cannot see them (404), whatever its project scope.
+	 */
+	hiddenProjectIds?: readonly string[];
 	runRestriction?: {
 		policy: 'run-v1';
 		runId: string;
@@ -516,6 +527,31 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 	// Don't block the request on the last-used bookkeeping write.
 	event.platform.ctx?.waitUntil?.(touch);
 
+	// An ordinary key reaches only the organizations its policy names
+	// (docs/organizations.md): its project scope narrows to the projects of
+	// those organizations the person belongs to, so joining an organization
+	// never widens a key that did not name it.
+	let organizationScope: ActorContext['organizationScope'];
+	let hiddenProjectIds: string[] | undefined;
+	if (row.agent_run_id === null) {
+		organizationScope = policyOrganizations(permissions, row.user_id);
+		if (organizationScope !== 'all') {
+			// Projects the person can reach whose organization the key does not
+			// name: invisible to it (404), wherever its project scope says.
+			const orgs = JSON.stringify(organizationScope);
+			const hidden = await sql<{ id: string }>`SELECT p.id FROM project p
+				LEFT JOIN project_member m ON m.project_id = p.id AND m.user_id = ${row.user_id}
+				WHERE (p.user_id = ${row.user_id} OR (m.revoked_at IS NULL AND m.revision IS NOT NULL))
+				AND COALESCE(p.organization_id, 'org_' || p.user_id) NOT IN (SELECT value FROM json_each(${orgs}))
+				-- A version-1 key keeps reaching projects shared with its owner the
+				-- old, per-project way (a project still in its owner's personal
+				-- organization), exactly as before organizations.
+				AND NOT (${permissions.organizations === undefined ? 1 : 0} = 1
+					AND COALESCE(p.organization_id, 'org_' || p.user_id) = 'org_' || p.user_id)`.execute(db);
+			hiddenProjectIds = hidden.rows.map((r) => r.id);
+		}
+	}
+
 	return {
 		userId: row.user_id,
 		userName: row.user_name,
@@ -524,7 +560,9 @@ export async function requireActor(event: RequestEvent): Promise<ActorContext> {
 		viaSession: false,
 		agentRunId: row.agent_run_id,
 		permissions,
-		runRestriction
+		runRestriction,
+		...(organizationScope ? { organizationScope } : {}),
+		...(hiddenProjectIds?.length ? { hiddenProjectIds } : {})
 	};
 }
 

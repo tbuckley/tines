@@ -69,6 +69,7 @@ import { decryptSecret, encryptSecret, sha256Hex } from '../crypto';
 import { assertScopeWritable } from './archive';
 import { eventInsert } from './events';
 import { substringMatch } from './search';
+import { contextOrgPredicate } from './org-core';
 import { guardPackItemUpdate, markdownTexts, packInputRefs } from './pack-items';
 import {
 	boundInput,
@@ -1895,7 +1896,8 @@ export function matchingItemsQuery(
 					eb('context_item.issue_id', 'is', null),
 					eb('context_item.issue_id', '=', target.issueId)
 				]),
-				packReachPredicate(target.stateChain[target.stateChain.length - 1])
+				packReachPredicate(target.stateChain[target.stateChain.length - 1]),
+				contextOrgPredicate(target.projectId)
 			])
 		);
 }
@@ -2556,7 +2558,8 @@ export async function contextSummaryForIssue(
 					)
 				]),
 				eb.or([eb('issue_id', 'is', null), eb('issue_id', '=', target.issueId)]),
-				packReachPredicate(target.stateId)
+				packReachPredicate(target.stateId),
+				contextOrgPredicate(target.projectId)
 			])
 		)
 		.execute();

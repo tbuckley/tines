@@ -16,6 +16,46 @@ export interface ProjectTable {
 	updated_at: number;
 	shared_at: number | null;
 	sharing_revision: Generated<number>;
+	/** Migration 0053; NULL = the owner's personal organization (`org_<user_id>`). */
+	organization_id?: string | null;
+}
+
+export interface OrganizationTable {
+	id: string;
+	name: string;
+	kind: 'personal' | 'shared';
+	owner_user_id: string;
+	created_by: string;
+	created_at: number;
+	updated_at: number;
+	revision: Generated<number>;
+}
+
+export interface OrganizationMemberTable {
+	organization_id: string;
+	user_id: string;
+	role: 'owner' | 'manager' | 'member';
+	revision: Generated<number>;
+	joined_at: number;
+	revoked_at: number | null;
+	updated_at: number;
+}
+
+export interface OrganizationInvitationTable {
+	id: string;
+	organization_id: string;
+	email: string;
+	token_hash: string;
+	generation: Generated<number>;
+	expires_at: number;
+	created_by_user_id: string;
+	created_by_api_key_id: string | null;
+	created_at: number;
+	updated_at: number;
+	accepted_by_user_id: string | null;
+	accepted_at: number | null;
+	canceled_at: number | null;
+	delivery_status: Generated<'pending' | 'sent' | 'failed'>;
 }
 
 export interface ProjectMemberTable {
@@ -82,6 +122,8 @@ export interface WorkflowTable {
 	pack_id: Generated<string | null>;
 	/** The workflow's key in its pack (its folder name); null outside packs. */
 	key: Generated<string | null>;
+	/** NULL = its owner's personal organization; system workflows have none. */
+	organization_id?: string | null;
 }
 
 export interface WorkflowStateTable {
@@ -244,6 +286,8 @@ export interface LabelTable {
 	description: string;
 	created_at: number;
 	updated_at: number;
+	/** NULL = its owner's personal organization. */
+	organization_id?: string | null;
 }
 
 export interface IssueLabelTable {
@@ -295,6 +339,8 @@ export interface ContextItemTable {
 	workflow_id?: string | null;
 	/** Pack items: JSON array of the input names the item reads. */
 	input_refs?: string | null;
+	/** NULL = its owner's personal organization. Decides where a project-less item applies. */
+	organization_id?: string | null;
 }
 
 /** One immutable attached version of an artifact context item. */
@@ -865,6 +911,9 @@ export interface WorkflowModerationAuditTable {
 export interface Database {
 	project: ProjectTable;
 	project_member: ProjectMemberTable;
+	organization: OrganizationTable;
+	organization_member: OrganizationMemberTable;
+	organization_invitation: OrganizationInvitationTable;
 	project_invitation: ProjectInvitationTable;
 	project_guidance_inclusion: ProjectGuidanceInclusionTable;
 	issue_guidance_block: IssueGuidanceBlockTable;

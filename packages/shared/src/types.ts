@@ -118,9 +118,13 @@ export interface Project {
 	issue_count: number;
 	/** Set (ms) while the project is archived; null = live. */
 	archived_at: number | null;
+	/** The organization the project belongs to. */
+	organization?: { id: string; name: string; kind: 'personal' | 'shared' };
 }
 
 export interface CreateProjectRequest {
+	/** The organization to create it in; defaults to your personal organization. */
+	organization_id?: string;
 	name: string;
 	description?: string;
 	default_workflow_id?: string | null;
@@ -3476,6 +3480,7 @@ export const EVENT_TYPES = [
 	'project.deleted',
 	'project.archived',
 	'project.unarchived',
+	'project.moved',
 	'project.sharing_started',
 	'project.invitation_created',
 	'project.member_joined',
