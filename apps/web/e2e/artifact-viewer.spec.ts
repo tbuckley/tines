@@ -74,6 +74,20 @@ test.beforeAll(async ({ apiFor, uniqueName, workerRequest: request }) => {
 		content_type: 'text/markdown'
 	});
 
+	// A markdown table whose last cell is a long unbreakable token: wider
+	// than a phone viewport, so the scroll rules in app.css are exercised.
+	const tableDoc = [
+		'| Status | Count | Result |',
+		'| --- | --- | --- |',
+		'| pass | 1 | ' + 'unbreakable'.repeat(40),
+		'| pass | 2 | ' + 'unbreakable'.repeat(40)
+	].join('\n');
+	await api.put(`/api/v1/issues/${issue.id}/artifacts/table-doc`, {
+		type: 'text',
+		content: tableDoc,
+		content_type: 'text/markdown'
+	});
+
 	// A folder set: the gallery has no height cap of its own, so the modal is
 	// the only thing keeping it on screen.
 	const multipart: Record<string, { name: string; mimeType: string; buffer: Buffer }> =
@@ -426,6 +440,38 @@ test('a long markdown artifact stays dismissable on a phone', async ({ page }) =
 	await expect(closeButton).toBeInViewport();
 
 	await closeButton.click();
+	await expect(dialog).toBeHidden();
+});
+
+test('a markdown table keeps words whole and scrolls on a phone', async ({ page }) => {
+	await page.setViewportSize(PHONE);
+	await gotoHydrated(page, issuePath(projectName, issue.number));
+	await unfoldArtifacts(page);
+
+	const dialog = page.getByRole('dialog', { name: 'Artifact viewer' });
+	await openViewer(page.getByRole('button', { name: /^View table-doc/ }), dialog);
+
+	const header = dialog.getByRole('columnheader', { name: 'Result' });
+	await expect(header).toBeVisible();
+
+	// The whole word fits inside the cell: no mid-word split (Tines/889).
+	const cellBox = await header.evaluate((el) => {
+		const range = document.createRange();
+		range.selectNodeContents(el);
+		return { cell: el.getBoundingClientRect(), text: range.getBoundingClientRect() };
+	});
+	expect(cellBox.text.width).toBeGreaterThan(0);
+	expect(cellBox.cell.width).toBeGreaterThanOrEqual(cellBox.text.width - 0.5);
+
+	// The over-wide table scrolls inside itself instead of compressing.
+	const scroll = await dialog.locator('table').evaluate((el) => ({
+		overflowX: getComputedStyle(el).overflowX,
+		scrolls: el.scrollWidth > el.clientWidth
+	}));
+	expect(scroll.overflowX).toBe('auto');
+	expect(scroll.scrolls).toBe(true);
+
+	await dialog.getByRole('button', { name: 'Close' }).click();
 	await expect(dialog).toBeHidden();
 });
 

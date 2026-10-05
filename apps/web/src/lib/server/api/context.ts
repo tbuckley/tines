@@ -399,7 +399,7 @@ export function contextItemQuery(db: Kysely<Database>, userId: string) {
 		.where('context_item.user_id', '=', userId);
 }
 
-type ItemRow = Awaited<ReturnType<ReturnType<typeof contextItemQuery>['execute']>>[number];
+export type ItemRow = Awaited<ReturnType<ReturnType<typeof contextItemQuery>['execute']>>[number];
 
 function rowScope(row: ItemRow): ResolvedScope {
 	return {
@@ -1671,8 +1671,16 @@ export interface MatchTarget {
  * effective-context read, once inside `contextSummaryForIssue`, which must stay
  * one query. Change one and change the other.
  */
-async function resolveStateChain(db: Kysely<Database>, leafStateId: string): Promise<string[]> {
-	const rows = await db
+export async function resolveStateChain(
+	db: Kysely<Database>,
+	leafStateId: string
+): Promise<string[]> {
+	return stateChainFromRows(await stateChainQuery(db, leafStateId).execute(), leafStateId);
+}
+
+/** `resolveStateChain`'s query, for a caller that runs it inside a batch. */
+export function stateChainQuery(db: Kysely<Database>, leafStateId: string) {
+	return db
 		.withRecursive('state_chain', (cte) =>
 			cte
 				.selectFrom('workflow_state')
@@ -1695,8 +1703,14 @@ async function resolveStateChain(db: Kysely<Database>, leafStateId: string): Pro
 				)
 		)
 		.selectFrom('state_chain')
-		.select(['id', 'depth'])
-		.execute();
+		.select(['id', 'depth']);
+}
+
+/** Orders `stateChainQuery` rows root → leaf. */
+export function stateChainFromRows(
+	rows: { id: string; depth: number }[],
+	leafStateId: string
+): string[] {
 	// Keep each state at its shallowest depth, so the leaf stays last even if a
 	// hand-edited loop reached it again, then order root → leaf.
 	const depths = new Map<string, number>();
@@ -1736,7 +1750,7 @@ function projectRow(row: ItemRow, projection: MatchProjection | undefined): Item
 	};
 }
 
-function matchingItemsQuery(
+export function matchingItemsQuery(
 	db: Kysely<Database>,
 	userId: string,
 	target: MatchTarget,
@@ -1785,6 +1799,31 @@ function matchingItemsQuery(
 		);
 }
 
+/**
+ * The shared projection (Tines/752), applied on top of `matchingItemsQuery`
+ * for a shared project: which of the owner's matching items everyone in the
+ * project may read. Project-, issue- and workflow-state-anchored items share
+ * automatically (the matcher already confines state items to the issue's
+ * chain); a global or label-only prompt, skill or repo shares only while the
+ * owner has included it in this project. Env and artifacts never do.
+ * Admissibility is re-checked on every read, so an inclusion row whose item
+ * was later rescoped is inert.
+ */
+export function sharedGuidancePredicate(projectId: string, issueId: string) {
+	return sql<boolean>`(context_item.kind NOT IN ('env', 'artifact') AND (
+		context_item.project_id = ${projectId}
+		OR context_item.issue_id = ${issueId}
+		OR context_item.workflow_state_id IS NOT NULL
+		OR (
+			context_item.project_id IS NULL AND context_item.issue_id IS NULL
+			AND context_item.workflow_state_id IS NULL
+			AND context_item.kind IN ('prompt', 'skill', 'repo')
+			AND EXISTS (SELECT 1 FROM project_guidance_inclusion g
+				WHERE g.project_id = ${projectId} AND g.context_item_id = context_item.id)
+		)
+	))`;
+}
+
 /** The label a same-rank tie orders by: name, then id for a dangling label. */
 function labelSortKey(row: ItemRow): string {
 	return (row.scope_label_name ?? '').toLowerCase() || (row.label_id ?? '');
@@ -1799,7 +1838,7 @@ function labelSortKey(row: ItemRow): string {
  * of a by-name dedupe is deterministic and explainable rather than whichever
  * item happened to be created first.
  */
-function sortMatched(rows: ItemRow[], stateChain: string[]): ItemRow[] {
+export function sortMatched(rows: ItemRow[], stateChain: string[]): ItemRow[] {
 	// Ancestors stitch before the state that inherits from them, inside the
 	// state dimension's existing rank: a tie-break, not a new layer. Inert for a
 	// parentless state — every matched row then names the one state in the chain.
@@ -1838,7 +1877,7 @@ function inheritedFrom(row: ItemRow, leafStateId: string): InheritedFrom | null 
  * issue, so an existing journal costs no extra query; only naming a base state
  * that has no journal yet needs one.
  */
-async function journalTarget(
+export async function journalTarget(
 	db: Kysely<Database>,
 	rows: ItemRow[],
 	target: MatchTarget
@@ -2089,14 +2128,38 @@ export async function effectiveContextForTarget(
 	target: MatchTarget,
 	{ skillFiles = true, projection }: { skillFiles?: boolean; projection?: MatchProjection } = {}
 ): Promise<EffectiveContext> {
-	const leafStateId = target.stateChain[target.stateChain.length - 1];
 	const rows = sortMatched(
 		(await matchingItemsQuery(db, userId, target, projection).execute()).map((row) =>
 			projectRow(row, projection)
 		),
 		target.stateChain
 	);
+	const fileMap = skillFiles
+		? await loadFiles(db, winningSkillIds(rows))
+		: new Map<string, ContextFile[]>();
+	return assembleEffectiveContext(rows, fileMap, target, await journalTarget(db, rows, target));
+}
 
+/** The skill items that win the by-name dedupe — the only ones whose files are delivered. */
+export function winningSkillIds(rows: ItemRow[]): string[] {
+	const byName = new Map<string, string>();
+	for (const r of rows) if (r.kind === 'skill') byName.set(r.name, r.id);
+	return [...byName.values()];
+}
+
+/**
+ * The post-query half of the effective context: prompt stitching, by-name
+ * dedupe and repo-dir conflicts over rows already matched and in layer order
+ * (`sortMatched`). Pure, so the shared execution bundle (Tines/752) assembles
+ * its own snapshot with exactly this precedence rather than a copy of it.
+ */
+export function assembleEffectiveContext(
+	rows: ItemRow[],
+	fileMap: Map<string, ContextFile[]>,
+	target: MatchTarget,
+	journal: EffectiveJournalTarget
+): EffectiveContext {
+	const leafStateId = target.stateChain[target.stateChain.length - 1];
 	const prompts = rows.filter((r) => r.kind === 'prompt');
 	const parts: EffectivePromptPart[] = prompts.map((r) => ({
 		item_id: r.id,
@@ -2135,12 +2198,6 @@ export async function effectiveContextForTarget(
 		};
 	});
 
-	const fileMap = skillFiles
-		? await loadFiles(
-				db,
-				skillDedupe.winners.map((r) => r.id)
-			)
-		: new Map<string, ContextFile[]>();
 	const skills: EffectiveSkill[] = skillDedupe.winners.map((r) => ({
 		item_id: r.id,
 		name: r.name,
@@ -2171,7 +2228,7 @@ export async function effectiveContextForTarget(
 		.map(([dir, item_ids]) => ({ kind: 'repo_dir', dir, item_ids }));
 
 	return {
-		prompt: { text, parts, journal: await journalTarget(db, rows, target) },
+		prompt: { text, parts, journal },
 		skills,
 		repos,
 		env: envEntries,
@@ -2803,13 +2860,16 @@ export async function findAttachedContext(
  * Rejects the operation (422 naming the attached items) unless forced; when
  * forced, returns the delete statements plus one `context.deleted` event per
  * item, to be committed in the caller's batch. All-or-nothing per request.
+ * A `guard` is ANDed onto each item's witness, so a batch whose own
+ * precondition failed without raising records no deletion either.
  */
 export function sweepAttachedContext(
 	db: Kysely<Database>,
 	actor: ActorContext,
 	items: AttachedContextItem[],
 	force: boolean,
-	operation: string
+	operation: string,
+	guard?: QueryGuard
 ): { queries: CompiledQuery[]; deleted: DeletedContextItem[] } {
 	if (items.length === 0) return { queries: [], deleted: [] };
 	if (!force) {
@@ -2863,7 +2923,7 @@ export function sweepAttachedContext(
 						forced: true
 					}
 				},
-				{ predicate: witness }
+				{ predicate: guard ? sql<boolean>`${witness} AND ${guard.predicate}` : witness }
 			),
 			// SQLite CASE is lazy: a lost witness raises and rolls back the whole
 			// D1 batch instead of letting the enclosing anchor cascade partially.

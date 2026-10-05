@@ -67,6 +67,7 @@ const workflow: WorkflowResponse = {
 		{ id: 't_ghost', name: 'Ghost', from_state_id: 's_open', to_state_id: 's_missing' }
 	],
 	issue_count: 0,
+	revision: 1,
 	created_at: 0,
 	updated_at: 0
 };

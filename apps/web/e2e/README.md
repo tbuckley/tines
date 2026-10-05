@@ -209,6 +209,17 @@ cover it:
 - `clickUntil` (retries the click until the expected state holds) as belt-and-braces
   around a first click, rather than a sleep or a bare click.
 
+## Deferred focus
+
+Bits UI popovers, dialogs and menus move focus to their first control one animation frame
+after they open. A spec that calls `focus()` on a control inside one and then presses a key
+races that frame: if it lands in between, the key goes to the first control instead
+(Tines/898: Space toggled a label, not the checkbox). Wait for focus to land inside first —
+`await expect(page.locator('[data-popover-content] :focus')).toHaveCount(1)`, as in
+`issue-duplicates.spec.ts`. When the first control is known, `selectRecoveryLabel` in
+`issue-create-artifacts.spec.ts` is the variant that waits on it by name. A pointer click or
+`.check()` does not depend on focus and is immune.
+
 ## Geometry
 
 Read layout through `readSettled` in `helpers.ts`: two reads a beat apart that agree. A
@@ -231,6 +242,19 @@ const cdp = await page.context().newCDPSession(page);
 await cdp.send('Emulation.setCPUThrottlingRate', { rate: 20 });
 // ... trigger the swap the locator races ...
 ```
+
+Throttling slows the test's own commands as much as the page, so it cannot open a window
+between two test commands. For a race between an animation frame and the next command, hold
+`requestAnimationFrame` in a `page.evaluate` and release the held callbacks from the event
+the spec itself triggers (Tines/898 released on `focusin`). Release in a `queueMicrotask`,
+not synchronously: `locator.focus()` calls `focus()` twice, and the second call undoes a
+synchronous release.
+
+CPU throttling slows the renderer only. When the locator races something outside it — a
+clipboard write, a network response — throttling will not give N/N (Tines/899: 1 red in 10 at
+20x). Delay that call instead: wrap the API in `page.evaluate`, or hold the response in
+`page.route`. `workflow-publications.spec.ts` holds `navigator.clipboard.writeText` open for
+200 ms.
 
 **`--repeat-each N` is not a flake probe for this suite** — it re-runs the fixture-creating
 tests too, and they write to the one shared D1, so every repeat sees the rows the previous

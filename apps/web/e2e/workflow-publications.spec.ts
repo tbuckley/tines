@@ -372,11 +372,25 @@ test.describe.serial('public workflow snapshots', () => {
 		await ownerPage.keyboard.press('Tab');
 		await expect(shareLink).toBeFocused();
 		await expect(receiptHeading).toHaveCSS('box-shadow', 'none');
+		// Hold the write open so the button is still pending when Chromium next settles focus:
+		// a natively disabled button loses focus there for good (Tines/899). The real write
+		// still happens first, so the clipboard read below holds.
+		await ownerPage.evaluate(() => {
+			const write = navigator.clipboard.writeText.bind(navigator.clipboard);
+			Object.defineProperty(navigator.clipboard, 'writeText', {
+				configurable: true,
+				value: async (text: string) => {
+					await write(text);
+					await new Promise((resolve) => setTimeout(resolve, 200));
+				}
+			});
+		});
 		await copyButton.click();
 		await expect(copyButton).toHaveText('Copied');
 		await expect(ownerPage.getByRole('status')).toContainText('Link copied.');
 		expect(await ownerPage.evaluate(() => navigator.clipboard.readText())).toBe(receiptUrl);
 		await expect(copyButton).toBeFocused();
+		await ownerPage.evaluate(() => Reflect.deleteProperty(navigator.clipboard, 'writeText'));
 		await ownerPage.waitForTimeout(1_100);
 		await copyButton.click();
 		await ownerPage.waitForTimeout(1_100);

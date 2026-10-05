@@ -143,6 +143,9 @@ test('project list has truthful counts and keyboard-operable duplicate controls 
 		page.getByRole('checkbox', { name: 'Show duplicates' })
 	);
 	const checkbox = page.getByRole('checkbox', { name: 'Show duplicates' });
+	// Bits UI focuses the popover's first control one frame after it opens. Wait for
+	// that move to land, or it can take focus back from the checkbox before Space.
+	await expect(page.locator('[data-popover-content] :focus')).toHaveCount(1);
 	await checkbox.focus();
 	await page.keyboard.press('Space');
 	await expect(page).toHaveURL(/duplicates=1/);

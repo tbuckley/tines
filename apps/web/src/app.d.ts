@@ -56,6 +56,12 @@ declare global {
 		 */
 		ARTIFACT_SANDBOX_ORIGIN?: string;
 		/**
+		 * Release flag for shared execution guidance (Tines/752): `on` enables
+		 * owner guidance inclusion and the shared projection. Unset in
+		 * production and preview; see lib/server/api/shared-execution.ts.
+		 */
+		SHARED_EXECUTION?: string;
+		/**
 		 * Public base URL managed runs use to reach the API (self-seeding
 		 * prompts, the agent's TINES_API_URL). Falls back to BETTER_AUTH_URL.
 		 */

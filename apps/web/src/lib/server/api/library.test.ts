@@ -145,6 +145,8 @@ describe('buildLibraryDocument', () => {
 		expect(wf.states.map((s) => s.name)).toEqual(['Backlog', 'Research', 'Done']);
 		expect(wf.initial_state).toBe('Backlog');
 		expect(wf.transitions).toContainEqual({ name: 'Start', from: 'Backlog', to: 'Research' });
+		// The save revision (Tines/608) is deployment-local and does not travel.
+		expect(wf).not.toHaveProperty('revision');
 	});
 
 	it('exports a workflow that is directly re-creatable — the format is the request', async () => {
