@@ -27,6 +27,7 @@ import {
 } from '@tines/shared';
 import { isPackClutterPath, packDigest, parsePack, readPackArchive } from '@tines/shared/packs';
 import { CliError } from './errors.js';
+import { runScopeLabel } from './format.js';
 
 // ---------------------------------------------------------------------------
 // Reading a pack from disk
@@ -401,7 +402,7 @@ export function addsLines(adds: PackAdds): string[] {
 		out.push(`fixed repo ${r.name}: ${r.url}${r.branch ? `#${r.branch}` : ''}`);
 	for (const s of adds.wide_states)
 		out.push(
-			`${s.run_scope === 'organization' ? 'HIGH RISK: ' : ''}state ${s.workflow} / ${s.state} has run_scope ${s.run_scope} (agents act past their own issue)`
+			`${s.run_scope === 'organization' ? 'HIGH RISK: ' : ''}state ${s.workflow} / ${s.state} has run_scope ${runScopeLabel(s.run_scope)} (agents act past their own issue)`
 		);
 	for (const s of adds.schedules) out.push(`suggested schedule ${s.name} [${s.key}]`);
 	return out;
@@ -628,7 +629,7 @@ export function formatPackDetail(p: PackDetail): string {
 				`${w.name} [${w.key}] ${w.id} — ${plural(w.issue_count, 'issue')}`,
 				...w.states.map(
 					(s) =>
-						`  ${s.name} [${s.key}] ${s.category}${s.run_scope !== 'issue' ? ` run_scope ${s.run_scope}` : ''}`
+						`  ${s.name} [${s.key}] ${s.category}${s.run_scope !== 'issue' ? ` run_scope ${runScopeLabel(s.run_scope)}` : ''}`
 				)
 			])
 		)

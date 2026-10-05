@@ -69,6 +69,8 @@ import { decryptSecret, encryptSecret, sha256Hex } from '../crypto';
 import { assertScopeWritable } from './archive';
 import { eventInsert } from './events';
 import { substringMatch } from './search';
+import { contextOrgPredicate, personalOrgId } from './org-core';
+import { keyReachesOrg, requireOrg } from './organizations';
 import { guardPackItemUpdate, markdownTexts, packInputRefs } from './pack-items';
 import {
 	boundInput,
@@ -444,6 +446,8 @@ function serializeItem(row: ItemRow): ContextItem {
 	const kind = row.kind as ContextKind;
 	const scope = toContextScope(rowScope(row));
 	if (row.pack_id && row.reach) scope.label = packScopeLabel(row);
+	if (row.organization_id && row.organization_id !== personalOrgId(row.user_id))
+		scope.organization_id = row.organization_id;
 	const item: ContextItem = {
 		id: row.id,
 		kind,
@@ -814,6 +818,62 @@ async function runContextWrite(env: Env, queries: CompiledQuery[]): Promise<D1Re
 	}
 }
 
+/**
+ * The organization a new item belongs to. Only project-less items name one
+ * (the others follow their project); naming a shared organization needs its
+ * owner, whose `user_id` its rows carry. Returns null for the personal one.
+ */
+async function contextOrganization(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	requested: unknown,
+	scope: ResolvedScope
+): Promise<string | null> {
+	const anchored = scope.projectId !== null || scope.issueId !== null;
+	if (requested === undefined || requested === null) {
+		if (!anchored && !keyReachesOrg(actor, personalOrgId(actor.userId)))
+			throw new ApiFail(
+				403,
+				'insufficient_permissions',
+				'This key does not reach your personal organization'
+			);
+		return null;
+	}
+	if (anchored)
+		throw new ApiFail(
+			422,
+			'invalid_field',
+			'organization_id is only for items with no project or issue',
+			{
+				field: 'organization_id'
+			}
+		);
+	const orgId = requireString(requested, 'organization_id', { max: 120 });
+	if (orgId === personalOrgId(actor.userId)) return null;
+	const access = await requireOrg(db, actor, orgId, ['owner']);
+	if (access.org.owner_user_id !== actor.userId)
+		throw new ApiFail(
+			403,
+			'organization_role',
+			'Only the organization owner edits its organization-level context'
+		);
+	return orgId;
+}
+
+/** A key that does not name a project-less item's organization cannot see it. */
+function assertRowOrgReachable(
+	actor: ActorContext,
+	row: {
+		project_id: string | null;
+		issue_id: string | null;
+		organization_id?: string | null;
+		user_id: string;
+	}
+): void {
+	if (row.project_id !== null || row.issue_id !== null) return;
+	if (!keyReachesOrg(actor, row.organization_id ?? personalOrgId(row.user_id))) throw notFound();
+}
+
 /** A pack item's place: the uniqueness key beside its scope. */
 export interface PackKey {
 	packId: string;
@@ -834,7 +894,8 @@ async function assertNameAvailable(
 	name: string,
 	scope: ScopeIds,
 	excludeId?: string,
-	pack: PackKey | null = null
+	pack: PackKey | null = null,
+	organizationId: string | null = null
 ) {
 	let q = db
 		.selectFrom('context_item')
@@ -849,6 +910,9 @@ async function assertNameAvailable(
 				.where('reach', '=', pack.reach)
 				.where(sql<boolean>`workflow_id IS ${pack.workflowId}`)
 		: q.where('pack_id', 'is', null);
+	q = q.where(
+		sql<boolean>`COALESCE(organization_id, 'org_' || user_id) = ${organizationId ?? `org_${userId}`}`
+	);
 	for (const [column, value] of [
 		['project_id', scope.projectId],
 		['workflow_state_id', scope.workflowStateId],
@@ -1019,6 +1083,8 @@ export function contextItemInsertQueries(
 		fileIds?: string[];
 		eventId?: string;
 		guard?: QueryGuard;
+		/** A shared organization's project-less item; null/absent = the owner's personal one. */
+		organizationId?: string | null;
 	}
 ): CompiledQuery[] {
 	const { id, fields, scope, position, now } = options;
@@ -1049,6 +1115,7 @@ export function contextItemInsertQueries(
 				env_value: envPayload && !envPayload.secret ? envPayload.value : null,
 				env_value_enc: envPayload?.secret ? fields.envValueEnc : null,
 				env_hint: envPayload?.hint ?? null,
+				organization_id: options.organizationId ?? null,
 				position,
 				version: 1,
 				created_at: now,
@@ -1128,7 +1195,10 @@ export async function createContextItem(
 		}
 	);
 	await assertScopeWritable(db, actor, scope);
-	await assertNameAvailable(db, actor.userId, kind, name, scope);
+	// A project-less item belongs to an organization: the owner's personal one
+	// unless `organization_id` names a shared organization they own.
+	const organizationId = await contextOrganization(db, actor, body.organization_id, scope);
+	await assertNameAvailable(db, actor.userId, kind, name, scope, undefined, null, organizationId);
 
 	const now = Date.now();
 	const id = newId('ctx');
@@ -1139,7 +1209,8 @@ export async function createContextItem(
 		scope,
 		position,
 		now,
-		guard: runBoundGuard(actor)
+		guard: runBoundGuard(actor),
+		organizationId
 	});
 	await beforeCommit?.();
 	const results = await runContextWrite(env, queries);
@@ -1204,6 +1275,7 @@ export async function updateContextItem(
 		.where('context_item.id', '=', id)
 		.executeTakeFirst();
 	if (!row) throw notFound();
+	assertRowOrgReachable(actor, row);
 	const kind = row.kind as ContextKind;
 	const currentScope = rowScope(row);
 	// Authority over the item where it sits comes before anything read from
@@ -1308,7 +1380,16 @@ export async function updateContextItem(
 	if (scopeChanged) await assertScopeWritable(db, actor, scope);
 
 	if (name !== row.name || scopeChanged) {
-		await assertNameAvailable(db, actor.userId, kind, name, targetIds, id, packKeyOf(row));
+		await assertNameAvailable(
+			db,
+			actor.userId,
+			kind,
+			name,
+			targetIds,
+			id,
+			packKeyOf(row),
+			row.organization_id ?? null
+		);
 	}
 
 	// Payload updates per kind.
@@ -1526,6 +1607,7 @@ export async function deleteContextItem(
 		.where('context_item.id', '=', id)
 		.executeTakeFirst();
 	if (!row) throw notFound();
+	assertRowOrgReachable(actor, row);
 	fenceRunKeyEnvWrite(actor, row.kind);
 	const scope = rowScope(row);
 	const boundJournal = await isBoundRunJournal(db, actor, row);
@@ -1907,7 +1989,8 @@ export function matchingItemsQuery(
 					eb('context_item.issue_id', 'is', null),
 					eb('context_item.issue_id', '=', target.issueId)
 				]),
-				packReachPredicate(target.stateChain[target.stateChain.length - 1])
+				packReachPredicate(target.stateChain[target.stateChain.length - 1]),
+				contextOrgPredicate(target.projectId)
 			])
 		);
 }
@@ -2568,7 +2651,8 @@ export async function contextSummaryForIssue(
 					)
 				]),
 				eb.or([eb('issue_id', 'is', null), eb('issue_id', '=', target.issueId)]),
-				packReachPredicate(target.stateId)
+				packReachPredicate(target.stateId),
+				contextOrgPredicate(target.projectId)
 			])
 		)
 		.execute();

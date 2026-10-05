@@ -206,6 +206,17 @@ export function requireAccess(
 ): void {
 	requireRunOperation(actor, operation, target);
 	const policy = actorPolicy(actor);
+	// A project in an organization the key does not name does not exist for it.
+	if (actor.hiddenProjectIds?.length) {
+		for (const requirement of requirements)
+			if (
+				requirement.domain === 'project' &&
+				'projectId' in requirement &&
+				actor.hiddenProjectIds.includes(requirement.projectId)
+			)
+				throw notFound();
+		if (target.projectId && actor.hiddenProjectIds.includes(target.projectId)) throw notFound();
+	}
 	for (const requirement of requirements) {
 		const allowed =
 			requirement.domain === 'project'
@@ -309,11 +320,14 @@ export function projectExpressionReadPredicate(
 		}
 		return sql<SqlBool>`${projectId} = ${runProjectId}`;
 	}
-	if (policy.projects.scope === 'all') return sql<SqlBool>`1 = 1`;
+	const hidden = actor.hiddenProjectIds?.length
+		? sql<SqlBool>`${projectId} NOT IN (SELECT value FROM json_each(${JSON.stringify(actor.hiddenProjectIds)}))`
+		: sql<SqlBool>`1 = 1`;
+	if (policy.projects.scope === 'all') return hidden;
 	if (policy.projects.scope.length === 0) return sql<SqlBool>`1 = 0`;
 	return sql<SqlBool>`${projectId} IN (
 		SELECT value FROM json_each(${JSON.stringify(policy.projects.scope)})
-	)`;
+	) AND ${hidden}`;
 }
 
 /** Requirements contributed by every populated context scope anchor. */
@@ -369,17 +383,28 @@ export function contextReadPredicate(
 		string | null
 	>`coalesce(${sql.ref(columns.project)}, ${sql.ref(columns.issueProject)})`;
 	const runProjectId = actor.runRestriction?.projectId;
+	const hidden = actor.hiddenProjectIds?.length
+		? sql<SqlBool>`${projectColumn} NOT IN (SELECT value FROM json_each(${JSON.stringify(actor.hiddenProjectIds)}))`
+		: sql<SqlBool>`1 = 1`;
 	const projectAllowed = runProjectId
 		? sql<SqlBool>`${projectColumn} = ${runProjectId}`
 		: policy.projects.scope === 'all'
-			? sql<SqlBool>`1 = 1`
+			? hidden
 			: policy.projects.scope.length === 0
 				? sql<SqlBool>`0 = 1`
 				: sql<SqlBool>`${projectColumn} IN (SELECT value FROM json_each(${JSON.stringify(policy.projects.scope)}))`;
 	const hasProject = sql<SqlBool>`${projectColumn} IS NOT NULL`;
+	// A key that names organizations reads project-less items only in those.
+	const alias = columns.project.split('.')[0];
+	const scope = actor.organizationScope;
+	const orgReadable =
+		scope && scope !== 'all'
+			? sql<SqlBool>`COALESCE(${sql.ref(`${alias}.organization_id`)}, 'org_' || ${sql.ref(`${alias}.user_id`)})
+				IN (SELECT value FROM json_each(${JSON.stringify(scope)}))`
+			: sql<SqlBool>`1 = 1`;
 	const needsWorkspace = sql<SqlBool>`(${sql.ref(columns.state)} IS NOT NULL OR ${sql.ref(columns.label)} IS NOT NULL OR ${projectColumn} IS NULL)`;
 	return sql<SqlBool>`(
 		((${hasProject} AND ${projectAllowed}) AND (${workspaceReadable ? sql`1 = 1` : sql`NOT ${needsWorkspace}`}))
-		OR (${projectColumn} IS NULL AND ${workspaceReadable ? sql`1 = 1` : sql`0 = 1`})
+		OR (${projectColumn} IS NULL AND ${workspaceReadable ? orgReadable : sql`0 = 1`})
 	)`;
 }

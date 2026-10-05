@@ -5,7 +5,7 @@
  * must name the pack's declared, non-secret inputs.
  */
 import { scanPlaceholders, type ContextFile, type PackInputDecl } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { Database } from '$lib/server/db';
 import { ApiFail } from './core';
 import { boundInput, parseInputDecls } from './pack-render';
@@ -140,23 +140,54 @@ export function assertWorkflowInProject(
 	);
 }
 
-/** `assertWorkflowInProject` for a workflow known by id only. */
+/**
+ * A workflow is usable in a project when it is a system workflow, or belongs
+ * to the project's organization — and, for a pack's workflow, to the pack's
+ * project (docs/packs.md, docs/organizations.md). `target` is the project, or
+ * the organization a project is being created in.
+ */
 export async function assertWorkflowIdInProject(
 	db: Kysely<Database>,
 	workflowId: string,
-	projectId: string | null,
+	target: string | { orgId: string } | null,
 	field = 'workflow_id'
 ): Promise<void> {
 	const row = await db
 		.selectFrom('workflow')
 		.leftJoin('pack', 'pack.id', 'workflow.pack_id')
-		.select(['workflow.name', 'workflow.pack_id', 'pack.project_id', 'pack.name as pack_name'])
+		.select([
+			'workflow.name',
+			'workflow.user_id',
+			'workflow.pack_id',
+			'pack.project_id',
+			'pack.name as pack_name',
+			sql<string>`COALESCE(workflow.organization_id, 'org_' || workflow.user_id)`.as('org_id')
+		])
 		.where('workflow.id', '=', workflowId)
 		.executeTakeFirst();
-	if (!row?.pack_id) return;
-	assertWorkflowInProject(
-		{ name: row.name, pack: { project_id: row.project_id, name: row.pack_name ?? '' } },
-		projectId,
-		field
-	);
+	if (!row || row.user_id === null) return;
+	const projectId = typeof target === 'string' ? target : null;
+	if (row.pack_id)
+		assertWorkflowInProject(
+			{ name: row.name, pack: { project_id: row.project_id, name: row.pack_name ?? '' } },
+			projectId,
+			field
+		);
+	const orgId =
+		typeof target === 'string'
+			? (
+					await db
+						.selectFrom('project')
+						.select(sql<string>`COALESCE(organization_id, 'org_' || user_id)`.as('org'))
+						.where('id', '=', target)
+						.executeTakeFirst()
+				)?.org
+			: target?.orgId;
+	if (orgId && row.org_id !== orgId)
+		throw new ApiFail(
+			422,
+			'workflow_not_in_organization',
+			`Workflow "${row.name}" belongs to another organization; copy it into this one to use it here`,
+			{ field }
+		);
 }

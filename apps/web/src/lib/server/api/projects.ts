@@ -11,11 +11,15 @@ import type {
 } from '@tines/shared';
 import { assertWorkflowIdInProject } from './pack-items';
 import { ACTIVE_RUN_STATUSES, PROJECT_NAME_MAX, PROJECT_PROMPT_NAME } from '@tines/shared';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
+import { personalOrgId } from './org-core';
+import { firstShareQueries, grantProjectMemberQueries, orgMemberIds } from './org-membership';
+import { requireOrg } from './organizations';
 import { newId, type Database } from '$lib/server/db';
 import { findAttachedContext, seedPromptQueries, sweepAttachedContext } from './context';
 import {
 	ApiFail,
+	attributedUserId,
 	notFound,
 	optionalString,
 	requireString,
@@ -32,7 +36,15 @@ import { projectReadPredicate, requireAccess } from './permissions';
 function projectQuery(db: Kysely<Database>, actor: ActorContext) {
 	return db
 		.selectFrom('project')
+		.leftJoin('organization as org', (join) =>
+			join.on(sql`org.id`, '=', sql`COALESCE(project.organization_id, 'org_' || project.user_id)`)
+		)
 		.selectAll('project')
+		.select([
+			sql<string>`COALESCE(project.organization_id, 'org_' || project.user_id)`.as('org_id'),
+			'org.name as org_name',
+			'org.kind as org_kind'
+		])
 		.select((eb) =>
 			eb
 				.selectFrom('issue')
@@ -57,7 +69,12 @@ function serializeProject(row: ProjectRow): Project {
 		created_at: row.created_at,
 		updated_at: row.updated_at,
 		issue_count: Number(row.issue_count ?? 0),
-		archived_at: row.archived_at
+		archived_at: row.archived_at,
+		organization: {
+			id: row.org_id,
+			name: row.org_name ?? 'Personal',
+			kind: row.org_kind ?? 'personal'
+		}
 	};
 }
 
@@ -127,12 +144,15 @@ async function assertNameAvailable(
 	db: Kysely<Database>,
 	userId: string,
 	name: string,
-	excludeId?: string
+	excludeId?: string,
+	orgId: string = personalOrgId(userId)
 ) {
+	// Names are unique within an organization (migration 0053).
 	let q = db
 		.selectFrom('project')
 		.select('id')
 		.where('user_id', '=', userId)
+		.where(sql<boolean>`COALESCE(organization_id, 'org_' || user_id) = ${orgId}`)
 		.where('name', '=', name);
 	if (excludeId) q = q.where('id', '!=', excludeId);
 	const existing = await q.executeTakeFirst();
@@ -162,7 +182,29 @@ export async function createProject(
 	if (resolvedStarter) {
 		requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'project.create');
 	}
-	await assertNameAvailable(db, actor.userId, name);
+	// The organization: a shared one's projects belong to its owner, and the
+	// manager creating it (if not the owner) acts with the owner's scope, as a
+	// member does (docs/organizations.md).
+	const id = newId('prj');
+	const person = attributedUserId(actor);
+	const orgId =
+		typeof body.organization_id === 'string' ? body.organization_id : personalOrgId(person);
+	const org = await requireOrg(db, actor, orgId, ['owner', 'manager']);
+	const owner = org.org.owner_user_id;
+	if (owner !== actor.userId) {
+		const ownerName = await db
+			.selectFrom('user')
+			.select('name')
+			.where('id', '=', owner)
+			.executeTakeFirstOrThrow();
+		actor = {
+			...actor,
+			userId: owner,
+			userName: ownerName.name,
+			member: { userId: person, userName: actor.userName, projectId: id, membershipRevision: 1 }
+		};
+	}
+	await assertNameAvailable(db, actor.userId, name, undefined, orgId);
 	if (resolvedStarter?.starter.default_workflow && body.default_workflow_id != null) {
 		throw new ApiFail(
 			422,
@@ -178,12 +220,11 @@ export async function createProject(
 		await assertWorkflowIdInProject(
 			db,
 			String(body.default_workflow_id),
-			null,
+			{ orgId },
 			'default_workflow_id'
 		);
 	}
 	const now = Date.now();
-	const id = newId('prj');
 	const plan = resolvedStarter
 		? await starterQueries(db, actor, {
 				starter: resolvedStarter.starter,
@@ -223,6 +264,7 @@ export async function createProject(
 				name,
 				description,
 				default_workflow_id: plan?.defaultWorkflowId ?? body.default_workflow_id ?? null,
+				organization_id: org.org.kind === 'shared' ? orgId : null,
 				created_at: now,
 				updated_at: now
 			})
@@ -233,7 +275,30 @@ export async function createProject(
 			payload: { name, ...(plan ? { starter: plan.applied.id } : {}) }
 		}),
 		...(seed?.queries ?? []),
-		...(plan?.after ?? [])
+		...(plan?.after ?? []),
+		// In a shared organization everyone else in it is a member of the new project,
+		// and a starter's workflows belong to the organization.
+		...(org.org.kind === 'shared'
+			? [
+					db
+						.updateTable('workflow')
+						.set({ organization_id: orgId })
+						.where('user_id', '=', actor.userId)
+						.where('created_at', '=', now)
+						.where('organization_id', 'is', null)
+						.compile(),
+					...firstShareQueries(db, id, { userId: person, apiKeyId: actor.apiKeyId }, now),
+					...(await orgMemberIds(db, orgId, owner)).flatMap((memberId) =>
+						grantProjectMemberQueries(
+							db,
+							id,
+							memberId,
+							{ userId: person, apiKeyId: actor.apiKeyId },
+							now
+						)
+					)
+				]
+			: [])
 	]);
 	const project = await getProject(db, actor, id);
 	return plan ? { ...project, starter: plan.applied } : project;
@@ -262,7 +327,7 @@ export async function updateProject(
 	const defaultWorkflowId =
 		body.default_workflow_id !== undefined ? body.default_workflow_id : current.default_workflow_id;
 	if (name !== current.name) {
-		await assertNameAvailable(db, actor.userId, name, id);
+		await assertNameAvailable(db, actor.userId, name, id, current.organization?.id);
 	}
 	if (defaultWorkflowId != null && defaultWorkflowId !== current.default_workflow_id) {
 		requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'project.update', {

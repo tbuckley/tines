@@ -18,6 +18,9 @@ This is a pnpm workspace:
 | `tines` | `packages/cli` | The `tines` CLI, published to npm as [`tines`](https://www.npmjs.com/package/tines). Talks to the same API as the web app. |
 | `@tines/shared` | `packages/shared` | Shared API types and client, used by both the web app and the CLI. |
 
+Organizations — personal and shared, the unit of sharing — are documented in
+[docs/organizations.md](docs/organizations.md).
+
 Packs — workflows plus their context, inputs and suggested schedules, installed into a project
 and replaced in place with newer versions — are documented in [docs/packs.md](docs/packs.md).
 

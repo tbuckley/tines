@@ -965,6 +965,51 @@ export function createApiClient(options: ApiClientOptions) {
 				'PUT',
 				packsPath(projectId, packId, '/my-secrets'),
 				{ secrets }
+			),
+
+		// Organizations (specs/packs/ORGANIZATIONS_SPEC.md). Transferring and
+		// deleting one, accepting an invitation, moving a project and Share
+		// this project need a browser session, so they have no method here.
+		listOrganizations: () =>
+			get<ListResponse<import('./org-api.js').OrganizationSummary>>('/api/v1/organizations'),
+		getOrganization: (id: string) =>
+			get<import('./org-api.js').OrganizationDetail>(
+				`/api/v1/organizations/${encodeURIComponent(id)}`
+			),
+		createOrganization: (body: import('./org-api.js').CreateOrganizationRequest) =>
+			request<import('./org-api.js').OrganizationDetail>('POST', '/api/v1/organizations', body),
+		renameOrganization: (id: string, body: { name: string; expected_revision?: number }) =>
+			request<import('./org-api.js').OrganizationDetail>(
+				'PATCH',
+				`/api/v1/organizations/${encodeURIComponent(id)}`,
+				body
+			),
+		inviteToOrganization: (id: string, body: { email: string }) =>
+			request<{
+				id: string;
+				email: string;
+				expires_at: number;
+				delivery_status: 'sent' | 'failed';
+			}>('POST', `/api/v1/organizations/${encodeURIComponent(id)}/invitations`, body),
+		cancelOrganizationInvitation: (id: string, inviteId: string) =>
+			request<{ id: string; canceled: true }>(
+				'DELETE',
+				`/api/v1/organizations/${encodeURIComponent(id)}/invitations/${encodeURIComponent(inviteId)}`
+			),
+		removeOrganizationMember: (id: string, userId: string) =>
+			request<{ organization_id: string; user_id: string; removed: true }>(
+				'DELETE',
+				`/api/v1/organizations/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`
+			),
+		leaveOrganization: (id: string) =>
+			request<{ organization_id: string; user_id: string; removed: true }>(
+				'POST',
+				`/api/v1/organizations/${encodeURIComponent(id)}/leave`
+			),
+		/** What moving the project to `toOrganizationId` does. Confirming it is browser-only. */
+		previewProjectMove: (projectId: string, toOrganizationId: string) =>
+			get<import('./org-api.js').ProjectMovePreview>(
+				`/api/v1/projects/${encodeURIComponent(projectId)}/move${query({ to: toOrganizationId })}`
 			)
 	};
 }

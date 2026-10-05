@@ -5,8 +5,16 @@
  * `edit`, and `delete` are control-plane fenced server-side.
  */
 import { createInterface } from 'node:readline/promises';
-import { client, die, printJson, table, withCommon, type CommonOpts } from '../common.js';
-import { LABEL_COLORS, type LabelColor } from '@tines/shared';
+import {
+	client,
+	die,
+	printJson,
+	resolveOrganization,
+	table,
+	withCommon,
+	type CommonOpts
+} from '../common.js';
+import { LABEL_COLORS, type CreateLabelRequest, type LabelColor } from '@tines/shared';
 import type { Command } from 'commander';
 
 /** Validates --color client-side so the error names the whole palette. */
@@ -49,12 +57,30 @@ export function register(program: Command): void {
 				`chip color (${LABEL_COLORS.join(', ')}); defaults to one derived from the name`
 			)
 			.option('-d, --description <text>', 'what the label means')
-	).action(async (name: string, opts: CommonOpts & { color?: string; description?: string }) => {
-		const color = parseLabelColor(opts.color);
-		const label = await client(opts).createLabel({ name, color, description: opts.description });
-		if (opts.json) return printJson(label);
-		console.log(`created label "${label.name}" (${label.color})`);
-	});
+			.option(
+				'--org <org>',
+				'organization the label belongs to (default: your personal one; a shared one needs its owner)'
+			)
+	).action(
+		async (
+			name: string,
+			opts: CommonOpts & { color?: string; description?: string; org?: string }
+		) => {
+			const color = parseLabelColor(opts.color);
+			const api = client(opts);
+			const org = opts.org ? await resolveOrganization(api, opts.org) : undefined;
+			// CreateLabelRequest predates organizations; the server reads organization_id.
+			const body: CreateLabelRequest = {
+				name,
+				color,
+				description: opts.description,
+				...(org ? { organization_id: org.id } : {})
+			};
+			const label = await api.createLabel(body);
+			if (opts.json) return printJson(label);
+			console.log(`created label "${label.name}" (${label.color})${org ? ` in ${org.name}` : ''}`);
+		}
+	);
 
 	withCommon(
 		labels

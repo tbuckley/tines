@@ -10,6 +10,7 @@ import {
 	printList,
 	resolveIssue,
 	resolveLabelFlag,
+	resolveOrganization,
 	resolveProject,
 	resolveStateFlag,
 	table,
@@ -205,6 +206,10 @@ export function register(program: Command): void {
 				)
 				.option('--secret', 'env: encrypt the value at rest; it is write-only afterwards')
 				.option('--hint <text>', 'env: a safe display hint for a secret (e.g. "github_pat_…abcd")')
+				.option(
+					'--org <org>',
+					'organization for an item with no --project/--issue (default: your personal one)'
+				)
 		)
 	).action(
 		async (
@@ -221,8 +226,15 @@ export function register(program: Command): void {
 					value?: string;
 					secret?: boolean;
 					hint?: string;
+					org?: string;
 				}
 		) => {
+			// A project or issue item lives in that project's organization.
+			if (opts.org !== undefined && (opts.project !== undefined || opts.issue !== undefined)) {
+				die(
+					'--org is for items with no --project or --issue: a project or issue item belongs to that project’s organization'
+				);
+			}
 			if (opts.kind === 'repo' && opts.repoUrl === undefined) {
 				die('--kind repo needs --repo-url <clone-url> (--url is the API base URL)');
 			}
@@ -231,10 +243,12 @@ export function register(program: Command): void {
 			}
 			const api = client(opts);
 			const scope = await resolveScopeFlags(api, opts);
+			const org = opts.org ? await resolveOrganization(api, opts.org) : undefined;
 			const body: CreateContextItemRequest = {
 				kind: opts.kind as ContextKind,
 				name: opts.name,
 				description: opts.description,
+				...(org ? { organization_id: org.id } : {}),
 				...scope
 			};
 			if (opts.body !== undefined) body.body = readBodyValue(opts.body);

@@ -1,3 +1,4 @@
+import { projectOrganization } from './org-core';
 import { sql, type Kysely } from 'kysely';
 import { sha256Hex } from '$lib/server/crypto';
 import { newId, type Database } from '$lib/server/db';
@@ -18,6 +19,21 @@ function requirePeopleWrite(actor: ActorContext, projectId: string) {
 }
 
 const WEEK = 7 * 24 * 60 * 60 * 1000;
+/**
+ * In a shared organization people belong to the organization, not to one
+ * project: invite them, or remove them, there (docs/organizations.md).
+ */
+async function assertNotOrganizationProject(db: Kysely<Database>, projectId: string) {
+	const org = await projectOrganization(db, projectId);
+	if (org?.kind === 'shared')
+		throw new ApiFail(
+			422,
+			'organization_project',
+			`This project belongs to the ${org.name} organization; manage its people there`,
+			{ organization_id: org.id }
+		);
+}
+
 function randomToken(): string {
 	const bytes = crypto.getRandomValues(new Uint8Array(32));
 	return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -114,6 +130,7 @@ export async function createInvitation(
 	const access = await resolveProjectAccess(db, actor, projectId);
 	assertCapability(access, 'invite');
 	requirePeopleWrite(actor, projectId);
+	await assertNotOrganizationProject(db, projectId);
 	if (access.archivedAt !== null)
 		throw new ApiFail(422, 'project_archived', 'Unarchive the project before inviting people');
 	const email = emailAddress(body.email);
@@ -582,6 +599,7 @@ export async function removeMember(
 ) {
 	noRunKey(actor);
 	const access = await resolveProjectAccess(db, actor, projectId);
+	await assertNotOrganizationProject(db, projectId);
 	if (actor.userId !== memberId) {
 		assertCapability(access, 'invite');
 		requirePeopleWrite(actor, projectId);

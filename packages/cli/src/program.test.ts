@@ -64,6 +64,7 @@ describe('command tree', () => {
 				'labels',
 				'login',
 				'logout',
+				'orgs',
 				'packs',
 				'projects',
 				'routing',

@@ -36,6 +36,8 @@ import { releaseAssignedIssueQueries } from '../supervisor/consent-admission';
 import { invalidateWorkflowSchedulePermissionQueries } from './schedule-consent';
 import { projectReadPredicate, requireAccess } from './permissions';
 import { packReadOnly } from './pack-items';
+import { personalOrgId } from './org-core';
+import { keyReachesOrg, requireOrg } from './organizations';
 
 interface ResolvedState {
 	id: string;
@@ -822,6 +824,9 @@ export async function loadWorkflows(
 			revision: row.definition_revision,
 			created_at: row.created_at,
 			updated_at: row.updated_at,
+			...(row.user_id !== null
+				? { organization_id: row.organization_id ?? personalOrgId(row.user_id) }
+				: {}),
 			warnings: deadEndWarnings({
 				states: wfStates,
 				transitions: wfTransitions
@@ -858,7 +863,9 @@ export async function loadWorkflowsForActor(
 	id?: string
 ): Promise<WorkflowResponse[]> {
 	requireAccess(actor, [{ domain: 'workspace', access: 'read' }], 'workflow.read');
-	const workflows = await loadWorkflows(db, actor.userId, id);
+	const workflows = (await loadWorkflows(db, actor.userId, id)).filter(
+		(w) => !w.organization_id || keyReachesOrg(actor, w.organization_id)
+	);
 	if (workflows.length === 0) return workflows;
 	let counts = db
 		.selectFrom('issue')
@@ -1101,12 +1108,59 @@ export async function createWorkflow(
 ): Promise<WorkflowResponse> {
 	const { name, description, def } = validateWorkflowCreateFields(body);
 	requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'workflow.create');
+	const organizationId = await ownedOrganization(db, actor, body.organization_id);
 	const id = newId('wf');
 	const inh = await resolveInheritance(db, actor.userId, { id, name }, def.states, []);
 	await assertPackInheritance(db, null, inh);
 	const now = Date.now();
-	await runAtomic(env, workflowInsertQueries(db, actor, { id, name, description, def, inh, now }));
+	const queries = workflowInsertQueries(db, actor, { id, name, description, def, inh, now });
+	if (organizationId)
+		queries.splice(
+			1,
+			0,
+			db
+				.updateTable('workflow')
+				.set({ organization_id: organizationId })
+				.where('id', '=', id)
+				.compile()
+		);
+	await runAtomic(env, queries);
 	return loadWorkflow(db, actor.userId, id);
+}
+
+/**
+ * A shared organization's workflows, labels and organization-level context
+ * are owned by its owner: only they create them there (docs/organizations.md).
+ * Returns null for the actor's personal organization. Keys must name it.
+ */
+export async function ownedOrganization(
+	db: Kysely<Database>,
+	actor: ActorContext,
+	requested: unknown
+): Promise<string | null> {
+	if (requested === undefined || requested === null || requested === personalOrgId(actor.userId)) {
+		if (!keyReachesOrg(actor, personalOrgId(actor.userId)))
+			throw new ApiFail(
+				403,
+				'insufficient_permissions',
+				'This key does not reach your personal organization'
+			);
+		return null;
+	}
+	const orgId = requireString(requested, 'organization_id', { max: 120 });
+	const access = await requireOrg(db, actor, orgId, ['owner']);
+	if (access.org.owner_user_id !== actor.userId)
+		throw new ApiFail(
+			403,
+			'organization_role',
+			'Only the organization owner edits its workflows and labels'
+		);
+	return orgId;
+}
+
+/** A key that does not name a workflow's organization cannot change it. */
+export function assertWorkflowOrgReachable(actor: ActorContext, workflow: WorkflowResponse): void {
+	if (workflow.organization_id && !keyReachesOrg(actor, workflow.organization_id)) throw notFound();
 }
 
 /**
@@ -1158,6 +1212,7 @@ export async function updateWorkflow(
 		);
 	}
 	if (current.pack?.kind === 'installed') throw packReadOnly(current.pack.name);
+	assertWorkflowOrgReachable(actor, current);
 	const baseRevision = current.revision;
 	if (body.expected_revision !== undefined) {
 		if (!Number.isInteger(body.expected_revision) || body.expected_revision < 1) {
@@ -1641,7 +1696,9 @@ export async function setStateRunScope(
 			"A stage's run scope is set by the workflow owner in the browser"
 		);
 	}
-	const scope = body.run_scope;
+	// `organization` is the name organizations give `workspace` (migration
+	// step one: both are accepted; the stored value is still `workspace`).
+	const scope = body.run_scope === 'organization' ? 'workspace' : body.run_scope;
 	if (typeof scope !== 'string' || !(RUN_SCOPES as readonly string[]).includes(scope)) {
 		throw new ApiFail(422, 'invalid_field', `"run_scope" must be one of ${RUN_SCOPES.join(', ')}`, {
 			field: 'run_scope'
@@ -1711,6 +1768,7 @@ export async function deleteWorkflow(
 		throw new ApiFail(403, 'workflow_read_only', 'The standard workflow cannot be deleted');
 	}
 	if (wf.pack?.kind === 'installed') throw packReadOnly(wf.pack.name);
+	assertWorkflowOrgReachable(actor, wf);
 	if (wf.issue_count > 0) {
 		throw new ApiFail(
 			422,

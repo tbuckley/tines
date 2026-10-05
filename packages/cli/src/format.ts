@@ -14,6 +14,7 @@ import type {
 	Comment,
 	ContextItem,
 	LinkedIssue,
+	ProjectMovePreview,
 	QuotaPolicy,
 	Round,
 	RoundArtifactChange,
@@ -416,4 +417,66 @@ export function formatTable(rows: string[][]): string {
 				.trimEnd()
 		)
 		.join('\n');
+}
+
+/**
+ * A state's run scope as people read it. `workspace` was renamed
+ * `organization` (specs/packs/ORGANIZATIONS_SPEC.md); a server that still
+ * stores the old value is shown the new name.
+ */
+export function runScopeLabel(scope: string): string {
+	return scope === 'workspace' ? 'organization' : scope;
+}
+
+const WORKFLOW_HANDLING: Record<ProjectMovePreview['workflows'][number]['handling'], string> = {
+	moves: 'moves with the project',
+	system: 'system workflow, stays available',
+	copy: 'organization-level here: a copy is brought into the project (or map it, in the browser)'
+};
+
+const LABEL_HANDLING: Record<ProjectMovePreview['labels'][number]['handling'], string> = {
+	moves: 'moves with the project',
+	copy: 'copied to the project',
+	use_existing: 'the destination’s label of the same name is used'
+};
+
+function names(people: { name: string }[]): string {
+	return people.length ? people.map((p) => p.name).join(', ') : 'nobody';
+}
+
+/** The move preview `projects move` prints, section by section. */
+export function formatMovePreview(preview: ProjectMovePreview): string {
+	const orgName = (o: ProjectMovePreview['from']) =>
+		o.kind === 'personal' ? `${o.name} (personal)` : o.name;
+	const lines = [
+		`Move "${preview.project.name}" from ${orgName(preview.from)} to ${orgName(preview.to)}`,
+		'',
+		`gain access: ${names(preview.people.gain)}`,
+		`lose access: ${names(preview.people.lose)}`
+	];
+	if (preview.people.lose.length)
+		lines.push(
+			'  (their personal choices, schedule choices and run keys in the project end, as on removal)'
+		);
+	lines.push('', 'workflows:');
+	if (preview.workflows.length === 0) lines.push('  none in use');
+	for (const w of preview.workflows) {
+		const use = [
+			`${w.issues} issue${w.issues === 1 ? '' : 's'}`,
+			...(w.schedules ? [`${w.schedules} schedule${w.schedules === 1 ? '' : 's'}`] : [])
+		].join(', ');
+		lines.push(`  ${w.name} [${w.id}] — ${WORKFLOW_HANDLING[w.handling] ?? w.handling} (${use})`);
+	}
+	lines.push('', 'labels:');
+	if (preview.labels.length === 0) lines.push('  none');
+	for (const l of preview.labels)
+		lines.push(`  ${l.name} — ${LABEL_HANDLING[l.handling] ?? l.handling}`);
+	lines.push('', 'organization context the project stops reading:');
+	if (preview.context_lost.length === 0) lines.push('  none');
+	for (const c of preview.context_lost) lines.push(`  ${c.kind} "${c.name}" [${c.id}]`);
+	if (preview.blockers.length) {
+		lines.push('', 'blockers (the move cannot be confirmed until these are cleared):');
+		for (const b of preview.blockers) lines.push(`  ${b.message} [${b.code}]`);
+	}
+	return lines.join('\n');
 }

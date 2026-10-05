@@ -35,7 +35,8 @@ import { ApiFail, notFound, runAtomic, type ActorContext } from '../core';
 import { eventInsert } from '../events';
 import { isJournal, resolveStateChain } from '../context';
 import { packInputRefs } from '../pack-items';
-import { assertWorkflowInProject } from '../pack-items';
+import { projectOrgExpr } from '../org-core';
+import { assertWorkflowIdInProject } from '../pack-items';
 import { loadWorkflow, uniqueKey } from '../workflows';
 import { assertAuthored, loadPack, packProject, revisionConflict } from './access';
 import { randomPackKey } from './install';
@@ -263,7 +264,7 @@ export async function addPackWorkflow(
 			field: 'copy_from'
 		});
 	const source = await loadWorkflow(db, pp.actor.userId, body.copy_from);
-	assertWorkflowInProject(source, projectId, 'copy_from');
+	await assertWorkflowIdInProject(db, source.id, projectId, 'copy_from');
 	if (source.pack?.id === pack.id)
 		throw new ApiFail(422, 'already_in_pack', `"${source.name}" is already in this pack`);
 	const model = await packModelFromDb(db, pack);
@@ -399,6 +400,7 @@ export async function addPackWorkflow(
 				initial_state_id: ids.states.get(stateRef(wfKey, nw.initial))!,
 				pack_id: pack.id,
 				key: wfKey,
+				organization_id: projectOrgExpr(projectId),
 				created_at: now,
 				updated_at: now
 			})

@@ -18,6 +18,8 @@ Commands:
   config [options]  Show the API URL and key in effect, and where each comes
                     from
   api-keys          Manage scoped API keys
+  orgs              Organizations: who shares which projects, workflows, labels
+                    and context
   projects          Manage projects
   workflows         Manage the workflow library
   packs             Packs: versioned bundles of workflows, context, inputs and
@@ -67,6 +69,10 @@ Options:
                                 "project-automation", "runner-setup")
   --projects <ids>              comma-separated explicit project IDs
   --all-projects                explicitly use all projects
+  --org <org>                   organization the key reaches, by id or name
+                                (repeatable; default: your personal one only)
+  --all-orgs                    every organization you are in, including ones
+                                you join later
   -u, --url <url>               base URL of the Tines API (or set TINES_API_URL,
                                 or run \`tines login\`; default
                                 https://tines.tbuckley.dev)
@@ -190,6 +196,8 @@ Options:
                                 afterwards
   --hint <text>                 env: a safe display hint for a secret (e.g.
                                 "github_pat_…abcd")
+  --org <org>                   organization for an item with no
+                                --project/--issue (default: your personal one)
   -p, --project <name>          scope: project name or id
   -s, --state <workflow/state>  scope: workflow-qualified state
   -i, --issue <ref>             scope: issue (<project>/<number>)
@@ -916,6 +924,8 @@ Options:
                             blue, violet, pink); defaults to one derived from
                             the name
   -d, --description <text>  what the label means
+  --org <org>               organization the label belongs to (default: your
+                            personal one; a shared one needs its owner)
   -u, --url <url>           base URL of the Tines API (or set TINES_API_URL, or
                             run \`tines login\`; default
                             https://tines.tbuckley.dev)
@@ -981,6 +991,139 @@ Forget the stored API URL and key
 
 Options:
   -h, --help  display help for command
+",
+  "tines orgs": "Usage: tines orgs [options] [command]
+
+Organizations: who shares which projects, workflows, labels and context
+
+Options:
+  -h, --help                                 display help for command
+
+Commands:
+  list [options]                             List the organizations you are in (and this key reaches)
+  show [options] <org>                       Show an organization: people and roles, pending invitations, projects
+  create [options] <name>                    Create a shared organization, with you as its owner
+  rename [options] <org> <name>              Rename an organization (owner only)
+  invite [options] <org> <email>             Invite someone to a shared organization; they join as a manager of every project in it, from the emailed link
+  cancel-invite [options] <org> <invite-id>  Cancel a pending invitation (see \`tines orgs show\`)
+  remove [options] <org> <user-id-or-email>  Remove someone from an organization: their access to every project in it ends
+  leave [options] <org>                      Leave a shared organization: you lose access to every project in it (the owner must transfer first)
+  transfer [options] <org>                   Transfer ownership to a manager — browser only; prints where to do it
+  delete [options] <org>                     Delete a shared organization — browser only; prints where to do it
+  help [command]                             display help for command
+",
+  "tines orgs cancel-invite": "Usage: tines orgs cancel-invite [options] <org> <invite-id>
+
+Cancel a pending invitation (see \`tines orgs show\`)
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines orgs create": "Usage: tines orgs create [options] <name>
+
+Create a shared organization, with you as its owner
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines orgs delete": "Usage: tines orgs delete [options] <org>
+
+Delete a shared organization — browser only; prints where to do it
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines orgs invite": "Usage: tines orgs invite [options] <org> <email>
+
+Invite someone to a shared organization; they join as a manager of every project
+in it, from the emailed link
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines orgs leave": "Usage: tines orgs leave [options] <org>
+
+Leave a shared organization: you lose access to every project in it (the owner
+must transfer first)
+
+Options:
+  -y, --yes        skip the confirmation prompt
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines orgs list": "Usage: tines orgs list [options]
+
+List the organizations you are in (and this key reaches)
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines orgs remove": "Usage: tines orgs remove [options] <org> <user-id-or-email>
+
+Remove someone from an organization: their access to every project in it ends
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines orgs rename": "Usage: tines orgs rename [options] <org> <name>
+
+Rename an organization (owner only)
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines orgs show": "Usage: tines orgs show [options] <org>
+
+Show an organization: people and roles, pending invitations, projects
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines orgs transfer": "Usage: tines orgs transfer [options] <org>
+
+Transfer ownership to a manager — browser only; prints where to do it
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
 ",
   "tines packs": "Usage: tines packs [options] [command]
 
@@ -1228,6 +1371,8 @@ Commands:
   edit [options] <id-or-name>                    Edit a project
   archive [options] <id-or-name>                 Archive a project: pause its schedules, stop dispatch, make its issues read-only
   unarchive [options] <id-or-name>               Unarchive a project: schedules resume from their next occurrence
+  move [options] <project> <org>                 Preview moving a project to another organization; the move itself is confirmed in the browser
+  share [options] <project>                      Share this project: a new shared organization with the project moved in — browser only; prints where
   delete [options] <id-or-name>                  Delete a project (refused while it still contains issues)
   help [command]                                 display help for command
 ",
@@ -1236,6 +1381,8 @@ Commands:
 Archive a project: pause its schedules, stop dispatch, make its issues read-only
 
 Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1251,6 +1398,8 @@ Options:
   -d, --description <text>             project description
   -w, --default-workflow <id-or-name>  default workflow for new issues
                                        (conflicts with a starter that sets one)
+  --org <org>                          organization to create it in (default:
+                                       your personal one; see \`tines orgs list\`)
   --starter <id>                       built-in starter (discover with \`tines
                                        projects starters\`)
   --repo <url>                         repository URL for the code starter
@@ -1273,6 +1422,8 @@ Options:
 Delete a project (refused while it still contains issues)
 
 Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1289,6 +1440,8 @@ Options:
   -w, --default-workflow <id-or-name>  set the default workflow for new issues
   --no-default-workflow                clear the default workflow (fall back to
                                        standard)
+  --org <org>                          look the project up in this organization
+                                       only (names repeat across them)
   -u, --url <url>                      base URL of the Tines API (or set
                                        TINES_API_URL, or run \`tines login\`;
                                        default https://tines.tbuckley.dev)
@@ -1315,6 +1468,8 @@ Commands:
 Remove a library item from a project's shared guidance
 
 Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1326,6 +1481,8 @@ Options:
 Include a library item in a project's shared guidance
 
 Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1337,6 +1494,8 @@ Options:
 List a project's included library items
 
 Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1351,6 +1510,8 @@ Options:
   --issue <ref>      issue to open after acceptance
   --confirm-sharing  acknowledge that first sharing gives members the whole
                      project and restarts assigned work
+  --org <org>        look the project up in this organization only (names repeat
+                     across them)
   -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
                      \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1362,6 +1523,8 @@ Options:
 Cancel an invitation
 
 Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1373,6 +1536,8 @@ Options:
 Rotate and resend an invitation
 
 Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1384,6 +1549,8 @@ Options:
 Leave a shared project
 
 Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1396,6 +1563,8 @@ List projects
 
 Options:
   --archived         include archived projects (hidden by default)
+  --org <org>        only projects in this organization (filters the fetched
+                     page)
   --limit <n>        maximum items to return (page size under --all-pages)
   --cursor <cursor>  resume from the next_cursor of a previous page
   --all-pages        fetch every page, not just the first (default safety
@@ -1408,11 +1577,27 @@ Options:
   --json             output the raw JSON response
   -h, --help         display help for command
 ",
+  "tines projects move": "Usage: tines projects move [options] <project> <org>
+
+Preview moving a project to another organization; the move itself is confirmed
+in the browser
+
+Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
   "tines projects people": "Usage: tines projects people [options] <project>
 
 List the owner and active members
 
 Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1424,6 +1609,22 @@ Options:
 Remove a project member
 
 Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines projects share": "Usage: tines projects share [options] <project>
+
+Share this project: a new shared organization with the project moved in —
+browser only; prints where
+
+Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1435,6 +1636,8 @@ Options:
 Show a project
 
 Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -1457,6 +1660,8 @@ Options:
 Unarchive a project: schedules resume from their next occurrence
 
 Options:
+  --org <org>      look the project up in this organization only (names repeat
+                   across them)
   -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
                    \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
@@ -2233,6 +2438,8 @@ instructions)
 Options:
   -f, --file <path>  read the JSON definition from a file ("-" for stdin)
   --no-prompts       allow states without initial "prompt" instructions
+  --org <org>        organization the workflow belongs to (default: your
+                     personal one; a shared one needs its owner)
   -u, --url <url>    base URL of the Tines API (or set TINES_API_URL, or run
                      \`tines login\`; default https://tines.tbuckley.dev)
   --api-key <key>    API key (or set TINES_API_KEY, or run \`tines login\`)

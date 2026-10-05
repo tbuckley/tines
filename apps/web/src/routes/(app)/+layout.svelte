@@ -4,6 +4,7 @@
 	import IconLogout from '@tabler/icons-svelte/icons/logout';
 	import IconRobot from '@tabler/icons-svelte/icons/robot';
 	import IconSettings from '@tabler/icons-svelte/icons/settings';
+	import IconBuildingCommunity from '@tabler/icons-svelte/icons/building-community';
 	import IconSitemap from '@tabler/icons-svelte/icons/sitemap';
 	import {
 		afterNavigate,
@@ -259,6 +260,14 @@
 							onclick={() => (menuOpen = false)}
 						>
 							<IconSettings size={16} stroke={1.75} /> Settings
+						</a>
+						<a
+							href="/organizations"
+							class="hover:bg-accent hover:text-accent-foreground flex items-center gap-2 rounded-md px-3 py-2 text-sm"
+							role="menuitem"
+							onclick={() => (menuOpen = false)}
+						>
+							<IconBuildingCommunity size={16} stroke={1.75} /> Organizations
 						</a>
 						<button
 							class="hover:bg-accent hover:text-accent-foreground flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm"

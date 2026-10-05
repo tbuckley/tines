@@ -174,6 +174,10 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 	'project.deleted': (ev, p) => projectSegments(ev, p),
 	'project.archived': (ev, p) => projectSegments(ev, p),
 	'project.unarchived': (ev, p) => projectSegments(ev, p),
+	'project.moved': (_ev, p) => [
+		text('moved this project to'),
+		name(p.to_organization_name ?? p.to_organization_id)
+	],
 	'project.sharing_started': () => [text('started sharing this project')],
 	'project.invitation_created': () => [text('created a project invitation')],
 	'project.member_joined': () => [text('joined this project')],

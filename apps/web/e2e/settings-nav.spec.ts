@@ -44,11 +44,11 @@ test.describe('settings navigation', () => {
 			await expect(menu).toBeVisible({ timeout: 1000 });
 		});
 
-		// One settings entry, not one per page. Each item carries an icon, so its
-		// text content is ` Settings`; compare trimmed.
+		// One settings entry, not one per page, beside Organizations. Each item
+		// carries an icon, so its text content is ` Settings`; compare trimmed.
 		await expect
 			.poll(async () => (await menu.getByRole('menuitem').allTextContents()).map((t) => t.trim()))
-			.toEqual(['Settings', 'Sign out']);
+			.toEqual(['Settings', 'Organizations', 'Sign out']);
 
 		await menu.getByRole('menuitem', { name: 'Settings' }).click();
 		await expect(page).toHaveURL('/settings/appearance');

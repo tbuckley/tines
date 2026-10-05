@@ -1,4 +1,5 @@
-import { assertWorkflowInProject } from './pack-items';
+import { assertWorkflowIdInProject } from './pack-items';
+import { projectOrganization } from './org-core';
 import {
 	prUrlOf,
 	renderTemplate,
@@ -1392,7 +1393,7 @@ export async function createIssue(
 			field: 'workflow_id'
 		});
 	});
-	assertWorkflowInProject(workflow, project.id);
+	await assertWorkflowIdInProject(db, workflow.id, project.id);
 	const initialState = body.state
 		? resolveStateRef(workflow, requireString(body.state, 'state', { max: 100 }).trim())
 		: resolveStateRef(workflow, workflow.initial_state_id);
@@ -1438,8 +1439,12 @@ export async function createIssue(
 
 	// Resolved before anything is inserted, so a run key's unknown label 422s
 	// without leaving a half-created issue behind.
+	// Labels resolve, and are created, in the project's organization.
+	const labelOrgId = body.labels?.length
+		? (await projectOrganization(db, project.id))?.id
+		: undefined;
 	const resolvedLabels = body.labels?.length
-		? await resolveOrCreateLabels(db, actor, body.labels)
+		? await resolveOrCreateLabels(db, actor, body.labels, 'labels', labelOrgId)
 		: null;
 	if ((resolvedLabels?.toCreate.length ?? 0) > 0) {
 		requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'label.create', {
@@ -1570,14 +1575,15 @@ export async function createIssue(
 	}
 	if (resolvedLabels) {
 		queries.push(
-			...labelInserts(db, actor, resolvedLabels.toCreate, freshIssueGuard),
+			...labelInserts(db, actor, resolvedLabels.toCreate, freshIssueGuard, labelOrgId),
 			...issueLabelInserts(
 				db,
 				actor,
 				{ id, project_id: projectId },
 				resolvedLabels.labels,
 				now,
-				freshIssueGuard
+				freshIssueGuard,
+				labelOrgId
 			)
 		);
 	}
@@ -1795,7 +1801,7 @@ export async function updateIssue(
 					field: 'workflow_id'
 				});
 			});
-			assertWorkflowInProject(workflow, current.project_id);
+			await assertWorkflowIdInProject(db, workflow.id, current.project_id);
 		}
 	}
 	const workflowChanged = workflow.id !== current.workflow.id;

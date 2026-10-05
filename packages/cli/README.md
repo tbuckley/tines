@@ -65,16 +65,16 @@ tines issues list --all --show-duplicates --all-pages --json
 
 Issues are addressed as `<project>/<number>`; schedules as `<project>/<name>`; workflow
 states as `<workflow>/<state>`. Paginated `list` commands return one page — add
-`--all-pages` for the whole list. Five lists instead return the whole collection and take no
-pagination flags: `labels list`, `runners list`, `routing list`, `api-keys list`, and
-`issues artifacts list`. Every leaf command except `login` and `logout` takes `--json` for
+`--all-pages` for the whole list. Six lists instead return the whole collection and take no
+pagination flags: `labels list`, `runners list`, `routing list`, `api-keys list`,
+`orgs list`, and `issues artifacts list`. Every leaf command except `login` and `logout` takes `--json` for
 machine-readable output. Complete list walks have a default 10,000-item safety ceiling. Use
 `--max-items <n>` with `--all-pages` to choose a different positive finite bound; exceeding
 it fails without printing a partial result. `--limit` remains the per-request page size. A
 larger bound keeps more output in memory and makes more requests, so increase it deliberately
 or narrow the list's filters. `usage --evidence … --all-pages` is the one exception: it follows
 every evidence page with no ceiling and takes no `--max-items`.
-`tines <noun> --help` lists the rest: `api-keys`, `workflows`, `packs`, `labels`, `context`, `journal`,
+`tines <noun> --help` lists the rest: `api-keys`, `orgs`, `workflows`, `packs`, `labels`, `context`, `journal`,
 `schedules`, `runners`, `runs`, `routing`, `supervisor`, `usage`.
 
 `issues create` accepts repeatable `--blocked-by` and `--blocks` references plus one
@@ -101,6 +101,46 @@ state. `issues move` submits the current exact decision witness once and does
 not retry after a conflict. Keys cannot turn issue or future-schedule personal
 permission on or off; open the issue or shared project in the browser. A saved
 member choice does not enable member execution in this release.
+
+## Organizations
+
+Every account has a personal organization; a shared organization has an owner and managers,
+and everyone in it works in every project in it. `<org>` is an organization id (`org_…`) or its
+exact name among `tines orgs list`; a name two organizations share is refused with their ids.
+
+```sh
+tines orgs list                                  # name, kind, your role, owner, members, projects, id
+tines orgs show Acme                             # people with roles and emails, pending invitations, projects
+tines orgs create "Acme"
+tines orgs rename Acme "Acme Inc"                # owner only
+tines orgs invite Acme dee@example.com           # they accept from the emailed link, in the browser
+tines orgs cancel-invite Acme <invite-id>
+tines orgs remove Acme dee@example.com           # or a user id
+tines orgs leave Acme --yes                      # managers; the owner transfers first
+tines projects create Ops --org Acme --no-prompt
+tines projects list --org Acme                   # every list row also names its organization
+tines projects show Site --org Acme              # --org picks among projects with the same name
+tines projects move Docs Acme                    # prints the move preview only
+tines workflows create --file review.json --org Acme  # also: labels create --org, context create --org
+tines api-keys create ci --preset full --org Acme --org Tom
+```
+
+Project names are unique within an organization, not across them: an ambiguous name is refused
+with each project's id and organization, and the `projects` subcommands take `--org <org>` to
+choose. `context create --org` is for items with no `--project` or `--issue` (those belong to the
+project's organization), and is refused with either.
+
+Some steps need your browser session, and the API refuses API keys for them:
+`projects move` prints the preview (who gains and loses access, what happens to each workflow
+and label, the organization context the project stops reading, and any blockers) and the page
+to confirm it on; `projects share`, `orgs transfer` and `orgs delete` print where to do it and
+exit 1. Accepting an invitation happens from its link.
+
+A new API key reaches only your personal organization unless you pass `--org <org>`
+(repeatable) or `--all-orgs`, which includes organizations you join later. A `--permissions`
+policy is sent as written. `api-keys list` and `show` print each key's organizations; a key made
+before organizations (policy version 1) shows `personal only`. Run scopes print `organization`
+where older servers said `workspace`.
 
 ## Workflow package files
 

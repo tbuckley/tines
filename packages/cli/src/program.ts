@@ -11,6 +11,7 @@ import { register as registerJournal } from './commands/journal.js';
 import { register as registerLabels } from './commands/labels.js';
 import { register as registerLogin } from './commands/login.js';
 import { registerEvents, registerTime } from './commands/misc.js';
+import { register as registerOrgs } from './commands/orgs.js';
 import { register as registerPacks } from './commands/packs.js';
 import { register as registerProjects } from './commands/projects.js';
 import { register as registerRouting } from './commands/routing.js';
@@ -31,6 +32,7 @@ program.name('tines').description('CLI for Tines').version(cliVersion()).enableP
 registerTime(program);
 registerLogin(program);
 registerApiKeys(program);
+registerOrgs(program);
 registerProjects(program);
 registerWorkflows(program);
 registerPacks(program);
