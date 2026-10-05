@@ -256,6 +256,9 @@ clipboard write, a network response — throttling will not give N/N (Tines/899:
 `page.route`. `workflow-publications.spec.ts` holds `navigator.clipboard.writeText` open for
 200 ms.
 
+When the locator races a network response rather than a render, throttling does not force it:
+delay or hold that request with `page.route` instead (Tines/897).
+
 **`--repeat-each N` is not a flake probe for this suite** — it re-runs the fixture-creating
 tests too, and they write to the one shared D1, so every repeat sees the rows the previous
 repeats left. `run-row.spec.ts:178` counts failed-run rows and goes 1 → 2 → 4 → 6 across

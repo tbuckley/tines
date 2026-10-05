@@ -132,3 +132,10 @@ current authority; a proof or candidate is not a capability. See `specs/api-keys
 While the clipboard write is pending the receipt's Copy action is `aria-disabled`, not `disabled`:
 a natively disabled button loses focus in Chromium and does not get it back. After a successful
 copy, focus stays on Copy; after a failed one it moves to the share field, as before.
+
+## Decision update — 2026-10-04 rebuild holds authoring (Tines/897)
+
+Apply automation replaces the whole copy when its request returns. While that request is out,
+declaration and passage saves are refused and the inventory's Add/Save controls are disabled; a
+refused passage save says so and keeps its draft. The rebuild is never discarded in favour of an
+edit: the author's applied automation choice wins, and nothing authored is silently overwritten.
