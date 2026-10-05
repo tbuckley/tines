@@ -80,6 +80,8 @@ export interface ClaudeRunMeta {
 	gc_done?: boolean;
 	/** Digest of the env items the vault was built for (names/versions, no values). */
 	env_digest?: string;
+	/** Shared-project runs: the guidance digest the session launched with. */
+	guidance_digest?: string;
 	/**
 	 * Set when the end finalizer retained this run's session for a resume:
 	 * the session is deliberately left idle and its vault alive, so the GC
@@ -768,20 +770,24 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		const overrides = parseJson<RunnerTierOverrides>(ctx.row.tiers);
 		const effort = input.effort ?? undefined;
 
-		// Launch materials, assembled at launch time over our own API.
-		const [issue, prompt, context] = await Promise.all([
-			provider.apiGet<IssueDetail>(base, `/api/v1/issues/${input.issueId}`, input.runKey),
-			provider.apiGet<LaunchPromptResponse>(
-				base,
-				`/api/v1/issues/${input.issueId}/prompt`,
-				input.runKey
-			),
-			provider.apiGet<EffectiveContext>(
-				base,
-				`/api/v1/issues/${input.issueId}/context`,
-				input.runKey
-			)
-		]);
+		// Launch materials: the shared path's guarded material when given,
+		// otherwise assembled at launch time over our own API.
+		const material = input.material;
+		const [issue, prompt, context] = material
+			? [material.issue, { text: material.launchPrompt }, material.context]
+			: await Promise.all([
+					provider.apiGet<IssueDetail>(base, `/api/v1/issues/${input.issueId}`, input.runKey),
+					provider.apiGet<LaunchPromptResponse>(
+						base,
+						`/api/v1/issues/${input.issueId}/prompt`,
+						input.runKey
+					),
+					provider.apiGet<EffectiveContext>(
+						base,
+						`/api/v1/issues/${input.issueId}/context`,
+						input.runKey
+					)
+				]);
 		const pat = await provider.githubPat(ctx.row.user_id);
 		if (context.repos.length > 0 && !pat) {
 			throw new Error(
@@ -806,12 +812,9 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		// Env items, decrypted server-side: secrets become vault credentials,
 		// public values become preamble exports. The digest (no values) joins
 		// the resume fingerprint so an env change forces a fresh vault.
-		const resolvedEnv: ResolvedEnvEntry[] = await resolvedEnvForIssue(
-			db,
-			env,
-			ctx.row.user_id,
-			input.issueId
-		);
+		const resolvedEnv: ResolvedEnvEntry[] = material
+			? material.env
+			: await resolvedEnvForIssue(db, env, ctx.row.user_id, input.issueId);
 		const currentEnvDigest = resolvedEnv.length > 0 ? await envDigest(resolvedEnv) : null;
 
 		// Continuation: the idle session this issue's previous run left on this
@@ -836,14 +839,17 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 			model: input.model,
 			effort: input.effort,
 			envDigest: currentEnvDigest,
+			guidanceDigest: material?.guidanceDigest ?? null,
 			now: Date.now()
 		});
 		if (resume) {
-			const continuation = await provider.apiGet<LaunchPromptResponse>(
-				base,
-				`/api/v1/issues/${input.issueId}/prompt?resume=1`,
-				input.runKey
-			);
+			const continuation = material
+				? { text: material.resumePrompt }
+				: await provider.apiGet<LaunchPromptResponse>(
+						base,
+						`/api/v1/issues/${input.issueId}/prompt?resume=1`,
+						input.runKey
+					);
 			const resumePreamble = buildResumePreamble({
 				variant: 'claude_managed',
 				runId: input.runId,
@@ -912,6 +918,7 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 					credential_id: resume.credential_id,
 					// The fingerprint matched, so the retained vault holds exactly this env set.
 					...(currentEnvDigest ? { env_digest: currentEnvDigest } : {}),
+					...(material ? { guidance_digest: material.guidanceDigest } : {}),
 					// Start the log after the predecessor's last rendered event, so
 					// its conversation does not replay into this run's log — and so
 					// its `end_turn` cannot be read as this run completing.
@@ -1003,7 +1010,8 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		const meta: ClaudeRunMeta = {
 			vault_id: vaultId,
 			credential_id: credentialId,
-			...(currentEnvDigest ? { env_digest: currentEnvDigest } : {})
+			...(currentEnvDigest ? { env_digest: currentEnvDigest } : {}),
+			...(material ? { guidance_digest: material.guidanceDigest } : {})
 		};
 		return {
 			provider_session_id: session.id,
@@ -1131,6 +1139,8 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 				model: input.model,
 				effort: input.effort,
 				envDigest: meta.env_digest ?? null,
+				contributorId: input.user_id,
+				guidanceDigest: meta.guidance_digest ?? null,
 				preambleVariant: 'claude_managed'
 			}),
 			expiresAt,
@@ -1177,5 +1187,13 @@ export function createClaudeAdapter(env: Env, opts: ClaudeAdapterOptions = {}): 
 		await reconcileSessions(db, ctx.client, runner.id, now);
 	}
 
-	return { launchMode: 'immediate', launch, poll, cancel, finalizeEnd, sweepRunner };
+	return {
+		launchMode: 'immediate',
+		sharedMaterial: true,
+		launch,
+		poll,
+		cancel,
+		finalizeEnd,
+		sweepRunner
+	};
 }

@@ -403,8 +403,9 @@ complete cumulative input/output/cache-read/cache-write evidence and its thread 
 calculates supported models using the immutable policy in [Codex run pricing](codex-pricing.md).
 Unsupported or incomplete evidence remains visibly Unpriced. Custom harnesses and processes that stop before
 a terminal usage event are marked `unreported`. Usage already emitted is retained even when
-the harness exits unsuccessfully. The session/thread id is shown on the run row and by
-`tines runs show`, and is what a resumed launch continues.
+the harness exits unsuccessfully. The session/thread id is printed by `tines runs show`
+(`provider session:`) and returned by the API; run rows do not show it. It is what a resumed
+launch continues.
 
 ## Resuming a send-back
 
@@ -435,6 +436,15 @@ runner, a changed model or harness, or a workspace that is no longer on disk (th
 logs `resume workspace <path> is gone; launching fresh`; for Pi, a session file missing from
 the kept workspace logs `pi session <id> is gone; launching fresh`). Nothing about a resumed run is
 required for correctness — it is only the clone and the re-exploration that are skipped.
+
+## Runs in shared projects
+
+When the server's shared-execution flag is on, an assignment for an issue in a shared
+project is built from that project's shared guidance: the owner's project, issue and
+workflow-stage guidance plus the library items the owner included, never their other
+private items. Such an assignment carries an optional `shared_bundle: { version: 1, digest }`
+naming the bundle it came from. The daemon needs no change and ignores the field; the
+prompt, `bundle` and `env` fields keep their usual shapes.
 
 ## Keep it running
 
