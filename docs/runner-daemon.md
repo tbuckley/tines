@@ -2,7 +2,7 @@
 
 The runner daemon turns a machine into a **local runner**: it polls Tines for issues the
 supervisor assigned to it, materializes a per-run workspace, launches your harness (Claude
-Code, codex, or a custom command), streams the output back as the run's log, and reports the
+Code, Codex, Pi, or a custom command), streams the output back as the run's log, and reports the
 finish. No inbound connection to the machine is ever needed. `tines runner install` sets it
 up as a service (the normal way); `tines runner daemon` runs it in the foreground.
 
@@ -354,7 +354,7 @@ is running. Notes:
 ### The harness's own CLI is yours to keep current
 
 The refresh above covers `tines` and nothing else — the daemon never installs or updates
-`claude`, `codex`, or a custom harness binary. That matters because the model the daemon
+`claude`, `codex`, `pi`, or a custom harness binary. That matters because the model the daemon
 passes as `--model` comes from the server, per run, and a harness can be too old for it: the
 built-in `smartest` tier for `claude_code` resolves to `claude-fable-5-1`, which **requires
 Claude Code 2.1.251 or newer**. An older `claude` fails the run in seconds with a
@@ -383,9 +383,10 @@ written by the daemon and by the harness, in this order:
    daemon's own version, not the agent's. The run key is never here — it rides in the
    harness's environment, never in argv.
 
-4. The harness's stdout and stderr. Claude Code and Codex both run in structured JSON mode,
+4. The harness's stdout and stderr. Claude Code, Codex and Pi all run in structured JSON mode,
 	 which the daemon renders as readable `[agent]`, `[tool]`, `[session]`, and `[error]` lines.
-	 For Claude Code, `tines runs show <id> --logs --raw` fetches the unrendered NDJSON.
+	 For Claude Code and Pi, `tines runs show <id> --logs --raw` fetches the unrendered NDJSON
+	 (Pi's without its per-token `message_update` lines).
 5. The **exit line**: `# tines runner: exit code=0 after 3m12s`, or `signal=SIGTERM` when
    something killed it, with `(timed out)` when that something was the daemon's own
    timeout. A run canceled by the supervisor has no exit line — the daemon stops logging
@@ -401,7 +402,8 @@ When a structured harness finishes, its terminal report is also saved on the run
 Code supplies a provider-reported cost, input/output/cache tokens, and its session id. Codex supplies
 complete cumulative input/output/cache-read/cache-write evidence and its thread id; the server
 calculates supported models using the immutable policy in [Codex run pricing](codex-pricing.md).
-Unsupported or incomplete evidence remains visibly Unpriced. Custom harnesses and processes that stop before
+Unsupported or incomplete evidence remains visibly Unpriced. Pi supplies its session id, and tokens and cost only
+when its model server reports them (see [What a Pi run reports](#what-a-pi-run-reports)). Custom harnesses and processes that stop before
 a terminal usage event are marked `unreported`. Usage already emitted is retained even when
 the harness exits unsuccessfully. The session/thread id is printed by `tines runs show`
 (`provider session:`) and returned by the API; run rows do not show it. It is what a resumed
