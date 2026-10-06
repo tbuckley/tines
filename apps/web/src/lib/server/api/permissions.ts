@@ -85,7 +85,10 @@ const RUN_OPERATIONS = new Set([
 	'event.read',
 	'library.validate',
 	'library.prepare',
-	'library.export'
+	'library.export',
+	'pack.read',
+	'pack.validate',
+	'pack.export'
 ]);
 
 /**

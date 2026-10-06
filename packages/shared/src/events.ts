@@ -43,6 +43,9 @@ export type EventSegment =
 const text = (t: string): EventSegment => ({ kind: 'text', text: t });
 const name = (t: unknown): EventSegment => ({ kind: 'name', text: str(t) });
 const selfRef = (): EventSegment => ({ kind: 'self-ref' });
+/** ` v4` after a pack name, when the payload carries a version. */
+const packVersion = (p: Record<string, unknown>): EventSegment[] =>
+	typeof p.version === 'number' ? [text(`v${p.version}`)] : [];
 
 function str(v: unknown): string {
 	return v === null || v === undefined ? '' : String(v);
@@ -185,6 +188,13 @@ const DESCRIBERS: Record<KnownEventType, Describer> = {
 		name(p.name),
 		text(`to ${String(p.run_scope)}`)
 	],
+	'pack.created': (_ev, p) => [text('created pack'), name(p.name)],
+	'pack.installed': (_ev, p) => [text('installed pack'), name(p.name), ...packVersion(p)],
+	'pack.replaced': (_ev, p) => [text('replaced pack'), name(p.name), ...packVersion(p)],
+	'pack.updated': (_ev, p) => [text('updated pack'), name(p.name)],
+	'pack.exported': (_ev, p) => [text('exported pack'), name(p.name), ...packVersion(p)],
+	'pack.detached': (_ev, p) => [text('detached pack'), name(p.name)],
+	'pack.removed': (_ev, p) => [text('removed pack'), name(p.name)],
 	'api_key.created': (_ev, p) => [text('created API key'), name(p.name)],
 	'api_key.permissions_updated': (_ev, p) => [
 		text('updated permissions for API key'),

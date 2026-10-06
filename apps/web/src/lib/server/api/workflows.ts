@@ -35,6 +35,7 @@ import { assertStatesNotScheduled, assertWorkflowNotScheduled } from './schedule
 import { releaseAssignedIssueQueries } from '../supervisor/consent-admission';
 import { invalidateWorkflowSchedulePermissionQueries } from './schedule-consent';
 import { projectReadPredicate, requireAccess } from './permissions';
+import { packReadOnly } from './pack-items';
 
 interface ResolvedState {
 	id: string;
@@ -350,6 +351,58 @@ export function resolveDef(
 	}
 
 	return { states, transitions, initialStateId: initial.id };
+}
+
+// ---------------------------------------------------------------------------
+// Packs
+
+/**
+ * Packs do not carry state inheritance: a pack workflow's states inherit from
+ * nothing, and no state inherits from a pack's state (its context would leak
+ * past the pack's own workflows).
+ */
+export async function assertPackInheritance(
+	db: Kysely<Database>,
+	pack: WorkflowResponse['pack'] | null,
+	inh: ResolvedInheritance
+): Promise<void> {
+	const targets = [...inh.pointers.values()].filter((v): v is string => v !== null);
+	if (targets.length === 0) return;
+	if (pack)
+		throw new ApiFail(
+			422,
+			'pack_inheritance',
+			'States in a pack workflow cannot inherit from other states; put shared text in the pack instead'
+		);
+	const packStates = await db
+		.selectFrom('workflow_state')
+		.innerJoin('workflow', 'workflow.id', 'workflow_state.workflow_id')
+		.select(['workflow_state.id', 'workflow_state.name', 'workflow.name as workflow_name'])
+		.where('workflow_state.id', 'in', targets)
+		.where('workflow.pack_id', 'is not', null)
+		.execute();
+	if (packStates.length > 0)
+		throw new ApiFail(
+			422,
+			'pack_inheritance',
+			`"${packStates[0].workflow_name} / ${packStates[0].name}" is a pack state; states cannot inherit from a pack's states`
+		);
+}
+
+/** A pack key from a display name: lowercase, dashes, starting with a letter, unique in `taken`. */
+export function uniqueKey(name: string, taken: Set<string>): string {
+	let base = name
+		.toLowerCase()
+		.normalize('NFKD')
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '')
+		.slice(0, 50);
+	if (!/^[a-z]/.test(base)) base = `s-${base}`.replace(/-+$/, '');
+	if (base === 's') base = 'state';
+	let key = base;
+	for (let i = 2; taken.has(key); i++) key = `${base}-${i}`;
+	taken.add(key);
+	return key;
 }
 
 // ---------------------------------------------------------------------------
@@ -689,7 +742,13 @@ export async function loadWorkflows(
 ): Promise<WorkflowResponse[]> {
 	let q = db
 		.selectFrom('workflow')
+		.leftJoin('pack', 'pack.id', 'workflow.pack_id')
 		.selectAll('workflow')
+		.select([
+			'pack.name as pack_name',
+			'pack.kind as pack_kind',
+			'pack.project_id as pack_project_id'
+		])
 		.select((eb) =>
 			eb
 				.selectFrom('issue')
@@ -749,7 +808,8 @@ export async function loadWorkflows(
 				category: s.category,
 				position: s.position,
 				inherits_from: s.inherits_from_state_id,
-				run_scope: s.run_scope
+				run_scope: s.run_scope,
+				...(row.pack_id ? { key: s.key } : {})
 			})),
 			transitions: wfTransitions.map((t) => ({
 				id: t.id,
@@ -765,7 +825,18 @@ export async function loadWorkflows(
 			warnings: deadEndWarnings({
 				states: wfStates,
 				transitions: wfTransitions
-			})
+			}),
+			...(row.pack_id
+				? {
+						pack: {
+							id: row.pack_id,
+							name: row.pack_name ?? '',
+							kind: (row.pack_kind ?? 'installed') as 'authored' | 'installed',
+							project_id: row.pack_project_id ?? null,
+							key: row.key ?? ''
+						}
+					}
+				: {})
 		};
 	});
 }
@@ -1032,6 +1103,7 @@ export async function createWorkflow(
 	requireAccess(actor, [{ domain: 'workspace', access: 'write' }], 'workflow.create');
 	const id = newId('wf');
 	const inh = await resolveInheritance(db, actor.userId, { id, name }, def.states, []);
+	await assertPackInheritance(db, null, inh);
 	const now = Date.now();
 	await runAtomic(env, workflowInsertQueries(db, actor, { id, name, description, def, inh, now }));
 	return loadWorkflow(db, actor.userId, id);
@@ -1085,6 +1157,7 @@ export async function updateWorkflow(
 			'The standard workflow is read-only; copy it into your library to make changes'
 		);
 	}
+	if (current.pack?.kind === 'installed') throw packReadOnly(current.pack.name);
 	const baseRevision = current.revision;
 	if (body.expected_revision !== undefined) {
 		if (!Number.isInteger(body.expected_revision) || body.expected_revision < 1) {
@@ -1208,6 +1281,7 @@ export async function updateWorkflow(
 	);
 
 	const inh = await resolveInheritance(db, actor.userId, { id, name }, def.states, current.states);
+	await assertPackInheritance(db, current.pack ?? null, inh);
 
 	// Removing a state other states inherit from rewrites those states'
 	// prompts, so it is refused unless explicitly forced — the same
@@ -1362,6 +1436,7 @@ export async function updateWorkflow(
 	for (const s of removedStates) {
 		queries.push(db.deleteFrom('workflow_state').where('id', '=', s.id).compile());
 	}
+	const takenKeys = new Set(current.states.map((s) => s.key ?? '').filter(Boolean));
 	for (const s of def.states) {
 		if (s.isNew) {
 			queries.push(
@@ -1373,6 +1448,8 @@ export async function updateWorkflow(
 						name: s.name,
 						category: s.category,
 						position: s.position,
+						// A state added to an authored pack's workflow gets a key from its name.
+						...(current.pack ? { key: uniqueKey(s.name, takenKeys) } : {}),
 						created_at: now
 					})
 					.compile()
@@ -1578,6 +1655,7 @@ export async function setStateRunScope(
 			'The standard workflow is read-only; copy it into your library to make changes'
 		);
 	}
+	if (current.pack?.kind === 'installed') throw packReadOnly(current.pack.name);
 	const state = current.states.find((s) => s.id === stateId);
 	if (!state) throw notFound();
 	if (state.run_scope === scope) return current;
@@ -1632,6 +1710,7 @@ export async function deleteWorkflow(
 	if (wf.is_system) {
 		throw new ApiFail(403, 'workflow_read_only', 'The standard workflow cannot be deleted');
 	}
+	if (wf.pack?.kind === 'installed') throw packReadOnly(wf.pack.name);
 	if (wf.issue_count > 0) {
 		throw new ApiFail(
 			422,
@@ -1705,6 +1784,24 @@ export async function deleteWorkflow(
 				db
 			),
 			...sweep.queries,
+			// An authored pack's workflow-reach items go with their workflow.
+			db
+				.deleteFrom('context_item_file')
+				.where(
+					'context_item_id',
+					'in',
+					db
+						.selectFrom('context_item')
+						.select('id')
+						.where('workflow_id', '=', id)
+						.where('reach', '=', 'workflow')
+				)
+				.compile(),
+			db
+				.deleteFrom('context_item')
+				.where('workflow_id', '=', id)
+				.where('reach', '=', 'workflow')
+				.compile(),
 			clearDefaultProjects,
 			db.deleteFrom('workflow_transition').where('workflow_id', '=', id).compile(),
 			// Same pre-null as a state removal: the self-FK has no ON DELETE action.

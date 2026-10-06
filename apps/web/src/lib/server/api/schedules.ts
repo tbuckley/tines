@@ -1,3 +1,4 @@
+import { assertWorkflowIdInProject } from './pack-items';
 import {
 	compilePreset,
 	describeRecurrence,
@@ -605,6 +606,7 @@ export async function updateSchedule(
 				? requireString(body.workflow_id, 'workflow_id', { max: 100 }).trim()
 				: current.workflow_id;
 		const workflow = await loadScheduleWorkflow(db, actor.userId, targetWorkflowId);
+		await assertWorkflowIdInProject(db, workflow.id, current.project_id);
 		workflowId = workflow.id;
 		workflowName = workflow.name;
 		if (body.state !== undefined) {

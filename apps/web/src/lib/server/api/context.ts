@@ -69,6 +69,14 @@ import { decryptSecret, encryptSecret, sha256Hex } from '../crypto';
 import { assertScopeWritable } from './archive';
 import { eventInsert } from './events';
 import { substringMatch } from './search';
+import { guardPackItemUpdate, markdownTexts, packInputRefs } from './pack-items';
+import {
+	boundInput,
+	contributorSecretValue,
+	loadPackRenderContext,
+	renderPackRow,
+	renderPackRows
+} from './pack-render';
 import {
 	resolveScope,
 	scopeLabel,
@@ -346,7 +354,7 @@ export function validateEnvPayload(
 }
 
 /** 503 when a secret is requested and the Worker cannot encrypt it. */
-function encryptionKeyOr503(env: Env): string {
+export function encryptionKeyOr503(env: Env): string {
 	if (!env.SECRET_ENCRYPTION_KEY) {
 		throw new ApiFail(
 			503,
@@ -375,8 +383,14 @@ export function contextItemQuery(db: Kysely<Database>, userId: string) {
 		.leftJoin('label as scope_label', 'scope_label.id', 'context_item.label_id')
 		.leftJoin('issue as scope_issue', 'scope_issue.id', 'context_item.issue_id')
 		.leftJoin('project as issue_project', 'issue_project.id', 'scope_issue.project_id')
+		.leftJoin('pack as scope_pack', 'scope_pack.id', 'context_item.pack_id')
+		.leftJoin('workflow as reach_workflow', 'reach_workflow.id', 'context_item.workflow_id')
 		.selectAll('context_item')
 		.select([
+			'scope_pack.name as pack_name',
+			'scope_pack.kind as pack_kind',
+			'scope_pack.position as pack_position',
+			'reach_workflow.name as reach_workflow_name',
 			'scope_project.name as scope_project_name',
 			'scope_state.name as scope_state_name',
 			'scope_label.name as scope_label_name',
@@ -428,12 +442,14 @@ function rowScope(row: ItemRow): ResolvedScope {
  */
 function serializeItem(row: ItemRow): ContextItem {
 	const kind = row.kind as ContextKind;
+	const scope = toContextScope(rowScope(row));
+	if (row.pack_id && row.reach) scope.label = packScopeLabel(row);
 	const item: ContextItem = {
 		id: row.id,
 		kind,
 		name: row.name,
 		description: row.description,
-		scope: toContextScope(rowScope(row)),
+		scope,
 		position: row.position,
 		version: row.version,
 		created_at: row.created_at,
@@ -458,7 +474,52 @@ function serializeItem(row: ItemRow): ContextItem {
 		item.hint = row.env_hint ?? null;
 		if (!secret) item.value = row.env_value ?? '';
 	}
+	if (row.pack_id && row.reach) item.pack = itemPack(row);
 	return item;
+}
+
+function inputRefList(raw: string | null): string[] {
+	if (!raw) return [];
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+	} catch {
+		return [];
+	}
+}
+
+function itemPack(row: ItemRow): NonNullable<ContextItem['pack']> {
+	return {
+		id: row.pack_id!,
+		name: row.pack_name ?? row.pack_id!,
+		kind: (row.pack_kind ?? 'installed') as 'authored' | 'installed',
+		reach: row.reach!,
+		workflow_id: row.workflow_id ?? row.scope_workflow_id ?? null,
+		workflow_name: row.reach_workflow_name ?? row.scope_workflow_name ?? null,
+		input: boundInput(row),
+		input_refs: inputRefList(row.input_refs ?? null)
+	};
+}
+
+/**
+ * The scope label of a pack item: where it comes from and which issues it
+ * reaches, e.g. `pack Engineering · workflow QA`. Pack items all live in one
+ * project, so a plain `project X` label would read as the project's own.
+ */
+export function packScopeLabel(row: ItemRow): string {
+	const pack = `pack ${row.pack_name ?? row.pack_id}`;
+	switch (row.reach) {
+		case 'project':
+			return `${pack} · project ${row.scope_project_name ?? row.project_id}`;
+		case 'pack':
+			return `${pack} · shared`;
+		case 'workflow':
+			return `${pack} · workflow ${row.reach_workflow_name ?? row.workflow_id}`;
+		default:
+			return `${pack} · state ${row.scope_workflow_name ?? row.scope_workflow_id} / ${
+				row.scope_state_name ?? row.workflow_state_id
+			}`;
+	}
 }
 
 /** Skill file bodies for a batch of items, keyed by item id, ordered by path. */
@@ -543,6 +604,8 @@ export interface ContextItemFilters {
 	archived?: ArchivedFilter;
 	/** Web-only: kinds to leave out, applied before the limit. Not exposed over HTTP. */
 	excludeKinds?: readonly ContextKind[];
+	/** Items of this pack only (pack id). */
+	pack?: string;
 }
 
 /**
@@ -573,6 +636,7 @@ export async function listContextItems(
 	if (filters.excludeKinds?.length) {
 		q = q.where('context_item.kind', 'not in', filters.excludeKinds);
 	}
+	if (filters.pack) q = q.where('context_item.pack_id', '=', filters.pack);
 	if (filters.project) {
 		const p = filters.project;
 		q = q.where((eb) =>
@@ -750,13 +814,27 @@ async function runContextWrite(env: Env, queries: CompiledQuery[]): Promise<D1Re
 	}
 }
 
+/** A pack item's place: the uniqueness key beside its scope. */
+export interface PackKey {
+	packId: string;
+	reach: 'project' | 'pack' | 'workflow' | 'state';
+	workflowId: string | null;
+}
+
+function packKeyOf(row: ItemRow): PackKey | null {
+	return row.pack_id && row.reach
+		? { packId: row.pack_id, reach: row.reach, workflowId: row.workflow_id ?? null }
+		: null;
+}
+
 async function assertNameAvailable(
 	db: Kysely<Database>,
 	userId: string,
 	kind: ContextKind,
 	name: string,
 	scope: ScopeIds,
-	excludeId?: string
+	excludeId?: string,
+	pack: PackKey | null = null
 ) {
 	let q = db
 		.selectFrom('context_item')
@@ -764,6 +842,13 @@ async function assertNameAvailable(
 		.where('user_id', '=', userId)
 		.where('kind', '=', kind)
 		.where('name', '=', name);
+	// Names are unique per exact scope and, for pack items, per pack and reach.
+	q = pack
+		? q
+				.where('pack_id', '=', pack.packId)
+				.where('reach', '=', pack.reach)
+				.where(sql<boolean>`workflow_id IS ${pack.workflowId}`)
+		: q.where('pack_id', 'is', null);
 	for (const [column, value] of [
 		['project_id', scope.projectId],
 		['workflow_state_id', scope.workflowStateId],
@@ -1139,6 +1224,7 @@ export async function updateContextItem(
 	);
 	await assertScopeWritable(db, actor, currentScope);
 	fenceRunKeyEnvWrite(actor, kind);
+	const packInputs = await guardPackItemUpdate(db, row, body as unknown as Record<string, unknown>);
 
 	if (body.expected_version !== undefined && body.expected_version !== row.version) {
 		throw versionConflict(await getContextItem(db, actor, id));
@@ -1222,7 +1308,7 @@ export async function updateContextItem(
 	if (scopeChanged) await assertScopeWritable(db, actor, scope);
 
 	if (name !== row.name || scopeChanged) {
-		await assertNameAvailable(db, actor.userId, kind, name, targetIds, id);
+		await assertNameAvailable(db, actor.userId, kind, name, targetIds, id, packKeyOf(row));
 	}
 
 	// Payload updates per kind.
@@ -1276,6 +1362,22 @@ export async function updateContextItem(
 		}
 		envHint = next.hint;
 	}
+
+	// A pack item's text is a template: recompute which inputs it reads (and
+	// refuse a placeholder that names no input, or a secret one).
+	const inputRefs = packInputs
+		? JSON.stringify(
+				packInputRefs(
+					packInputs,
+					[
+						kind === 'prompt' ? promptBody : null,
+						kind === 'env' && envValueEnc === null ? envValue : null,
+						...(kind === 'skill' ? markdownTexts(files ?? (await loadFiles(db, [id])).get(id)) : [])
+					],
+					boundInput(row)
+				)
+			)
+		: (row.input_refs ?? null);
 
 	// Position: re-scoping re-appends at the end of the target scope's
 	// sequence; an explicit position (with or without a re-scope) wins.
@@ -1359,6 +1461,7 @@ export async function updateContextItem(
 				env_value: envValue,
 				env_value_enc: envValueEnc,
 				env_hint: envHint,
+				input_refs: inputRefs,
 				position,
 				version: newVersion,
 				updated_at: now
@@ -1426,6 +1529,7 @@ export async function deleteContextItem(
 	fenceRunKeyEnvWrite(actor, row.kind);
 	const scope = rowScope(row);
 	const boundJournal = await isBoundRunJournal(db, actor, row);
+	if (row.pack_id) await guardPackItemUpdate(db, row, null);
 	requireAccess(
 		actor,
 		contextRequirements(scope, 'delete', { env: row.kind === 'env' }),
@@ -1503,6 +1607,14 @@ export async function appendContextItem(
 			}
 		);
 		await assertScopeWritable(db, actor, scope);
+		if (row.pack_id) {
+			await guardPackItemUpdate(db, row, null);
+			throw new ApiFail(
+				422,
+				'pack_item_append',
+				'Pack prompts are edited whole; update the item instead of appending to it'
+			);
+		}
 		if (row.kind !== 'prompt') {
 			throw new ApiFail(
 				422,
@@ -1794,9 +1906,27 @@ export function matchingItemsQuery(
 				eb.or([
 					eb('context_item.issue_id', 'is', null),
 					eb('context_item.issue_id', '=', target.issueId)
-				])
+				]),
+				packReachPredicate(target.stateChain[target.stateChain.length - 1])
 			])
 		);
+}
+
+/**
+ * Which pack items reach an issue in `leafStateId` (specs/packs/MVP_SPEC.md,
+ * "Where pack context stitches"): project reach always (the project clause
+ * already confines it), state reach through the state clause, and pack and
+ * workflow reach only when the issue's workflow is in that pack, or is that
+ * workflow. Items outside packs are untouched.
+ */
+export function packReachPredicate(leafStateId: string) {
+	return sql<boolean>`(context_item.pack_id IS NULL
+		OR context_item.reach IN ('project', 'state')
+		OR (context_item.reach = 'workflow' AND context_item.workflow_id =
+			(SELECT workflow_id FROM workflow_state WHERE id = ${leafStateId}))
+		OR (context_item.reach = 'pack' AND context_item.pack_id =
+			(SELECT w.pack_id FROM workflow_state s JOIN workflow w ON w.id = s.workflow_id
+				WHERE s.id = ${leafStateId})))`;
 }
 
 /**
@@ -1846,13 +1976,30 @@ export function sortMatched(rows: ItemRow[], stateChain: string[]): ItemRow[] {
 		row.workflow_state_id ? stateChain.indexOf(row.workflow_state_id) : stateChain.length - 1;
 	return [...rows].sort(
 		(a, b) =>
-			layerRank(rowScope(a)) - layerRank(rowScope(b)) ||
+			sortRank(a) - sortRank(b) ||
+			(a.pack_id ? (a.pack_position ?? 0) : 0) - (b.pack_id ? (b.pack_position ?? 0) : 0) ||
 			stateDepth(a) - stateDepth(b) ||
 			(labelSortKey(a) < labelSortKey(b) ? -1 : labelSortKey(a) > labelSortKey(b) ? 1 : 0) ||
 			a.position - b.position ||
+			// Prompts in one pack folder stitch by `order`, then file name.
+			(a.pack_id && b.pack_id ? (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) : 0) ||
 			a.created_at - b.created_at ||
 			(a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 	);
+}
+
+/**
+ * `layerRank` scaled by ten, with pack layers slotted between: each pack's
+ * project items after global (5), then — for an issue whose workflow is in a
+ * pack — that pack's shared, workflow and state items after the project's
+ * own project-scoped items (15–17), before the project's own state items.
+ */
+function sortRank(row: ItemRow): number {
+	if (row.pack_id && row.reach) {
+		if (row.reach === 'project') return 5;
+		return row.reach === 'pack' ? 15 : row.reach === 'workflow' ? 16 : 17;
+	}
+	return layerRank(rowScope(row)) * 10;
 }
 
 /**
@@ -1917,12 +2064,22 @@ export async function journalTarget(
 function describeRow(
 	row: ItemRow,
 	leafStateId: string
-): { scope: ContextScope; inherited_from: InheritedFrom | null } {
+): {
+	scope: ContextScope;
+	inherited_from: InheritedFrom | null;
+	pack?: { id: string; name: string };
+} {
 	const from = inheritedFrom(row, leafStateId);
-	return {
-		scope: toContextScope(rowScope(row), { qualifyState: from !== null }),
-		inherited_from: from
-	};
+	const scope = toContextScope(rowScope(row), { qualifyState: from !== null });
+	if (row.pack_id && row.reach) {
+		scope.label = packScopeLabel(row);
+		return {
+			scope,
+			inherited_from: from,
+			pack: { id: row.pack_id, name: row.pack_name ?? row.pack_id }
+		};
+	}
+	return { scope, inherited_from: from };
 }
 
 /** Dedupe by name within a kind: the later (more specific) item wins wholesale. */
@@ -2126,18 +2283,35 @@ export async function effectiveContextForTarget(
 	db: Kysely<Database>,
 	userId: string,
 	target: MatchTarget,
-	{ skillFiles = true, projection }: { skillFiles?: boolean; projection?: MatchProjection } = {}
+	{
+		skillFiles = true,
+		projection,
+		contributorId = userId
+	}: {
+		skillFiles?: boolean;
+		projection?: MatchProjection;
+		/** Whose secret pack inputs count as supplied; defaults to `userId`. */
+		contributorId?: string | null;
+	} = {}
 ): Promise<EffectiveContext> {
-	const rows = sortMatched(
+	const matched = sortMatched(
 		(await matchingItemsQuery(db, userId, target, projection).execute()).map((row) =>
 			projectRow(row, projection)
 		),
 		target.stateChain
 	);
-	const fileMap = skillFiles
-		? await loadFiles(db, winningSkillIds(rows))
+	const loaded = skillFiles
+		? await loadFiles(db, winningSkillIds(matched))
 		: new Map<string, ContextFile[]>();
-	return assembleEffectiveContext(rows, fileMap, target, await journalTarget(db, rows, target));
+	const { rows, fileMap, missing } = await renderPackRows(db, matched, loaded, contributorId);
+	const context = assembleEffectiveContext(
+		rows,
+		fileMap,
+		target,
+		await journalTarget(db, rows, target)
+	);
+	if (missing.length > 0) context.missing_inputs = missing;
+	return context;
 }
 
 /** The skill items that win the by-name dedupe — the only ones whose files are delivered. */
@@ -2269,8 +2443,39 @@ export async function resolvedEnvForIssue(
 		leafStateId
 	);
 	const out: ResolvedEnvEntry[] = [];
-	for (const r of winners) {
+	const packCtx = await loadPackRenderContext(
+		db,
+		winners.map((r) => r.pack_id).filter((id): id is string => !!id),
+		userId
+	);
+	for (const raw of winners) {
 		let value: string;
+		const { row: r } = renderPackRow(raw, packCtx);
+		const packSecret = r.pack_id ? boundInput(r) : null;
+		if (
+			r.pack_id &&
+			packSecret &&
+			packCtx.packs.get(r.pack_id)?.inputs[packSecret]?.type === 'secret'
+		) {
+			// A pack's secret input: the contributor's own value, never anyone else's.
+			const own = await contributorSecretValue(
+				db,
+				encryptionKeyOr503(env),
+				userId,
+				r.pack_id,
+				packSecret
+			).catch((e) => {
+				throw new Error(
+					`Cannot decrypt your value for secret input "${packSecret}" of pack ${r.pack_name ?? r.pack_id}: ${e instanceof Error ? e.message : String(e)}`
+				);
+			});
+			if (own === null)
+				throw new Error(
+					`Secret input "${packSecret}" of pack ${r.pack_name ?? r.pack_id} has no value for this contributor`
+				);
+			out.push({ name: r.name, value: own, secret: true, itemId: r.id, version: r.version });
+			continue;
+		}
 		const secret = r.env_value_enc !== null && r.env_value_enc !== undefined;
 		if (secret) {
 			try {
@@ -2362,7 +2567,8 @@ export async function contextSummaryForIssue(
 							.where('issue_label.issue_id', '=', target.issueId)
 					)
 				]),
-				eb.or([eb('issue_id', 'is', null), eb('issue_id', '=', target.issueId)])
+				eb.or([eb('issue_id', 'is', null), eb('issue_id', '=', target.issueId)]),
+				packReachPredicate(target.stateId)
 			])
 		)
 		.execute();

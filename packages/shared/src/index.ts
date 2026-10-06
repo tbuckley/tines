@@ -21,3 +21,10 @@ export * from './publications.js';
 export * from './publication-moderation.js';
 export * from './public-text.js';
 export * from './personal-permission.js';
+// The pack format's pure pieces. Parsing, writing and archives pull in `yaml`
+// and `fflate`, so they live behind `@tines/shared/packs` and stay out of the
+// browser bundles that import this barrel.
+export * from './packs/types.js';
+export * from './packs/placeholders.js';
+export * from './packs/recurrence.js';
+export * from './pack-api.js';

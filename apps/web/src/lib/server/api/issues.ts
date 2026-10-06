@@ -1,3 +1,4 @@
+import { assertWorkflowInProject } from './pack-items';
 import {
 	prUrlOf,
 	renderTemplate,
@@ -1391,6 +1392,7 @@ export async function createIssue(
 			field: 'workflow_id'
 		});
 	});
+	assertWorkflowInProject(workflow, project.id);
 	const initialState = body.state
 		? resolveStateRef(workflow, requireString(body.state, 'state', { max: 100 }).trim())
 		: resolveStateRef(workflow, workflow.initial_state_id);
@@ -1793,6 +1795,7 @@ export async function updateIssue(
 					field: 'workflow_id'
 				});
 			});
+			assertWorkflowInProject(workflow, current.project_id);
 		}
 	}
 	const workflowChanged = workflow.id !== current.workflow.id;

@@ -247,6 +247,8 @@ export interface WorkflowState {
 	inherits_from: string | null;
 	/** Present on workflow reads: what runs launched here may touch. */
 	run_scope?: RunScope;
+	/** The state's key in its pack (pack workflows only). */
+	key?: string | null;
 }
 
 export interface WorkflowTransition {
@@ -278,6 +280,20 @@ export interface Workflow {
 	revision: number;
 	created_at: number;
 	updated_at: number;
+	/**
+	 * Set when the workflow comes from a pack: it is offered only in that
+	 * pack's project, and an installed pack's workflow is read-only.
+	 */
+	pack?: WorkflowPack | null;
+}
+
+export interface WorkflowPack {
+	id: string;
+	name: string;
+	kind: 'authored' | 'installed';
+	project_id: string | null;
+	/** The workflow's key (folder name) in the pack. */
+	key: string;
 }
 
 /**
@@ -1230,6 +1246,26 @@ export interface ContextItem {
 	version: number;
 	created_at: number;
 	updated_at: number;
+	/**
+	 * Set when the item belongs to a pack (specs/packs/MVP_SPEC.md). Its scope
+	 * is then the pack's project; `reach` says which of its issues it applies
+	 * to. An installed pack's items are read-only.
+	 */
+	pack?: ContextItemPack;
+}
+
+export interface ContextItemPack {
+	id: string;
+	name: string;
+	kind: 'authored' | 'installed';
+	reach: 'project' | 'pack' | 'workflow' | 'state';
+	/** Workflow reach: the workflow. */
+	workflow_id: string | null;
+	workflow_name: string | null;
+	/** env/repo: the input this item takes its value from, if any. */
+	input?: string | null;
+	/** The inputs this item reads (placeholders and its bound input). */
+	input_refs?: string[];
 }
 
 export interface CreateContextItemRequest {
@@ -1338,6 +1374,8 @@ export interface EffectivePromptPart {
 	is_journal: boolean;
 	/** Set when the part matched through an ancestor of the issue's state. */
 	inherited_from: InheritedFrom | null;
+	/** Set when the item comes from a pack. */
+	pack?: { id: string; name: string };
 }
 
 export interface EffectiveSkill {
@@ -1352,6 +1390,8 @@ export interface EffectiveSkill {
 	version: number;
 	/** Set when the skill matched through an ancestor of the issue's state. */
 	inherited_from: InheritedFrom | null;
+	/** Set when the item comes from a pack. */
+	pack?: { id: string; name: string };
 }
 
 export interface EffectiveRepo {
@@ -1365,6 +1405,8 @@ export interface EffectiveRepo {
 	version: number;
 	/** Set when the repo matched through an ancestor of the issue's state. */
 	inherited_from: InheritedFrom | null;
+	/** Set when the item comes from a pack. */
+	pack?: { id: string; name: string };
 }
 
 /** One effective environment variable. Secret values never travel here. */
@@ -1379,6 +1421,8 @@ export interface EffectiveEnv {
 	version: number;
 	/** Set when the item matched through an ancestor of the issue's state. */
 	inherited_from: InheritedFrom | null;
+	/** Set when the item comes from a pack. */
+	pack?: { id: string; name: string };
 }
 
 /** A name-collision loser: a more specific item of the same kind+name won. */
@@ -1392,6 +1436,8 @@ export interface OverriddenContextItem {
 	repo?: { url: string; branch?: string | null; dir: string };
 	/** Set when the loser matched through an ancestor of the issue's state. */
 	inherited_from: InheritedFrom | null;
+	/** Set when the item comes from a pack. */
+	pack?: { id: string; name: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,7 +1460,12 @@ export interface IssueTransferProject {
 
 /** Why a transfer cannot be committed right now, and what to do about it. */
 export interface IssueTransferBlocker {
-	code: 'run_key_forbidden' | 'project_archived' | 'issue_busy' | 'transfer_preview_unavailable';
+	code:
+		| 'run_key_forbidden'
+		| 'project_archived'
+		| 'issue_busy'
+		| 'transfer_preview_unavailable'
+		| 'pack_workflow';
 	message: string;
 	/** Set for `issue_busy`: the run holding the issue. */
 	run_id?: string;
@@ -1571,6 +1622,21 @@ export interface EffectiveContext {
 	env: EffectiveEnv[];
 	overridden: OverriddenContextItem[];
 	conflicts: RepoDirConflict[];
+	/**
+	 * Pack inputs this context reads that have no value (a required input
+	 * never set, a workflow input whose workflow was removed). While any is
+	 * listed, no run is admitted. Absent when there are none.
+	 */
+	missing_inputs?: PackMissingInput[];
+}
+
+/** One pack input an issue's context needs and lacks. */
+export interface PackMissingInput {
+	pack_id: string;
+	pack_name: string;
+	input: string;
+	type: 'text' | 'secret' | 'repo' | 'workflow';
+	description: string;
 }
 
 /** Per-kind counts of the currently effective context, post-dedupe. */
@@ -3422,6 +3488,13 @@ export const EVENT_TYPES = [
 	'workflow.updated',
 	'workflow.deleted',
 	'workflow.run_scope_changed',
+	'pack.created',
+	'pack.installed',
+	'pack.replaced',
+	'pack.updated',
+	'pack.exported',
+	'pack.detached',
+	'pack.removed',
 	'api_key.created',
 	'api_key.permissions_updated',
 	'api_key.revoked',

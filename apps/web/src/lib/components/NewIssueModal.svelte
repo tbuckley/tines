@@ -80,6 +80,10 @@
 	const defaultWorkflowId = $derived(
 		selectedProject?.default_workflow_id ?? workflows.find((w) => w.is_system)?.id ?? ''
 	);
+	/** A pack's workflows are offered only in the pack's project. */
+	const usableWorkflows = $derived(
+		workflows.filter((w) => !w.pack || w.pack.project_id === (selectedProject?.id ?? null))
+	);
 	const pickedWorkflow = $derived(workflows.find((w) => w.id === workflowId));
 	const pickedState = $derived(pickedWorkflow?.states.find((state) => state.id === stateId));
 	const consentMode = $derived(selectedProject?.shared_at != null);
@@ -283,12 +287,11 @@
 				<div class="space-y-1.5">
 					<label class="text-sm font-medium" for="issue-workflow">Workflow</label>
 					<Select id="issue-workflow" bind:value={workflowId}>
-						{#each workflows as workflow (workflow.id)}
+						{#each usableWorkflows as workflow (workflow.id)}
 							<option value={workflow.id}>
-								{workflow.name}{workflow.is_system ? ' (standard)' : ''}{workflow.id ===
-								defaultWorkflowId
-									? ' — default'
-									: ''}
+								{workflow.name}{workflow.pack ? ` · ${workflow.pack.name}` : ''}{workflow.is_system
+									? ' (standard)'
+									: ''}{workflow.id === defaultWorkflowId ? ' — default' : ''}
 							</option>
 						{/each}
 					</Select>

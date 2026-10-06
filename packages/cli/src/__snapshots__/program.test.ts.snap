@@ -20,6 +20,8 @@ Commands:
   api-keys          Manage scoped API keys
   projects          Manage projects
   workflows         Manage the workflow library
+  packs             Packs: versioned bundles of workflows, context, inputs and
+                    suggested schedules
   issues            Work with issues
   labels            Manage the label library
   context           Manage context items (prompts, skills, repo pointers,
@@ -978,6 +980,230 @@ Options:
 Forget the stored API URL and key
 
 Options:
+  -h, --help  display help for command
+",
+  "tines packs": "Usage: tines packs [options] [command]
+
+Packs: versioned bundles of workflows, context, inputs and suggested schedules
+
+Options:
+  -h, --help                                                    display help for command
+
+Commands:
+  validate [options] <path>                                     Validate a pack folder or .tinespack/.zip locally (no server needed): errors, warnings, digest and a summary
+  list [options] <project>                                      List a project's packs, in order
+  show [options] <project> <pack>                               Show a pack: inputs, workflows and states, items by reach, suggested schedules (<pack>: id, pack id or name)
+  install [options] <path-or-project> [project]                 Install a pack from a folder or .tinespack (install <path> <project>), or from another project (install --from <source-pack> <project>)
+  replace [options] <path-or-project> <project-or-pack> [pack]  Replace a pack with a new version: replace <path> <project> <pack>, or replace --from-source <project> <pack>
+  export [options] <project> <pack>                             Export a pack as a .tinespack (default: the suggested file name, in the current folder) or into a folder
+  create [options] <project> <name>                             Create a new authored pack in a project
+  inputs [options] <project> <pack>                             Show a pack's inputs and this project's values
+  set-input [options] <project> <pack> <name> [value]           Set this project's value for an input, typed by the input: text, a repo URL[#branch], or a workflow (id or name[/<state>], or pack:<workflow>[/<state>])
+  set-secret [options] <project> <pack> <name>                  Set your own value for a secret input: typed at a hidden prompt, or read from stdin when piped
+  detach [options] <project> <pack>                             Turn an installed pack into an authored one (new pack id; the source is forgotten)
+  remove [options] <project> <pack>                             Remove a pack, its workflows and context, and the project additions on its states (shows what goes first)
+  sources [options] <project>                                   List packs in your other projects that can be installed here (install --from)
+  help [command]                                                display help for command
+",
+  "tines packs create": "Usage: tines packs create [options] <project> <name>
+
+Create a new authored pack in a project
+
+Options:
+  -d, --description <text>  what the pack is for
+  -u, --url <url>           base URL of the Tines API (or set TINES_API_URL, or
+                            run \`tines login\`; default
+                            https://tines.tbuckley.dev)
+  --api-key <key>           API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                    output the raw JSON response
+  -h, --help                display help for command
+",
+  "tines packs detach": "Usage: tines packs detach [options] <project> <pack>
+
+Turn an installed pack into an authored one (new pack id; the source is
+forgotten)
+
+Options:
+  -y, --yes        skip the confirmation prompt
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines packs export": "Usage: tines packs export [options] <project> <pack>
+
+Export a pack as a .tinespack (default: the suggested file name, in the current
+folder) or into a folder
+
+Options:
+  -o, --output <file>  write the archive here
+  --dir <folder>       write the pack as files into this folder instead of an
+                       archive
+  --force              overwrite an existing file, or write into a non-empty
+                       folder
+  -u, --url <url>      base URL of the Tines API (or set TINES_API_URL, or run
+                       \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>      API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json               output the raw JSON response
+  -h, --help           display help for command
+",
+  "tines packs inputs": "Usage: tines packs inputs [options] <project> <pack>
+
+Show a pack's inputs and this project's values
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines packs install": "Usage: tines packs install [options] <path-or-project> [project]
+
+Install a pack from a folder or .tinespack (install <path> <project>), or from
+another project (install --from <source-pack> <project>)
+
+Options:
+  --from <source-pack>         install from a pack in another project (see
+                               \`packs sources\`)
+  --authored                   install as an editable authored pack instead of
+                               read-only
+  --schedule <key[@timezone]>  create this suggested schedule, enabled
+                               (repeatable; timezone defaults to the local one)
+                               (default: [])
+  --dry-run                    print the review and exit without installing
+  -y, --yes                    skip the confirmation prompt
+  --value <name=text>          set a text input (repeatable) (default: [])
+  --repo <name=url[#branch]>   set a repo input (repeatable) (default: [])
+  --workflow <name=ref>        set a workflow input to a workflow id or name
+                               ([/<state>]), or pack:<workflow>[/<state>] for
+                               one of this pack (repeatable) (default: [])
+  --secret <name>              set your own value for a secret input, typed at a
+                               hidden prompt (repeatable) (default: [])
+  --secret-stdin <name>        set your own value for one secret input, read
+                               from stdin
+  -u, --url <url>              base URL of the Tines API (or set TINES_API_URL,
+                               or run \`tines login\`; default
+                               https://tines.tbuckley.dev)
+  --api-key <key>              API key (or set TINES_API_KEY, or run \`tines
+                               login\`)
+  --json                       output the raw JSON response
+  -h, --help                   display help for command
+",
+  "tines packs list": "Usage: tines packs list [options] <project>
+
+List a project's packs, in order
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines packs remove": "Usage: tines packs remove [options] <project> <pack>
+
+Remove a pack, its workflows and context, and the project additions on its
+states (shows what goes first)
+
+Options:
+  -y, --yes        skip the confirmation prompt
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines packs replace": "Usage: tines packs replace [options] <path-or-project> <project-or-pack> [pack]
+
+Replace a pack with a new version: replace <path> <project> <pack>, or replace
+--from-source <project> <pack>
+
+Options:
+  --from-source               update from the project the pack was installed
+                              from
+  --map <state=target>        map a removed state (id or <workflow>/<state> key)
+                              to a target ref from the review (repeatable)
+                              (default: [])
+  --confirm-version           accept a lower version, or the same version with
+                              different content
+  --diff                      print each changed file's diff in the review
+  --dry-run                   print the review and exit without replacing
+  -y, --yes                   skip the confirmation prompt
+  --value <name=text>         set a text input (repeatable) (default: [])
+  --repo <name=url[#branch]>  set a repo input (repeatable) (default: [])
+  --workflow <name=ref>       set a workflow input to a workflow id or name
+                              ([/<state>]), or pack:<workflow>[/<state>] for one
+                              of this pack (repeatable) (default: [])
+  --secret <name>             set your own value for a secret input, typed at a
+                              hidden prompt (repeatable) (default: [])
+  --secret-stdin <name>       set your own value for one secret input, read from
+                              stdin
+  -u, --url <url>             base URL of the Tines API (or set TINES_API_URL,
+                              or run \`tines login\`; default
+                              https://tines.tbuckley.dev)
+  --api-key <key>             API key (or set TINES_API_KEY, or run \`tines
+                              login\`)
+  --json                      output the raw JSON response
+  -h, --help                  display help for command
+",
+  "tines packs set-input": "Usage: tines packs set-input [options] <project> <pack> <name> [value]
+
+Set this project's value for an input, typed by the input: text, a repo
+URL[#branch], or a workflow (id or name[/<state>], or pack:<workflow>[/<state>])
+
+Options:
+  --clear          remove the value
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines packs set-secret": "Usage: tines packs set-secret [options] <project> <pack> <name>
+
+Set your own value for a secret input: typed at a hidden prompt, or read from
+stdin when piped
+
+Options:
+  --clear          remove your value
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines packs show": "Usage: tines packs show [options] <project> <pack>
+
+Show a pack: inputs, workflows and states, items by reach, suggested schedules
+(<pack>: id, pack id or name)
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines packs sources": "Usage: tines packs sources [options] <project>
+
+List packs in your other projects that can be installed here (install --from)
+
+Options:
+  -u, --url <url>  base URL of the Tines API (or set TINES_API_URL, or run
+                   \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>  API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json           output the raw JSON response
+  -h, --help       display help for command
+",
+  "tines packs validate": "Usage: tines packs validate [options] <path>
+
+Validate a pack folder or .tinespack/.zip locally (no server needed): errors,
+warnings, digest and a summary
+
+Options:
+  --json      output the validation result as JSON
   -h, --help  display help for command
 ",
   "tines projects": "Usage: tines projects [options] [command]

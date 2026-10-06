@@ -1,6 +1,6 @@
 import type { RunScope, StateCategory } from '@tines/shared';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { Kysely, SqliteAdapter, type Generated } from 'kysely';
+import { Kysely, SqliteAdapter, type Generated, type Selectable } from 'kysely';
 import { D1Dialect } from 'kysely-d1';
 import { traceUsageScaleDb } from './usage-scale-trace';
 
@@ -78,6 +78,10 @@ export interface WorkflowTable {
 	 * `workflow_definition_revision_step` trigger aborts any other step.
 	 */
 	definition_revision: Generated<number>;
+	/** The pack this workflow comes from (migration 0052), or null. */
+	pack_id: Generated<string | null>;
+	/** The workflow's key in its pack (its folder name); null outside packs. */
+	key: Generated<string | null>;
 }
 
 export interface WorkflowStateTable {
@@ -90,6 +94,8 @@ export interface WorkflowStateTable {
 	inherits_from_state_id: string | null;
 	/** Migration 0047: what runs launched in this state may touch. */
 	run_scope: Generated<RunScope>;
+	/** The state's key in its pack's workflow.yaml; null outside packs. */
+	key: Generated<string | null>;
 	created_at: number;
 }
 
@@ -195,6 +201,8 @@ export interface ScheduledTaskTable {
 	last_update_token: Generated<string | null>;
 	created_at: number;
 	updated_at: number;
+	/** The pack suggestion this schedule was created from (display only). */
+	pack_schedule_id?: string | null;
 }
 
 export interface SchedulePersonalChoiceTable {
@@ -279,6 +287,14 @@ export interface ContextItemTable {
 	version: number;
 	created_at: number;
 	updated_at: number;
+	/** Migration 0052: the pack this item belongs to, or null. */
+	pack_id?: string | null;
+	/** Pack items only: which issues the item applies to. */
+	reach?: 'project' | 'pack' | 'workflow' | 'state' | null;
+	/** Pack items with workflow reach: the workflow. */
+	workflow_id?: string | null;
+	/** Pack items: JSON array of the input names the item reads. */
+	input_refs?: string | null;
 }
 
 /** One immutable attached version of an artifact context item. */
@@ -605,6 +621,87 @@ export interface RunResourceTable {
 	updated_at: number;
 }
 
+export interface PackTable {
+	id: string;
+	project_id: string | null;
+	organization_id: string | null;
+	pack_key: string;
+	name: string;
+	description: string;
+	kind: 'authored' | 'installed';
+	version: number | null;
+	digest: string | null;
+	source_kind: 'file' | 'project' | null;
+	source_pack_id: string | null;
+	derived_from: string | null;
+	position: number;
+	inputs: string;
+	readme: string | null;
+	changelog: string | null;
+	migrations: string;
+	created_by: string;
+	created_at: number;
+	updated_at: number;
+	revision: Generated<number>;
+}
+
+/** A `pack` row as read. */
+export type PackRow = Selectable<PackTable>;
+
+export interface PackInputValueTable {
+	pack_id: string;
+	name: string;
+	text_value: string | null;
+	repo_url: string | null;
+	repo_branch: string | null;
+	workflow_id: string | null;
+	state_id: string | null;
+	updated_at: number;
+}
+
+export interface ContributorSecretTable {
+	id: string;
+	user_id: string;
+	pack_id: string | null;
+	input_name: string | null;
+	value_enc: string;
+	hint: string | null;
+	updated_at: number;
+}
+
+export interface PackScheduleTable {
+	id: string;
+	pack_id: string;
+	schedule_key: string;
+	name: string;
+	workflow_key: string;
+	start_key: string | null;
+	recurrence: string;
+	only_when_previous_closed: number;
+	title: string;
+	description: string;
+	position: number;
+}
+
+export interface PackSnapshotFileTable {
+	pack_id: string;
+	path: string;
+	content_b64: string;
+	sha256: string;
+}
+
+export interface PackReceiptTable {
+	id: string;
+	pack_id: string;
+	project_id: string | null;
+	action: 'install' | 'replace';
+	digest: string;
+	version: number | null;
+	actor_user_id: string;
+	receipt_json: string;
+	created_at: number;
+}
+
 /** Better Auth's user table — only the columns we read. */
 export interface UserTable {
 	id: string;
@@ -810,6 +907,12 @@ export interface Database {
 	workflow_report_request: WorkflowReportRequestTable;
 	workflow_report_rate_event: WorkflowReportRateEventTable;
 	workflow_moderation_audit: WorkflowModerationAuditTable;
+	pack: PackTable;
+	pack_input_value: PackInputValueTable;
+	contributor_secret: ContributorSecretTable;
+	pack_schedule: PackScheduleTable;
+	pack_snapshot_file: PackSnapshotFileTable;
+	pack_receipt: PackReceiptTable;
 	user: UserTable;
 }
 
