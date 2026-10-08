@@ -332,6 +332,24 @@ export function runProjectActor(actor: ActorContext, projectId: string): ActorCo
 	};
 }
 
+/**
+ * Whether a new issue in a shared project starts with the owner's agents off:
+ * a member's issue, and a member-contributor run's (a proposal until the
+ * owner allows it). The owner's own run keeps the owner default, like the
+ * owner's named key (Tines/905). A run cannot create outside its project
+ * today, so `member` already covers member runs; the binding check keeps that
+ * true if the project fence ever moves.
+ */
+export function startsOwnerAgentsOff(
+	actor: Pick<ActorContext, 'member' | 'runRestriction'>
+): boolean {
+	const binding = actor.runRestriction?.binding;
+	return (
+		Boolean(actor.member) ||
+		(binding != null && binding.projectOwnerId !== binding.contributorUserId)
+	);
+}
+
 /** `actorForProject`'s member branch, for a caller that already holds the access and owner name. */
 export function memberActor(
 	actor: ActorContext,
