@@ -157,9 +157,10 @@
 		</nav>
 		<div class="opening">
 			<p class="eyebrow">HUMANS & AGENTS, ON THE SAME PAGE</p>
-			<h1>Manage a system.<br />Let work move.</h1>
+			<h1>Put your agents to work.<br />Keep the story.</h1>
 			<p class="pitch">
-				An issue tracker that gives your agents<br class="desktop" /> a workflow, and you the whole story.
+				An issue tracker that routes work to your agents,<br class="desktop" /> runs them through the
+				workflow, and hands you the whole story.
 			</p>
 		</div>
 	</header>
