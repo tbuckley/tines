@@ -1,6 +1,6 @@
 # Tines
 
-pnpm monorepo (Node >= 20). `apps/web` is a SvelteKit (Svelte 5) app deployed to Cloudflare Workers with D1/Kysely; `packages/cli` and `packages/shared` are the CLI and shared code.
+pnpm monorepo (Node >= 22: Wrangler refuses older versions, though the published CLI alone runs on 20). `apps/web` is a SvelteKit (Svelte 5) app deployed to Cloudflare Workers with D1/Kysely; `packages/cli` and `packages/shared` are the CLI and shared code.
 
 ## Layout and conventions
 

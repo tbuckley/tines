@@ -102,7 +102,8 @@ member-admission half has not landed yet.
 
 ### Contributor setup
 
-Prereqs: Node 20+, pnpm 10 (`corepack enable`).
+Prereqs: Node 22+, pnpm 10 (`corepack enable`). Wrangler, which the database steps below
+run, refuses older Node versions; the published CLI on its own still runs on Node 20.
 
 ```sh
 pnpm install
@@ -399,7 +400,7 @@ matches. Only the widest level can create new labels.
 All of this is edited on the **Agents** tab, and most of it from the CLI too:
 
 - **The kill switch** — `tines supervisor enable` (resume) / `tines supervisor disable`, with
-  `tines supervisor status` for a one-screen overview — which now also lists the issues
+  `tines supervisor status` for a one-screen overview — which also lists the issues
   waiting for an agent, grouped by why, with the fix for each.
 - **Stage flow** — the Agents tab and `tines supervisor stats --window 7d` compare queue wait,
   work time, runs per visit, outcomes and sent-back rates with the prior window. Project and
@@ -585,8 +586,9 @@ everyone types; `pnpm check` fails on any script named after a pnpm command (bar
 ### Continuous integration
 
 `.github/workflows/ci.yml` runs on every pull request and push to `main`: one job
-typechecks (`pnpm check`) and runs the unit tests, and three more each install Chromium's
-headless shell and run one shard of the Playwright suite (`pnpm test:e2e --shard=N/3`)
+typechecks (`pnpm check`), checks formatting (`pnpm format:check`), runs the unit tests, then
+runs the navigation performance probe and the usage correctness and scale probes. Three
+more each install Chromium's headless shell and run one shard of the Playwright suite (`pnpm test:e2e --shard=N/3`)
 against their own local `wrangler dev` with a throwaway D1. A final "Playwright e2e" job
 just reports whether every shard passed, so the check name predates the sharding. It needs
 no secrets, so it runs for fork PRs too. The deploy and publish workflows below run
@@ -745,6 +747,7 @@ From the repo root:
 - `pnpm build` — build the web app and CLI (`@tines/shared` has no build script; both
   consume it as TypeScript source)
 - `pnpm check` — the migration-numbering and script-name guards in `scripts/` and `apps/web/scripts/`, then typecheck all packages (svelte-check + tsc)
+- `pnpm format` / `pnpm format:check` — Prettier; `ci.yml` runs the check, so format before pushing
 - `pnpm test` — the release-version script's `node --test` tests, then vitest unit tests in every package (`ci.yml` runs them on every pull request, and the deploy and publish workflows run them again before shipping)
 - `pnpm test:e2e` — Playwright e2e suite (boots the built worker under `wrangler dev` with a seeded local D1; see `apps/web/e2e/` and its README for the suite's motion, hydration and geometry policies). Run by `ci.yml` on pull requests, but not by `pnpm test`.
 - `pnpm cli <command>` — run the CLI from source against the local dev server (`http://localhost:5173`, pinned; pass `--url` for anything else)
