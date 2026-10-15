@@ -1,5 +1,4 @@
 import { building } from '$app/environment';
-import { withReadBatching } from '$lib/server/db';
 import { jsonifyMethodNotAllowed } from '$lib/server/api/core';
 import { artifactSandboxOrigin } from '$lib/server/artifact-site';
 import { getAuth } from '$lib/server/auth';
@@ -115,12 +114,9 @@ const handleRequest: Handle = async ({ event, resolve }) => {
 	return response;
 };
 
-// Read batching is per request (lib/server/db.ts, `withReadBatching`).
-export const handle: Handle = ({ event, resolve }) =>
-	withReadBatching(async () =>
-		finalizeDeploymentResponse(
-			event.request,
-			finalizePublicationResponse(event.request, await handleRequest({ event, resolve })),
-			deploymentIdentity
-		)
+export const handle: Handle = async ({ event, resolve }) =>
+	finalizeDeploymentResponse(
+		event.request,
+		finalizePublicationResponse(event.request, await handleRequest({ event, resolve })),
+		deploymentIdentity
 	);
