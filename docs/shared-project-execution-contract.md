@@ -23,8 +23,12 @@ uses it.
   contributor's. Every run-reachable write re-checks the binding in the same
   D1 batch (`runStillBoundPredicate`). Member admission (Tines/670) must write
   `admitted_membership_revision`, or the run is refused.
-- **Run-filed issues.** An issue a run key files in a shared project is created
-  with the owner's `off` row: a proposal a person must allow in the browser.
+- **Run-filed issues (Tines/751, amended by Tines/905).** An issue the project
+  owner's run files in a shared project writes no owner row, so the owner
+  default (on) applies, as for the owner's named key. An issue a member's run
+  files is created with the owner's `off` row: a proposal the owner must allow
+  in the browser. A run can create issues only in its own project. Keys still
+  cannot supply a choice.
 - **Run events and rows.** `supervisorEvent` writes one row per lifecycle event
   in the project owner's stream, with `actor_user_id` = the contributor;
   `runner.*` health stays in the contributor's own stream. An owner viewing a

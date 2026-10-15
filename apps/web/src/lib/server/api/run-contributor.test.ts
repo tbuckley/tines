@@ -26,7 +26,8 @@ import {
 	assertNotMember,
 	resolveProjectAccess,
 	runProjectActor,
-	runStillBoundPredicate
+	runStillBoundPredicate,
+	startsOwnerAgentsOff
 } from './project-access';
 import {
 	MEMBER,
@@ -564,18 +565,25 @@ async function ownerWouldRun(t: TestDb, issueId: string): Promise<boolean> {
 	return Boolean(row.ok);
 }
 
-describe('run-filed issues in shared projects are unapproved proposals', () => {
-	it('creates an owner run’s issue with the owner’s agents off', async () => {
-		const { t, runId } = await sharedOwnerRunSetup(true);
+describe('run-filed issues in shared projects: owner runs keep the owner default, member runs file proposals', () => {
+	it('creates an owner run’s issue, and a link-created child, with the owner default on', async () => {
+		const { t, issueId, runId } = await sharedOwnerRunSetup(true);
 		const actor = await authenticate(t);
 		const filed = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
 			title: 'Follow-up'
 		});
-		expect(ownerOffRows(t, filed.id)).toEqual([{ user_id: USER, value: 'off', current_epoch: 1 }]);
-		expect(await ownerWouldRun(t, filed.id)).toBe(false);
+		const child = await createIssue(t.db, t.env, actor, TEST_NOOP_DISPATCH_EFFECTS, PROJECT, {
+			title: 'Blocked child',
+			blocked_by: [issueId]
+		});
+		for (const id of [filed.id, child.id]) {
+			expect(ownerOffRows(t, id)).toEqual([]);
+			expect(await ownerWouldRun(t, id)).toBe(true);
+		}
 		expect(filed.permission_receipt).toMatchObject({
 			actor: 'key',
-			message: expect.stringContaining('Agents stay off until a person allows them.')
+			my_agents: { value: 'unset' },
+			message: 'Permission unchanged; manage your permission in the browser.'
 		});
 		expect(
 			t.sqlite.prepare('SELECT created_by_run_id FROM issue WHERE id = ?').get(filed.id)
@@ -596,8 +604,29 @@ describe('run-filed issues in shared projects are unapproved proposals', () => {
 			expect(ownerOffRows(t, id)).toEqual([{ user_id: USER, value: 'off', current_epoch: 1 }]);
 			expect(await ownerWouldRun(t, id)).toBe(false);
 		}
+		expect(filed.permission_receipt).toMatchObject({
+			actor: 'key',
+			message: expect.stringContaining('Agents stay off until a person allows them.')
+		});
 		// The parent's consent never propagates to the child.
 		expect(ownerOffRows(t, issueId)).toEqual([]);
+	});
+
+	it('treats members and member-contributor runs as starting off, wherever the run files', async () => {
+		const owner = await sharedOwnerRunSetup(true);
+		expect(startsOwnerAgentsOff(await authenticate(owner.t))).toBe(false);
+		expect(startsOwnerAgentsOff(sessionActor({ id: USER, name: 'alice' }))).toBe(false);
+
+		const { t, memberId } = await setup();
+		const undelegated = await authenticate(t);
+		expect(undelegated.member).toBeUndefined();
+		expect(startsOwnerAgentsOff(undelegated)).toBe(true);
+		expect(startsOwnerAgentsOff(await actorForProject(t.db, undelegated, PROJECT))).toBe(true);
+		expect(
+			startsOwnerAgentsOff({
+				member: { userId: memberId, userName: 'bob', projectId: PROJECT, membershipRevision: 1 }
+			})
+		).toBe(true);
 	});
 
 	it('refuses a run key that tries to set consent on create', async () => {

@@ -61,7 +61,8 @@ import {
 	currentProjectWriterPredicate,
 	runStillBoundPredicate,
 	assertRunStillBound,
-	runProjectActor
+	runProjectActor,
+	startsOwnerAgentsOff
 } from './project-access';
 import { readSharedIssue } from './shared-issues';
 import { deriveRound, deriveSinceLastRun } from './handoff';
@@ -1612,10 +1613,12 @@ export async function createIssue(
 		}
 		if (linkPlan) await recheckCreateIssueLinkPlan(db, actor, linkPlan);
 	}
-	if ((actor.member || actor.runRestriction) && project.shared_at !== null) {
-		// The owner's agents stay off a member's new issue, and off any
-		// run-filed issue (a proposal, whoever's run filed it), until the
-		// owner allows them; an explicit off wins over the owner default.
+	const ownerStartsOff = project.shared_at !== null && startsOwnerAgentsOff(actor);
+	if (ownerStartsOff) {
+		// The owner's agents stay off a member's new issue, and off an issue a
+		// member's run files (a proposal), until the owner allows them; an
+		// explicit off wins over the owner default. The owner's own run writes
+		// no row: its issues follow the owner default, on.
 		queries.push(
 			sql`INSERT INTO issue_personal_choice
 				(issue_id, user_id, value, revision, issue_epoch, membership_revision, source_kind, updated_at)
@@ -1693,9 +1696,10 @@ export async function createIssue(
 			...(actor.viaSession
 				? {}
 				: {
-						message: actor.runRestriction
-							? 'Permission unchanged; manage your permission in the browser. Agents stay off until a person allows them.'
-							: 'Permission unchanged; manage your permission in the browser.'
+						message:
+							actor.runRestriction && ownerStartsOff
+								? 'Permission unchanged; manage your permission in the browser. Agents stay off until a person allows them.'
+								: 'Permission unchanged; manage your permission in the browser.'
 					})
 		};
 	}

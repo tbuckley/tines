@@ -1,5 +1,9 @@
 # API key permissions
 
+## 2026-10-03 — Owner-run-filed issues keep the owner default (Tines/905)
+
+This narrows the last paragraph of the 2026-09-26 entry. An issue the project owner's run files in a shared project is created with no owner row, so the owner's agents are on by default. An issue a member-contributor run files is still created with the project owner's agents off. A run key can create issues only in its own project (`outside_run_project`), and no key can supply a consent choice.
+
 ## 2026-09-26 — Contributor-bound run keys (Tines/751)
 
 A run key is bound at authentication to its contributor (`agent_run.user_id`), runner, admitted project, the issue's project assignment token, and, for a member run, the membership revision it was admitted at (`agent_run.admitted_membership_revision`, migration `0049`). Authentication fails closed with `401 run_key_inactive` and a `reason`: `contributor_mismatch` (key or runner owner is not the contributor), `cancel_requested` (owner runs too — cancellation revokes app capability immediately, the slot stays occupied until the terminal acknowledgement), `transferred` (issue left the admitted project or its token changed), `membership_changed` (project unshared, member removed, rejoined at a new revision, or no admitted revision recorded), and `owner_changed`.

@@ -16,10 +16,12 @@ starts on for a nonterminal issue and explains that enabling agents lets them
 use the owner's runner and account resources. No runner is needed to save the
 choice. A done issue stores no choice.
 
-An issue an agent files in a shared project — a follow-up, a subtask, or a
-linked child — starts with the owner's agents off. It is a proposal: nothing
-runs it until a person allows it in the browser. Issues agents file in a
-project that was never shared keep the default, on.
+An issue the owner's agent files in a shared project — a follow-up, a subtask,
+or a linked child — follows the owner default: the owner's agents are on, as if
+the owner had created it from the CLI. An issue a member's agent files starts
+with the owner's agents off. It is a proposal: the owner's agents do not run it
+until the owner allows it in the browser. Issues agents file in a project that
+was never shared keep the default, on.
 
 Choices are revisioned per issue and carry the issue's consent epoch. A
 separate issue permission write includes the expected choice revision, issue
