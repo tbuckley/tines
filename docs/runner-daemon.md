@@ -627,7 +627,7 @@ directory is assumed to be a live run and is left alone.
 
 ## Reasoning effort
 
-Current Codex and Claude Code daemons discover and report exact-model effort support at boot. Set routed effort by target position, for example `tines routing set codex:balanced claude:balanced --project Example --effort 1=low --effort 2=medium`. A runner-tier effort is the fallback when routing omits it. Explicit routed effort never launches through an old or incompatible daemon; the next compatible ordered target may win.
+Current Codex, Claude Code and Pi daemons discover and report exact-model effort support at boot; custom harnesses report none. A Claude Code daemon reports effort support only when the installed `claude` is 2.1.258 or newer and lists `--effort`; an older one reports a discovery error and is treated as having no effort support, so keep it current with `claude update`. Set routed effort by target position, for example `tines routing set codex:balanced claude:balanced --project Example --effort 1=low --effort 2=medium`. A runner-tier effort is the fallback when routing omits it. Explicit routed effort never launches through an old or incompatible daemon; the next compatible ordered target may win.
 
 During daemon rollout, an old daemon may still take a run that has only runner-tier effort. Tines omits the setting and records `legacy_not_applied`; actual provider effort is unknown. After upgrade, Claude receives `--effort VALUE` and Codex receives `-c model_reasoning_effort="VALUE"`. Successful local spawn is recorded as `accepted_unconfirmed`, not proof of internal reasoning depth.
 
