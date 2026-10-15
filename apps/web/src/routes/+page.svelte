@@ -11,7 +11,7 @@
 <svelte:head
 	><title>Tines — A place for work to move</title><meta
 		name="description"
-		content="An issue tracker that gives agents a workflow and people the whole story."
+		content="An issue tracker that routes work to your agents and hands you the whole story."
 	/><meta name="color-scheme" content="light" /></svelte:head
 >
 <MarketingPage {linkError} />
