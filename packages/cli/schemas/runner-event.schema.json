@@ -1,0 +1,372 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$ref": "#/$defs/RunnerExecutionEvent",
+	"$defs": {
+		"RunnerExecutionEvent": {
+			"oneOf": [
+				{
+					"type": "object",
+					"properties": {
+						"type": { "type": "string", "const": "workspace" },
+						"workspace_path": { "type": "string" }
+					},
+					"required": ["type", "workspace_path"]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": { "type": "string", "const": "started" },
+						"pid": { "type": "number" },
+						"started_at": { "type": "number" }
+					},
+					"required": ["type", "pid", "started_at"]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": { "type": "string", "const": "log" },
+						"body": { "$ref": "#/$defs/AppendRunLogRequest" }
+					},
+					"required": ["type", "body"]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": { "type": "string", "const": "finish" },
+						"body": { "$ref": "#/$defs/FinishRunRequest" }
+					},
+					"required": ["type", "body"]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": { "type": "string", "const": "raw_log" },
+						"data": { "type": "string" }
+					},
+					"required": ["type", "data"]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"type": { "type": "string", "const": "canceled" },
+						"workspace_path": { "type": "string" }
+					},
+					"required": ["type", "workspace_path"]
+				}
+			]
+		},
+		"AppendRunLogRequest": {
+			"type": "object",
+			"properties": {
+				"chunk": { "type": "string" },
+				"effort_application": {
+					"type": "object",
+					"properties": {
+						"status": {
+							"type": "string",
+							"enum": ["accepted_unconfirmed", "confirmed", "rejected"]
+						},
+						"attempted_effort": { "type": "string" },
+						"transport": { "type": "string", "const": "argv" },
+						"reason": { "type": "string" },
+						"observed_effort": { "type": "string" }
+					},
+					"required": ["status", "attempted_effort", "transport"]
+				},
+				"seq": { "type": "number" }
+			},
+			"required": ["chunk"]
+		},
+		"FinishRunRequest": {
+			"type": "object",
+			"properties": {
+				"status": { "type": "string", "enum": ["completed", "failed"] },
+				"error": { "type": "string" },
+				"effort_application": {
+					"type": "object",
+					"properties": {
+						"status": {
+							"type": "string",
+							"enum": ["accepted_unconfirmed", "confirmed", "rejected"]
+						},
+						"attempted_effort": { "type": "string" },
+						"transport": { "type": "string", "const": "argv" },
+						"reason": { "type": "string" },
+						"observed_effort": { "type": "string" }
+					},
+					"required": ["status", "attempted_effort", "transport"]
+				},
+				"judgment": { "type": "string", "enum": ["interrupted", "rate_limited"] },
+				"resume_at": { "type": "number" },
+				"provider_session_id": { "type": "string" },
+				"turn_count": { "type": "number" },
+				"conversation_turn_count": { "type": "number" },
+				"workspace_path": { "type": "string" },
+				"usage": { "$ref": "#/$defs/AgentRunUsage" },
+				"pricing_evidence": { "$ref": "#/$defs/CodexPricingEvidenceV1" }
+			},
+			"required": ["status"]
+		},
+		"AgentRunUsage": {
+			"type": "object",
+			"properties": {
+				"input_tokens": { "type": "number" },
+				"output_tokens": { "type": "number" },
+				"cache_read_tokens": { "type": "number" },
+				"cache_write_tokens": { "type": "number" },
+				"cost_usd": { "type": "number" },
+				"cost_source": { "type": "string", "enum": ["provider", "priced", "none"] },
+				"pricing": { "$ref": "#/$defs/RunPricingV1" }
+			}
+		},
+		"RunPricingV1": {
+			"anyOf": [
+				{
+					"type": "object",
+					"properties": {
+						"status": { "type": "string", "const": "calculated" },
+						"basis": { "$ref": "#/$defs/RunPricingBasisV1" },
+						"version": { "type": "number", "const": 1 },
+						"evidence": { "$ref": "#/$defs/CodexPricingEvidenceV1" },
+						"evaluated_at": { "type": "number" },
+						"repriced_from": {
+							"type": "object",
+							"properties": {
+								"evaluated_at": { "type": "number" },
+								"reason": { "$ref": "#/$defs/RunPricingReason" }
+							},
+							"required": ["evaluated_at", "reason"]
+						}
+					},
+					"required": ["basis", "evaluated_at", "status", "version"]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"status": { "type": "string", "const": "unpriced" },
+						"reason": { "$ref": "#/$defs/RunPricingReason" },
+						"version": { "type": "number", "const": 1 },
+						"evidence": { "$ref": "#/$defs/CodexPricingEvidenceV1" },
+						"evaluated_at": { "type": "number" },
+						"repriced_from": {
+							"type": "object",
+							"properties": {
+								"evaluated_at": { "type": "number" },
+								"reason": { "$ref": "#/$defs/RunPricingReason" }
+							},
+							"required": ["evaluated_at", "reason"]
+						}
+					},
+					"required": ["evaluated_at", "reason", "status", "version"]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"status": { "type": "string", "const": "provider_authoritative" },
+						"version": { "type": "number", "const": 1 },
+						"evidence": { "$ref": "#/$defs/CodexPricingEvidenceV1" },
+						"evaluated_at": { "type": "number" },
+						"repriced_from": {
+							"type": "object",
+							"properties": {
+								"evaluated_at": { "type": "number" },
+								"reason": { "$ref": "#/$defs/RunPricingReason" }
+							},
+							"required": ["evaluated_at", "reason"]
+						}
+					},
+					"required": ["evaluated_at", "status", "version"]
+				}
+			]
+		},
+		"RunPricingBasisV1": {
+			"type": "object",
+			"properties": {
+				"calculation_version": { "type": "string", "const": "tokens-times-usd-per-million-v1" },
+				"provider": { "type": "string", "const": "openai" },
+				"model": { "type": "string" },
+				"model_identity": { "type": "string", "const": "requested_launch_no_observed_reroute" },
+				"usage_scope": { "type": "string", "const": "attempt" },
+				"plan": { "type": "string", "enum": ["api_standard", "user_entered"] },
+				"rate_source": { "type": "string", "const": "user" },
+				"rate_entered_at": { "type": "number" },
+				"context_band": { "type": "string", "enum": ["short", "published"] },
+				"rate_id": { "type": "string" },
+				"rate_version": { "type": "number" },
+				"rate_adopted_at": { "type": "number" },
+				"rate_valid_to": { "type": ["number", "null"] },
+				"rate_selected_at": { "type": "number" },
+				"source_url": { "type": "string" },
+				"source_checked_at": { "type": "string" },
+				"source_effective_at": { "type": ["string", "null"] },
+				"unit_tokens": { "type": "number", "const": 1000000 },
+				"rates": {
+					"type": "object",
+					"properties": {
+						"input_tokens": { "type": ["string", "null"] },
+						"cache_read_tokens": { "type": ["string", "null"] },
+						"cache_write_tokens": { "type": ["string", "null"] },
+						"output_tokens": { "type": ["string", "null"] }
+					},
+					"required": ["input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens"]
+				},
+				"cost_usd_exact": { "type": "string" }
+			},
+			"required": [
+				"calculation_version",
+				"provider",
+				"model",
+				"model_identity",
+				"usage_scope",
+				"plan",
+				"context_band",
+				"rate_id",
+				"rate_version",
+				"rate_adopted_at",
+				"rate_valid_to",
+				"rate_selected_at",
+				"source_url",
+				"source_checked_at",
+				"source_effective_at",
+				"unit_tokens",
+				"rates",
+				"cost_usd_exact"
+			]
+		},
+		"CodexPricingEvidenceV1": {
+			"type": "object",
+			"properties": {
+				"version": { "type": "number", "const": 1 },
+				"harness": { "type": "string", "const": "codex" },
+				"model": { "type": ["string", "null"] },
+				"identity_source": { "type": "string", "const": "launch_argument" },
+				"usage_scope": { "type": "string", "const": "thread_total" },
+				"session_mode": { "type": "string", "enum": ["cold", "resumed"] },
+				"normalization": { "type": "string", "const": "codex-jsonl-v1" },
+				"raw_usage": { "$ref": "#/$defs/CodexRawUsageV1" },
+				"model_rerouted": { "type": "boolean" },
+				"measurement_status": {
+					"type": "string",
+					"enum": [
+						"complete",
+						"missing",
+						"invalid",
+						"nonmonotonic",
+						"incomplete_attempt",
+						"multiple_threads"
+					]
+				},
+				"terminal_snapshots": { "type": "number" },
+				"daemon_version": { "type": "string" },
+				"request_context": { "$ref": "#/$defs/CodexRequestContextV1" }
+			},
+			"required": [
+				"version",
+				"harness",
+				"model",
+				"identity_source",
+				"usage_scope",
+				"session_mode",
+				"normalization",
+				"model_rerouted",
+				"measurement_status",
+				"terminal_snapshots"
+			]
+		},
+		"CodexRawUsageV1": {
+			"type": "object",
+			"properties": {
+				"input_tokens": { "type": "number" },
+				"cached_input_tokens": { "type": "number" },
+				"cache_write_input_tokens": { "type": "number" },
+				"output_tokens": { "type": "number" }
+			}
+		},
+		"CodexRequestContextV1": {
+			"anyOf": [
+				{
+					"type": "object",
+					"properties": {
+						"status": { "type": "string", "const": "complete" },
+						"harness_version": { "type": "string" },
+						"request_count": { "type": "number" },
+						"max_request_input_tokens": { "type": "number" },
+						"reconciled_usage": {
+							"type": "object",
+							"properties": {
+								"input_tokens": { "type": "number" },
+								"cached_input_tokens": { "type": "number" },
+								"cache_write_input_tokens": { "type": "number" },
+								"output_tokens": { "type": "number" }
+							}
+						},
+						"version": { "type": "number", "const": 1 },
+						"normalization": { "type": "string", "const": "codex-rollout-delta-v1" }
+					},
+					"required": [
+						"harness_version",
+						"max_request_input_tokens",
+						"normalization",
+						"reconciled_usage",
+						"request_count",
+						"status",
+						"version"
+					]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"status": { "type": "string", "enum": ["unavailable", "unsupported", "invalid"] },
+						"reason": {
+							"type": "string",
+							"enum": [
+								"not_applicable",
+								"thread_id_missing",
+								"rollout_missing",
+								"rollout_ambiguous",
+								"unsafe_path",
+								"read_failed",
+								"limit_exceeded",
+								"unsupported_version",
+								"metadata_mismatch",
+								"malformed",
+								"missing_dimension",
+								"nonmonotonic",
+								"delta_mismatch",
+								"terminal_mismatch",
+								"model_mismatch"
+							]
+						},
+						"version": { "type": "number", "const": 1 },
+						"normalization": { "type": "string", "const": "codex-rollout-delta-v1" },
+						"harness_version": { "type": "string" }
+					},
+					"required": ["normalization", "reason", "status", "version"]
+				}
+			]
+		},
+		"RunPricingReason": {
+			"type": "string",
+			"enum": [
+				"pricing_evidence_missing",
+				"harness_unpriced",
+				"invalid_pricing_evidence",
+				"model_missing",
+				"model_mismatch",
+				"model_rerouted",
+				"unsupported_model",
+				"missing_rate",
+				"missing_token_dimension",
+				"invalid_token_dimension",
+				"long_context_band_unknown",
+				"request_context_invalid",
+				"long_context_rate_unsupported",
+				"attempt_scope_unknown",
+				"incomplete_attempt",
+				"nonmonotonic_usage",
+				"multiple_threads",
+				"cost_out_of_range"
+			]
+		}
+	}
+}

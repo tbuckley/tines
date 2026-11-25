@@ -1,5 +1,6 @@
 /** Wire types for the Tines phase-one API (`/api/v1/*`). All snake_case. */
 
+import type { UsageDimensions, UsageEvidenceAccounting } from './usage.js';
 import type { SchedulePreset } from './schedule.js';
 import type { EffortApplicationStatus, EffortCapabilities, EffortSource } from './effort.js';
 import type { ApiKeyPermissions } from './permissions.js';
@@ -2438,7 +2439,7 @@ export interface RunnerAssignment {
 	effort?: {
 		version: 1;
 		value: string;
-		source: import('./effort.js').EffortSource;
+		source: EffortSource;
 		/** Capability catalog the server checked immediately before delivery. */
 		capability_digest: string;
 		/** Present when the model was not listed in the daemon's capability catalog. */
@@ -2830,9 +2831,9 @@ export interface AgentRun {
 	effort_application_evidence: Record<string, unknown> | null;
 	usage: AgentRunUsage | null;
 	/** Resolved ledger dimensions, populated only for finalized period evidence. */
-	usage_dimensions?: import('./usage.js').UsageDimensions;
+	usage_dimensions?: UsageDimensions;
 	/** Accounting classification, populated only for finalized period evidence. */
-	usage_accounting?: import('./usage.js').UsageEvidenceAccounting;
+	usage_accounting?: UsageEvidenceAccounting;
 	state_id_at_start: string;
 	state_at_start_name: string | null;
 	state_id_at_end: string | null;
@@ -2869,7 +2870,7 @@ export interface UsagePendingRun {
 	state_at_start_name: string | null;
 	created_at: number;
 	pending_at: number;
-	usage_dimensions: Omit<import('./usage.js').UsageDimensions, 'outcome'>;
+	usage_dimensions: Omit<UsageDimensions, 'outcome'>;
 	accounting_status: 'pending';
 }
 

@@ -18,6 +18,7 @@ import {
 	type CommonOpts,
 	type ListOpts
 } from '../common.js';
+import { runExecutor } from '../daemon/execute.js';
 import { runDaemon } from '../daemon/daemon.js';
 import {
 	defaultConfigDir,
@@ -28,7 +29,13 @@ import {
 	saveRunnerCredentials,
 	workspacesDir
 } from '../daemon/store.js';
-import { parseDaemonFlags, withDaemonFlags, type DaemonFlagValues } from './daemon-flags.js';
+import {
+	parseHarness,
+	withHarnessFlags,
+	parseDaemonFlags,
+	withDaemonFlags,
+	type DaemonFlagValues
+} from './daemon-flags.js';
 import { registerServiceCommands } from './runner-service.js';
 import {
 	issueRef,
@@ -430,6 +437,28 @@ export function register(program: Command): void {
 	// --- runner daemon -----------------------------------------------------------
 
 	const runnerCmd = program.command('runner').description('The local runner daemon');
+
+	withCommon(
+		withHarnessFlags(
+			runnerCmd
+				.command('execute')
+				.description('Execute one runner assignment from stdin and write JSONL to stdout')
+		)
+	)
+		.option('--no-cli-refresh', 'use the agent-facing tines CLI on PATH')
+		.action(
+			async (
+				opts: CommonOpts & Pick<DaemonFlagValues, 'harness' | 'command'> & { cliRefresh: boolean }
+			) => {
+				await runExecutor({
+					harness: parseHarness(opts),
+					command: opts.command,
+					cliRefresh: opts.cliRefresh,
+					configDir: defaultConfigDir(),
+					url: resolveUrl(opts).replace(/\/+$/, '')
+				});
+			}
+		);
 
 	withCommon(
 		withDaemonFlags(

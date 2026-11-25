@@ -1306,6 +1306,8 @@ Options:
   -h, --help                  display help for command
 
 Commands:
+  execute [options]           Execute one runner assignment from stdin and write
+                              JSONL to stdout
   daemon [options]            Run the local runner daemon in the foreground:
                               register/reconnect, poll for assigned runs,
                               execute them (\`tines runner install\` runs it as a
@@ -1361,6 +1363,22 @@ Options:
                                  login\`)
   --json                         output the raw JSON response
   -h, --help                     display help for command
+",
+  "tines runner execute": "Usage: tines runner execute [options]
+
+Execute one runner assignment from stdin and write JSONL to stdout
+
+Options:
+  --harness <harness>   claude-code | codex | pi | custom (default:
+                        "claude-code")
+  --command <template>  custom harness command template ({prompt_file},
+                        {workspace}, {model}, {effort})
+  -u, --url <url>       base URL of the Tines API (or set TINES_API_URL, or run
+                        \`tines login\`; default https://tines.tbuckley.dev)
+  --api-key <key>       API key (or set TINES_API_KEY, or run \`tines login\`)
+  --json                output the raw JSON response
+  --no-cli-refresh      use the agent-facing tines CLI on PATH
+  -h, --help            display help for command
 ",
   "tines runner install": "Usage: tines runner install [options]
 
