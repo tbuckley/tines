@@ -546,7 +546,10 @@ export class RunTable<T extends ManagedRun> {
 		error?: string,
 		judgment?: RunJudgment
 	): Promise<void> {
-		if (run.settled) return this.cleanup(run);
+		if (run.settled) {
+			if (run.canceled && this.has(run.runId)) this.cleanup(run);
+			return;
+		}
 		run.settled = true;
 		run.endNote ??= error;
 		// Before the flush, not after: a line appended afterwards would sit in

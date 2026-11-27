@@ -1,0 +1,58 @@
+{
+	"run": {
+		"id": "run_stub1",
+		"issue_id": "iss_1",
+		"issue_ref": {
+			"project_name": "Stub",
+			"number": 1,
+			"title": "Example"
+		},
+		"runner_id": "rnr_stub",
+		"runner_name": "stub",
+		"status": "launching",
+		"outcome": null,
+		"tier": "balanced",
+		"model": null,
+		"requested_effort": null,
+		"resolved_effort": null,
+		"effort_source": null,
+		"effort_application_status": "not_requested",
+		"effort_application_evidence": null,
+		"usage": null,
+		"state_id_at_start": "state_1",
+		"state_at_start_name": null,
+		"state_id_at_end": null,
+		"state_at_end_name": null,
+		"provider_session_id": null,
+		"provider_url": null,
+		"turn_count": null,
+		"conversation_turn_count": null,
+		"resumed_from_run_id": null,
+		"resume_expires_at": null,
+		"resume_fallback_reason": null,
+		"error": null,
+		"created_at": 0,
+		"started_at": null,
+		"ended_at": null
+	},
+	"prompt": "PROMPT BODY",
+	"bundle": {
+		"prompt": {
+			"text": "",
+			"parts": [],
+			"journal": {
+				"state_id": "state_1",
+				"inherited_from": null,
+				"item_id": null,
+				"version": null
+			}
+		},
+		"skills": [],
+		"repos": [],
+		"env": [],
+		"overridden": [],
+		"conflicts": []
+	},
+	"run_key": "trk_stub_run_key_never_logged",
+	"timeout_minutes": 30
+}

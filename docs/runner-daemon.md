@@ -6,6 +6,8 @@ Code, Codex, Pi, or a custom command), streams the output back as the run's log,
 finish. No inbound connection to the machine is ever needed. `tines runner install` sets it
 up as a service (the normal way); `tines runner daemon` runs it in the foreground.
 
+For a supervisor that already polls for assignments, see [Execute one runner assignment](runner-execute.md) for the stdin and JSONL interface.
+
 ## First start
 
 Four setup steps from nothing to an agent working an issue. The hosted app is

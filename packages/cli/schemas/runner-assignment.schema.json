@@ -1,0 +1,735 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$ref": "#/$defs/RunnerAssignment",
+	"$defs": {
+		"RunnerAssignment": {
+			"type": "object",
+			"properties": {
+				"run": { "$ref": "#/$defs/AgentRun" },
+				"effort": {
+					"type": "object",
+					"properties": {
+						"version": { "type": "number", "const": 1 },
+						"value": { "type": "string" },
+						"source": { "$ref": "#/$defs/EffortSource" },
+						"capability_digest": { "type": "string" },
+						"verification": { "type": "string", "const": "asserted" }
+					},
+					"required": ["version", "value", "source", "capability_digest"]
+				},
+				"prompt": { "type": "string" },
+				"bundle": { "$ref": "#/$defs/EffectiveContext" },
+				"run_key": { "type": "string", "minLength": 1 },
+				"env": { "type": "array", "items": { "$ref": "#/$defs/RunnerAssignmentEnv" } },
+				"timeout_minutes": { "type": "number", "exclusiveMinimum": 0 },
+				"shared_bundle": {
+					"type": "object",
+					"properties": {
+						"version": { "type": "number", "const": 1 },
+						"digest": { "type": "string" }
+					},
+					"required": ["version", "digest"]
+				},
+				"resume": { "$ref": "#/$defs/RunnerAssignmentResume" }
+			},
+			"required": ["run", "prompt", "bundle", "run_key", "timeout_minutes"]
+		},
+		"AgentRun": {
+			"type": "object",
+			"properties": {
+				"id": { "type": "string", "pattern": "^[a-zA-Z0-9_-]+$" },
+				"issue_id": { "type": "string" },
+				"issue_ref": { "anyOf": [{ "$ref": "#/$defs/IssueRef" }, { "type": "null" }] },
+				"runner_id": { "type": "string" },
+				"runner_name": { "type": "string" },
+				"status": { "$ref": "#/$defs/RunStatus" },
+				"outcome": { "anyOf": [{ "$ref": "#/$defs/RunEndOutcome" }, { "type": "null" }] },
+				"tier": { "$ref": "#/$defs/ModelTier" },
+				"model": { "type": ["string", "null"] },
+				"requested_effort": { "type": ["string", "null"] },
+				"resolved_effort": { "type": ["string", "null"] },
+				"effort_source": { "anyOf": [{ "$ref": "#/$defs/EffortSource" }, { "type": "null" }] },
+				"effort_application_status": { "$ref": "#/$defs/EffortApplicationStatus" },
+				"effort_application_evidence": {
+					"anyOf": [{ "type": "object", "additionalProperties": {} }, { "type": "null" }]
+				},
+				"usage": { "anyOf": [{ "$ref": "#/$defs/AgentRunUsage" }, { "type": "null" }] },
+				"usage_dimensions": { "$ref": "#/$defs/UsageDimensions" },
+				"usage_accounting": { "$ref": "#/$defs/UsageEvidenceAccounting" },
+				"state_id_at_start": { "type": "string" },
+				"state_at_start_name": { "type": ["string", "null"] },
+				"state_id_at_end": { "type": ["string", "null"] },
+				"state_at_end_name": { "type": ["string", "null"] },
+				"provider_session_id": { "type": ["string", "null"] },
+				"provider_url": { "type": ["string", "null"] },
+				"turn_count": { "type": ["number", "null"] },
+				"conversation_turn_count": { "type": ["number", "null"] },
+				"resumed_from_run_id": { "type": ["string", "null"] },
+				"resume_expires_at": { "type": ["number", "null"] },
+				"resume_fallback_reason": {
+					"type": ["string", "null"],
+					"enum": [
+						"expired",
+						"long_context",
+						"incompatible",
+						"unavailable",
+						"unsupported",
+						"provider_rejected",
+						null
+					]
+				},
+				"error": { "type": ["string", "null"] },
+				"created_at": { "type": "number" },
+				"started_at": { "type": ["number", "null"] },
+				"ended_at": { "type": ["number", "null"] }
+			},
+			"required": [
+				"id",
+				"issue_id",
+				"issue_ref",
+				"runner_id",
+				"runner_name",
+				"status",
+				"outcome",
+				"tier",
+				"model",
+				"requested_effort",
+				"resolved_effort",
+				"effort_source",
+				"effort_application_status",
+				"effort_application_evidence",
+				"usage",
+				"state_id_at_start",
+				"state_at_start_name",
+				"state_id_at_end",
+				"state_at_end_name",
+				"provider_session_id",
+				"provider_url",
+				"turn_count",
+				"conversation_turn_count",
+				"resumed_from_run_id",
+				"resume_expires_at",
+				"resume_fallback_reason",
+				"error",
+				"created_at",
+				"started_at",
+				"ended_at"
+			]
+		},
+		"IssueRef": {
+			"type": "object",
+			"properties": {
+				"project_name": { "type": "string" },
+				"number": { "type": "number" },
+				"title": { "type": "string" }
+			},
+			"required": ["project_name", "number", "title"]
+		},
+		"RunStatus": {
+			"type": "string",
+			"enum": ["assigned", "launching", "running", "completed", "failed", "timed_out", "canceled"]
+		},
+		"RunEndOutcome": { "type": "string", "enum": ["advanced", "stalled", "interrupted"] },
+		"ModelTier": { "type": "string", "enum": ["smartest", "balanced", "cheapest"] },
+		"EffortSource": {
+			"anyOf": [
+				{
+					"type": "object",
+					"properties": {
+						"kind": { "type": "string", "const": "routing_target" },
+						"runner_id": { "type": "string" },
+						"tier": { "type": "string" },
+						"rule_id": { "type": "string" },
+						"scope_label": { "type": "string" },
+						"target_index": { "type": "number" }
+					},
+					"required": ["kind", "runner_id", "tier", "rule_id", "scope_label", "target_index"]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"kind": { "type": "string", "const": "runner_tier" },
+						"runner_id": { "type": "string" },
+						"tier": { "type": "string" }
+					},
+					"required": ["kind", "runner_id", "tier"]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"kind": { "type": "string", "const": "none" },
+						"runner_id": { "type": "string" },
+						"tier": { "type": "string" }
+					},
+					"required": ["kind", "runner_id", "tier"]
+				}
+			]
+		},
+		"EffortApplicationStatus": {
+			"type": "string",
+			"enum": [
+				"unknown",
+				"not_requested",
+				"legacy_not_applied",
+				"pending",
+				"accepted_unconfirmed",
+				"confirmed",
+				"rejected"
+			]
+		},
+		"AgentRunUsage": {
+			"type": "object",
+			"properties": {
+				"input_tokens": { "type": "number" },
+				"output_tokens": { "type": "number" },
+				"cache_read_tokens": { "type": "number" },
+				"cache_write_tokens": { "type": "number" },
+				"cost_usd": { "type": "number" },
+				"cost_source": { "type": "string", "enum": ["provider", "priced", "none"] },
+				"pricing": { "$ref": "#/$defs/RunPricingV1" }
+			}
+		},
+		"RunPricingV1": {
+			"anyOf": [
+				{
+					"type": "object",
+					"properties": {
+						"status": { "type": "string", "const": "calculated" },
+						"basis": { "$ref": "#/$defs/RunPricingBasisV1" },
+						"version": { "type": "number", "const": 1 },
+						"evidence": { "$ref": "#/$defs/CodexPricingEvidenceV1" },
+						"evaluated_at": { "type": "number" },
+						"repriced_from": {
+							"type": "object",
+							"properties": {
+								"evaluated_at": { "type": "number" },
+								"reason": { "$ref": "#/$defs/RunPricingReason" }
+							},
+							"required": ["evaluated_at", "reason"]
+						}
+					},
+					"required": ["basis", "evaluated_at", "status", "version"]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"status": { "type": "string", "const": "unpriced" },
+						"reason": { "$ref": "#/$defs/RunPricingReason" },
+						"version": { "type": "number", "const": 1 },
+						"evidence": { "$ref": "#/$defs/CodexPricingEvidenceV1" },
+						"evaluated_at": { "type": "number" },
+						"repriced_from": {
+							"type": "object",
+							"properties": {
+								"evaluated_at": { "type": "number" },
+								"reason": { "$ref": "#/$defs/RunPricingReason" }
+							},
+							"required": ["evaluated_at", "reason"]
+						}
+					},
+					"required": ["evaluated_at", "reason", "status", "version"]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"status": { "type": "string", "const": "provider_authoritative" },
+						"version": { "type": "number", "const": 1 },
+						"evidence": { "$ref": "#/$defs/CodexPricingEvidenceV1" },
+						"evaluated_at": { "type": "number" },
+						"repriced_from": {
+							"type": "object",
+							"properties": {
+								"evaluated_at": { "type": "number" },
+								"reason": { "$ref": "#/$defs/RunPricingReason" }
+							},
+							"required": ["evaluated_at", "reason"]
+						}
+					},
+					"required": ["evaluated_at", "status", "version"]
+				}
+			]
+		},
+		"RunPricingBasisV1": {
+			"type": "object",
+			"properties": {
+				"calculation_version": { "type": "string", "const": "tokens-times-usd-per-million-v1" },
+				"provider": { "type": "string", "const": "openai" },
+				"model": { "type": "string" },
+				"model_identity": { "type": "string", "const": "requested_launch_no_observed_reroute" },
+				"usage_scope": { "type": "string", "const": "attempt" },
+				"plan": { "type": "string", "enum": ["api_standard", "user_entered"] },
+				"rate_source": { "type": "string", "const": "user" },
+				"rate_entered_at": { "type": "number" },
+				"context_band": { "type": "string", "enum": ["short", "published"] },
+				"rate_id": { "type": "string" },
+				"rate_version": { "type": "number" },
+				"rate_adopted_at": { "type": "number" },
+				"rate_valid_to": { "type": ["number", "null"] },
+				"rate_selected_at": { "type": "number" },
+				"source_url": { "type": "string" },
+				"source_checked_at": { "type": "string" },
+				"source_effective_at": { "type": ["string", "null"] },
+				"unit_tokens": { "type": "number", "const": 1000000 },
+				"rates": {
+					"type": "object",
+					"properties": {
+						"input_tokens": { "type": ["string", "null"] },
+						"cache_read_tokens": { "type": ["string", "null"] },
+						"cache_write_tokens": { "type": ["string", "null"] },
+						"output_tokens": { "type": ["string", "null"] }
+					},
+					"required": ["input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens"]
+				},
+				"cost_usd_exact": { "type": "string" }
+			},
+			"required": [
+				"calculation_version",
+				"provider",
+				"model",
+				"model_identity",
+				"usage_scope",
+				"plan",
+				"context_band",
+				"rate_id",
+				"rate_version",
+				"rate_adopted_at",
+				"rate_valid_to",
+				"rate_selected_at",
+				"source_url",
+				"source_checked_at",
+				"source_effective_at",
+				"unit_tokens",
+				"rates",
+				"cost_usd_exact"
+			]
+		},
+		"CodexPricingEvidenceV1": {
+			"type": "object",
+			"properties": {
+				"version": { "type": "number", "const": 1 },
+				"harness": { "type": "string", "const": "codex" },
+				"model": { "type": ["string", "null"] },
+				"identity_source": { "type": "string", "const": "launch_argument" },
+				"usage_scope": { "type": "string", "const": "thread_total" },
+				"session_mode": { "type": "string", "enum": ["cold", "resumed"] },
+				"normalization": { "type": "string", "const": "codex-jsonl-v1" },
+				"raw_usage": { "$ref": "#/$defs/CodexRawUsageV1" },
+				"model_rerouted": { "type": "boolean" },
+				"measurement_status": {
+					"type": "string",
+					"enum": [
+						"complete",
+						"missing",
+						"invalid",
+						"nonmonotonic",
+						"incomplete_attempt",
+						"multiple_threads"
+					]
+				},
+				"terminal_snapshots": { "type": "number" },
+				"daemon_version": { "type": "string" },
+				"request_context": { "$ref": "#/$defs/CodexRequestContextV1" }
+			},
+			"required": [
+				"version",
+				"harness",
+				"model",
+				"identity_source",
+				"usage_scope",
+				"session_mode",
+				"normalization",
+				"model_rerouted",
+				"measurement_status",
+				"terminal_snapshots"
+			]
+		},
+		"CodexRawUsageV1": {
+			"type": "object",
+			"properties": {
+				"input_tokens": { "type": "number" },
+				"cached_input_tokens": { "type": "number" },
+				"cache_write_input_tokens": { "type": "number" },
+				"output_tokens": { "type": "number" }
+			}
+		},
+		"CodexRequestContextV1": {
+			"anyOf": [
+				{
+					"type": "object",
+					"properties": {
+						"status": { "type": "string", "const": "complete" },
+						"harness_version": { "type": "string" },
+						"request_count": { "type": "number" },
+						"max_request_input_tokens": { "type": "number" },
+						"reconciled_usage": {
+							"type": "object",
+							"properties": {
+								"input_tokens": { "type": "number" },
+								"cached_input_tokens": { "type": "number" },
+								"cache_write_input_tokens": { "type": "number" },
+								"output_tokens": { "type": "number" }
+							}
+						},
+						"version": { "type": "number", "const": 1 },
+						"normalization": { "type": "string", "const": "codex-rollout-delta-v1" }
+					},
+					"required": [
+						"harness_version",
+						"max_request_input_tokens",
+						"normalization",
+						"reconciled_usage",
+						"request_count",
+						"status",
+						"version"
+					]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"status": { "type": "string", "enum": ["unavailable", "unsupported", "invalid"] },
+						"reason": {
+							"type": "string",
+							"enum": [
+								"not_applicable",
+								"thread_id_missing",
+								"rollout_missing",
+								"rollout_ambiguous",
+								"unsafe_path",
+								"read_failed",
+								"limit_exceeded",
+								"unsupported_version",
+								"metadata_mismatch",
+								"malformed",
+								"missing_dimension",
+								"nonmonotonic",
+								"delta_mismatch",
+								"terminal_mismatch",
+								"model_mismatch"
+							]
+						},
+						"version": { "type": "number", "const": 1 },
+						"normalization": { "type": "string", "const": "codex-rollout-delta-v1" },
+						"harness_version": { "type": "string" }
+					},
+					"required": ["normalization", "reason", "status", "version"]
+				}
+			]
+		},
+		"RunPricingReason": {
+			"type": "string",
+			"enum": [
+				"pricing_evidence_missing",
+				"harness_unpriced",
+				"invalid_pricing_evidence",
+				"model_missing",
+				"model_mismatch",
+				"model_rerouted",
+				"unsupported_model",
+				"missing_rate",
+				"missing_token_dimension",
+				"invalid_token_dimension",
+				"long_context_band_unknown",
+				"request_context_invalid",
+				"long_context_rate_unsupported",
+				"attempt_scope_unknown",
+				"incomplete_attempt",
+				"nonmonotonic_usage",
+				"multiple_threads",
+				"cost_out_of_range"
+			]
+		},
+		"UsageDimensions": {
+			"type": "object",
+			"properties": {
+				"project": { "$ref": "#/$defs/UsageDimension" },
+				"workflow": { "$ref": "#/$defs/UsageDimension" },
+				"state": { "$ref": "#/$defs/UsageDimension" },
+				"outcome": { "$ref": "#/$defs/UsageDimension" },
+				"runner": { "$ref": "#/$defs/UsageDimension" },
+				"tier": { "$ref": "#/$defs/UsageDimension" }
+			},
+			"required": ["project", "workflow", "state", "outcome", "runner", "tier"]
+		},
+		"UsageDimension": {
+			"type": "object",
+			"properties": {
+				"id": { "type": ["string", "null"] },
+				"name": { "type": "string" },
+				"workflow_id": { "type": ["string", "null"] },
+				"workflow_name": { "type": ["string", "null"] }
+			},
+			"required": ["id", "name"]
+		},
+		"UsageEvidenceAccounting": {
+			"type": "object",
+			"properties": {
+				"status": { "$ref": "#/$defs/UsageAccountingStatus" },
+				"cost": { "type": ["number", "null"] },
+				"cost_exact": { "type": ["string", "null"] },
+				"source": {
+					"type": ["string", "null"],
+					"enum": ["provider", "calculated", "unknown_source", null]
+				},
+				"basis": { "anyOf": [{ "$ref": "#/$defs/RunPricingBasisV1" }, { "type": "null" }] },
+				"tokens": {
+					"type": "object",
+					"properties": {
+						"input_tokens": { "type": ["number", "null"] },
+						"output_tokens": { "type": ["number", "null"] },
+						"cache_read_tokens": { "type": ["number", "null"] },
+						"cache_write_tokens": { "type": ["number", "null"] }
+					},
+					"required": ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"]
+				},
+				"invalid_tokens": { "type": "array", "items": { "$ref": "#/$defs/UsageTokenField" } },
+				"diagnostics": { "$ref": "#/$defs/UsageDiagnostics" },
+				"pricing_reason": { "anyOf": [{ "$ref": "#/$defs/RunPricingReason" }, { "type": "null" }] }
+			},
+			"required": [
+				"status",
+				"cost",
+				"cost_exact",
+				"source",
+				"basis",
+				"tokens",
+				"invalid_tokens",
+				"diagnostics",
+				"pricing_reason"
+			]
+		},
+		"UsageAccountingStatus": { "type": "string", "enum": ["priced", "unpriced", "unreported"] },
+		"UsageTokenField": {
+			"type": "string",
+			"enum": ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"]
+		},
+		"UsageDiagnostics": {
+			"type": "object",
+			"properties": {
+				"legacy_null": { "type": "number" },
+				"explicit_none": { "type": "number" },
+				"malformed": { "type": "number" },
+				"invalid_cost": { "type": "number" },
+				"invalid_token_fields": { "type": "number" },
+				"partial_token_fields": { "type": "number" },
+				"unknown_or_inconsistent_source": { "type": "number" },
+				"invalid_or_missing_calculated_basis": { "type": "number" }
+			},
+			"required": [
+				"legacy_null",
+				"explicit_none",
+				"malformed",
+				"invalid_cost",
+				"invalid_token_fields",
+				"partial_token_fields",
+				"unknown_or_inconsistent_source",
+				"invalid_or_missing_calculated_basis"
+			]
+		},
+		"EffectiveContext": {
+			"type": "object",
+			"properties": {
+				"prompt": {
+					"type": "object",
+					"properties": {
+						"text": { "type": "string" },
+						"parts": { "type": "array", "items": { "$ref": "#/$defs/EffectivePromptPart" } },
+						"journal": { "$ref": "#/$defs/EffectiveJournalTarget" }
+					},
+					"required": ["text", "parts", "journal"]
+				},
+				"skills": { "type": "array", "items": { "$ref": "#/$defs/EffectiveSkill" } },
+				"repos": { "type": "array", "items": { "$ref": "#/$defs/EffectiveRepo" } },
+				"env": { "type": "array", "items": { "$ref": "#/$defs/EffectiveEnv" } },
+				"overridden": { "type": "array", "items": { "$ref": "#/$defs/OverriddenContextItem" } },
+				"conflicts": { "type": "array", "items": { "$ref": "#/$defs/RepoDirConflict" } }
+			},
+			"required": ["prompt", "skills", "repos", "env", "overridden", "conflicts"]
+		},
+		"EffectivePromptPart": {
+			"type": "object",
+			"properties": {
+				"item_id": { "type": "string" },
+				"name": { "type": "string" },
+				"scope": { "$ref": "#/$defs/ContextScope" },
+				"body": { "type": "string" },
+				"version": { "type": "number" },
+				"is_journal": { "type": "boolean" },
+				"inherited_from": { "anyOf": [{ "$ref": "#/$defs/InheritedFrom" }, { "type": "null" }] }
+			},
+			"required": ["item_id", "name", "scope", "body", "version", "is_journal", "inherited_from"]
+		},
+		"ContextScope": {
+			"type": "object",
+			"properties": {
+				"project_id": { "type": ["string", "null"] },
+				"project_name": { "type": ["string", "null"] },
+				"workflow_state_id": { "type": ["string", "null"] },
+				"workflow_state_name": { "type": ["string", "null"] },
+				"workflow_id": { "type": ["string", "null"] },
+				"workflow_name": { "type": ["string", "null"] },
+				"issue_id": { "type": ["string", "null"] },
+				"issue_ref": {
+					"anyOf": [
+						{
+							"type": "object",
+							"properties": {
+								"project_name": { "type": "string" },
+								"number": { "type": "number" }
+							},
+							"required": ["project_name", "number"]
+						},
+						{ "type": "null" }
+					]
+				},
+				"label_id": { "type": ["string", "null"] },
+				"label_name": { "type": ["string", "null"] },
+				"label_color": { "anyOf": [{ "$ref": "#/$defs/LabelColor" }, { "type": "null" }] },
+				"label": { "type": "string" }
+			},
+			"required": [
+				"project_id",
+				"project_name",
+				"workflow_state_id",
+				"workflow_state_name",
+				"workflow_id",
+				"workflow_name",
+				"issue_id",
+				"issue_ref",
+				"label_id",
+				"label_name",
+				"label_color",
+				"label"
+			]
+		},
+		"LabelColor": {
+			"type": "string",
+			"enum": ["slate", "red", "orange", "amber", "green", "teal", "blue", "violet", "pink"]
+		},
+		"InheritedFrom": {
+			"type": "object",
+			"properties": {
+				"state_id": { "type": "string" },
+				"state_name": { "type": "string" },
+				"workflow_id": { "type": "string" },
+				"workflow_name": { "type": "string" }
+			},
+			"required": ["state_id", "state_name", "workflow_id", "workflow_name"]
+		},
+		"EffectiveJournalTarget": {
+			"type": "object",
+			"properties": {
+				"state_id": { "type": "string" },
+				"inherited_from": { "anyOf": [{ "$ref": "#/$defs/InheritedFrom" }, { "type": "null" }] },
+				"item_id": { "type": ["string", "null"] },
+				"version": { "type": ["number", "null"] }
+			},
+			"required": ["state_id", "inherited_from", "item_id", "version"]
+		},
+		"EffectiveSkill": {
+			"type": "object",
+			"properties": {
+				"item_id": { "type": "string" },
+				"name": { "type": "string" },
+				"description": { "type": "string" },
+				"scope": { "$ref": "#/$defs/ContextScope" },
+				"files": { "type": "array", "items": { "$ref": "#/$defs/ContextFile" } },
+				"file_count": { "type": "number" },
+				"version": { "type": "number" },
+				"inherited_from": { "anyOf": [{ "$ref": "#/$defs/InheritedFrom" }, { "type": "null" }] }
+			},
+			"required": [
+				"item_id",
+				"name",
+				"description",
+				"scope",
+				"files",
+				"file_count",
+				"version",
+				"inherited_from"
+			]
+		},
+		"ContextFile": {
+			"type": "object",
+			"properties": { "path": { "type": "string" }, "content": { "type": "string" } },
+			"required": ["path", "content"]
+		},
+		"EffectiveRepo": {
+			"type": "object",
+			"properties": {
+				"item_id": { "type": "string" },
+				"name": { "type": "string" },
+				"scope": { "$ref": "#/$defs/ContextScope" },
+				"url": { "type": "string" },
+				"branch": { "type": ["string", "null"] },
+				"dir": { "type": "string" },
+				"version": { "type": "number" },
+				"inherited_from": { "anyOf": [{ "$ref": "#/$defs/InheritedFrom" }, { "type": "null" }] }
+			},
+			"required": ["item_id", "name", "scope", "url", "dir", "version", "inherited_from"]
+		},
+		"EffectiveEnv": {
+			"type": "object",
+			"properties": {
+				"item_id": { "type": "string" },
+				"name": { "type": "string" },
+				"secret": { "type": "boolean" },
+				"hint": { "type": ["string", "null"] },
+				"value": { "type": "string" },
+				"scope": { "$ref": "#/$defs/ContextScope" },
+				"version": { "type": "number" },
+				"inherited_from": { "anyOf": [{ "$ref": "#/$defs/InheritedFrom" }, { "type": "null" }] }
+			},
+			"required": ["item_id", "name", "secret", "hint", "scope", "version", "inherited_from"]
+		},
+		"OverriddenContextItem": {
+			"type": "object",
+			"properties": {
+				"item_id": { "type": "string" },
+				"kind": { "$ref": "#/$defs/ContextKind" },
+				"name": { "type": "string" },
+				"scope": { "$ref": "#/$defs/ContextScope" },
+				"overridden_by": { "type": "string" },
+				"repo": {
+					"type": "object",
+					"properties": {
+						"url": { "type": "string" },
+						"branch": { "type": ["string", "null"] },
+						"dir": { "type": "string" }
+					},
+					"required": ["url", "dir"]
+				},
+				"inherited_from": { "anyOf": [{ "$ref": "#/$defs/InheritedFrom" }, { "type": "null" }] }
+			},
+			"required": ["item_id", "kind", "name", "scope", "overridden_by", "inherited_from"]
+		},
+		"ContextKind": { "type": "string", "enum": ["prompt", "skill", "repo", "artifact", "env"] },
+		"RepoDirConflict": {
+			"type": "object",
+			"properties": {
+				"kind": { "type": "string", "const": "repo_dir" },
+				"dir": { "type": "string" },
+				"item_ids": { "type": "array", "items": { "type": "string" } }
+			},
+			"required": ["kind", "dir", "item_ids"]
+		},
+		"RunnerAssignmentEnv": {
+			"type": "object",
+			"properties": {
+				"name": { "type": "string" },
+				"value": { "type": "string" },
+				"secret": { "type": "boolean" }
+			},
+			"required": ["name", "value", "secret"]
+		},
+		"RunnerAssignmentResume": {
+			"type": "object",
+			"properties": {
+				"previous_run_id": { "type": "string" },
+				"provider_session_id": { "type": "string" },
+				"workspace_path": { "type": "string" },
+				"prior_turn_count": { "type": "number" }
+			},
+			"required": ["previous_run_id", "provider_session_id", "workspace_path", "prior_turn_count"]
+		}
+	}
+}

@@ -5,14 +5,19 @@
  * they cannot — that the daemon actually appends the banner before the spawn
  * and the exit line after it, in the run's own log, in order.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
+import { createInterface } from 'node:readline';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { FinishRunRequest, RunnerAssignment } from '@tines/shared';
+import Ajv2020 from 'ajv/dist/2020.js';
+import eventSchema from '../../schemas/runner-event.schema.json';
+import example from '../../../../docs/examples/runner-assignment.json';
+import type { FinishRunRequest, RunnerAssignment, RunnerExecutionEvent } from '@tines/shared';
 import { cliVersion } from '../version.js';
 import { CLI_BIN, NODE } from '../test-bin.js';
 
@@ -22,16 +27,8 @@ const RUN_KEY = 'trk_stub_run_key_never_logged';
 /** The assignment the stub hands out once: no repos, no skills, one run. */
 function assignment(timeoutMinutes: number, model: string, env?: RunnerAssignment['env']) {
 	return {
-		run: {
-			id: RUN_ID,
-			issue_id: 'iss_1',
-			issue_ref: { project_name: 'Stub', number: 1 },
-			model,
-			status: 'launching'
-		},
-		prompt: 'PROMPT BODY',
-		bundle: { skills: [], repos: [] },
-		run_key: RUN_KEY,
+		...example,
+		run: { ...example.run, model },
 		...(env ? { env } : {}),
 		timeout_minutes: timeoutMinutes
 	};
@@ -350,6 +347,156 @@ afterEach(async () => {
 	if (configDir)
 		rmSync(configDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 	configDir = null;
+});
+
+const validEvent = new Ajv2020({ allowUnionTypes: true }).compile<RunnerExecutionEvent>(
+	eventSchema
+);
+
+function readEvents(stdout: string): RunnerExecutionEvent[] {
+	return stdout
+		.trimEnd()
+		.split('\n')
+		.map((line) => {
+			const record: unknown = JSON.parse(line);
+			if (!validEvent(record)) throw new Error(JSON.stringify(validEvent.errors));
+			return record;
+		});
+}
+
+it('reports the daemon finish, rendered output and raw bytes for the same assignment', async () => {
+	const { server: stub, done } = stubSupervisor();
+	server = stub;
+	await new Promise<void>((resolve) => stub.listen(0, '127.0.0.1', resolve));
+	configDir = mkdtempSync(join(tmpdir(), 'tines-parity-'));
+	const bin = fakeClaudeProviderError(configDir);
+	child = startDaemon((stub.address() as AddressInfo).port, configDir, { fakeClaudeDir: bin });
+	const daemon = await done;
+	await expect.poll(() => daemon.raw).not.toBeNull();
+	const result = spawnSync(NODE, [CLI_BIN, 'runner', 'execute', '--no-cli-refresh'], {
+		input: JSON.stringify(assignment(30, 'claude-sonnet-5')),
+		encoding: 'utf8',
+		env: { ...process.env, TINES_CONFIG_DIR: configDir, PATH: bin + delimiter + process.env.PATH }
+	});
+	expect(result.status, result.stderr).toBe(0);
+	const events = readEvents(result.stdout);
+	const last = events.at(-1);
+	expect(last?.type).toBe('finish');
+	if (last?.type !== 'finish') throw new Error('missing finish');
+	const workspace = last.body.workspace_path!;
+	expect(last.body).toEqual({ ...daemon.finish, workspace_path: workspace });
+	const log = events.flatMap((event) => (event.type === 'log' ? [event.body.chunk] : [])).join('');
+	const normalize = (s: string, path: string) =>
+		s.replaceAll(path, '<workspace>').replace(/after \d+m\d+s/g, 'after <duration>');
+	expect(normalize(log, workspace)).toEqual(normalize(daemon.log, daemon.finish!.workspace_path!));
+	expect(
+		Buffer.concat(
+			events.flatMap((event) =>
+				event.type === 'raw_log' ? [Buffer.from(event.data, 'base64')] : []
+			)
+		).toString()
+	).toBe(daemon.raw);
+}, 30000);
+
+it.each(['SIGTERM', 'SIGINT'] as const)(
+	'settles a live executor on %s',
+	async (signal) => {
+		configDir = mkdtempSync(join(tmpdir(), 'tines-signal-'));
+		const proc = spawn(
+			NODE,
+			[
+				CLI_BIN,
+				'runner',
+				'execute',
+				'--harness',
+				'custom',
+				'--command',
+				'sleep 60',
+				'--no-cli-refresh'
+			],
+			{
+				env: { ...process.env, TINES_CONFIG_DIR: configDir }
+			}
+		);
+		child = proc;
+		const events: RunnerExecutionEvent[] = [];
+		createInterface({ input: proc.stdout }).on('line', (line) => {
+			const [event] = readEvents(line);
+			events.push(event);
+			if (event.type === 'started') proc.kill(signal);
+		});
+		let stderr = '';
+		proc.stderr.setEncoding('utf8').on('data', (chunk) => {
+			stderr += chunk;
+		});
+		const closed = once(proc, 'close');
+		proc.stdin.end(JSON.stringify(example));
+		expect((await closed)[0], stderr).toBe(0);
+		expect(events.filter((e) => e.type === 'canceled' || e.type === 'finish')).toHaveLength(1);
+		if (signal === 'SIGTERM')
+			expect(events.at(-1)).toMatchObject({ type: 'canceled', workspace_path: expect.any(String) });
+		else
+			expect(events.at(-1)).toMatchObject({
+				type: 'finish',
+				body: { status: 'failed', judgment: 'interrupted' }
+			});
+	},
+	15000
+);
+
+it('reuses the retained workspace and counts previous turns on resume', () => {
+	configDir = mkdtempSync(join(tmpdir(), 'tines-resume-'));
+	const bin = join(configDir, 'bin');
+	mkdirSync(bin);
+	writeFileSync(
+		join(bin, 'claude'),
+		`#!/bin/sh
+printf '%s\\n' '{"type":"result","subtype":"success","session_id":"session_1","num_turns":2,"result":"done"}'
+`,
+		{ mode: 0o755 }
+	);
+	const execute = (request: unknown) => {
+		const result = spawnSync(NODE, [CLI_BIN, 'runner', 'execute', '--no-cli-refresh'], {
+			env: {
+				...process.env,
+				TINES_CONFIG_DIR: configDir!,
+				PATH: bin + delimiter + process.env.PATH
+			},
+			input: JSON.stringify(request),
+			encoding: 'utf8'
+		});
+		expect(result.status, result.stderr).toBe(0);
+		const event = readEvents(result.stdout).at(-1);
+		if (event?.type !== 'finish') throw new Error('expected finish');
+		return event.body;
+	};
+	const first = execute(example);
+	const resumed = execute({
+		...example,
+		run: { ...example.run, id: 'run_next' },
+		resume: {
+			previous_run_id: example.run.id,
+			workspace_path: first.workspace_path,
+			provider_session_id: first.provider_session_id,
+			prior_turn_count: first.conversation_turn_count
+		}
+	});
+	expect(resumed).toMatchObject({
+		status: 'completed',
+		workspace_path: first.workspace_path,
+		turn_count: 2,
+		conversation_turn_count: 4
+	});
+});
+
+it('rejects malformed input without echoing credentials or writing protocol output', () => {
+	const result = spawnSync(NODE, [CLI_BIN, 'runner', 'execute'], {
+		input: '{"run_key":"SECRET"',
+		encoding: 'utf8'
+	});
+	expect(result.status).toBe(1);
+	expect(result.stdout).toBe('');
+	expect(result.stderr).not.toContain('SECRET');
 });
 
 describe('the run log a local run leaves behind', () => {

@@ -37,17 +37,35 @@ export interface DaemonSettings {
 	keepWorkspacesMax: number;
 }
 
-export function withDaemonFlags(cmd: Command): Command {
+export function withHarnessFlags(cmd: Command): Command {
 	return cmd
-		.option(
-			'--name <name>',
-			'runner name, unique per user; name it machine-plus-harness, e.g. macbook-claude (default: this hostname)'
-		)
 		.option('--harness <harness>', 'claude-code | codex | pi | custom', 'claude-code')
 		.option(
 			'--command <template>',
 			'custom harness command template ({prompt_file}, {workspace}, {model}, {effort})'
-		)
+		);
+}
+
+export function parseHarness(opts: Pick<DaemonFlagValues, 'harness' | 'command'>): HarnessKind {
+	const harness = opts.harness.replaceAll('-', '_') as HarnessKind;
+	if (!HARNESS_KINDS.includes(harness)) {
+		die(`--harness must be claude-code, codex, pi, or custom, got "${opts.harness}"`);
+	}
+	if (harness === 'custom' && !opts.command) {
+		die(
+			'the custom harness needs --command "<template>" ({prompt_file}, {workspace}, {model}, {effort})'
+		);
+	}
+	if (harness !== 'custom' && opts.command) die('--command only applies to --harness custom');
+	return harness;
+}
+
+export function withDaemonFlags(cmd: Command): Command {
+	cmd.option(
+		'--name <name>',
+		'runner name, unique per user; name it machine-plus-harness, e.g. macbook-claude (default: this hostname)'
+	);
+	return withHarnessFlags(cmd)
 		.option(
 			'--max-concurrent <n>',
 			'local maximum simultaneous runs (remote-adjustment ceiling when enabled)',
@@ -80,16 +98,7 @@ export function withDaemonFlags(cmd: Command): Command {
 
 /** Validates the shared flags; exits with the daemon's usual messages when they are wrong. */
 export function parseDaemonFlags(opts: DaemonFlagValues): DaemonSettings {
-	const harness = opts.harness.replaceAll('-', '_') as HarnessKind;
-	if (!HARNESS_KINDS.includes(harness)) {
-		die(`--harness must be claude-code, codex, pi, or custom, got "${opts.harness}"`);
-	}
-	if (harness === 'custom' && !opts.command) {
-		die(
-			'the custom harness needs --command "<template>" ({prompt_file}, {workspace}, {model}, {effort})'
-		);
-	}
-	if (harness !== 'custom' && opts.command) die('--command only applies to --harness custom');
+	const harness = parseHarness(opts);
 	if (!Number.isInteger(opts.maxConcurrent) || opts.maxConcurrent < 1 || opts.maxConcurrent > 100) {
 		die('--max-concurrent must be an integer between 1 and 100');
 	}
