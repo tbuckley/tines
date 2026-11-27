@@ -19,7 +19,7 @@ export interface PublicationSourceSelection {
 }
 
 const jsonRows = (query: RawBuilder<unknown>) =>
-	sql`(SELECT json_group_array(json(row_json)) FROM (${query}))`;
+	sql`json((SELECT json_group_array(json(row_json)) FROM (${query})))`;
 const ids = (values: string[]) => sql`(SELECT value FROM json_each(${JSON.stringify(values)}))`;
 
 /**
@@ -138,7 +138,7 @@ export function publicationSourceExpression(
 	return sql<string>`json_object(
 		'selection', json(${canonicalizeLibraryValue(selection.options)}),
 		'workflows', ${workflows}, 'context', ${context},
-		'project', ${project}, 'schedules', ${schedules}
+		'project', json(${project}), 'schedules', ${schedules}
 	)`;
 }
 

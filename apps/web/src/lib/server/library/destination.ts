@@ -81,7 +81,7 @@ export interface DestinationSelection {
 }
 
 const jsonList = (query: RawBuilder<unknown>) =>
-	sql`(SELECT json_group_array(json(row_json)) FROM (${query}))`;
+	sql`json((SELECT json_group_array(json(row_json)) FROM (${query})))`;
 const jsonRow = (table: string, columns: string[]) =>
 	sql`json_object(${sql.join(columns.flatMap((c) => [sql.lit(c), sql.ref(`${table}.${c}`)]))})`;
 const inList = (column: string, values: string[]) =>
